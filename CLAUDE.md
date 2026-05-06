@@ -80,7 +80,8 @@ come from?" the answer is "page 7 lines 14, 22, 31, ..." — clickable.
 | LLM | Claude Sonnet 4.6 via AWS Bedrock (`AnthropicBedrock` client) |
 | AWS SDK | `anthropic[bedrock]` + `boto3` |
 | PDF metadata | `pikepdf` |
-| PDF rendering | `weasyprint` (HTML → PDF for disclosures) |
+| PDF rendering (disclosures) | `weasyprint` (HTML → PDF, Phase 4) |
+| PDF generation (corpus) | `reportlab` (pure Python, programmatic, Phase 5.5) |
 | Templates | Jinja2 (server-rendered HTML dashboard) |
 | Interactivity | HTMX (no React, no build step) |
 | Job queue | `arq` (Redis-backed, async) |

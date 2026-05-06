@@ -21,6 +21,7 @@ dependencies = [
     "boto3>=1.35",
     "pikepdf>=9.0",
     "weasyprint>=63",
+    "reportlab>=4.2",
     "numpy>=2.1",
     "scipy>=1.14",
     "jinja2>=3.1",

@@ -72,8 +72,15 @@ class StatementSummary(_StrictModel):
 
     These are quoted by Claude in pass 1 from the printed PDF text. They
     are the ground-truth that the validation gate ties out against.
+
+    `bank_name`, `account_holder`, and `account_last4` are optional and
+    are present here so Phase 5 can use them for downstream merchant
+    matching and audit-log enrichment without a second LLM call.
     """
 
+    bank_name: str | None = None
+    account_holder: str | None = None
+    account_last4: str | None = Field(default=None, max_length=4)
     beginning_balance: Money
     ending_balance: Money
     deposit_total: Money

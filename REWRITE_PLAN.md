@@ -130,14 +130,16 @@ computed in pure Python with full source attribution.
   ```
 - [ ] Migration to add `_source_ids: UUID[]` arrays to every aggregate
   field on the `analyses` table.
-- [ ] Port the 117 existing test cases from the TS repo to pytest. Use
-  the synthetic PDFs in `test-data/`.
-- [ ] Parity test: same PDF through TS and Python systems; new system's
-  aggregates match TS within tolerance, except for documented fixes.
 
-**Done when:** All ported tests pass. Source attribution verified end to
-end (a parsed PDF produces transactions with non-null source_page/line,
-and aggregates have non-empty source_ids arrays).
+**Done when:** Source attribution verified end to end (a parsed PDF
+produces transactions with non-null source_page/line, and aggregates have
+non-empty source_ids arrays). The validation gate fires correctly on a
+math-broken statement.
+
+> Note: there are no "ported TS tests" or "parity tests" here. Validation
+> at scale is Phase 5.5's job, against a deterministically-generated
+> synthetic corpus rather than against an old TS deployment that no
+> longer exists.
 
 **STOP. Review with operator before Phase 3. This is the critical
 review point — confirm the architecture is what you wanted.**
@@ -245,10 +247,12 @@ trustworthy." It exists because parser bugs only show up at scale.
 ### Synthetic corpus
 
 - [ ] `scripts/generate_corpus.py`: produces synthetic but realistic-looking
-  PDF bank statements via `pikepdf` or `weasyprint`. Layouts based on
-  Chase Business, Bank of America Business, Wells Fargo Business,
-  Capital One Spark, plus 2 regional formats (e.g. a community bank and a
-  credit union). Fixed RNG seed for reproducibility.
+  PDF bank statements via `reportlab` (pure Python, installs cleanly on
+  every platform — chosen over weasyprint, which needs Pango/GObject
+  native libs and is reserved for HTML-template rendering in Phase 4).
+  Layouts based on Chase Business, Bank of America Business, Wells
+  Fargo Business, Capital One Spark, plus 2 regional formats (e.g. a
+  community bank and a credit union). Fixed RNG seed for reproducibility.
 - [ ] Each generated PDF has a paired `<name>.manifest.json` written
   deterministically by the generator. The manifest is **ground truth from
   which the PDF was generated**, NOT extracted from the PDF after the fact.
@@ -338,8 +342,11 @@ reviewable. No live machine yet.
   failure, write to journalctl + `/var/log/aegis/`.
 - [ ] `deploy/install.sh`: idempotent first-time setup on a fresh Hetzner
   box. Creates the `aegis` user, installs python3.12, uv, redis-server,
-  cloudflared, and the systemd units. Sets up `/var/log/aegis/` with
-  logrotate config.
+  cloudflared, the systemd units, and the **weasyprint native runtime**
+  (`apt install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b
+  libcairo2 libgdk-pixbuf-2.0-0 fonts-liberation`). Without these,
+  Phase 4 disclosure rendering will fail at runtime. Sets up
+  `/var/log/aegis/` with logrotate config.
 - [ ] `deploy/cloudflared-config.yml.example`: tunnel config routing the
   public hostname to local port 5555.
 - [ ] `scripts/deploy.sh`: pre-flight checks (clean working tree, `uv.lock`
@@ -350,6 +357,11 @@ reviewable. No live machine yet.
   aegis-web -f`), how to roll back (`git checkout PREVIOUS_SHA &&
   systemctl restart`), how to drain the queue before maintenance, how to
   rotate the bearer token, how to renew Cloudflare Tunnel credentials.
+  Includes a "system dependencies" section documenting that weasyprint
+  needs Pango/GObject/Cairo runtime libs (`libpango-1.0-0`,
+  `libpangoft2-1.0-0`, `libharfbuzz0b`, `libcairo2`,
+  `libgdk-pixbuf-2.0-0`, `fonts-liberation`) and that re-running
+  `deploy/install.sh` is the supported way to reinstall them.
 - [ ] `deploy/iam-policy.json`: required IAM policy for the
   `aegis-bedrock` AWS user. Includes `bedrock:InvokeModel` scoped to the
   Sonnet 4.6 model ARN and the us-regional inference profile ARN.
