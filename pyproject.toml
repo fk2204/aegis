@@ -1,0 +1,58 @@
+[project]
+name = "aegis"
+version = "2.0.0"
+description = "MCA underwriting brain for Commera Capital (Python rewrite)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+    "supabase>=2.9",
+    "anthropic[bedrock]>=0.39",
+    "boto3>=1.35",
+    "pikepdf>=9.0",
+    "weasyprint>=63",
+    "numpy>=2.1",
+    "scipy>=1.14",
+    "jinja2>=3.1",
+    "arq>=0.26",
+    "redis>=5.2",
+    "python-dotenv>=1.0",
+    "tenacity>=9.0",
+    "python-multipart>=0.0.12",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13",
+    "ruff>=0.7",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-snapshot>=0.9",
+    "hypothesis>=6.115",
+    "types-redis",
+    "boto3-stubs[bedrock-runtime]",
+]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+disallow_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "S", "ANN", "RUF"]
+ignore = ["ANN101", "ANN102"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
