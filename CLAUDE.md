@@ -89,6 +89,42 @@ come from?" the answer is "page 7 lines 14, 22, 31, ..." — clickable.
 
 ---
 
+## Deployment target
+
+This is the only AEGIS app — there is no other deployment to coexist with.
+Deploy is fresh.
+
+- **Host:** Single Hetzner CPX21 VM (Ubuntu 24 LTS), running both the FastAPI
+  web process and the arq worker process via systemd. No Docker, no
+  Kubernetes, no orchestrator. Single box because volume is ~100 deals/month.
+- **Reverse proxy:** Cloudflare Tunnel (`cloudflared`) terminates HTTPS and
+  forwards to the local FastAPI on port 5555. Cloudflare Access enforces SSO
+  before any request reaches the app. The bearer token is a second layer
+  behind Cloudflare Access.
+- **Process supervision:** systemd. Two units: `aegis-web.service` (uvicorn)
+  and `aegis-worker.service` (arq). Both restart on failure. Both run as a
+  non-root `aegis` user. Both load `/etc/aegis/aegis.env` (NOT the repo
+  `.env` — separate ops-managed file with prod secrets).
+- **Redis:** installed via apt, listening on localhost only, no password
+  (loopback-only). For 100 deals/month a persistent Redis with
+  `appendonly yes` is fine.
+- **Logs:** stdout/stderr captured by `journalctl`. Application JSON logs
+  also written to `/var/log/aegis/app.log` with logrotate (daily, 14 days).
+  Errors duplicated to `/var/log/aegis/errors.log`.
+- **Updates:** deploy is `git pull && uv sync && systemctl restart aegis-web
+  aegis-worker`. No CI/CD pipeline — manual ssh + git is appropriate for a
+  solo operator. `scripts/deploy.sh` runs these steps with safety checks
+  (clean working tree, lockfile present, tests pass, residency env confirmed).
+- **Backups:** Supabase handles Postgres backups (daily snapshots in their
+  console). The Hetzner VM is treated as cattle — if it dies, rebuild from
+  the deploy script. The only stateful thing on the box is Redis, and arq
+  queues are recoverable (jobs lost during outage are re-uploaded by the
+  operator).
+- **Health:** Cloudflare hits `/healthz` every 60s. systemd hits the same
+  locally for restart decisions.
+
+---
+
 ## Non-Negotiable Rules
 
 ### Mathematical Correctness
@@ -172,7 +208,21 @@ aegis/
   CLAUDE.md               # this file
   REWRITE_PLAN.md
   COMPLIANCE.md           # statute citations for every state
+  CORPUS_FINDINGS.md      # bugs surfaced by Phase 5.5 corpus + their fixes
+  RUNBOOK.md              # ops procedures (ssh, logs, rollback, key rotation)
   Makefile
+
+  deploy/
+    aegis-web.service          # systemd unit (uvicorn)
+    aegis-worker.service       # systemd unit (arq)
+    install.sh                 # idempotent first-time setup on fresh Hetzner box
+    cloudflared-config.yml.example
+    iam-policy.json            # AWS IAM policy for the aegis-bedrock user
+    logrotate.aegis            # /etc/logrotate.d/aegis config
+
+  scripts/
+    deploy.sh               # pre-flight checks + ssh + git pull + restart + smoke
+    generate_corpus.py      # synthetic statement generator (Phase 5.5, fixed seed)
 
   src/aegis/
     __init__.py
@@ -200,6 +250,7 @@ aegis/
       build_score_input.py
       match_funders.py
       submission_package.py
+      ofac.py             # OFAC SDN sanctions check (hard decline)
 
     compliance/
       states.py           # Cited statute table
@@ -237,12 +288,16 @@ aegis/
   tests/
     conftest.py
     fixtures/
+      corpus/
+        synthetic/         # generated PDFs + manifests, committed
+        real/              # operator-provided PDFs (gitignored except README)
     parser/
     scoring/
     compliance/
     api/
     integration/
     snapshots/
+    test_corpus.py         # Phase 5.5 corpus runner
 ```
 
 ---
