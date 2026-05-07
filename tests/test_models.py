@@ -147,59 +147,46 @@ class TestAggregates:
         assert agg.num_nsf.value == 2
 
 
+def _baseline_score_kwargs() -> dict[str, object]:
+    return {
+        "merchant_id": uuid4(),
+        "business_name": "Acme Co",
+        "owner_name": "Jane Doe",
+        "state": "CA",
+        "avg_daily_balance": Decimal("1000.00"),
+        "true_revenue": Decimal("50000.00"),
+        "monthly_revenue": Decimal("50000.00"),
+        "lowest_balance": Decimal("100.00"),
+        "num_nsf": 0,
+        "days_negative": 0,
+        "mca_positions": 0,
+        "mca_daily_total": Decimal("0.00"),
+        "debt_to_revenue": Decimal("0.00"),
+        "fraud_score": 10,
+        "statement_period_start": date(2026, 1, 1),
+        "statement_period_end": date(2026, 1, 31),
+        "statement_days": 30,
+        "requested_amount": Decimal("10000.00"),
+        "requested_factor": Decimal("1.30"),
+        "requested_term_days": 100,
+    }
+
+
 class TestScoreInput:
     def test_state_must_be_two_letters(self) -> None:
         with pytest.raises(ValidationError):
-            ScoreInput(
-                merchant_id=uuid4(),
-                business_name="Acme Co",
-                owner_name="Jane Doe",
-                state="California",  # too long
-                avg_daily_balance=Decimal("1000.00"),
-                true_revenue=Decimal("50000.00"),
-                num_nsf=0,
-                days_negative=0,
-                mca_positions=0,
-                mca_daily_total=Decimal("0.00"),
-                statement_period_start=date(2026, 1, 1),
-                statement_period_end=date(2026, 1, 31),
-                statement_days=30,
-                requested_amount=Decimal("10000.00"),
-                requested_factor=Decimal("1.30"),
-                requested_term_days=100,
-            )
+            ScoreInput(**(_baseline_score_kwargs() | {"state": "California"}))
 
     def test_credit_score_range(self) -> None:
         with pytest.raises(ValidationError):
-            ScoreInput(
-                merchant_id=uuid4(),
-                business_name="Acme Co",
-                owner_name="Jane Doe",
-                state="CA",
-                credit_score=900,  # > 850
-                avg_daily_balance=Decimal("1000.00"),
-                true_revenue=Decimal("50000.00"),
-                num_nsf=0,
-                days_negative=0,
-                mca_positions=0,
-                mca_daily_total=Decimal("0.00"),
-                statement_period_start=date(2026, 1, 1),
-                statement_period_end=date(2026, 1, 31),
-                statement_days=30,
-                requested_amount=Decimal("10000.00"),
-                requested_factor=Decimal("1.30"),
-                requested_term_days=100,
-            )
+            ScoreInput(**(_baseline_score_kwargs() | {"credit_score": 900}))
 
 
 class TestScoreResult:
     def test_recommendation_literal(self) -> None:
         with pytest.raises(ValidationError):
-            ScoreResult(
-                score=80,
-                recommendation="maybe",
-            )
+            ScoreResult(score=80, tier="A", recommendation="maybe")
 
     def test_score_bounds(self) -> None:
         with pytest.raises(ValidationError):
-            ScoreResult(score=101, recommendation="approve")
+            ScoreResult(score=101, tier="A", recommendation="approve")
