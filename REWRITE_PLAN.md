@@ -169,6 +169,47 @@ review point — confirm the architecture is what you wanted.**
 **Done when:** Scoring tests pass + new tests for fixed bugs + OFAC
 hard-decline test passes against a known-sanctioned name fixture.
 
+**STOP. Review with operator before Phase 3.5.**
+
+---
+
+## Phase 3.5 — Funder management + guideline extraction (3 days)
+
+Goal: capture the funder side of the matching equation. Existing
+`match_funders.py` reads a `FunderRow` shape; this phase makes that shape
+authoritative, persistable, and operator-fillable from PDFs that funders
+distribute as their underwriting criteria.
+
+- [ ] `src/aegis/funders/models.py`: Pydantic `FunderRow` (replaces the
+  dataclass currently in `match_funders.py`), `FunderGuidelineExtraction`
+  (the LLM output: a draft FunderRow + per-field confidence map +
+  unparseable-fragments list).
+- [ ] `src/aegis/funders/repository.py`: `FunderRepository` Protocol +
+  `InMemoryFunderRepository` reference implementation. Phase 5 wires a
+  Supabase-backed implementation.
+- [ ] `src/aegis/funders/prompts.py`: extraction prompt instructing
+  Claude to read a funder's underwriting-criteria PDF and emit
+  `FunderGuidelineExtraction` JSON. Per-field confidence is mandatory —
+  the operator reviews low-confidence fields before saving.
+- [ ] `src/aegis/funders/extract.py`: `extract_funder_guidelines(pdf_bytes,
+  llm)` -> `FunderGuidelineExtraction`. Reuses `aegis.llm.LLMClient`.
+- [ ] `migrations/003_funders_table.sql`: schema for funders. Columns
+  match `FunderRow` fields (incl. UUID id default via gen_random_uuid()
+  — pgcrypto already created in 001). Includes `guidelines_extracted_at`
+  + `guidelines_source_pdf_hash` columns so re-extraction can be
+  detected.
+- [ ] `scoring/match_funders.py`: imports `FunderRow` from the new
+  module instead of declaring the dataclass locally. Existing
+  `match_funder()` semantics unchanged.
+- [ ] Tests: `test_extract.py` (canned LLM response → FunderGuidelineExtraction),
+  `test_repository.py` (CRUD + uniqueness), and a regression test
+  verifying `match_funder()` still produces the same output it did with
+  the dataclass FunderRow.
+
+**Done when:** PDF + canned LLM response yields a populated
+`FunderGuidelineExtraction` with per-field confidence; in-memory
+repository CRUD round-trips; existing match_funders tests still pass.
+
 **STOP. Review with operator before Phase 4.**
 
 ---

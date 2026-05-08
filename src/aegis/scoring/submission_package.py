@@ -3,7 +3,7 @@
 REWRITES the term/payback math from the TS version. TS computed
 `payback_business_days = principal / daily_payback`, which silently
 undercounts payback by the factor margin (the same bug as score.py's
-`estimated_payback_days`). Hercules uses
+`estimated_payback_days`). AEGIS uses
 `total_repayment / daily_payment` everywhere. Numbers in the email body
 must reconcile against `score_result.estimated_payback_days`.
 """

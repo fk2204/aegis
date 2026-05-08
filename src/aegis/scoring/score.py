@@ -44,7 +44,7 @@ RETURNED_ACH_HARD_DECLINE: Final[int] = 5
 TIB_MIN_MONTHS: Final[int] = 3
 MCA_POSITIONS_HARD_DECLINE: Final[int] = 2  # > 2 active = decline
 
-# Tier-based factor / holdback. Hercules uses Decimal throughout.
+# Tier-based factor / holdback. AEGIS uses Decimal throughout.
 _FACTOR_BY_TIER: Final[dict[str, Decimal]] = {
     "A": Decimal("1.18"),
     "B": Decimal("1.29"),

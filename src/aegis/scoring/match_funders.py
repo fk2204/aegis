@@ -4,39 +4,43 @@ A funder match is a tuple of `(qualifies, hard_fails, soft_concerns)`.
 Hard fails mean the funder will not approve regardless of relationship;
 soft concerns degrade likelihood but don't reject.
 
-TS-fix
-------
+TS-fix: missing data is a soft concern, not a silent pass
+--------------------------------------------------------
 Missing credit_score / time_in_business is a SOFT CONCERN, not a silent
 pass. Scoring missing data as "no concern" is how stacking gets through.
+
+Stacking semantics
+------------------
+We deliberately separate "the funder published an exact maximum" from
+"the funder hasn't said". The four branches are:
+  - max_positions set + deal positions > max     -> hard fail
+    (`exceeds_max_positions`) — published constraint is binding.
+  - accepts_stacking=False + deal positions >= 1 -> SOFT concern
+    (`stacking_acceptance_unconfirmed`) — the funder hasn't published
+    an opt-in, but absence of opt-in is not a published refusal.
+    Operator confirms manually before submitting.
+  - accepts_stacking=True  + max_positions None  -> SOFT concern
+    (`stacking_max_unspecified`) — funder accepts stacking but cap is
+    fuzzy; verify with funder before submitting.
+  - accepts_stacking=False + deal positions == 0 -> no concern
+    (clean first-position deal; stacking never engaged).
+
+Unused fields
+-------------
+`typical_factor_low/high` and `typical_holdback_low/high` on FunderRow
+are extracted from guideline PDFs and stored, but match scoring does
+not use them yet. They are reserved for the v1.1 ranking enhancement
+(reordering equally-qualified funders by pricing fit to the deal).
+
+`FunderRow` lives in `aegis.funders.models` (Phase 3.5). It is re-exported
+here so existing callers (`from aegis.scoring.match_funders import FunderRow`)
+continue to work.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from uuid import UUID
-
-from aegis.money import Money
+from aegis.funders.models import FunderRow
 from aegis.scoring.models import FunderMatch, ScoreInput, ScoreResult
-
-
-@dataclass
-class FunderRow:
-    """Subset of a funders-table row relevant to matching."""
-
-    id: UUID
-    name: str
-    active: bool = True
-    min_monthly_revenue: Money | None = None
-    min_avg_daily_balance: Money | None = None
-    min_credit_score: int | None = None
-    min_months_in_business: int | None = None
-    max_positions: int | None = None
-    accepts_stacking: bool = False
-    min_advance: Money | None = None
-    max_advance: Money | None = None
-    max_nsf_tolerance: int | None = None
-    excluded_industries: tuple[str, ...] = ()
-    excluded_states: tuple[str, ...] = ()
 
 
 def match_funder(
@@ -84,13 +88,33 @@ def match_funder(
                 f"tib {deal.time_in_business_months}mo < min {funder.min_months_in_business}mo"
             )
 
-    if funder.max_positions is not None:
+    # Stacking — see module docstring "Stacking semantics" for the four branches.
+    has_stacking_policy = (
+        funder.max_positions is not None
+        or funder.accepts_stacking
+        or deal.mca_positions >= 1  # raises a soft concern even with default policy
+    )
+    if has_stacking_policy:
         criteria_count += 1
-        if deal.mca_positions > funder.max_positions:
-            hard.append(f"positions {deal.mca_positions} > max {funder.max_positions}")
-    elif not funder.accepts_stacking and deal.mca_positions > 0:
-        criteria_count += 1
-        hard.append("funder_does_not_accept_stacking")
+        if funder.max_positions is not None and deal.mca_positions > funder.max_positions:
+            # Branch 2: published constraint is binding.
+            hard.append(
+                f"exceeds_max_positions: {deal.mca_positions} > max {funder.max_positions}"
+            )
+        elif not funder.accepts_stacking and deal.mca_positions >= 1:
+            # Branch 1: no opt-in published; ambiguous default. Operator confirms.
+            soft.append(
+                "stacking_acceptance_unconfirmed: "
+                "funder has not confirmed stacking acceptance — manual confirmation needed"
+            )
+        elif funder.accepts_stacking and funder.max_positions is None:
+            # Branch 3: opt-in but cap is fuzzy. Verify before submitting.
+            soft.append(
+                "stacking_max_unspecified: "
+                "stacking accepted but no maximum specified — verify with funder"
+            )
+        # else: branch 4 — clean first-position deal, or stacked deal within
+        # the funder's published cap. No concern emitted.
 
     if funder.max_nsf_tolerance is not None:
         criteria_count += 1
@@ -144,3 +168,4 @@ def _likelihood(qualifies: bool, soft: list[str], tier: str) -> int:
 
 
 __all__ = ["FunderRow", "match_funder"]
+# FunderRow is re-exported from aegis.funders.models — see module docstring.

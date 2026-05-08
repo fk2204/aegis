@@ -2,7 +2,7 @@
 
 Ported from the TS implementation with two structural changes:
 
-1. Hercules input is a flat `list[ClassifiedTransaction]` (deterministically
+1. AEGIS input is a flat `list[ClassifiedTransaction]` (deterministically
    classified after the validation gate). The TS version received a
    pre-aggregated `ExtractedData` shape where Claude grouped recurring
    debits — here, we re-derive recurring groups in pure Python.
@@ -291,7 +291,7 @@ def _preloan_spike(
     """Detect last-week (and last-14-day) deposit spikes vs prior-period avg.
 
     TS bug: triggered both 7-day and 14-day windows independently and added
-    score twice for the same underlying event. Hercules fix: detect either
+    score twice for the same underlying event. AEGIS fix: detect either
     window, score once.
     """
     if not deposits or statement_days < 21:
