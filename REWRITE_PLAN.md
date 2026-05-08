@@ -219,35 +219,72 @@ repository CRUD round-trips; existing match_funders tests still pass.
 Goal: state regulation table that is correct, with state-prescribed
 disclosure templates.
 
-- [ ] **Statute audit.** For each of CA, IL, NC, NY, NJ, VA, CT, UT, FL,
-  GA, KS, MD, TX, MO: operator provides the actual bill text or a link
-  to the statute. Claude Code reads it and fills in `compliance/states.py`
-  with verified values + citation comments. Do NOT fill in values from
-  prior knowledge — every constant gets a cited source.
-  - Specifically verify (these were wrong in the TS version): Kansas SB 345
-    (enacted), Georgia SB 90 (enacted), Missouri SB 1359 (enacted),
-    Maryland's actual current bill (not "HB 1007"), Virginia CoJ
-    prohibition.
-- [ ] **State-prescribed disclosure templates.** For each state with
-  `disclosure_required=true`, find the regulator's prescribed form
-  (CA DFPI, NY DFS, VA SCC, CT DOB, FL OFR, etc.). Operator provides
-  the template URL or PDF; Claude Code renders Jinja templates that
-  match exactly.
-- [ ] `compliance/disclosure.py`: state-router. If no template exists
-  for a state with `disclosure_required=true`, raise
-  `DisclosureTemplateMissing`. Never fall back to generic.
-- [ ] Snapshot test per state: render disclosure with fixed inputs,
-  snapshot the HTML.
-- [ ] HTML escaping via Jinja autoescape. Never string-format user
-  input into HTML.
+### Served-state inventory
 
-**Done when:** Every state in `states.py` has a citation. Every state
-with active disclosure obligations has a regulator-prescribed template.
-Snapshot tests pass.
+AEGIS serves 45 states. Texas, Virginia, Connecticut, Utah, Missouri,
+Washington DC, and the U.S. territories are NOT served. A deal from a
+non-served state is rejected by the API with `state_not_served`.
 
-**STOP. Operator MUST review every state's template against the
-regulator's prescribed form before approving Phase 5. This is where
-non-compliance becomes regulatory exposure.**
+### Three-tier model
+
+- **Tier 1 — MCA-specific commercial financing disclosure law in effect.**
+  Required fields: `bill_number`, `effective_date`, `citation_url`,
+  `citation_excerpt` (≤ 500 words verbatim), `verified_date`,
+  `apr_calculation_method` (enum), `disclosure_required=True`,
+  `coj_allowed` + sub-citation, `prescribed_form_url` (if applicable),
+  and a Jinja template at `compliance/templates/{state}_{bill_short}.html.j2`
+  matching the regulator's prescribed form line-by-line.
+- **Tier 2 — General state law applies, no MCA-specific statute.**
+  Required fields: `general_law_citation`, `citation_url`, `verified_date`,
+  `disclosure_required=False`, `notes` (1-3 sentences on the regulatory
+  posture). Disclosure endpoint renders a generic acknowledgment receipt
+  citing the general law (NOT a state-prescribed form).
+- **Tier 3 — Served, audit not yet completed.** Default for every state
+  until the operator provides source material. Disclosure endpoint
+  raises `StateNotAudited`.
+
+### Skeleton phase deliverables
+
+- [ ] `src/aegis/compliance/states.py`: Pydantic discriminated-union
+  `StateRegulation` (Tier1/Tier2/Tier3) keyed off `tier`. Module-level
+  `STATES: dict[str, StateRegulation]` with all 45 served states present
+  in Tier 3 with `verified_date=2026-05-07`. Boot validator raises
+  `CompliancePolicyError` listing every state that has missing required
+  fields or, for Tier 1, a missing template file. `validate_state_served(state)`
+  raises `StateNotServed` for non-served states.
+- [ ] `src/aegis/compliance/disclosure.py`: `render_disclosure(state, deal)`.
+  Tier 1 → renders prescribed Jinja template. Tier 2 → renders generic
+  acknowledgment template citing the general law. Tier 3 → raises
+  `StateNotAudited`.
+- [ ] `src/aegis/compliance/templates/README.md`: documents the rule that
+  Tier 1 templates must match the regulator's prescribed form line-by-line.
+  Directory otherwise empty until states get audited.
+- [ ] `warn_if_unaudited(state)` logs a soft warning whenever a deal
+  originates from a Tier 3 state. Phase 5 wires this into the parse path.
+
+### Audit phase deliverables (after the skeleton, one state at a time)
+
+- [ ] **Per-state audit:** operator provides bill text, citation URL,
+  excerpt, and (for Tier 1) the regulator's prescribed form. Claude Code
+  upgrades the entry from Tier 3 to Tier 1 or Tier 2 with verified
+  values + citation comments. NEVER fill values from prior knowledge.
+- [ ] Snapshot test per Tier 1 state: render disclosure with fixed inputs,
+  snapshot the HTML so the prescribed form is locked.
+- [ ] HTML escaping via Jinja autoescape. Never string-format user input
+  into HTML.
+
+**Done when (skeleton):** All 45 states present and Tier 3. Boot
+validator passes. Disclosure router raises StateNotAudited for every
+state. Unaudited-state warning logs on parse for any Tier 3 state.
+Templates directory README explains the prescribed-form rule. All tests
+pass; mypy strict + ruff clean.
+
+**STOP after the skeleton. Operator reviews the 45-state list to verify
+nothing was assumed before any audits begin.**
+
+**STOP again after the audits. Operator reviews every Tier 1 state's
+template against the regulator's prescribed form before approving
+Phase 5. This is where non-compliance becomes regulatory exposure.**
 
 ---
 
