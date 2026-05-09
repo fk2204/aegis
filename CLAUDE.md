@@ -353,3 +353,21 @@ aegis/
 ---
 
 **Version:** 2.0.0 (Python rewrite, two-pass + audit trail, AWS Bedrock)
+
+## Compliance research location
+
+Authoritative compliance research lives in `docs/compliance/`. Read
+`docs/compliance/CORRECTIONS_2026-05-08.md` first for the audit log of
+verification corrections. Read `docs/compliance/15_aegis_compliance_posture.md`
+for the master obligation matrix.
+
+When implementing any compliance-touching code (state regulation Tier promotion,
+disclosure templates, OFAC workflow, retention logic, cybersecurity controls,
+broker rules, renewal handling), cite the specific dossier and section in the
+commit message. Example: `feat(compliance): promote CA from Tier 3 to Tier 1
+per docs/compliance/01_california.md`.
+
+When a dossier conflicts with the older state research notes elsewhere in the
+repo, the dossier wins. The dossiers are dated 2026-05-07 with verification
+pass 2026-05-08; older notes predate this research and may contain superseded
+information.
