@@ -166,13 +166,17 @@ def _build_context(
         common.update(
             {
                 "bill_number": reg.bill_number,
-                "effective_date": reg.effective_date.isoformat(),
-                "citation_url": reg.citation_url,
-                "citation_excerpt": reg.citation_excerpt,
+                "effective_date_statute": reg.effective_date_statute.isoformat(),
+                "effective_date_regulations": reg.effective_date_regulations.isoformat(),
+                "statute_citation": reg.statute_citation,
+                "regulation_citation": reg.regulation_citation,
+                "citation_url_statute": reg.citation_url_statute,
+                "citation_url_regulation": reg.citation_url_regulation,
+                "prescribed_form_section": reg.prescribed_form_section,
                 "apr_calculation_method": reg.apr_calculation_method,
                 "coj_allowed": reg.coj_allowed,
                 "coj_citation": reg.coj_citation,
-                "prescribed_form_url": reg.prescribed_form_url or "",
+                "notes": reg.notes,
             }
         )
     else:

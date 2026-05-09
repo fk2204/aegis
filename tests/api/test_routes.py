@@ -223,7 +223,13 @@ def _score_result_dict() -> dict[str, Any]:
 
 
 def test_disclosure_render_tier3_returns_503(client: TestClient) -> None:
-    body = {"state": "CA", "deal": _score_input_dict(), "score": _score_result_dict()}
+    # CA is now Tier 1 per docs/compliance/01_california.md; pick a state
+    # that is still Tier 3 to exercise the unaudited-state route.
+    body = {
+        "state": "WY",
+        "deal": {**_score_input_dict(), "state": "WY"},
+        "score": _score_result_dict(),
+    }
     resp = client.post("/disclosures/render", json=body, headers=AUTH)
     assert resp.status_code == 503
     assert "state_not_audited" in resp.text

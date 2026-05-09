@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Final, Literal
 
@@ -93,6 +94,21 @@ class _StrictModel(BaseModel):
 AprMethod = Literal["actuarial_reg_z", "simple_interest", "not_specified"]
 
 
+class Amendment(_StrictModel):
+    """A statute amendment that layers on top of the base bill.
+
+    Per CA dossier: SB 362 (2025) amends SB 1235 with re-disclosure rules
+    effective 2026-01-01. Future Tier 1 entries (NY, FL, GA) will carry
+    their own amendment chains in the same shape.
+    """
+
+    bill_number: str = Field(min_length=1, description='e.g. "SB 362"')
+    year: int = Field(ge=1900, le=2100)
+    effective_date: date
+    summary: str = Field(min_length=1, max_length=2000)
+    citation_url: str = Field(min_length=1)
+
+
 class _BaseRegulation(_StrictModel):
     state: str = Field(min_length=2, max_length=2, description="USPS code, uppercase")
     state_name: str = Field(min_length=1)
@@ -100,18 +116,65 @@ class _BaseRegulation(_StrictModel):
 
 
 class Tier1Regulation(_BaseRegulation):
-    """MCA-specific disclosure law in effect."""
+    """MCA-specific commercial-financing disclosure law in effect.
+
+    Field shape follows the per-state dossiers under ``docs/compliance/``.
+    Tier 1 entries for CA (and forthcoming NY/FL/GA) populate the full
+    statute-vs-regulation date pair, threshold, CoJ status with citation
+    chain, transmission rules, amendments, and a free-form notes block.
+
+    The single AEGIS-internal field outside the dossier schema is
+    ``template_path`` — required by the boot validator to verify the
+    prescribed-form Jinja template exists on disk.
+    """
 
     tier: Literal[1] = 1
-    bill_number: str = Field(min_length=1, description='e.g. "California SB 1235"')
-    effective_date: date
-    citation_url: str = Field(min_length=1)
-    citation_excerpt: str = Field(min_length=1, max_length=4000)
+
+    # Bill identification
+    bill_number: str = Field(min_length=1, description='e.g. "SB 1235"')
+    bill_year: int = Field(ge=1900, le=2100)
+    chapter: str = Field(min_length=1, description='e.g. "Chapter 1011, Statutes of 2018"')
+    sponsor: str = Field(min_length=1)
+
+    # Effective dates — split because statute and regulations land on
+    # different days for most CFDLs (SB 1235 enacted 2018-09-30, regs
+    # effective 2022-12-09).
+    effective_date_statute: date
+    effective_date_regulations: date
+
+    # Citations
+    statute_citation: str = Field(min_length=1)
+    regulation_citation: str = Field(min_length=1)
+    citation_url_statute: str = Field(min_length=1)
+    citation_url_regulation: str = Field(min_length=1)
+    prescribed_form_section: str = Field(min_length=1)
+
+    # APR + threshold + scope
     apr_calculation_method: AprMethod
+    threshold_amount_usd: Decimal = Field(gt=Decimal("0"))
+    threshold_test_summary: str = Field(min_length=1, max_length=1000)
     disclosure_required: Literal[True] = True
+
+    # Confession of judgment (CoJ)
     coj_allowed: bool
     coj_citation: str = Field(min_length=1, description="sub-citation for the CoJ rule")
-    prescribed_form_url: str | None = None
+    coj_citation_url: str = Field(min_length=1)
+    coj_amendment_bill: str = Field(min_length=1, description='e.g. "SB 688 (2022)"')
+    coj_effective_date: date
+
+    # Broker / transmission rules
+    requires_unaltered_disclosure_transmission: bool
+    transmission_record_retention_years: int = Field(ge=0)
+    broker_compensation_disclosure_required: bool
+
+    # Amendment chain (e.g. CA SB 1235 amended by SB 362)
+    amendments: list[Amendment] = Field(default_factory=list)
+
+    # Free-form notes from the dossier (template guidance, etc.)
+    notes: str = Field(min_length=1, max_length=4000)
+
+    # AEGIS-internal: filename under compliance/templates/. Boot validator
+    # verifies the file exists.
     template_path: str = Field(
         min_length=1,
         description="filename under compliance/templates/, e.g. ca_sb1235.html.j2",
@@ -210,6 +273,82 @@ def _build_skeleton() -> dict[str, StateRegulation]:
 STATES: dict[str, StateRegulation] = _build_skeleton()
 
 
+# --- Per-state Tier 1 / Tier 2 promotions ------------------------------------
+# Each promotion block is sourced from the corresponding dossier under
+# ``docs/compliance/``. The dossier is authoritative for every field value.
+# Field-name mapping: dossier's ``state="California"`` → model's
+# ``state_name``; dossier's ``abbreviation="CA"`` → model's ``state``. The
+# only AEGIS-added field beyond the dossier is ``template_path`` (boot
+# validator routing key). ``verified_date`` is filled from the operator's
+# session date; the dossier explicitly leaves it for the operator.
+#
+# Per docs/compliance/01_california.md: California — SB 1235 + SB 362
+STATES["CA"] = Tier1Regulation(
+    state="CA",
+    state_name="California",
+    tier=1,
+    bill_number="SB 1235",
+    bill_year=2018,
+    chapter="Chapter 1011, Statutes of 2018",
+    sponsor="Glazer",
+    effective_date_statute=date(2018, 9, 30),
+    effective_date_regulations=date(2022, 12, 9),
+    statute_citation="Cal. Fin. Code § 22800-22805",
+    regulation_citation="10 CCR § 900-956",
+    citation_url_statute=(
+        "https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml"
+        "?bill_id=201720180SB1235"
+    ),
+    citation_url_regulation="https://www.law.cornell.edu/regulations/california/10-CCR-914",
+    prescribed_form_section="10 CCR § 914",
+    apr_calculation_method="actuarial_reg_z",
+    threshold_amount_usd=Decimal("500000"),
+    threshold_test_summary=(
+        "Disclosure required when financing offer <= $500,000 AND "
+        "recipient principally directed or managed from California "
+        "(per 10 CCR § 954)."
+    ),
+    disclosure_required=True,
+    coj_allowed=False,
+    coj_citation="Cal. Code Civ. Proc. § 1132",
+    coj_citation_url=(
+        "https://law.justia.com/codes/california/code-ccp/part-3/title-3/"
+        "chapter-1/section-1132/"
+    ),
+    coj_amendment_bill="SB 688 (2022)",
+    coj_effective_date=date(2023, 1, 1),
+    requires_unaltered_disclosure_transmission=True,
+    transmission_record_retention_years=4,
+    broker_compensation_disclosure_required=False,
+    amendments=[
+        Amendment(
+            bill_number="SB 362",
+            year=2025,
+            effective_date=date(2026, 1, 1),
+            summary=(
+                "Adds Section 22806: provider may not use 'interest' or 'rate' "
+                "deceptively; must re-disclose APR every time a charge/pricing "
+                "metric/financing amount is communicated to recipient. Repeals "
+                "old Section 22805 enforcement provision."
+            ),
+            citation_url=(
+                "https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml"
+                "?bill_id=202520260SB362"
+            ),
+        ),
+    ],
+    notes=(
+        "MCAs fall under 'sales-based financing' for disclosure (10 CCR § 914). "
+        "APR via DFPI methodology in §§ 940 and 942 — actuarial method consistent "
+        "with scipy.brentq APR engine. Tolerances and cure provisions in § 955. "
+        "CoJs banned outright since 2023-01-01. "
+        "Section 952 transmission duties require unaltered forwarding + 4-year records."
+    ),
+    template_path="ca_sb1235.html.j2",
+    verified_date=SKELETON_VERIFIED_DATE,
+)
+
+
 # Validators -------------------------------------------------------------------
 
 
@@ -293,6 +432,7 @@ __all__ = [
     "SKELETON_VERIFIED_DATE",
     "STATES",
     "TEMPLATES_DIR",
+    "Amendment",
     "AprMethod",
     "CompliancePolicyError",
     "StateNotAudited",

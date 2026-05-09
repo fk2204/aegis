@@ -40,7 +40,18 @@ continue to work.
 from __future__ import annotations
 
 from aegis.funders.models import FunderRow
+from aegis.logger import get_logger
 from aegis.scoring.models import FunderMatch, ScoreInput, ScoreResult
+
+_log = get_logger(__name__)
+
+# State-level CoJ blocks. Sourced from docs/compliance/<state>.md dossiers;
+# CA per Cal. Code Civ. Proc. § 1132 (SB 688, effective 2023-01-01) — see
+# docs/compliance/01_california.md. Add additional states as their
+# dossiers are promoted to Tier 1 with coj_allowed=False.
+_COJ_BANNED_STATES: dict[str, str] = {
+    "CA": "Cal. Code Civ. Proc. § 1132",
+}
 
 
 def match_funder(
@@ -55,6 +66,27 @@ def match_funder(
     hard: list[str] = []
     soft: list[str] = []
     criteria_count = 0
+
+    # State-level CoJ block. Per docs/compliance/01_california.md, a
+    # funder requiring CoJ cannot be paired with a CA merchant; the
+    # CoJ clause would be unenforceable under Cal. Code Civ. Proc. § 1132
+    # and the deal cannot ship. This is a state-level block, not a soft
+    # signal — both the return value (reason `coj_invalid_in_state`) and
+    # the match log entry (`funder_requires_coj_blocked_by_state`) are
+    # explicit so audit + dashboard can surface the cause distinctly.
+    state_code = (deal.state or "").upper()
+    if funder.requires_coj and state_code in _COJ_BANNED_STATES:
+        criteria_count += 1
+        citation = _COJ_BANNED_STATES[state_code]
+        hard.append(f"coj_invalid_in_state: {citation}")
+        _log.warning(
+            "funder_requires_coj_blocked_by_state funder_id=%s funder_name=%s "
+            "merchant_state=%s citation=%s",
+            funder.id,
+            funder.name,
+            state_code,
+            citation,
+        )
 
     if funder.min_monthly_revenue is not None:
         criteria_count += 1

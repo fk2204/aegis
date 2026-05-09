@@ -1,0 +1,190 @@
+{#-
+  California SB 1235 / 10 CCR § 914 — Sales-Based Financing Disclosure.
+
+  Source-of-truth dossier: docs/compliance/01_california.md, section
+  "What 10 CCR § 914 requires for MCA disclosures."
+
+  This template MUST match the regulator's prescribed form line-by-line.
+  Variables ({{ }}) are runtime substitutions only — every literal
+  regulatory string is from the dossier verbatim. No {% if %} branches
+  alter the regulation's text; conditional rows (Estimated Monthly Cost
+  insert; "no interest" suffix on Row 2; "finance charge will not
+  increase" on Row 3) are emitted only when the regulation says they
+  apply.
+
+  Required context variables:
+    financer_name              str   — funder/lender name
+    funding_provided           str   — formatted dollars, gross advance
+    recipient_funds            str   — net delivered to merchant
+    recipient_funds_lt_funding bool  — true when payments to others are deducted
+    pays_third_party_payoffs   bool  — true when financing pays off other obligations
+    third_party_payoff_note    str   — short explanation when above is true
+    apr                        str   — formatted percent, e.g. "36.50%"
+    payment_channel            str   — e.g. "credit card receipts"
+    avg_monthly_income         str   — formatted dollars per § 930/§ 931
+    finance_is_fee_based       bool  — true for typical MCA (no interest accrual)
+    finance_charge             str   — formatted dollars per § 943
+    finance_charge_can_increase bool — false for typical MCA
+    estimated_total_payment    str   — formatted dollars
+    estimated_payment_amount   str   — formatted dollars (e.g. "487.00")
+    estimated_payment_freq     str   — e.g. "business day", "week"
+    irregular_payments_note    str   — empty string if none
+    payment_terms_text         str   — pre-rendered (split-rate / preset+true-up / minimum)
+    estimated_term             str   — formatted per § 901 (days if <=1y, else "Y years M months")
+    estimated_term_explanation str   — short text on income assumption
+    has_monthly_cost_insert    bool  — true when periodic payment is non-monthly (i.e. all MCAs)
+    estimated_monthly_cost     str   — formatted dollars (or list) per § 942
+    monthly_cost_derivation    str   — short explanation
+    prepayment_finance_charge_text str — Row 8 content
+    prepayment_additional_fee_text str — Row 9 content
+    rendered_at                str   — ISO date for the rendering
+-#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Commercial Financing Disclosure — California (SB 1235)</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 760px; margin: 24px auto;
+         color: #111; }
+  h1   { font-size: 18px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th, td { border: 1px solid #555; padding: 8px 10px; vertical-align: top;
+           font-size: 12px; }
+  th    { background: #f0f0f0; text-align: left; }
+  .col1 { width: 22%; font-weight: 600; }
+  .col2 { width: 22%; }
+  .col3 { width: 56%; }
+  .footer { margin-top: 16px; font-size: 11px; color: #333; }
+  .meta   { font-size: 10px; color: #666; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Commercial Financing Disclosure</h1>
+<p class="meta">California — 10 CCR § 914. Provider: {{ financer_name }}.</p>
+
+<table>
+<thead>
+<tr><th class="col1">&nbsp;</th><th class="col2">&nbsp;</th><th class="col3">&nbsp;</th></tr>
+</thead>
+<tbody>
+
+{#- Row 1 — Funding Provided -#}
+<tr>
+  <td class="col1">Funding Provided</td>
+  <td class="col2">{{ funding_provided }}</td>
+  <td class="col3">
+    This is how much funding {{ financer_name }} will provide.
+    {%- if recipient_funds_lt_funding %}
+    Due to deductions or payments to others, the total funds that will be
+    provided to you directly is {{ recipient_funds }}. For more information
+    on what amounts will be deducted, please review the attached document
+    "Itemization of Amount Financed."
+    {%- endif %}
+    {%- if pays_third_party_payoffs %}
+    {{ third_party_payoff_note }}
+    {%- endif %}
+  </td>
+</tr>
+
+{#- Row 2 — Estimated APR -#}
+<tr>
+  <td class="col1">Estimated Annual Percentage Rate (APR)</td>
+  <td class="col2">{{ apr }}</td>
+  <td class="col3">
+    APR is the estimated cost of your financing expressed as a yearly rate.
+    APR incorporates the amount and timing of the funding you receive,
+    fees you pay, and the periodic payments you make. This calculation
+    assumes your estimated average monthly income through {{ payment_channel }}
+    will be {{ avg_monthly_income }}. Since your actual income may vary
+    from our estimate, your effective APR may also vary.
+    {%- if finance_is_fee_based %}
+    APR is not an interest rate. The cost of this financing is based upon
+    fees charged by {{ financer_name }} rather than interest that accrues
+    over time.
+    {%- endif %}
+  </td>
+</tr>
+
+{#- Row 3 — Finance Charge -#}
+<tr>
+  <td class="col1">Finance Charge</td>
+  <td class="col2">{{ finance_charge }}</td>
+  <td class="col3">
+    This is the dollar cost of your financing.
+    {%- if not finance_charge_can_increase %}
+    Your finance charge will not increase if you take longer to pay off
+    what you owe.
+    {%- endif %}
+  </td>
+</tr>
+
+{#- Row 4 — Estimated Total Payment Amount -#}
+<tr>
+  <td class="col1">Estimated Total Payment Amount</td>
+  <td class="col2">{{ estimated_total_payment }}</td>
+  <td class="col3">
+    This is the total dollar amount of payments we estimate you will make
+    under the contract.
+  </td>
+</tr>
+
+{#- Optional inserted row — Estimated Monthly Cost (for non-monthly periodic
+    payments, i.e. all MCAs). Per § 914 this row is inserted BELOW Row 4. -#}
+{%- if has_monthly_cost_insert %}
+<tr>
+  <td class="col1">Estimated Monthly Cost</td>
+  <td class="col2">{{ estimated_monthly_cost }}</td>
+  <td class="col3">{{ monthly_cost_derivation }}</td>
+</tr>
+{%- endif %}
+
+{#- Row 5 — Estimated Payment.
+    Per § 914 cols 2+3 are combined: average periodic payment per § 942
+    followed by "/" and frequency, plus dates+amounts of irregular payments. -#}
+<tr>
+  <td class="col1">Estimated Payment</td>
+  <td class="col2" colspan="2">
+    {{ estimated_payment_amount }} / {{ estimated_payment_freq }}
+    {%- if irregular_payments_note %}
+    <br>{{ irregular_payments_note }}
+    {%- endif %}
+  </td>
+</tr>
+
+{#- Row 6 — Payment Terms.
+    Per § 914 cols 2+3 are combined; content depends on the payment
+    structure (split rate / preset+true-up / minimum). The caller
+    pre-renders the appropriate variant per dossier guidance. -#}
+<tr>
+  <td class="col1">Payment Terms</td>
+  <td class="col2" colspan="2">{{ payment_terms_text }}</td>
+</tr>
+
+{#- Row 7 — Estimated Term -#}
+<tr>
+  <td class="col1">Estimated Term</td>
+  <td class="col2">{{ estimated_term }}</td>
+  <td class="col3">{{ estimated_term_explanation }}</td>
+</tr>
+
+{#- Rows 8 & 9 — Prepayment.
+    Per § 914 col 1 of rows 8 and 9 is combined as "Prepayment".
+    Each row's cols 2+3 are also combined. -#}
+<tr>
+  <td class="col1" rowspan="2">Prepayment</td>
+  <td class="col2" colspan="2">{{ prepayment_finance_charge_text }}</td>
+</tr>
+<tr>
+  <td class="col2" colspan="2">{{ prepayment_additional_fee_text }}</td>
+</tr>
+
+</tbody>
+</table>
+
+<p class="footer">California Applicable law requires this information to be provided to you to help you make an informed decision.</p>
+
+<p class="meta">Generated by AEGIS on {{ rendered_at }}. Per 10 CCR § 901.</p>
+</body>
+</html>

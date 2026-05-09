@@ -1,0 +1,112 @@
+"""CoJ hard-decline rule tests.
+
+Per docs/compliance/01_california.md, "CoJ status: BANNED in California
+(Cal. Code Civ. Proc. § 1132)" — operational rules section. Match log
+records ``funder_requires_coj_blocked_by_state`` (verified via caplog);
+return value carries ``coj_invalid_in_state`` in the soft_concerns/
+hard-fail list.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date
+from decimal import Decimal
+from uuid import uuid4
+
+import pytest
+
+from aegis.funders.models import FunderRow
+from aegis.scoring.match_funders import match_funder
+from aegis.scoring.models import ScoreInput, ScoreResult
+
+
+def _ca_score_input() -> ScoreInput:
+    return ScoreInput(
+        merchant_id=uuid4(),
+        business_name="Acme CA",
+        owner_name="Jane Doe",
+        state="CA",
+        avg_daily_balance=Decimal("12500.00"),
+        true_revenue=Decimal("100000.00"),
+        monthly_revenue=Decimal("100000.00"),
+        lowest_balance=Decimal("3000.00"),
+        num_nsf=0,
+        days_negative=0,
+        mca_positions=0,
+        mca_daily_total=Decimal("0.00"),
+        debt_to_revenue=Decimal("0.00"),
+        fraud_score=10,
+        statement_period_start=date(2026, 4, 1),
+        statement_period_end=date(2026, 4, 30),
+        statement_days=30,
+        requested_amount=Decimal("50000.00"),
+        requested_factor=Decimal("1.30"),
+        requested_term_days=120,
+    )
+
+
+def _ny_score_input() -> ScoreInput:
+    return _ca_score_input().model_copy(update={"state": "NY"})
+
+
+def _baseline_score_result() -> ScoreResult:
+    return ScoreResult(
+        score=72,
+        tier="B",
+        recommendation="approve",
+        suggested_max_advance=Decimal("100000.00"),
+        recommended_factor_rate=Decimal("1.29"),
+        recommended_holdback_pct=Decimal("0.12"),
+        estimated_payback_days=180,
+    )
+
+
+def test_ca_merchant_plus_coj_funder_hard_declines() -> None:
+    funder = FunderRow(name="Coj Funder LLC", requires_coj=True, max_positions=1)
+    match = match_funder(funder, _ca_score_input(), _baseline_score_result())
+    assert match is not None
+    assert match.match_score == 0
+    # Reason carries the dossier's identifier + Cal. Code Civ. Proc. § 1132.
+    joined = " | ".join(match.soft_concerns)
+    assert "coj_invalid_in_state" in joined
+    assert "Cal. Code Civ. Proc. § 1132" in joined
+
+
+def test_ca_merchant_plus_non_coj_funder_passes_coj_check(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Funder doesn't require CoJ → no CoJ block, even for CA merchant."""
+    funder = FunderRow(name="Friendly Funder", requires_coj=False, max_positions=1)
+    with caplog.at_level(logging.WARNING, logger="aegis.scoring.match_funders"):
+        match = match_funder(funder, _ca_score_input(), _baseline_score_result())
+    assert match is not None
+    joined = " | ".join(match.soft_concerns)
+    assert "coj_invalid_in_state" not in joined
+    # And no CoJ-block log line was emitted.
+    assert not any("funder_requires_coj_blocked_by_state" in r.message for r in caplog.records)
+
+
+def test_non_ca_merchant_plus_coj_funder_does_not_block_on_coj() -> None:
+    """NY/FL/etc. don't ban CoJ outright — those merchants pass the CoJ check
+    here. (NY restricts CoJ residency; that rule lives elsewhere.)"""
+    funder = FunderRow(name="Coj Funder LLC", requires_coj=True, max_positions=1)
+    match = match_funder(funder, _ny_score_input(), _baseline_score_result())
+    assert match is not None
+    joined = " | ".join(match.soft_concerns)
+    assert "coj_invalid_in_state" not in joined
+
+
+def test_match_log_records_funder_requires_coj_blocked_by_state(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The dossier's match-log identifier appears in WARNING-level logs."""
+    funder = FunderRow(
+        name="LoggedCoj Funder", requires_coj=True, max_positions=1
+    )
+    with caplog.at_level(logging.WARNING, logger="aegis.scoring.match_funders"):
+        match_funder(funder, _ca_score_input(), _baseline_score_result())
+    assert any(
+        "funder_requires_coj_blocked_by_state" in r.getMessage()
+        for r in caplog.records
+    )

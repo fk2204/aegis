@@ -63,7 +63,9 @@ def _score() -> ScoreResult:
 # (4) ------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("state", ["CA", "NY", "FL", "WY"])
+# CA is Tier 1 (promoted per docs/compliance/01_california.md); use other
+# still-unaudited states for the Tier 3 fail path.
+@pytest.mark.parametrize("state", ["NY", "FL", "WY"])
 def test_tier3_state_raises_state_not_audited(state: str) -> None:
     with pytest.raises(StateNotAudited, match=r"compliance research"):
         render_disclosure(state, _deal(state), _score())
@@ -76,9 +78,9 @@ def test_non_served_state_raises_state_not_served() -> None:
 
 def test_state_not_audited_carries_state_attr() -> None:
     try:
-        render_disclosure("CA", _deal("CA"), _score())
+        render_disclosure("NY", _deal("NY"), _score())
     except StateNotAudited as exc:
-        assert exc.state == "CA"
+        assert exc.state == "NY"
     else:
         pytest.fail("expected StateNotAudited")
 

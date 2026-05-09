@@ -51,6 +51,11 @@ class FunderRow(_StrictModel):
     min_advance: Money | None = None
     max_advance: Money | None = None
     max_nsf_tolerance: Annotated[int, Field(ge=0)] | None = None
+    # True = funder agreement requires a confession of judgment (CoJ).
+    # Triggers a hard-decline at match time for merchants in any state
+    # whose StateRegulation.coj_allowed=False (e.g. California per
+    # Cal. Code Civ. Proc. § 1132 — see docs/compliance/01_california.md).
+    requires_coj: bool = False
 
     # Pricing envelope (informational; matcher doesn't enforce)
     typical_factor_low: Decimal | None = None
