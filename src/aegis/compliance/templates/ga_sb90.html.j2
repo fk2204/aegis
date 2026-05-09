@@ -1,0 +1,123 @@
+{#-
+  Georgia SB 90 / O.C.G.A. § 10-1-393.18 — Commercial Financing Disclosure.
+
+  Source-of-truth dossier: docs/compliance/04_georgia.md, section
+  "What § 10-1-393.18 requires for disclosures" → "Required disclosure
+  content".
+
+  Citation precision per docs/compliance/CORRECTIONS_2026-05-08.md
+  → "Correction 1 — GA citation precision": cite § 10-1-393.18 as a
+  single section (multiple subsections), NOT "et seq.".
+
+  Georgia is CONTENT-BASED (no prescribed table format), like Florida —
+  but unlike Florida it DOES require an APR row. So this template uses
+  the same semantic <dl> shape as fl_fcfdl.html.j2, with a seventh item
+  (APR) inserted between Total Dollar Cost and Payment Schedule.
+
+  Notable differences vs CA / NY (the dossier explicitly enumerates):
+    * No prescribed row/column table format (content-based)
+    * No anti-double-dipping disclosure (NY-only)
+    * No collateral requirements line (NY-only)
+    * No APR re-disclosure on every pricing communication (no SB 362
+      equivalent)
+    * No broker compensation written disclosure required
+
+  Required context variables:
+    financer_name                      str — funder/lender name
+    funds_provided                     str — formatted dollars; item 1
+    funds_disbursed_to_business        str — formatted dollars; item 2
+    funds_disbursed_lt_provided        bool — true when item 2 < item 1
+    deductions_explanation             str — short text describing why
+                                             item 2 is less than item 1;
+                                             empty when funds_disbursed_lt_provided is False
+    total_amount_to_be_paid            str — formatted dollars; item 3
+    total_dollar_cost                  str — formatted dollars = (3)−(1); item 4
+    apr                                str — formatted percent (e.g. "36.50%"); item 5
+    payment_amounts_may_vary           bool — true → use first-payment estimate
+    payment_manner                     str — e.g. "ACH debit"
+    payment_frequency                  str — e.g. "each business day"
+    payment_amount_or_first_estimate   str — formatted dollars; item 6 second clause
+    has_prepayment_costs_or_discounts  bool — true → describe terms
+    prepayment_terms_text              str — short text on costs/discounts;
+                                             empty when none
+    rendered_at                        str — ISO date for the rendering
+-#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Commercial Financing Disclosure — Georgia (SB 90)</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 760px; margin: 24px auto;
+         color: #111; }
+  h1   { font-size: 18px; }
+  h2   { font-size: 13px; margin-top: 18px; }
+  dl   { margin: 12px 0; }
+  dt   { font-weight: 600; margin-top: 10px; font-size: 12px; }
+  dd   { margin: 2px 0 0 16px; font-size: 12px; }
+  .footer { margin-top: 16px; font-size: 11px; color: #333; }
+  .meta   { font-size: 10px; color: #666; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Commercial Financing Disclosure</h1>
+<p class="meta">Georgia — O.C.G.A. § 10-1-393.18. Provider: {{ financer_name }}.</p>
+
+<dl>
+
+  {#- Item 1 — total amount of funds provided. -#}
+  <dt>Total amount of funds provided</dt>
+  <dd>{{ funds_provided }}</dd>
+
+  {#- Item 2 — total amount disbursed to business after fees, prior
+      balance payoffs, third-party payments. -#}
+  <dt>Total amount of funds disbursed to your business</dt>
+  <dd>{{ funds_disbursed_to_business }}
+    {%- if funds_disbursed_lt_provided %}
+    <br>{{ deductions_explanation }}
+    {%- endif %}
+  </dd>
+
+  {#- Item 3 — total amount to be paid to provider. -#}
+  <dt>Total amount your business will pay to {{ financer_name }}</dt>
+  <dd>{{ total_amount_to_be_paid }}</dd>
+
+  {#- Item 4 — total dollar cost = item 3 − item 1. -#}
+  <dt>Total dollar cost of this commercial financing</dt>
+  <dd>{{ total_dollar_cost }}</dd>
+
+  {#- Item 5 — APR. The Georgia-specific addition vs FL's six-item form. -#}
+  <dt>Annual Percentage Rate (APR)</dt>
+  <dd>{{ apr }}</dd>
+
+  {#- Item 6 — payment schedule: manner, frequency, amount of each
+      payment (or first-payment estimate when amounts vary). -#}
+  <dt>Payment schedule</dt>
+  <dd>
+    Payments will be made by {{ payment_manner }}, {{ payment_frequency }}.
+    {%- if payment_amounts_may_vary %}
+    Payment amounts may vary. The estimated amount of the first payment is
+    {{ payment_amount_or_first_estimate }}.
+    {%- else %}
+    The amount of each payment is {{ payment_amount_or_first_estimate }}.
+    {%- endif %}
+  </dd>
+
+  {#- Item 7 — prepayment terms. -#}
+  <dt>Prepayment terms</dt>
+  <dd>
+    {%- if has_prepayment_costs_or_discounts %}
+    {{ prepayment_terms_text }}
+    {%- else %}
+    There are no costs or discounts associated with prepayment.
+    {%- endif %}
+  </dd>
+
+</dl>
+
+<p class="footer">This disclosure is provided pursuant to O.C.G.A. § 10-1-393.18.</p>
+
+<p class="meta">Generated by AEGIS on {{ rendered_at }}.</p>
+</body>
+</html>

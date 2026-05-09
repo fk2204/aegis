@@ -170,6 +170,13 @@ class Tier1Regulation(_BaseRegulation):
         min_length=1,
         description='e.g. "Commercial Finance Disclosure Law (CFDL)"',
     )
+    # Optional executive-action attribution. ``signed_by`` carries the
+    # governor's name when the dossier supplies it (e.g. GA "Gov. Kemp");
+    # ``signed_date`` carries the signing date. Distinct from
+    # ``effective_date_statute`` because some states have a gap between
+    # signing and effect (GA: signed 2023-05-01, effective 2024-01-01).
+    signed_by: str | None = Field(default=None, min_length=1)
+    signed_date: date | None = None
 
     # Effective dates — both optional because dossiers may quote one or
     # the other (or neither, in pending/audited-but-not-yet-enacted cases).
@@ -221,6 +228,11 @@ class Tier1Regulation(_BaseRegulation):
     # Optional: FL § 55.05 is a historic statute (predates MCAs by ~century);
     # the dossier does not quote a specific effective date.
     coj_effective_date: date | None = None
+    # Optional: GA O.C.G.A. § 9-12-18 permits CoJs but restricts the
+    # county where the action may be filed. CA / FL ban CoJs outright;
+    # NY conditions on residency. ``"allowed"`` states use this to
+    # surface venue / procedural caveats to the operator.
+    coj_venue_restriction: str | None = Field(default=None, min_length=1)
 
     # Broker / transmission rules
     requires_unaltered_disclosure_transmission: bool
@@ -246,9 +258,23 @@ class Tier1Regulation(_BaseRegulation):
     # ``private_right_of_action`` defaults True because most state UDAP
     # frameworks include a PRA; states that exclude one (FL FCFDL
     # § 559.9615) flip it False. ``enforcement_authority`` is a free-form
-    # short label for the dashboard.
+    # short label for the dashboard. ``enforcement_framework`` names the
+    # broader umbrella (e.g. GA's Fair Business Practices Act) when the
+    # CFDL is enforced under an existing statutory framework rather than
+    # standing alone.
     private_right_of_action: bool = True
     enforcement_authority: str | None = Field(default=None, min_length=1)
+    enforcement_framework: str | None = Field(default=None, min_length=1)
+
+    # Per docs/compliance/04_georgia.md and dossier 12 (MCA reclassification
+    # defense): some states statutorily protect the parties' characterization
+    # of a transaction as a purchase of receivables / payment intangibles.
+    # Where True, state law treats the transaction as conclusively NOT a
+    # loan for purposes of state financial-institutions law — strengthens
+    # AEGIS's reclassification defense (see docs/compliance/12_mca_vs_loan_
+    # reclassification.md). Default False; metadata only, no runtime
+    # enforcement.
+    receivable_purchase_statutorily_protected: bool = False
 
     # Amendment chains
     amendments: list[Amendment] = Field(default_factory=list)
@@ -597,6 +623,102 @@ STATES["FL"] = Tier1Regulation(
         "action; underlying transaction remains valid even on violation."
     ),
     template_path="fl_fcfdl.html.j2",
+    verified_date=SKELETON_VERIFIED_DATE,
+)
+
+
+# Per docs/compliance/04_georgia.md: Georgia — Commercial Financing
+# Disclosure Law, SB 90 (2023), enforced under the Fair Business
+# Practices Act. Field-name mapping follows the established convention.
+#
+# ``statute_citation`` cites § 10-1-393.18 as a single section per
+# docs/compliance/CORRECTIONS_2026-05-08.md → "Correction 1 — GA
+# citation precision": "The authoritative section is § 10-1-393.18 —
+# not 'et seq.'" The dossier uses both forms (the body refers to
+# § 10-1-393.19 in one heading, but that is itself a typo per the
+# CORRECTIONS file; the authoritative citation is § 10-1-393.18).
+#
+# GA differs from CA / NY / FL in three structural ways:
+#   1. CoJ ``"allowed"`` (CA / FL ban; NY conditional). Venue
+#      restriction only — recorded in ``coj_venue_restriction``.
+#   2. Content-based BUT WITH APR (lighter than CA/NY's prescribed
+#      forms; heavier than FL which omits APR entirely).
+#   3. Receivable-purchase characterization is statutorily protected
+#      as "not a loan" per § 10-1-393.18 — a defensive posture for
+#      reclassification cases (dossier 12). Hence
+#      ``receivable_purchase_statutorily_protected=True``.
+STATES["GA"] = Tier1Regulation(
+    state="GA",
+    state_name="Georgia",
+    tier=1,
+    bill_number="SB 90",
+    bill_year=2023,
+    chapter="Act 217 of the 2023 Regular Session",
+    common_name="Georgia Commercial Financing Disclosure Law",
+    signed_by="Gov. Kemp",
+    signed_date=date(2023, 5, 1),
+    effective_date_statute=date(2024, 1, 1),
+    effective_date_regulations=date(2024, 1, 1),
+    # Per CORRECTIONS_2026-05-08.md: cite § 10-1-393.18 as a single
+    # section, NOT "et seq." (Justia 2024 GA Code listing confirms).
+    statute_citation="O.C.G.A. § 10-1-393.18 (single section, multiple subsections)",
+    # GA has no separate body of implementing regulations — statute is
+    # self-executing within the Fair Business Practices Act framework.
+    regulation_citation=None,
+    citation_url_statute=(
+        "https://www.legis.ga.gov/api/legislation/document/20232024/219440"
+    ),
+    citation_url_regulation=None,
+    # Content-based, not form-prescribed (similar to FL).
+    prescribed_form_section=None,
+    apr_calculation_method="actuarial_reg_z",
+    apr_required=True,
+    threshold_amount_usd=Decimal("500000"),
+    threshold_test_summary=(
+        "Disclosure required when financing offer <= $500,000 AND "
+        "provider consummates more than 5 commercial financing "
+        "transactions in Georgia per calendar year."
+    ),
+    disclosure_required=True,
+    coj_allowed="allowed",
+    coj_citation="O.C.G.A. § 9-12-18",
+    coj_citation_url=(
+        "https://law.justia.com/codes/georgia/2020/title-9/chapter-12/"
+        "article-1/section-9-12-18/"
+    ),
+    coj_amendment_bill=None,
+    coj_effective_date=None,
+    coj_venue_restriction=(
+        "Action filed in county where defendant resided at commencement"
+    ),
+    requires_unaltered_disclosure_transmission=False,
+    transmission_record_retention_years=0,
+    broker_compensation_disclosure_required=False,
+    broker_advance_fees_prohibited=True,
+    broker_advertisement_address_disclosure_required=False,
+    private_right_of_action=False,
+    enforcement_authority="Georgia Attorney General (exclusive)",
+    enforcement_framework="Fair Business Practices Act",
+    receivable_purchase_statutorily_protected=True,
+    notes=(
+        "GA CFDL is content-based, not form-prescribed (similar to FL). "
+        "APR IS required (unlike FL; lighter methodology than CA/NY). "
+        "Lease financing NOT covered. CoJs PERMITTED in GA — no state-"
+        "level matcher block; venue restricted to county where defendant "
+        "resided at commencement (O.C.G.A. § 9-12-18). Receivable-"
+        "purchase characterization is statutorily protected as 'not a "
+        "loan' for purposes of GA financial-institutions law per "
+        "§ 10-1-393.18 — strengthens AEGIS's reclassification defense "
+        "(see docs/compliance/12_mca_vs_loan_reclassification.md). "
+        "AEGIS as broker: NO upfront broker fees from GA merchants per "
+        "§ 10-1-393.18 (broker rules subsection). Penalties per "
+        "§ 10-1-393.18(h)(i): $500/violation, $20K aggregate (initial); "
+        "$1,000/violation, $50K aggregate after written notice of prior "
+        "violation. AG-only enforcement under the Fair Business Practices "
+        "Act; no private right of action; § 10-1-393.18(k) confirms "
+        "underlying transaction remains enforceable on violation."
+    ),
+    template_path="ga_sb90.html.j2",
     verified_date=SKELETON_VERIFIED_DATE,
 )
 

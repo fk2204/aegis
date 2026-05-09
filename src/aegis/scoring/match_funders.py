@@ -75,23 +75,25 @@ def _broker_advance_fee_rule(state_code: str) -> tuple[bool, str | None]:
     of-truth pattern as ``_coj_state_rule``. States that aren't Tier 1 (or
     don't flag the prohibition) return ``(False, None)`` and pass through.
 
-    The citation returned is the FL FCFDL section that the dossier names
-    (``"Fla. Stat. § 559.9614(1)(a)"``); for now FL is the only state
-    flipping the field. Future states (e.g. GA per O.C.G.A. § 10-1-393.20)
-    will set their own ``broker_advance_fees_prohibited=True`` plus a
-    state-specific citation in their notes — until that happens this
-    helper hard-codes the FL cite as the only meaningful one.
+    The citation returned is per-state, drawn verbatim from the dossiers:
+    FL FCFDL § 559.9614(1)(a), GA O.C.G.A. § 10-1-393.18 (broker rules
+    subsection — the dossier does not name a finer subsection). Other
+    Tier 1 states that flip the flag in the future fall back to the
+    state's general statute citation until added explicitly here.
     """
     reg = STATES.get(state_code)
     if not isinstance(reg, Tier1Regulation):
         return (False, None)
     if not reg.broker_advance_fees_prohibited:
         return (False, None)
-    # FL is currently the only state with this flag set; cite verbatim
-    # from docs/compliance/03_florida.md "Broker rules under FCFDL".
-    citation = (
-        "Fla. Stat. § 559.9614(1)(a)" if state_code == "FL" else reg.statute_citation
-    )
+    state_specific_cites: dict[str, str] = {
+        # docs/compliance/03_florida.md "Broker rules under FCFDL".
+        "FL": "Fla. Stat. § 559.9614(1)(a)",
+        # docs/compliance/04_georgia.md "Broker rules under SB 90". The
+        # dossier does not specify a finer subsection — cite the section.
+        "GA": "O.C.G.A. § 10-1-393.18",
+    }
+    citation = state_specific_cites.get(state_code, reg.statute_citation)
     return (True, citation)
 
 
@@ -109,16 +111,22 @@ def match_funder(
     criteria_count = 0
 
     # State-level CoJ rule — driven off the Tier 1 STATES table:
-    #   * "banned"      → hard fail (CA per Cal. Code Civ. Proc. § 1132).
-    #     Reason `coj_invalid_in_state`; warning log
-    #     `funder_requires_coj_blocked_by_state`. The CoJ clause would be
-    #     unenforceable in this state and the deal cannot ship.
+    #   * "banned"      → hard fail (CA per Cal. Code Civ. Proc. § 1132,
+    #     FL per Fla. Stat. § 55.05). Reason `coj_invalid_in_state`;
+    #     warning log `funder_requires_coj_blocked_by_state`. The CoJ
+    #     clause would be unenforceable in this state and the deal
+    #     cannot ship.
     #   * "conditional" → soft concern (NY per CPLR § 3218 — CoJs only
     #     enforceable against NY-resident merchants since 2019-08-30, see
     #     docs/compliance/02_new_york.md). Reason `coj_ny_resident_only`;
     #     info log of the same name. Operator confirms merchant residency
     #     before transmitting the funder agreement.
-    #   * "allowed" / not Tier 1 → no concern.
+    #   * "allowed"     → no concern, no soft signal — but emit an audit
+    #     log line `funder_requires_coj_allowed_in_state` so the audit
+    #     trail records that AEGIS knew the state's CoJ posture and
+    #     deliberately did not block (GA per O.C.G.A. § 9-12-18).
+    #   * not Tier 1    → no concern, no log (state's CoJ posture not
+    #     yet researched in AEGIS).
     state_code = (deal.state or "").upper()
     if funder.requires_coj:
         coj_status, coj_citation = _coj_state_rule(state_code)
@@ -148,18 +156,36 @@ def match_funder(
                 state_code,
                 coj_citation,
             )
+        elif coj_status == "allowed":
+            # No criteria_count bump and no soft/hard signal — the deal
+            # proceeds normally. Audit log only, so the dashboard can
+            # surface "this state permits CoJ; AEGIS knowingly did not
+            # block" without misclassifying the line as a concern.
+            _log.info(
+                "funder_requires_coj_allowed_in_state funder_id=%s funder_name=%s "
+                "merchant_state=%s citation=%s",
+                funder.id,
+                funder.name,
+                state_code,
+                coj_citation,
+            )
 
     # State-level broker advance-fee prohibition (FL FCFDL § 559.9614(1)(a)
-    # per docs/compliance/03_florida.md). When a funder's ISO contract
+    # per docs/compliance/03_florida.md; GA SB 90 / O.C.G.A. § 10-1-393.18
+    # per docs/compliance/04_georgia.md). When a funder's ISO contract
     # forces AEGIS to charge merchant-side advance fees AND the merchant
     # is in a state that prohibits them, the deal cannot ship. Hard fail,
-    # parallel to the CoJ ban path. Reason: `fl_broker_advance_fee_prohibited`.
+    # parallel to the CoJ ban path. Reason is state-prefixed
+    # (`fl_broker_advance_fee_prohibited`, `ga_broker_advance_fee_prohibited`)
+    # so the dashboard can attribute the block to the right statute.
     if funder.charges_merchant_advance_fees:
         prohibited, advance_fee_citation = _broker_advance_fee_rule(state_code)
         if prohibited:
             criteria_count += 1
+            reason_prefix = state_code.lower()
             hard.append(
-                f"fl_broker_advance_fee_prohibited: {advance_fee_citation}"
+                f"{reason_prefix}_broker_advance_fee_prohibited: "
+                f"{advance_fee_citation}"
             )
             _log.warning(
                 "funder_charges_merchant_advance_fees_blocked_by_state "
