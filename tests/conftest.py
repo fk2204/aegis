@@ -12,6 +12,9 @@ import os
 os.environ.setdefault("AEGIS_DATA_RESIDENCY_CONFIRMED", "true")
 os.environ.setdefault("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 os.environ.setdefault("API_BEARER_TOKEN", "test-token-not-real")
+# Default tests to the in-memory backend so the API layer is exercised
+# end-to-end without Supabase wiring.
+os.environ.setdefault("AEGIS_STORAGE_BACKEND", "memory")
 
 from aegis.config import get_settings
 

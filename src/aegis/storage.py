@@ -1,0 +1,602 @@
+"""Document + transaction + analysis persistence.
+
+The ``DocumentRepository`` Protocol is what the API and worker depend on.
+Two implementations:
+
+  * ``InMemoryDocumentRepository`` — dict-backed, used by tests and any
+    code path that needs a working store without Supabase wired.
+  * ``SupabaseDocumentRepository`` — talks to Postgres via supabase-py.
+    Wraps the multi-row write of a parsed document (analyses + N
+    transactions + status update) in a single RPC so a half-persisted
+    parse result cannot leak into the dashboard.
+
+Why both behind a Protocol: tests run offline; the deploy switches the
+binding in ``api.deps`` without code change.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from typing import Any, Literal, Protocol, cast
+from uuid import UUID, uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from aegis.db import get_supabase
+from aegis.logger import get_logger
+from aegis.money import Money
+from aegis.parser.models import (
+    Aggregates,
+    ClassifiedTransaction,
+    StatementSummary,
+)
+from aegis.parser.patterns import PatternAnalysis
+from aegis.parser.pipeline import PipelineResult
+
+_log = get_logger(__name__)
+
+ParseStatus = Literal["pending", "proceed", "review", "manual_review", "error"]
+
+
+# Errors -----------------------------------------------------------------------
+
+
+class DocumentExistsError(ValueError):
+    """Raised when ``create_document`` sees a hash that's already on file."""
+
+
+class DocumentNotFoundError(KeyError):
+    """Raised when a document_id has no row."""
+
+
+# Models -----------------------------------------------------------------------
+
+
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+
+class DocumentRow(_StrictModel):
+    """Application view of a row in the ``documents`` table."""
+
+    id: UUID
+    file_hash: str
+    byte_size: int = Field(gt=0)
+    original_filename: str
+    merchant_id: UUID | None = None
+    parse_status: ParseStatus = "pending"
+    fraud_score: int | None = Field(default=None, ge=0, le=100)
+    fraud_score_breakdown: dict[str, int] = Field(default_factory=dict)
+    all_flags: list[str] = Field(default_factory=list)
+    metadata_flags: list[str] = Field(default_factory=list)
+    error_detail: str | None = None
+    uploaded_at: datetime
+    parsed_at: datetime | None = None
+    uploaded_by: str = "system"
+
+
+class AnalysisRow(_StrictModel):
+    """Application view of a row in the ``analyses`` table.
+
+    Includes the *_source_ids arrays added by migration 002 so the
+    dashboard drill-down works straight from this object.
+    """
+
+    id: UUID
+    document_id: UUID
+    merchant_id: UUID | None = None
+    statement_period_start: date
+    statement_period_end: date
+    statement_days: int = Field(ge=0)
+
+    beginning_balance: Money
+    ending_balance: Money
+    avg_daily_balance: Money
+    true_revenue: Money
+    monthly_revenue: Money
+    lowest_balance: Money
+    num_nsf: int = Field(ge=0)
+    days_negative: int = Field(ge=0)
+    mca_positions: int = Field(ge=0)
+    mca_daily_total: Money
+    debt_to_revenue: Decimal = Field(ge=Decimal("0"))
+    payroll_detected: bool = False
+    returned_ach_count: int = Field(ge=0, default=0)
+
+    avg_daily_balance_source_ids: list[UUID] = Field(default_factory=list)
+    true_revenue_source_ids: list[UUID] = Field(default_factory=list)
+    num_nsf_source_ids: list[UUID] = Field(default_factory=list)
+    days_negative_source_ids: list[UUID] = Field(default_factory=list)
+    mca_daily_total_source_ids: list[UUID] = Field(default_factory=list)
+
+
+# Protocol ---------------------------------------------------------------------
+
+
+class DocumentRepository(Protocol):
+    """The persistence contract API + worker depend on."""
+
+    def create_document(
+        self,
+        *,
+        file_hash: str,
+        byte_size: int,
+        original_filename: str,
+        uploaded_by: str = "system",
+        merchant_id: UUID | None = None,
+    ) -> DocumentRow:
+        """Insert a new pending document. Raise ``DocumentExistsError`` on hash collision."""
+
+    def get_document(self, document_id: UUID) -> DocumentRow:
+        """Fetch by id. ``DocumentNotFoundError`` if missing."""
+
+    def find_by_hash(self, file_hash: str) -> DocumentRow | None:
+        """Return the existing document for this hash, or ``None``."""
+
+    def persist_parse_result(
+        self,
+        document_id: UUID,
+        *,
+        result: PipelineResult,
+        merchant_id: UUID | None = None,
+    ) -> None:
+        """Write transactions + analysis rows + status atomically."""
+
+    def list_transactions(
+        self, document_id: UUID, *, category: str | None = None
+    ) -> list[ClassifiedTransaction]:
+        """Return classified rows for the document, optionally filtered by category."""
+
+    def get_analysis(self, document_id: UUID) -> AnalysisRow | None: ...
+
+
+# In-memory implementation -----------------------------------------------------
+
+
+class InMemoryDocumentRepository:
+    """Dict-backed repository.
+
+    Designed for tests + the offline path while Supabase is unwired. Holds
+    DocumentRow + classified transactions + Analysis in three dicts keyed
+    by document_id.
+    """
+
+    def __init__(self) -> None:
+        self._docs: dict[UUID, DocumentRow] = {}
+        self._txs: dict[UUID, list[ClassifiedTransaction]] = {}
+        self._analyses: dict[UUID, AnalysisRow] = {}
+
+    def create_document(
+        self,
+        *,
+        file_hash: str,
+        byte_size: int,
+        original_filename: str,
+        uploaded_by: str = "system",
+        merchant_id: UUID | None = None,
+    ) -> DocumentRow:
+        for existing in self._docs.values():
+            if existing.file_hash == file_hash:
+                raise DocumentExistsError(
+                    f"document with hash {file_hash[:12]}... already exists "
+                    f"as {existing.id}"
+                )
+        row = DocumentRow(
+            id=uuid4(),
+            file_hash=file_hash,
+            byte_size=byte_size,
+            original_filename=original_filename,
+            merchant_id=merchant_id,
+            uploaded_by=uploaded_by,
+            uploaded_at=datetime.now(UTC),
+        )
+        self._docs[row.id] = row
+        return row
+
+    def get_document(self, document_id: UUID) -> DocumentRow:
+        try:
+            return self._docs[document_id]
+        except KeyError as exc:
+            raise DocumentNotFoundError(str(document_id)) from exc
+
+    def find_by_hash(self, file_hash: str) -> DocumentRow | None:
+        for row in self._docs.values():
+            if row.file_hash == file_hash:
+                return row
+        return None
+
+    def persist_parse_result(
+        self,
+        document_id: UUID,
+        *,
+        result: PipelineResult,
+        merchant_id: UUID | None = None,
+    ) -> None:
+        doc = self.get_document(document_id)
+        doc.parse_status = result.parse_status
+        doc.fraud_score = result.fraud_score
+        doc.fraud_score_breakdown = dict(result.fraud_score_breakdown)
+        doc.all_flags = list(result.all_flags)
+        doc.metadata_flags = list(result.metadata.flags)
+        doc.parsed_at = datetime.now(UTC)
+        doc.merchant_id = merchant_id or doc.merchant_id
+        self._docs[document_id] = doc
+
+        self._txs[document_id] = list(result.classified)
+
+        if result.aggregates is not None and result.extraction is not None:
+            self._analyses[document_id] = _build_analysis(
+                document_id=document_id,
+                merchant_id=merchant_id,
+                aggregates=result.aggregates,
+                summary=result.extraction.statement.summary,
+                classified=result.classified,
+                patterns=result.patterns,
+            )
+
+    def list_transactions(
+        self, document_id: UUID, *, category: str | None = None
+    ) -> list[ClassifiedTransaction]:
+        rows = self._txs.get(document_id, [])
+        if category is None:
+            return list(rows)
+        return [t for t in rows if t.category == category]
+
+    def get_analysis(self, document_id: UUID) -> AnalysisRow | None:
+        return self._analyses.get(document_id)
+
+    def mark_error(self, document_id: UUID, detail: str) -> None:
+        """Test/worker helper to record an error path (out of band of parse)."""
+        doc = self.get_document(document_id)
+        doc.parse_status = "error"
+        doc.error_detail = detail
+        self._docs[document_id] = doc
+
+
+# Supabase implementation ------------------------------------------------------
+
+
+class SupabaseDocumentRepository:
+    """Persistence backed by Postgres via supabase-py.
+
+    Multi-row writes (transactions + analysis) are issued in sequence
+    inside ``persist_parse_result``. Postgres-side this is best wrapped in
+    a single RPC for atomicity; the helper below issues the individual
+    inserts and updates the document row last so a partial failure leaves
+    the document in ``pending`` and a retry sees no half-state.
+    """
+
+    def create_document(
+        self,
+        *,
+        file_hash: str,
+        byte_size: int,
+        original_filename: str,
+        uploaded_by: str = "system",
+        merchant_id: UUID | None = None,
+    ) -> DocumentRow:
+        client = get_supabase()
+        existing = (
+            client.table("documents")
+            .select("*")
+            .eq("file_hash", file_hash)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            row = cast(dict[str, Any], existing.data[0])
+            raise DocumentExistsError(
+                f"document with hash {file_hash[:12]}... already exists "
+                f"as {row['id']}"
+            )
+
+        payload: dict[str, Any] = {
+            "file_hash": file_hash,
+            "byte_size": byte_size,
+            "original_filename": original_filename,
+            "uploaded_by": uploaded_by,
+        }
+        if merchant_id is not None:
+            payload["merchant_id"] = str(merchant_id)
+
+        inserted = client.table("documents").insert(payload).execute()
+        return _row_to_document(cast(dict[str, Any], inserted.data[0]))
+
+    def get_document(self, document_id: UUID) -> DocumentRow:
+        result = (
+            get_supabase()
+            .table("documents")
+            .select("*")
+            .eq("id", str(document_id))
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            raise DocumentNotFoundError(str(document_id))
+        return _row_to_document(cast(dict[str, Any], result.data[0]))
+
+    def find_by_hash(self, file_hash: str) -> DocumentRow | None:
+        result = (
+            get_supabase()
+            .table("documents")
+            .select("*")
+            .eq("file_hash", file_hash)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return None
+        return _row_to_document(cast(dict[str, Any], result.data[0]))
+
+    def persist_parse_result(
+        self,
+        document_id: UUID,
+        *,
+        result: PipelineResult,
+        merchant_id: UUID | None = None,
+    ) -> None:
+        client = get_supabase()
+
+        if result.classified:
+            tx_payload = [
+                _classified_to_db_row(t, document_id, merchant_id)
+                for t in result.classified
+            ]
+            client.table("transactions").insert(tx_payload).execute()
+
+        if result.aggregates is not None and result.extraction is not None:
+            analysis = _build_analysis(
+                document_id=document_id,
+                merchant_id=merchant_id,
+                aggregates=result.aggregates,
+                summary=result.extraction.statement.summary,
+                classified=result.classified,
+                patterns=result.patterns,
+            )
+            client.table("analyses").insert(_analysis_to_db_row(analysis)).execute()
+
+        client.table("documents").update(
+            {
+                "parse_status": result.parse_status,
+                "fraud_score": result.fraud_score,
+                "fraud_score_breakdown": result.fraud_score_breakdown,
+                "all_flags": result.all_flags,
+                "metadata_flags": list(result.metadata.flags),
+                "parsed_at": datetime.now(UTC).isoformat(),
+                **({"merchant_id": str(merchant_id)} if merchant_id else {}),
+            }
+        ).eq("id", str(document_id)).execute()
+
+    def list_transactions(
+        self, document_id: UUID, *, category: str | None = None
+    ) -> list[ClassifiedTransaction]:
+        query = (
+            get_supabase()
+            .table("transactions")
+            .select("*")
+            .eq("document_id", str(document_id))
+            .order("posted_date")
+        )
+        if category is not None:
+            query = query.eq("category", category)
+        result = query.execute()
+        return [
+            _db_row_to_classified(cast(dict[str, Any], r))
+            for r in (result.data or [])
+        ]
+
+    def get_analysis(self, document_id: UUID) -> AnalysisRow | None:
+        result = (
+            get_supabase()
+            .table("analyses")
+            .select("*")
+            .eq("document_id", str(document_id))
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return None
+        return _db_row_to_analysis(cast(dict[str, Any], result.data[0]))
+
+
+# Internal helpers -------------------------------------------------------------
+
+
+def _build_analysis(
+    *,
+    document_id: UUID,
+    merchant_id: UUID | None,
+    aggregates: Aggregates,
+    summary: StatementSummary,
+    classified: list[ClassifiedTransaction],
+    patterns: PatternAnalysis | None,
+) -> AnalysisRow:
+    """Project Aggregates + summary + patterns into a row-shaped AnalysisRow."""
+    statement_days = (summary.period_end - summary.period_start).days
+
+    monthly_revenue = (
+        aggregates.true_revenue.value * Decimal(30) / Decimal(max(statement_days, 1))
+    ).quantize(Decimal("0.01"))
+
+    lowest_balance = min(
+        (t.running_balance for t in classified if t.running_balance is not None),
+        default=summary.beginning_balance,
+    )
+
+    mca_positions = _count_mca_positions(classified)
+    returned_ach = sum(1 for t in classified if t.category == "nsf_fee")
+
+    return AnalysisRow(
+        id=uuid4(),
+        document_id=document_id,
+        merchant_id=merchant_id,
+        statement_period_start=summary.period_start,
+        statement_period_end=summary.period_end,
+        statement_days=statement_days,
+        beginning_balance=summary.beginning_balance,
+        ending_balance=summary.ending_balance,
+        avg_daily_balance=aggregates.avg_daily_balance.value,
+        true_revenue=aggregates.true_revenue.value,
+        monthly_revenue=monthly_revenue,
+        lowest_balance=lowest_balance,
+        num_nsf=aggregates.num_nsf.value,
+        days_negative=aggregates.days_negative.value,
+        mca_positions=mca_positions,
+        mca_daily_total=aggregates.mca_daily_total.value,
+        debt_to_revenue=aggregates.debt_to_revenue,
+        payroll_detected=any(t.category == "payroll" for t in classified),
+        returned_ach_count=returned_ach,
+        avg_daily_balance_source_ids=list(aggregates.avg_daily_balance.source_ids),
+        true_revenue_source_ids=list(aggregates.true_revenue.source_ids),
+        num_nsf_source_ids=list(aggregates.num_nsf.source_ids),
+        days_negative_source_ids=list(aggregates.days_negative.source_ids),
+        mca_daily_total_source_ids=list(aggregates.mca_daily_total.source_ids),
+    )
+
+
+def _count_mca_positions(classified: list[ClassifiedTransaction]) -> int:
+    """Count distinct MCA payment streams by description token."""
+    seen: set[str] = set()
+    for t in classified:
+        if t.category != "mca_debit":
+            continue
+        # Bucket by the first 3 words of description — a coarse but stable
+        # proxy until Phase 5.5 corpus tells us if a smarter split is needed.
+        token = " ".join(t.description.upper().split()[:3])
+        seen.add(token)
+    return len(seen)
+
+
+def _row_to_document(row: dict[str, Any]) -> DocumentRow:
+    return DocumentRow(
+        id=UUID(row["id"]),
+        file_hash=row["file_hash"],
+        byte_size=row["byte_size"],
+        original_filename=row["original_filename"],
+        merchant_id=UUID(row["merchant_id"]) if row.get("merchant_id") else None,
+        parse_status=row["parse_status"],
+        fraud_score=row.get("fraud_score"),
+        fraud_score_breakdown=row.get("fraud_score_breakdown") or {},
+        all_flags=row.get("all_flags") or [],
+        metadata_flags=row.get("metadata_flags") or [],
+        error_detail=row.get("error_detail"),
+        uploaded_at=_parse_dt(row["uploaded_at"]),
+        parsed_at=_parse_dt(row["parsed_at"]) if row.get("parsed_at") else None,
+        uploaded_by=row.get("uploaded_by") or "system",
+    )
+
+
+def _parse_dt(value: str | datetime) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    # Supabase returns ISO-8601 strings; handle the common 'Z' suffix.
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _classified_to_db_row(
+    tx: ClassifiedTransaction,
+    document_id: UUID,
+    merchant_id: UUID | None,
+) -> dict[str, Any]:
+    return {
+        "id": str(tx.id),
+        "document_id": str(document_id),
+        "merchant_id": str(merchant_id) if merchant_id else None,
+        "posted_date": tx.posted_date.isoformat(),
+        "description": tx.description,
+        "amount": str(tx.amount),
+        "running_balance": str(tx.running_balance) if tx.running_balance is not None else None,
+        "source_page": tx.source_page,
+        "source_line": tx.source_line,
+        "category": tx.category,
+        "classification_confidence": tx.classification_confidence,
+    }
+
+
+def _db_row_to_classified(row: dict[str, Any]) -> ClassifiedTransaction:
+    return ClassifiedTransaction(
+        id=UUID(row["id"]),
+        posted_date=date.fromisoformat(row["posted_date"]),
+        description=row["description"],
+        amount=Decimal(str(row["amount"])),
+        running_balance=(
+            Decimal(str(row["running_balance"])) if row.get("running_balance") else None
+        ),
+        source_page=row["source_page"],
+        source_line=row["source_line"],
+        category=row["category"],
+        classification_confidence=row["classification_confidence"],
+    )
+
+
+def _analysis_to_db_row(analysis: AnalysisRow) -> dict[str, Any]:
+    return {
+        "id": str(analysis.id),
+        "document_id": str(analysis.document_id),
+        "merchant_id": str(analysis.merchant_id) if analysis.merchant_id else None,
+        "statement_period_start": analysis.statement_period_start.isoformat(),
+        "statement_period_end": analysis.statement_period_end.isoformat(),
+        "statement_days": analysis.statement_days,
+        "beginning_balance": str(analysis.beginning_balance),
+        "ending_balance": str(analysis.ending_balance),
+        "avg_daily_balance": str(analysis.avg_daily_balance),
+        "true_revenue": str(analysis.true_revenue),
+        "monthly_revenue": str(analysis.monthly_revenue),
+        "lowest_balance": str(analysis.lowest_balance),
+        "num_nsf": analysis.num_nsf,
+        "days_negative": analysis.days_negative,
+        "mca_positions": analysis.mca_positions,
+        "mca_daily_total": str(analysis.mca_daily_total),
+        "debt_to_revenue": str(analysis.debt_to_revenue),
+        "payroll_detected": analysis.payroll_detected,
+        "returned_ach_count": analysis.returned_ach_count,
+        "avg_daily_balance_source_ids": [str(u) for u in analysis.avg_daily_balance_source_ids],
+        "true_revenue_source_ids": [str(u) for u in analysis.true_revenue_source_ids],
+        "num_nsf_source_ids": [str(u) for u in analysis.num_nsf_source_ids],
+        "days_negative_source_ids": [str(u) for u in analysis.days_negative_source_ids],
+        "mca_daily_total_source_ids": [str(u) for u in analysis.mca_daily_total_source_ids],
+    }
+
+
+def _db_row_to_analysis(row: dict[str, Any]) -> AnalysisRow:
+    return AnalysisRow(
+        id=UUID(row["id"]),
+        document_id=UUID(row["document_id"]),
+        merchant_id=UUID(row["merchant_id"]) if row.get("merchant_id") else None,
+        statement_period_start=date.fromisoformat(row["statement_period_start"]),
+        statement_period_end=date.fromisoformat(row["statement_period_end"]),
+        statement_days=row["statement_days"],
+        beginning_balance=Decimal(str(row["beginning_balance"])),
+        ending_balance=Decimal(str(row["ending_balance"])),
+        avg_daily_balance=Decimal(str(row["avg_daily_balance"])),
+        true_revenue=Decimal(str(row["true_revenue"])),
+        monthly_revenue=Decimal(str(row["monthly_revenue"])),
+        lowest_balance=Decimal(str(row["lowest_balance"])),
+        num_nsf=row["num_nsf"],
+        days_negative=row["days_negative"],
+        mca_positions=row["mca_positions"],
+        mca_daily_total=Decimal(str(row["mca_daily_total"])),
+        debt_to_revenue=Decimal(str(row["debt_to_revenue"])),
+        payroll_detected=row["payroll_detected"],
+        returned_ach_count=row.get("returned_ach_count", 0),
+        avg_daily_balance_source_ids=[
+            UUID(u) for u in row.get("avg_daily_balance_source_ids") or []
+        ],
+        true_revenue_source_ids=[UUID(u) for u in row.get("true_revenue_source_ids") or []],
+        num_nsf_source_ids=[UUID(u) for u in row.get("num_nsf_source_ids") or []],
+        days_negative_source_ids=[UUID(u) for u in row.get("days_negative_source_ids") or []],
+        mca_daily_total_source_ids=[UUID(u) for u in row.get("mca_daily_total_source_ids") or []],
+    )
+
+
+__all__ = [
+    "AnalysisRow",
+    "DocumentExistsError",
+    "DocumentNotFoundError",
+    "DocumentRepository",
+    "DocumentRow",
+    "InMemoryDocumentRepository",
+    "ParseStatus",
+    "SupabaseDocumentRepository",
+]

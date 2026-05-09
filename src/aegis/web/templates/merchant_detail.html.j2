@@ -1,0 +1,56 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ merchant.business_name }} — AEGIS{% endblock %}
+{% block content %}
+  <h1>{{ merchant.business_name }}</h1>
+  <p class="src-ref">
+    {{ merchant.owner_name }} · {{ merchant.state }}
+    {% if merchant.industry_naics %} · NAICS {{ merchant.industry_naics }}{% endif %}
+    {% if merchant.zoho_deal_id %} · Zoho {{ merchant.zoho_deal_id }}{% endif %}
+  </p>
+
+  {% if document is none %}
+    <p>No documents uploaded yet for this merchant.</p>
+  {% else %}
+    <h2>
+      Latest document
+      <span class="tag tag-{{ document.parse_status }}">{{ document.parse_status }}</span>
+    </h2>
+    <p class="src-ref">
+      Uploaded {{ document.uploaded_at }} · {{ document.byte_size }} bytes ·
+      sha256 {{ document.file_hash[:12] }}…
+      {% if document.fraud_score is not none %}
+        · fraud score {{ document.fraud_score }}
+      {% endif %}
+    </p>
+
+    {% if analysis %}
+      <h3>Aggregates</h3>
+      <p class="src-ref">
+        Statement period {{ analysis.statement_period_start }} →
+        {{ analysis.statement_period_end }} ({{ analysis.statement_days }} days)
+      </p>
+
+      {% set agg_metrics = [
+          ("true_revenue", analysis.true_revenue),
+          ("avg_daily_balance", analysis.avg_daily_balance),
+          ("num_nsf", analysis.num_nsf),
+          ("days_negative", analysis.days_negative),
+          ("mca_daily_total", analysis.mca_daily_total),
+        ] %}
+
+      {% for key, value in agg_metrics %}
+        <div class="tile">
+          <div class="tile-label">{{ aggregate_labels[key] }}</div>
+          <div class="tile-value">{{ value }}</div>
+          <button hx-get="/ui/documents/{{ document.id }}/aggregate/{{ key }}"
+                  hx-target="#drilldown"
+                  hx-swap="innerHTML">drill down</button>
+        </div>
+      {% endfor %}
+
+      <div id="drilldown" style="margin-top: 24px;"></div>
+    {% else %}
+      <p>Document is parsing or no analysis is available yet.</p>
+    {% endif %}
+  {% endif %}
+{% endblock %}

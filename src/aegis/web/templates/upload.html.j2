@@ -1,0 +1,27 @@
+{% extends "base.html.j2" %}
+{% block title %}Upload statement — AEGIS{% endblock %}
+{% block content %}
+  <h1>Upload bank statement</h1>
+  <p class="src-ref">PDF only, max 25 MB. The file is hashed; re-uploads
+  are deduped to the existing document id.</p>
+
+  <form action="/upload"
+        method="post"
+        enctype="multipart/form-data"
+        hx-post="/upload"
+        hx-encoding="multipart/form-data"
+        hx-target="#upload-result"
+        hx-swap="innerHTML">
+    <input type="file" name="file" accept="application/pdf" required>
+    <input type="hidden" name="dummy" value="x">
+    <button type="submit">Upload</button>
+  </form>
+
+  <div id="upload-result" style="margin-top: 16px;"></div>
+
+  <p class="src-ref" style="margin-top: 24px;">
+    The bearer token must be supplied in the Authorization header by your
+    proxy / browser plugin in dev. In production, Cloudflare Access
+    handles SSO before the request reaches the app.
+  </p>
+{% endblock %}

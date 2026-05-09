@@ -1,0 +1,29 @@
+<h3>{{ aggregate_label }} — contributing transactions</h3>
+{% if not transactions %}
+  <p class="src-ref">No transactions contributed to this aggregate.</p>
+{% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Description</th>
+        <th>Amount</th>
+        <th>Balance</th>
+        <th>Category</th>
+        <th>Source</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in transactions|sort(attribute='posted_date') %}
+      <tr>
+        <td>{{ t.posted_date }}</td>
+        <td>{{ t.description }}</td>
+        <td>{{ t.amount }}</td>
+        <td>{{ t.running_balance or "" }}</td>
+        <td>{{ t.category }}</td>
+        <td class="src-ref">page {{ t.source_page }}, line {{ t.source_line }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}

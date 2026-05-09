@@ -10,7 +10,10 @@ environment routed bank statements outside the US — that must never silently b
 
 from __future__ import annotations
 
+import tempfile
 from functools import lru_cache
+from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -58,6 +61,25 @@ class Settings(BaseSettings):
     # App
     app_port: int = Field(default=5555, ge=1, le=65535)
     log_level: str = "INFO"
+
+    # Storage backend selector. "memory" = in-process dict (tests + offline);
+    # "supabase" = Postgres via supabase-py (production default).
+    aegis_storage_backend: Literal["memory", "supabase"] = "supabase"
+
+    # Where uploaded PDFs land before the worker picks them up. The worker
+    # deletes the file in a finally block — nothing here is long-lived.
+    aegis_upload_dir: Path = Field(
+        default_factory=lambda: Path(tempfile.gettempdir()) / "aegis-uploads"
+    )
+
+    # Hard cap on uploaded PDF size (per CLAUDE.md security rules).
+    aegis_max_upload_bytes: int = Field(default=25 * 1024 * 1024, gt=0)
+
+    # Worker tuning
+    aegis_worker_max_concurrent: int = Field(default=4, ge=1, le=32)
+    aegis_worker_job_timeout: int = Field(
+        default=600, ge=30, description="seconds; longer than typical parse to allow LLM retries"
+    )
 
     @field_validator("bedrock_model_id")
     @classmethod

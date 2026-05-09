@@ -1,0 +1,35 @@
+{% extends "base.html.j2" %}
+{% block title %}Merchants — AEGIS{% endblock %}
+{% block content %}
+  <h1>Merchants</h1>
+  {% if not merchants %}
+    <p>No merchants yet. Upload a statement and create one to begin.</p>
+  {% else %}
+    <table>
+      <thead>
+        <tr>
+          <th>Business</th>
+          <th>Owner</th>
+          <th>State</th>
+          <th>Industry</th>
+          <th>Credit</th>
+          <th>TIB (mo.)</th>
+          <th>Zoho</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in merchants %}
+        <tr>
+          <td><a href="/ui/merchants/{{ m.id }}">{{ m.business_name }}</a></td>
+          <td>{{ m.owner_name }}</td>
+          <td>{{ m.state }}</td>
+          <td>{{ m.industry_naics or "—" }}</td>
+          <td>{{ m.credit_score or "—" }}</td>
+          <td>{{ m.time_in_business_months or "—" }}</td>
+          <td>{{ m.zoho_deal_id or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

@@ -12,9 +12,12 @@ swap implementations without code changes.
 
 from __future__ import annotations
 
-from typing import Protocol
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any, Protocol, cast
 from uuid import UUID
 
+from aegis.db import get_supabase
 from aegis.funders.models import FunderRow
 
 
@@ -71,4 +74,126 @@ class InMemoryFunderRepository:
         self._by_id.pop(funder_id, None)
 
 
-__all__ = ["FunderNotFoundError", "FunderRepository", "InMemoryFunderRepository"]
+class SupabaseFunderRepository:
+    """Persistence backed by Postgres ``funders`` table.
+
+    Mirrors the in-memory contract; Postgres enforces ``UNIQUE(name)`` so
+    a unique-violation surfaces as a Supabase error from ``upsert()``.
+    """
+
+    def get(self, funder_id: UUID) -> FunderRow:
+        result = (
+            get_supabase()
+            .table("funders")
+            .select("*")
+            .eq("id", str(funder_id))
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            raise FunderNotFoundError(str(funder_id))
+        return _row_to_funder(cast(dict[str, Any], result.data[0]))
+
+    def list_active(self) -> list[FunderRow]:
+        result = (
+            get_supabase()
+            .table("funders")
+            .select("*")
+            .eq("active", True)
+            .order("name")
+            .execute()
+        )
+        return [_row_to_funder(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    def upsert(self, funder: FunderRow) -> FunderRow:
+        payload = _funder_to_payload(funder)
+        result = (
+            get_supabase()
+            .table("funders")
+            .upsert(payload, on_conflict="id")
+            .execute()
+        )
+        if not result.data:
+            raise RuntimeError("supabase.upsert returned no row")
+        return _row_to_funder(cast(dict[str, Any], result.data[0]))
+
+    def delete(self, funder_id: UUID) -> None:
+        get_supabase().table("funders").delete().eq("id", str(funder_id)).execute()
+
+
+def _row_to_funder(row: dict[str, Any]) -> FunderRow:
+    def _money(key: str) -> Decimal | None:
+        val = row.get(key)
+        return Decimal(str(val)) if val is not None else None
+
+    def _dt(key: str) -> datetime | None:
+        val = row.get(key)
+        if val is None:
+            return None
+        if isinstance(val, datetime):
+            return val
+        return datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+
+    return FunderRow(
+        id=UUID(row["id"]),
+        name=row["name"],
+        active=row.get("active", True),
+        min_monthly_revenue=_money("min_monthly_revenue"),
+        min_avg_daily_balance=_money("min_avg_daily_balance"),
+        min_credit_score=row.get("min_credit_score"),
+        min_months_in_business=row.get("min_months_in_business"),
+        max_positions=row.get("max_positions"),
+        accepts_stacking=row.get("accepts_stacking", False),
+        min_advance=_money("min_advance"),
+        max_advance=_money("max_advance"),
+        max_nsf_tolerance=row.get("max_nsf_tolerance"),
+        typical_factor_low=_money("typical_factor_low"),
+        typical_factor_high=_money("typical_factor_high"),
+        typical_holdback_low=_money("typical_holdback_low"),
+        typical_holdback_high=_money("typical_holdback_high"),
+        excluded_industries=tuple(row.get("excluded_industries") or ()),
+        excluded_states=tuple(row.get("excluded_states") or ()),
+        guidelines_extracted_at=_dt("guidelines_extracted_at"),
+        guidelines_source_pdf_hash=row.get("guidelines_source_pdf_hash"),
+        notes=row.get("notes") or "",
+    )
+
+
+def _funder_to_payload(f: FunderRow) -> dict[str, Any]:
+    def _str_or_none(v: Decimal | None) -> str | None:
+        return str(v) if v is not None else None
+
+    return {
+        "id": str(f.id),
+        "name": f.name,
+        "active": f.active,
+        "min_monthly_revenue": _str_or_none(f.min_monthly_revenue),
+        "min_avg_daily_balance": _str_or_none(f.min_avg_daily_balance),
+        "min_credit_score": f.min_credit_score,
+        "min_months_in_business": f.min_months_in_business,
+        "max_positions": f.max_positions,
+        "accepts_stacking": f.accepts_stacking,
+        "min_advance": _str_or_none(f.min_advance),
+        "max_advance": _str_or_none(f.max_advance),
+        "max_nsf_tolerance": f.max_nsf_tolerance,
+        "typical_factor_low": _str_or_none(f.typical_factor_low),
+        "typical_factor_high": _str_or_none(f.typical_factor_high),
+        "typical_holdback_low": _str_or_none(f.typical_holdback_low),
+        "typical_holdback_high": _str_or_none(f.typical_holdback_high),
+        "excluded_industries": list(f.excluded_industries),
+        "excluded_states": list(f.excluded_states),
+        "guidelines_extracted_at": (
+            f.guidelines_extracted_at.isoformat() if f.guidelines_extracted_at else None
+        ),
+        "guidelines_source_pdf_hash": f.guidelines_source_pdf_hash,
+        "notes": f.notes,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+__all__ = [
+    "FunderNotFoundError",
+    "FunderRepository",
+    "InMemoryFunderRepository",
+    "SupabaseFunderRepository",
+]
