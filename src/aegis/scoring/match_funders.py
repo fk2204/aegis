@@ -39,19 +39,33 @@ continue to work.
 
 from __future__ import annotations
 
+from aegis.compliance.states import STATES, Tier1Regulation
 from aegis.funders.models import FunderRow
 from aegis.logger import get_logger
 from aegis.scoring.models import FunderMatch, ScoreInput, ScoreResult
 
 _log = get_logger(__name__)
 
-# State-level CoJ blocks. Sourced from docs/compliance/<state>.md dossiers;
-# CA per Cal. Code Civ. Proc. § 1132 (SB 688, effective 2023-01-01) — see
-# docs/compliance/01_california.md. Add additional states as their
-# dossiers are promoted to Tier 1 with coj_allowed=False.
-_COJ_BANNED_STATES: dict[str, str] = {
-    "CA": "Cal. Code Civ. Proc. § 1132",
-}
+
+def _coj_state_rule(state_code: str) -> tuple[str | None, str | None]:
+    """Resolve the merchant's state to (coj_status, citation).
+
+    Drives off the Tier 1 ``StateRegulation`` table so promoting a new
+    state to Tier 1 with ``coj_allowed`` set automatically activates the
+    matcher rule — no second source of truth here. States that aren't
+    Tier 1 (or aren't served at all) return ``(None, None)`` and pass
+    through.
+
+    Returns
+    -------
+    (status, citation)
+        status ∈ {"banned", "conditional", "allowed", None}.
+        citation is the state's ``coj_citation`` when status is non-None.
+    """
+    reg = STATES.get(state_code)
+    if not isinstance(reg, Tier1Regulation):
+        return (None, None)
+    return (reg.coj_allowed, reg.coj_citation)
 
 
 def match_funder(
@@ -67,26 +81,46 @@ def match_funder(
     soft: list[str] = []
     criteria_count = 0
 
-    # State-level CoJ block. Per docs/compliance/01_california.md, a
-    # funder requiring CoJ cannot be paired with a CA merchant; the
-    # CoJ clause would be unenforceable under Cal. Code Civ. Proc. § 1132
-    # and the deal cannot ship. This is a state-level block, not a soft
-    # signal — both the return value (reason `coj_invalid_in_state`) and
-    # the match log entry (`funder_requires_coj_blocked_by_state`) are
-    # explicit so audit + dashboard can surface the cause distinctly.
+    # State-level CoJ rule — driven off the Tier 1 STATES table:
+    #   * "banned"      → hard fail (CA per Cal. Code Civ. Proc. § 1132).
+    #     Reason `coj_invalid_in_state`; warning log
+    #     `funder_requires_coj_blocked_by_state`. The CoJ clause would be
+    #     unenforceable in this state and the deal cannot ship.
+    #   * "conditional" → soft concern (NY per CPLR § 3218 — CoJs only
+    #     enforceable against NY-resident merchants since 2019-08-30, see
+    #     docs/compliance/02_new_york.md). Reason `coj_ny_resident_only`;
+    #     info log of the same name. Operator confirms merchant residency
+    #     before transmitting the funder agreement.
+    #   * "allowed" / not Tier 1 → no concern.
     state_code = (deal.state or "").upper()
-    if funder.requires_coj and state_code in _COJ_BANNED_STATES:
-        criteria_count += 1
-        citation = _COJ_BANNED_STATES[state_code]
-        hard.append(f"coj_invalid_in_state: {citation}")
-        _log.warning(
-            "funder_requires_coj_blocked_by_state funder_id=%s funder_name=%s "
-            "merchant_state=%s citation=%s",
-            funder.id,
-            funder.name,
-            state_code,
-            citation,
-        )
+    if funder.requires_coj:
+        coj_status, coj_citation = _coj_state_rule(state_code)
+        if coj_status == "banned":
+            criteria_count += 1
+            hard.append(f"coj_invalid_in_state: {coj_citation}")
+            _log.warning(
+                "funder_requires_coj_blocked_by_state funder_id=%s funder_name=%s "
+                "merchant_state=%s citation=%s",
+                funder.id,
+                funder.name,
+                state_code,
+                coj_citation,
+            )
+        elif coj_status == "conditional":
+            criteria_count += 1
+            soft.append(
+                f"coj_ny_resident_only: {coj_citation} permits CoJ only "
+                "against NY-resident merchants — verify principal place of "
+                "business before transmitting funder agreement"
+            )
+            _log.info(
+                "coj_ny_resident_only funder_id=%s funder_name=%s "
+                "merchant_state=%s citation=%s",
+                funder.id,
+                funder.name,
+                state_code,
+                coj_citation,
+            )
 
     if funder.min_monthly_revenue is not None:
         criteria_count += 1

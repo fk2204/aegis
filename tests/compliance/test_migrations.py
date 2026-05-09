@@ -88,3 +88,32 @@ def test_005_default_is_false() -> None:
     """Existing funders are assumed not to require CoJ until operator updates."""
     sql = _read("005_funders_requires_coj.sql")
     assert re.search(r"requires_coj\s+BOOLEAN[^;]*DEFAULT\s+false", sql, re.IGNORECASE)
+
+
+# --- 006 funders.aegis_compensation_disclosure_text -------------------------
+
+
+def test_006_adds_aegis_compensation_disclosure_text_column() -> None:
+    sql = _read("006_funders_aegis_compensation_disclosure.sql")
+    assert re.search(
+        r"ALTER TABLE\s+funders\s+ADD COLUMN IF NOT EXISTS\s+"
+        r"aegis_compensation_disclosure_text\s+TEXT",
+        sql,
+        re.IGNORECASE,
+    )
+
+
+def test_006_default_is_empty_string_not_null() -> None:
+    """Empty default + NOT NULL: missing text is the disclosure-guard signal."""
+    sql = _read("006_funders_aegis_compensation_disclosure.sql")
+    assert re.search(
+        r"aegis_compensation_disclosure_text\s+TEXT\s+NOT NULL\s+DEFAULT\s+''",
+        sql,
+        re.IGNORECASE,
+    )
+
+
+def test_006_cites_section_600_21_in_comments() -> None:
+    """Migration self-documents the regulatory source for future reviewers."""
+    sql = _read("006_funders_aegis_compensation_disclosure.sql")
+    assert "600.21(f)" in sql

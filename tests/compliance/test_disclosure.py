@@ -63,9 +63,9 @@ def _score() -> ScoreResult:
 # (4) ------------------------------------------------------------------------
 
 
-# CA is Tier 1 (promoted per docs/compliance/01_california.md); use other
+# CA + NY are Tier 1 (promoted per docs/compliance/0[1,2]_*.md); use other
 # still-unaudited states for the Tier 3 fail path.
-@pytest.mark.parametrize("state", ["NY", "FL", "WY"])
+@pytest.mark.parametrize("state", ["FL", "WY", "AZ"])
 def test_tier3_state_raises_state_not_audited(state: str) -> None:
     with pytest.raises(StateNotAudited, match=r"compliance research"):
         render_disclosure(state, _deal(state), _score())
@@ -78,9 +78,9 @@ def test_non_served_state_raises_state_not_served() -> None:
 
 def test_state_not_audited_carries_state_attr() -> None:
     try:
-        render_disclosure("NY", _deal("NY"), _score())
+        render_disclosure("WY", _deal("WY"), _score())
     except StateNotAudited as exc:
-        assert exc.state == "NY"
+        assert exc.state == "WY"
     else:
         pytest.fail("expected StateNotAudited")
 
@@ -91,12 +91,12 @@ def test_state_not_audited_carries_state_attr() -> None:
 def test_unaudited_warning_logged_for_tier3_state(caplog: pytest.LogCaptureFixture) -> None:
     """Phase 4 spec: warn_if_unaudited(state) logs the documented format."""
     with caplog.at_level(logging.WARNING, logger="aegis.compliance.states"):
-        warn_if_unaudited("ny")
+        warn_if_unaudited("wy")
 
     matching = [
         r for r in caplog.records
         if "compliance.unaudited_state" in r.getMessage()
-        and "state=NY" in r.getMessage()
+        and "state=WY" in r.getMessage()
         and "DEAL FROM UNAUDITED STATE" in r.getMessage()
     ]
     assert matching, (

@@ -53,9 +53,22 @@ class FunderRow(_StrictModel):
     max_nsf_tolerance: Annotated[int, Field(ge=0)] | None = None
     # True = funder agreement requires a confession of judgment (CoJ).
     # Triggers a hard-decline at match time for merchants in any state
-    # whose StateRegulation.coj_allowed=False (e.g. California per
+    # whose StateRegulation.coj_allowed="banned" (e.g. California per
     # Cal. Code Civ. Proc. § 1132 — see docs/compliance/01_california.md).
+    # NY (coj_allowed="conditional") permits CoJ only against NY-resident
+    # merchants — soft warning rather than hard decline.
     requires_coj: bool = False
+
+    # Per docs/compliance/02_new_york.md: 23 NYCRR § 600.21(f) requires the
+    # provider (funder) to inform the recipient in writing how, and by
+    # whom, the broker is compensated. AEGIS is the broker. AEGIS supplies
+    # the funder with a standard text block describing AEGIS's
+    # compensation arrangement with that funder; the funder includes it
+    # when transmitting the disclosure. This text is per-funder because
+    # the arrangement (commission %, ISO fee structure) varies by funder.
+    # Empty string means "not yet supplied" — disclosure generation for an
+    # NY merchant requires this to be non-empty.
+    aegis_compensation_disclosure_text: str = ""
 
     # Pricing envelope (informational; matcher doesn't enforce)
     typical_factor_low: Decimal | None = None

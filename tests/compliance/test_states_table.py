@@ -43,11 +43,12 @@ def test_all_45_states_present() -> None:
 
 
 def test_skeleton_states_are_all_tier_3_except_promoted() -> None:
-    """Skeleton: every state starts Tier 3; promoted states (CA) are Tier 1.
+    """Skeleton: every state starts Tier 3; promoted states are Tier 1.
 
     CA promoted per docs/compliance/01_california.md.
+    NY promoted per docs/compliance/02_new_york.md.
     """
-    promoted_to_tier_1 = {"CA"}
+    promoted_to_tier_1 = {"CA", "NY"}
     for abbr, reg in STATES.items():
         if abbr in promoted_to_tier_1:
             assert reg.tier == 1, f"{abbr} should be promoted to Tier 1"
@@ -103,7 +104,7 @@ def test_tier1_construction_rejects_missing_field() -> None:
             apr_calculation_method="actuarial_reg_z",
             threshold_amount_usd=Decimal("250000"),
             threshold_test_summary="When offer <= $250K and merchant in ZZ.",
-            coj_allowed=True,
+            coj_allowed="allowed",
             coj_citation="—",
             coj_citation_url="https://example.invalid/coj",
             coj_amendment_bill="Test SB 0 (2023)",
@@ -145,7 +146,7 @@ def test_validator_rejects_tier1_with_missing_template_file() -> None:
         apr_calculation_method="actuarial_reg_z",
         threshold_amount_usd=Decimal("500000"),
         threshold_test_summary="<= $500K + CA-managed merchant.",
-        coj_allowed=False,
+        coj_allowed="banned",
         coj_citation="Cal. Code Civ. Proc. § 1132",
         coj_citation_url="https://example.invalid/coj",
         coj_amendment_bill="SB 688 (2022)",

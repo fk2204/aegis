@@ -55,7 +55,7 @@ def test_california_threshold_is_500k() -> None:
 def test_california_coj_banned_with_citation() -> None:
     ca = STATES["CA"]
     assert isinstance(ca, Tier1Regulation)
-    assert ca.coj_allowed is False
+    assert ca.coj_allowed == "banned"
     assert ca.coj_citation == "Cal. Code Civ. Proc. § 1132"
     assert ca.coj_amendment_bill == "SB 688 (2022)"
     assert ca.coj_effective_date == date(2023, 1, 1)

@@ -163,11 +163,28 @@ def _build_context(
         "total_repayment": str(total_repayment),
     }
     if isinstance(reg, Tier1Regulation):
+        # effective_date_statute and effective_date_regulations are both
+        # Optional on the model — NY's dossier glues SB 5470 + S898 into a
+        # single bill_number and does not quote the original statute date.
+        # Format defensively.
         common.update(
             {
                 "bill_number": reg.bill_number,
-                "effective_date_statute": reg.effective_date_statute.isoformat(),
-                "effective_date_regulations": reg.effective_date_regulations.isoformat(),
+                "effective_date_statute": (
+                    reg.effective_date_statute.isoformat()
+                    if reg.effective_date_statute is not None
+                    else ""
+                ),
+                "effective_date_regulations": (
+                    reg.effective_date_regulations.isoformat()
+                    if reg.effective_date_regulations is not None
+                    else ""
+                ),
+                "mandatory_compliance_date": (
+                    reg.mandatory_compliance_date.isoformat()
+                    if reg.mandatory_compliance_date is not None
+                    else ""
+                ),
                 "statute_citation": reg.statute_citation,
                 "regulation_citation": reg.regulation_citation,
                 "citation_url_statute": reg.citation_url_statute,

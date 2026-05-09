@@ -1,0 +1,212 @@
+{#-
+  New York CFDL / 23 NYCRR § 600.6 — Sales-Based Financing Disclosure.
+
+  Source-of-truth dossier: docs/compliance/02_new_york.md, section
+  "What 23 NYCRR § 600.6 requires for MCA disclosures."
+
+  Differs from CA in three ways:
+    1. Adds Row 10 — Collateral Requirements
+    2. Row 1 includes the NY-specific double-dipping disclosure paragraph
+       under § 600.6(b)(3)(v) when the financing is a renewal that pays
+       down a prior position with the same provider
+    3. Footer cites NY § 600.0 instead of CA § 901
+
+  Variables ({{ }}) are runtime substitutions only — every literal
+  regulatory string is from the dossier verbatim. Conditional blocks
+  emit additional regulator-prescribed sentences only when the regulation
+  says they apply.
+
+  Required context variables (additions vs CA marked +):
+    financer_name              str
+    funding_provided           str
+    recipient_funds            str
+    recipient_funds_lt_funding bool
+    pays_third_party_payoffs   bool
+    third_party_payoff_note    str
+   +is_renewal_with_double_dip bool   — true when payoff comes from same provider
+   +double_dipping_amount      str    — "$X,XXX.XX" or "$0.00"; only consulted if above is true
+    apr                        str
+    payment_channel            str
+    avg_monthly_income         str
+    finance_is_fee_based       bool
+    finance_charge             str
+    finance_charge_can_increase bool
+    estimated_total_payment    str
+    estimated_payment_amount   str
+    estimated_payment_freq     str
+    irregular_payments_note    str
+    payment_terms_text         str
+    estimated_term             str
+    estimated_term_explanation str
+    has_monthly_cost_insert    bool
+    estimated_monthly_cost     str
+    monthly_cost_derivation    str
+    prepayment_finance_charge_text str
+    prepayment_additional_fee_text str
+   +collateral_requirements_text   str  — description, or "None" if no collateral
+    rendered_at                str
+-#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Commercial Financing Disclosure — New York (CFDL)</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 760px; margin: 24px auto;
+         color: #111; }
+  h1   { font-size: 18px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th, td { border: 1px solid #555; padding: 8px 10px; vertical-align: top;
+           font-size: 12px; }
+  th    { background: #f0f0f0; text-align: left; }
+  .col1 { width: 22%; font-weight: 600; }
+  .col2 { width: 22%; }
+  .col3 { width: 56%; }
+  .footer { margin-top: 16px; font-size: 11px; color: #333; }
+  .meta   { font-size: 10px; color: #666; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Commercial Financing Disclosure</h1>
+<p class="meta">New York — 23 NYCRR § 600.6. Provider: {{ financer_name }}.</p>
+
+<table>
+<thead>
+<tr><th class="col1">&nbsp;</th><th class="col2">&nbsp;</th><th class="col3">&nbsp;</th></tr>
+</thead>
+<tbody>
+
+{#- Row 1 — Funding Provided.
+    NY-specific addition: when this financing is a renewal that pays
+    down a prior position with the same provider, § 600.6(b)(3)(v)
+    requires the double-dipping paragraph in a SECOND paragraph
+    of column 3. -#}
+<tr>
+  <td class="col1">Funding Provided</td>
+  <td class="col2">{{ funding_provided }}</td>
+  <td class="col3">
+    <p>This is how much funding {{ financer_name }} will provide.
+    {%- if recipient_funds_lt_funding %}
+    Due to deductions or payments to others, the total funds that will be
+    provided to you directly is {{ recipient_funds }}. For more information
+    on what amounts will be deducted, please review the attached document
+    "Itemization of Amount Financed."
+    {%- endif %}
+    {%- if pays_third_party_payoffs %}
+    {{ third_party_payoff_note }}
+    {%- endif %}
+    </p>
+    {%- if is_renewal_with_double_dip %}
+    <p>Does the renewal financing include any amount that is used to pay
+    unpaid finance charges or fees, also known as double dipping?
+    {{ double_dipping_amount }}. If the amount is zero, the answer would be No.</p>
+    {%- endif %}
+  </td>
+</tr>
+
+{#- Row 2 — Estimated APR. NY § 600.6 form, with finance-charge wording
+    ("finance charges you pay" rather than CA's "fees you pay"). -#}
+<tr>
+  <td class="col1">Estimated Annual Percentage Rate (APR)</td>
+  <td class="col2">{{ apr }}</td>
+  <td class="col3">
+    APR is the estimated cost of your financing expressed as a yearly rate.
+    APR incorporates the amount and timing of the funding you receive,
+    finance charges you pay, and the periodic payments you make. This
+    calculation assumes your estimated average monthly income through
+    {{ payment_channel }} will be {{ avg_monthly_income }}. Since your
+    actual income may vary from our estimate, your effective APR may
+    also vary.
+    {%- if finance_is_fee_based %}
+    APR is not an interest rate. The cost of this financing is based upon
+    fees charged by {{ financer_name }} rather than interest that accrues
+    over time.
+    {%- endif %}
+  </td>
+</tr>
+
+{#- Row 3 — Finance Charge -#}
+<tr>
+  <td class="col1">Finance Charge</td>
+  <td class="col2">{{ finance_charge }}</td>
+  <td class="col3">
+    This is the dollar cost of your financing.
+    {%- if not finance_charge_can_increase %}
+    Your finance charge will not increase if you take longer to pay off
+    what you owe.
+    {%- endif %}
+  </td>
+</tr>
+
+{#- Row 4 — Estimated Total Payment Amount -#}
+<tr>
+  <td class="col1">Estimated Total Payment Amount</td>
+  <td class="col2">{{ estimated_total_payment }}</td>
+  <td class="col3">
+    This is the total dollar amount of payments we estimate you will make
+    under the contract.
+  </td>
+</tr>
+
+{#- Optional inserted row — Estimated Monthly Cost (for non-monthly periodic
+    payments, i.e. all MCAs). Per § 600.6 inserted BELOW Row 4. -#}
+{%- if has_monthly_cost_insert %}
+<tr>
+  <td class="col1">Estimated Monthly Cost</td>
+  <td class="col2">{{ estimated_monthly_cost }}</td>
+  <td class="col3">{{ monthly_cost_derivation }}</td>
+</tr>
+{%- endif %}
+
+{#- Row 5 — Estimated Payment.
+    Per § 600.6 cols 2+3 are combined: average periodic payment per
+    § 600.7 followed by "/" and frequency, plus dates+amounts of
+    irregular payments. -#}
+<tr>
+  <td class="col1">Estimated Payment</td>
+  <td class="col2" colspan="2">
+    {{ estimated_payment_amount }} / {{ estimated_payment_freq }}
+    {%- if irregular_payments_note %}
+    <br>{{ irregular_payments_note }}
+    {%- endif %}
+  </td>
+</tr>
+
+{#- Row 6 — Payment Terms (combined cols 2+3 per regulation). -#}
+<tr>
+  <td class="col1">Payment Terms</td>
+  <td class="col2" colspan="2">{{ payment_terms_text }}</td>
+</tr>
+
+{#- Row 7 — Estimated Term -#}
+<tr>
+  <td class="col1">Estimated Term</td>
+  <td class="col2">{{ estimated_term }}</td>
+  <td class="col3">{{ estimated_term_explanation }}</td>
+</tr>
+
+{#- Rows 8 & 9 — Prepayment (col 1 combined as "Prepayment", cols 2+3 combined). -#}
+<tr>
+  <td class="col1" rowspan="2">Prepayment</td>
+  <td class="col2" colspan="2">{{ prepayment_finance_charge_text }}</td>
+</tr>
+<tr>
+  <td class="col2" colspan="2">{{ prepayment_additional_fee_text }}</td>
+</tr>
+
+{#- Row 10 — Collateral Requirements (NY-specific; the additional row
+    that distinguishes NY's 10-row disclosure from CA's 9-row disclosure). -#}
+<tr>
+  <td class="col1">Collateral Requirements</td>
+  <td class="col2" colspan="2">{{ collateral_requirements_text }}</td>
+</tr>
+
+</tbody>
+</table>
+
+<p class="footer">New York Applicable law requires this information to be provided to you to help you make an informed decision.</p>
+
+<p class="meta">Generated by AEGIS on {{ rendered_at }}. Per 23 NYCRR § 600.0.</p>
+</body>
+</html>

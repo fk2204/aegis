@@ -1,10 +1,17 @@
-"""CoJ hard-decline rule tests.
+"""CoJ rule tests — per-state branching.
 
-Per docs/compliance/01_california.md, "CoJ status: BANNED in California
-(Cal. Code Civ. Proc. § 1132)" — operational rules section. Match log
-records ``funder_requires_coj_blocked_by_state`` (verified via caplog);
-return value carries ``coj_invalid_in_state`` in the soft_concerns/
-hard-fail list.
+CA hard-decline path (``coj_allowed="banned"``)
+  Per docs/compliance/01_california.md: Cal. Code Civ. Proc. § 1132.
+  Reason ``coj_invalid_in_state``; warning log
+  ``funder_requires_coj_blocked_by_state``.
+
+NY soft-concern path (``coj_allowed="conditional"``)
+  Per docs/compliance/02_new_york.md: CPLR § 3218 (amended chapter 311
+  of 2019, effective 2019-08-30) — CoJs enforceable only against NY-
+  resident merchants. Reason ``coj_ny_resident_only``; info log of the
+  same name. Operator confirms residency before transmitting agreement.
+
+Tier 3 / non-CoJ-rule states pass through with no CoJ-related entries.
 """
 
 from __future__ import annotations
@@ -87,14 +94,51 @@ def test_ca_merchant_plus_non_coj_funder_passes_coj_check(
     assert not any("funder_requires_coj_blocked_by_state" in r.message for r in caplog.records)
 
 
-def test_non_ca_merchant_plus_coj_funder_does_not_block_on_coj() -> None:
-    """NY/FL/etc. don't ban CoJ outright — those merchants pass the CoJ check
-    here. (NY restricts CoJ residency; that rule lives elsewhere.)"""
+def test_tier3_state_plus_coj_funder_does_not_block_on_coj() -> None:
+    """Tier 3 / non-Tier-1 states pass the CoJ check entirely — no rule."""
     funder = FunderRow(name="Coj Funder LLC", requires_coj=True, max_positions=1)
+    deal = _ca_score_input().model_copy(update={"state": "FL"})
+    match = match_funder(funder, deal, _baseline_score_result())
+    assert match is not None
+    joined = " | ".join(match.soft_concerns)
+    assert "coj_invalid_in_state" not in joined
+    assert "coj_ny_resident_only" not in joined
+
+
+def test_ny_merchant_plus_coj_funder_soft_warns_residency(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """NY merchant + CoJ-requiring funder → soft concern, NOT hard fail.
+
+    Per docs/compliance/02_new_york.md: NY permits CoJ but only against
+    NY-resident merchants since 2019-08-30 (CPLR § 3218). Match score is
+    non-zero (qualifies, with residency caveat); soft_concerns includes
+    ``coj_ny_resident_only`` and the citation; INFO-level log records
+    ``coj_ny_resident_only`` so the dashboard can flag the deal.
+    """
+    funder = FunderRow(name="Coj Funder LLC", requires_coj=True, max_positions=1)
+    with caplog.at_level(logging.INFO, logger="aegis.scoring.match_funders"):
+        match = match_funder(funder, _ny_score_input(), _baseline_score_result())
+    assert match is not None
+    joined = " | ".join(match.soft_concerns)
+    assert "coj_invalid_in_state" not in joined  # NOT a hard fail.
+    assert "coj_ny_resident_only" in joined
+    assert "CPLR § 3218" in joined
+    # Match still qualifies (no hard fail); score may be reduced by the soft.
+    assert match.match_score > 0
+    assert any(
+        "coj_ny_resident_only" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_ny_merchant_plus_non_coj_funder_passes_clean() -> None:
+    """NY soft warning fires only when funder requires CoJ."""
+    funder = FunderRow(name="Friendly Funder", requires_coj=False, max_positions=1)
     match = match_funder(funder, _ny_score_input(), _baseline_score_result())
     assert match is not None
     joined = " | ".join(match.soft_concerns)
     assert "coj_invalid_in_state" not in joined
+    assert "coj_ny_resident_only" not in joined
 
 
 def test_match_log_records_funder_requires_coj_blocked_by_state(

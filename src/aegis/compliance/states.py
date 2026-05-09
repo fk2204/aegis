@@ -92,19 +92,36 @@ class _StrictModel(BaseModel):
 
 
 AprMethod = Literal["actuarial_reg_z", "simple_interest", "not_specified"]
+CojStatus = Literal["allowed", "banned", "conditional"]
 
 
 class Amendment(_StrictModel):
-    """A statute amendment that layers on top of the base bill.
+    """An ENACTED statute amendment that layers on top of the base bill.
 
     Per CA dossier: SB 362 (2025) amends SB 1235 with re-disclosure rules
-    effective 2026-01-01. Future Tier 1 entries (NY, FL, GA) will carry
-    their own amendment chains in the same shape.
+    effective 2026-01-01. Future Tier 1 entries with enacted amendments
+    use this shape. Pending / introduced bills go in `PendingAmendment`.
     """
 
     bill_number: str = Field(min_length=1, description='e.g. "SB 362"')
     year: int = Field(ge=1900, le=2100)
     effective_date: date
+    summary: str = Field(min_length=1, max_length=2000)
+    citation_url: str = Field(min_length=1)
+
+
+class PendingAmendment(_StrictModel):
+    """A bill that is INTRODUCED / PENDING — not yet enacted.
+
+    Per NY dossier: S2305 (2025) would prohibit CoJs on debts < $5M but
+    is still pending. Tracked here so the operator dashboard can flag
+    affected states and so the matcher can warn before the bill changes
+    status.
+    """
+
+    bill_number: str = Field(min_length=1, description='e.g. "S2305"')
+    year: int = Field(ge=1900, le=2100)
+    status: Literal["introduced", "pending", "in_committee"] = "introduced"
     summary: str = Field(min_length=1, max_length=2000)
     citation_url: str = Field(min_length=1)
 
@@ -119,28 +136,42 @@ class Tier1Regulation(_BaseRegulation):
     """MCA-specific commercial-financing disclosure law in effect.
 
     Field shape follows the per-state dossiers under ``docs/compliance/``.
-    Tier 1 entries for CA (and forthcoming NY/FL/GA) populate the full
-    statute-vs-regulation date pair, threshold, CoJ status with citation
-    chain, transmission rules, amendments, and a free-form notes block.
+    Many fields are OPTIONAL because dossiers vary in coverage — e.g. the
+    CA dossier provides bill_year + chapter + sponsor + statute enactment
+    date; the NY dossier glues the bill+amendment year into a single
+    ``bill_number`` string and does not quote SB 5470's enactment date.
+    Each dossier populates the fields it speaks to; the rest stay null.
 
-    The single AEGIS-internal field outside the dossier schema is
+    The single AEGIS-internal field outside any dossier schema is
     ``template_path`` — required by the boot validator to verify the
     prescribed-form Jinja template exists on disk.
     """
 
     tier: Literal[1] = 1
 
-    # Bill identification
+    # Bill identification — bill_number is required; richer attribution
+    # is optional because not every dossier supplies it.
     bill_number: str = Field(min_length=1, description='e.g. "SB 1235"')
-    bill_year: int = Field(ge=1900, le=2100)
-    chapter: str = Field(min_length=1, description='e.g. "Chapter 1011, Statutes of 2018"')
-    sponsor: str = Field(min_length=1)
+    bill_year: int | None = Field(default=None, ge=1900, le=2100)
+    chapter: str | None = Field(default=None, min_length=1)
+    sponsor: str | None = Field(default=None, min_length=1)
+    common_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description='e.g. "Commercial Finance Disclosure Law (CFDL)"',
+    )
 
-    # Effective dates — split because statute and regulations land on
-    # different days for most CFDLs (SB 1235 enacted 2018-09-30, regs
-    # effective 2022-12-09).
-    effective_date_statute: date
-    effective_date_regulations: date
+    # Effective dates — both optional because dossiers may quote one or
+    # the other (or neither, in pending/audited-but-not-yet-enacted cases).
+    # ``effective_date_regulations`` is the binding compliance date.
+    effective_date_statute: date | None = None
+    effective_date_regulations: date | None = None
+
+    # NY-specific date pair: regulations were ADOPTED 2023-02-01 but
+    # mandatory compliance only kicked in 2023-08-01. Other states use
+    # the single ``effective_date_regulations`` field above.
+    regulations_adopted: date | None = None
+    mandatory_compliance_date: date | None = None
 
     # Citations
     statute_citation: str = Field(min_length=1)
@@ -151,24 +182,38 @@ class Tier1Regulation(_BaseRegulation):
 
     # APR + threshold + scope
     apr_calculation_method: AprMethod
+    apr_tolerance_percent: Decimal | None = Field(
+        default=None,
+        description="e.g. NY § 600.4: 0.125 (regular) or 0.250 (irregular)",
+    )
+    apr_tolerance_irregular_percent: Decimal | None = None
+    apr_re_disclosure_required: bool = False
     threshold_amount_usd: Decimal = Field(gt=Decimal("0"))
-    threshold_test_summary: str = Field(min_length=1, max_length=1000)
+    threshold_test_summary: str | None = Field(default=None, min_length=1, max_length=1000)
     disclosure_required: Literal[True] = True
 
-    # Confession of judgment (CoJ)
-    coj_allowed: bool
+    # Confession of judgment (CoJ). Tristate per the dossiers:
+    #   "allowed"     — CoJ permitted, no state-level restriction
+    #   "banned"      — CoJ unenforceable in this state (CA)
+    #   "conditional" — permitted with restrictions (NY: residents only)
+    coj_allowed: CojStatus
     coj_citation: str = Field(min_length=1, description="sub-citation for the CoJ rule")
     coj_citation_url: str = Field(min_length=1)
-    coj_amendment_bill: str = Field(min_length=1, description='e.g. "SB 688 (2022)"')
+    coj_amendment_bill: str | None = Field(default=None, min_length=1)
     coj_effective_date: date
 
     # Broker / transmission rules
     requires_unaltered_disclosure_transmission: bool
     transmission_record_retention_years: int = Field(ge=0)
     broker_compensation_disclosure_required: bool
+    broker_disclosure_section: str | None = Field(
+        default=None,
+        description='e.g. "23 NYCRR § 600.21(f)"',
+    )
 
-    # Amendment chain (e.g. CA SB 1235 amended by SB 362)
+    # Amendment chains
     amendments: list[Amendment] = Field(default_factory=list)
+    pending_amendments: list[PendingAmendment] = Field(default_factory=list)
 
     # Free-form notes from the dossier (template guidance, etc.)
     notes: str = Field(min_length=1, max_length=4000)
@@ -309,7 +354,7 @@ STATES["CA"] = Tier1Regulation(
         "(per 10 CCR § 954)."
     ),
     disclosure_required=True,
-    coj_allowed=False,
+    coj_allowed="banned",
     coj_citation="Cal. Code Civ. Proc. § 1132",
     coj_citation_url=(
         "https://law.justia.com/codes/california/code-ccp/part-3/title-3/"
@@ -345,6 +390,88 @@ STATES["CA"] = Tier1Regulation(
         "Section 952 transmission duties require unaltered forwarding + 4-year records."
     ),
     template_path="ca_sb1235.html.j2",
+    verified_date=SKELETON_VERIFIED_DATE,
+)
+
+
+# Per docs/compliance/02_new_york.md: New York — CFDL Article 8 + 23 NYCRR
+# Part 600. Field-name mapping follows the CA convention: dossier's
+# ``state="New York"`` → ``state_name``; ``abbreviation="NY"`` → ``state``.
+# The dossier glues SB 5470 + S898 into ``bill_number`` rather than
+# splitting them into a base+amendment pair, and does not quote SB 5470's
+# enactment date — both are preserved as the dossier provides them
+# (``effective_date_statute`` left None; bill_year is the year of the
+# original SB 5470 enactment per ``"SB 5470 (2020)"``).
+STATES["NY"] = Tier1Regulation(
+    state="NY",
+    state_name="New York",
+    tier=1,
+    bill_number="SB 5470 (2020), amended by S898 (2021)",
+    bill_year=2020,
+    common_name="Commercial Finance Disclosure Law (CFDL)",
+    # statute enactment date not specified in the dossier — leave null
+    # rather than improvise.
+    effective_date_statute=None,
+    # NY's mandatory compliance date doubles as the binding regulations-
+    # effective date for the matcher / boot validator.
+    effective_date_regulations=date(2023, 8, 1),
+    regulations_adopted=date(2023, 2, 1),
+    mandatory_compliance_date=date(2023, 8, 1),
+    statute_citation="N.Y. Fin. Services Law §§ 801-811",
+    regulation_citation="23 NYCRR Part 600",
+    citation_url_statute=(
+        "https://www.dfs.ny.gov/industry_guidance/regulations/"
+        "final_financial_services/rf_finservices_23nycrr600_text"
+    ),
+    citation_url_regulation="https://www.law.cornell.edu/regulations/new-york/23-NYCRR-600.6",
+    prescribed_form_section="23 NYCRR § 600.6",
+    apr_calculation_method="actuarial_reg_z",
+    # Per CORRECTIONS_2026-05-08.md: the tolerance section is § 600.4,
+    # NOT § 600.5 (which covers signatures). 0.125% regular, 0.25% irregular.
+    apr_tolerance_percent=Decimal("0.125"),
+    apr_tolerance_irregular_percent=Decimal("0.250"),
+    apr_re_disclosure_required=True,
+    threshold_amount_usd=Decimal("2500000"),
+    threshold_test_summary=(
+        "Disclosure required when financing offer <= $2,500,000 AND a specific "
+        "offer is extended to the recipient (per 23 NYCRR § 600.0)."
+    ),
+    disclosure_required=True,
+    coj_allowed="conditional",
+    coj_citation="N.Y. CPLR § 3218 (amended chapter 311 of 2019)",
+    coj_citation_url="https://law.justia.com/codes/new-york/cvp/article-32/3218/",
+    coj_amendment_bill="Chapter 311 of 2019",
+    coj_effective_date=date(2019, 8, 30),
+    requires_unaltered_disclosure_transmission=True,
+    transmission_record_retention_years=4,
+    broker_compensation_disclosure_required=True,
+    broker_disclosure_section="23 NYCRR § 600.21(f)",
+    pending_amendments=[
+        PendingAmendment(
+            bill_number="S2305",
+            year=2025,
+            status="introduced",
+            summary=(
+                "Would prohibit CoJs on debts < $5,000,000 and on consumer / "
+                "non-business debts. If enacted, AEGIS should default "
+                "coj_allowed='banned' for NY MCA deals < $5M."
+            ),
+            citation_url="https://www.nysenate.gov/legislation/bills/2025/S2305",
+        ),
+    ],
+    notes=(
+        "MCAs are 'sales-based financing' under § 803 / 23 NYCRR § 600.6. "
+        "10-row disclosure (one more than CA — adds Collateral Requirements). "
+        "Includes anti-double-dipping disclosure for renewal financing per "
+        "§ 600.6(b)(3)(v). APR re-disclosure required at every pricing "
+        "communication (built into the regulations from inception, not a "
+        "later amendment as in CA). CoJs allowed against NY-resident "
+        "merchants only since 2019-08-30. Pending bill S2305 would ban CoJs "
+        "on debts < $5M — track for status. Broker compensation disclosure "
+        "REQUIRED — separate written notice from provider per § 600.21(f). "
+        "60-day bona fide error cure under § 600.22."
+    ),
+    template_path="ny_cfdl.html.j2",
     verified_date=SKELETON_VERIFIED_DATE,
 )
 
@@ -434,7 +561,9 @@ __all__ = [
     "TEMPLATES_DIR",
     "Amendment",
     "AprMethod",
+    "CojStatus",
     "CompliancePolicyError",
+    "PendingAmendment",
     "StateNotAudited",
     "StateNotServed",
     "StateRegulation",
