@@ -1,0 +1,44 @@
+# /etc/systemd/system/aegis-web.service
+#
+# uvicorn process serving the FastAPI app on localhost:5555.
+# Cloudflare Tunnel terminates HTTPS and forwards to this port.
+#
+# Install via deploy/install.sh; reload with `systemctl daemon-reload`.
+
+[Unit]
+Description=AEGIS web (uvicorn / FastAPI)
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aegis
+Group=aegis
+WorkingDirectory=/srv/aegis
+EnvironmentFile=/etc/aegis/aegis.env
+ExecStart=/usr/local/bin/uv run uvicorn aegis.api.app:app --host 127.0.0.1 --port 5555
+Restart=on-failure
+RestartSec=5s
+
+# Security hardening — minimum-privilege defaults.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+PrivateTmp=true
+ReadWritePaths=/var/log/aegis /tmp
+
+# Logs land in journalctl by default; the app also writes structured JSON
+# to /var/log/aegis/app.log via the project logger configuration.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aegis-web
+
+# Resource caps appropriate for ~100 deals/month on a CPX21.
+LimitNOFILE=4096
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

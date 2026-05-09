@@ -1,0 +1,27 @@
+# /etc/cloudflared/config.yml.example
+#
+# Cloudflare Tunnel routes the public hostname to local uvicorn on
+# 127.0.0.1:5555. Cloudflare Access enforces SSO before any request
+# reaches this box.
+#
+# Setup (operator, in Cloudflare dashboard):
+#   1. Create a tunnel; copy the credentials JSON to
+#      /etc/cloudflared/<tunnel-uuid>.json.
+#   2. Replace <tunnel-uuid> + <hostname> below.
+#   3. Install: cloudflared service install
+#   4. cloudflared tunnel route dns <tunnel-uuid> <hostname>
+#   5. Add an Access policy gating <hostname> to the operator's email.
+
+tunnel: <tunnel-uuid>
+credentials-file: /etc/cloudflared/<tunnel-uuid>.json
+
+ingress:
+  - hostname: <hostname>            # e.g. aegis.commerafunding.com
+    service: http://127.0.0.1:5555
+  # Catch-all required by cloudflared.
+  - service: http_status:404
+
+# Health monitoring:
+#   The /healthz endpoint on the FastAPI app is auth-free; the tunnel
+#   pulls it every 60s. systemd hits the same endpoint locally for
+#   restart decisions.

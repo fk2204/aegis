@@ -1,0 +1,39 @@
+# /etc/systemd/system/aegis-worker.service
+#
+# arq worker — drains the parse_document job queue.
+# Reads the same /etc/aegis/aegis.env as the web process so Bedrock,
+# Supabase, and Redis URLs stay in one ops-managed file.
+
+[Unit]
+Description=AEGIS worker (arq)
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aegis
+Group=aegis
+WorkingDirectory=/srv/aegis
+EnvironmentFile=/etc/aegis/aegis.env
+ExecStart=/usr/local/bin/uv run arq aegis.workers.WorkerSettings
+Restart=on-failure
+RestartSec=5s
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+PrivateTmp=true
+ReadWritePaths=/var/log/aegis /tmp
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aegis-worker
+
+LimitNOFILE=4096
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
