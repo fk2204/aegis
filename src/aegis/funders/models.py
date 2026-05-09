@@ -70,6 +70,18 @@ class FunderRow(_StrictModel):
     # NY merchant requires this to be non-empty.
     aegis_compensation_disclosure_text: str = ""
 
+    # Per docs/compliance/03_florida.md: Fla. Stat. § 559.9614(1)(a)
+    # prohibits brokers from assessing, collecting, or soliciting an
+    # advance fee from a merchant for brokering services (with a narrow
+    # carve-out for actual third-party services like credit checks paid
+    # to an independent third party). AEGIS's standard practice is broker
+    # commission paid by the funder, never advance fees from merchants —
+    # default False. A funder whose ISO contract requires merchant-side
+    # advance fees must have this flipped True; the matcher then hard-
+    # fails any pairing with an FL merchant (or any state with
+    # broker_advance_fees_prohibited=True), parallel to the CoJ rule.
+    charges_merchant_advance_fees: bool = False
+
     # Pricing envelope (informational; matcher doesn't enforce)
     typical_factor_low: Decimal | None = None
     typical_factor_high: Decimal | None = None

@@ -47,8 +47,9 @@ def test_skeleton_states_are_all_tier_3_except_promoted() -> None:
 
     CA promoted per docs/compliance/01_california.md.
     NY promoted per docs/compliance/02_new_york.md.
+    FL promoted per docs/compliance/03_florida.md.
     """
-    promoted_to_tier_1 = {"CA", "NY"}
+    promoted_to_tier_1 = {"CA", "NY", "FL"}
     for abbr, reg in STATES.items():
         if abbr in promoted_to_tier_1:
             assert reg.tier == 1, f"{abbr} should be promoted to Tier 1"

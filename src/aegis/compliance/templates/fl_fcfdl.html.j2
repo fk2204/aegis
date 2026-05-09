@@ -1,0 +1,134 @@
+{#-
+  Florida FCFDL / Fla. Stat. § 559.9613 — Commercial Financing Disclosure.
+
+  Source-of-truth dossier: docs/compliance/03_florida.md, section
+  "What § 559.9613 requires for disclosures" → "Required disclosure
+  content (Fla. Stat. § 559.9613(2))".
+
+  Florida is CONTENT-BASED, not form-prescribed. Unlike CA's 9-row
+  § 914 table or NY's 10-row § 600.6 table, FL specifies the SIX
+  required content items but does not mandate a row/column structure.
+  This template uses a definition list rather than a table — semantic
+  HTML that conveys the items, their values, and the regulator-
+  prescribed framing without inventing a structure FL did not require.
+
+  Notable absences vs CA/NY (the dossier explicitly enumerates these):
+    * No APR row (FL does not require APR disclosure)
+    * No average monthly cost calculation
+    * No itemization-of-amount-financed attached document
+    * No collateral requirements line
+    * No anti-double-dipping disclosure (NY-only)
+    * No prescribed table format
+    * No broker-compensation written notice (NY-only)
+
+  Required context variables:
+    financer_name                     str — funder/lender name
+    funds_provided                    str — formatted dollars; § 559.9613(2)(a)
+    funds_disbursed_to_business       str — formatted dollars; § 559.9613(2)(b)
+    funds_disbursed_lt_provided       bool — true when (b) < (a)
+    deductions_explanation            str — short text describing why
+                                            (b) is less than (a) (deductions,
+                                            third-party payoffs, prior balance);
+                                            empty string when funds_disbursed_lt_provided is False
+    total_amount_business_must_pay    str — formatted dollars; § 559.9613(2)(c)
+    total_dollar_cost                 str — formatted dollars = (c) − (a); § 559.9613(2)(d)
+    payment_amounts_may_vary          bool — true → use first-payment estimate
+    payment_manner                    str — e.g. "ACH debit", "split-funded credit
+                                            card processor remittance"
+    payment_frequency                 str — e.g. "each business day", "weekly"
+    payment_amount_or_first_estimate  str — formatted dollars; either the fixed
+                                            amount of each payment OR (when
+                                            payment_amounts_may_vary is true) the
+                                            estimate of the first payment per
+                                            § 559.9613(2)(e) second clause
+    has_prepayment_costs_or_discounts bool — true → describe prepayment terms
+    prepayment_terms_text             str — short text describing prepayment
+                                            costs or discounts; empty when none
+    prepayment_contract_provision_ref str — reference to the contract section
+                                            governing prepayment (e.g.
+                                            "Section 7.3 of the Master
+                                            Financing Agreement"); always
+                                            required per § 559.9613(2)(f)
+    rendered_at                       str — ISO date for the rendering
+-#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Commercial Financing Disclosure — Florida (FCFDL)</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 760px; margin: 24px auto;
+         color: #111; }
+  h1   { font-size: 18px; }
+  h2   { font-size: 13px; margin-top: 18px; }
+  dl   { margin: 12px 0; }
+  dt   { font-weight: 600; margin-top: 10px; font-size: 12px; }
+  dd   { margin: 2px 0 0 16px; font-size: 12px; }
+  .footer { margin-top: 16px; font-size: 11px; color: #333; }
+  .meta   { font-size: 10px; color: #666; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Commercial Financing Disclosure</h1>
+<p class="meta">Florida — Fla. Stat. § 559.9613. Provider: {{ financer_name }}.</p>
+
+<dl>
+
+  {#- Item 1 — § 559.9613(2)(a): total amount of funds provided. -#}
+  <dt>Total amount of funds provided</dt>
+  <dd>{{ funds_provided }}</dd>
+
+  {#- Item 2 — § 559.9613(2)(b): total amount disbursed to business if less
+      than item 1, with explanation of why. -#}
+  <dt>Total amount of funds disbursed to your business</dt>
+  <dd>{{ funds_disbursed_to_business }}
+    {%- if funds_disbursed_lt_provided %}
+    <br>{{ deductions_explanation }}
+    {%- endif %}
+  </dd>
+
+  {#- Item 3 — § 559.9613(2)(c): total amount business must pay. -#}
+  <dt>Total amount your business must pay to {{ financer_name }}</dt>
+  <dd>{{ total_amount_business_must_pay }}</dd>
+
+  {#- Item 4 — § 559.9613(2)(d): total dollar cost = item 3 − item 1. -#}
+  <dt>Total dollar cost of this commercial financing</dt>
+  <dd>{{ total_dollar_cost }}</dd>
+
+  {#- Item 5 — § 559.9613(2)(e): manner, frequency, amount of each payment.
+      If payment amounts may vary, the manner and frequency plus an
+      estimate of the first payment. -#}
+  <dt>Manner, frequency, and amount of payments</dt>
+  <dd>
+    Payments will be made by {{ payment_manner }}, {{ payment_frequency }}.
+    {%- if payment_amounts_may_vary %}
+    Payment amounts may vary. The estimated amount of the first payment is
+    {{ payment_amount_or_first_estimate }}.
+    {%- else %}
+    The amount of each payment is {{ payment_amount_or_first_estimate }}.
+    {%- endif %}
+  </dd>
+
+  {#- Item 6 — § 559.9613(2)(f): prepayment costs or discounts AND a
+      reference to the contract provision creating the prepayment rights.
+      The contract reference is required even when there are no costs
+      or discounts (the merchant still has prepayment rights). -#}
+  <dt>Prepayment</dt>
+  <dd>
+    {%- if has_prepayment_costs_or_discounts %}
+    {{ prepayment_terms_text }}
+    {%- else %}
+    There are no costs or discounts associated with prepayment.
+    {%- endif %}
+    See {{ prepayment_contract_provision_ref }} of your financing agreement
+    for the contractual provision governing prepayment.
+  </dd>
+
+</dl>
+
+<p class="footer">This disclosure is provided pursuant to Fla. Stat. § 559.9613.</p>
+
+<p class="meta">Generated by AEGIS on {{ rendered_at }}.</p>
+</body>
+</html>

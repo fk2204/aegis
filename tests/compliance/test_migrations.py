@@ -117,3 +117,32 @@ def test_006_cites_section_600_21_in_comments() -> None:
     """Migration self-documents the regulatory source for future reviewers."""
     sql = _read("006_funders_aegis_compensation_disclosure.sql")
     assert "600.21(f)" in sql
+
+
+# --- 007 funders.charges_merchant_advance_fees ------------------------------
+
+
+def test_007_adds_charges_merchant_advance_fees_column() -> None:
+    sql = _read("007_funders_charges_merchant_advance_fees.sql")
+    assert re.search(
+        r"ALTER TABLE\s+funders\s+ADD COLUMN IF NOT EXISTS\s+"
+        r"charges_merchant_advance_fees\s+BOOLEAN",
+        sql,
+        re.IGNORECASE,
+    )
+
+
+def test_007_default_is_false_not_null() -> None:
+    """Existing funders are assumed not to charge merchant advance fees."""
+    sql = _read("007_funders_charges_merchant_advance_fees.sql")
+    assert re.search(
+        r"charges_merchant_advance_fees\s+BOOLEAN\s+NOT NULL\s+DEFAULT\s+false",
+        sql,
+        re.IGNORECASE,
+    )
+
+
+def test_007_cites_section_559_9614_in_comments() -> None:
+    """Migration self-documents the regulatory source (FL FCFDL § 559.9614(1)(a))."""
+    sql = _read("007_funders_charges_merchant_advance_fees.sql")
+    assert "559.9614" in sql

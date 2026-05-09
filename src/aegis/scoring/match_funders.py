@@ -68,6 +68,33 @@ def _coj_state_rule(state_code: str) -> tuple[str | None, str | None]:
     return (reg.coj_allowed, reg.coj_citation)
 
 
+def _broker_advance_fee_rule(state_code: str) -> tuple[bool, str | None]:
+    """Resolve the merchant's state to (advance_fees_prohibited, citation).
+
+    Drives off the Tier 1 ``StateRegulation`` table — same single-source-
+    of-truth pattern as ``_coj_state_rule``. States that aren't Tier 1 (or
+    don't flag the prohibition) return ``(False, None)`` and pass through.
+
+    The citation returned is the FL FCFDL section that the dossier names
+    (``"Fla. Stat. § 559.9614(1)(a)"``); for now FL is the only state
+    flipping the field. Future states (e.g. GA per O.C.G.A. § 10-1-393.20)
+    will set their own ``broker_advance_fees_prohibited=True`` plus a
+    state-specific citation in their notes — until that happens this
+    helper hard-codes the FL cite as the only meaningful one.
+    """
+    reg = STATES.get(state_code)
+    if not isinstance(reg, Tier1Regulation):
+        return (False, None)
+    if not reg.broker_advance_fees_prohibited:
+        return (False, None)
+    # FL is currently the only state with this flag set; cite verbatim
+    # from docs/compliance/03_florida.md "Broker rules under FCFDL".
+    citation = (
+        "Fla. Stat. § 559.9614(1)(a)" if state_code == "FL" else reg.statute_citation
+    )
+    return (True, citation)
+
+
 def match_funder(
     funder: FunderRow,
     deal: ScoreInput,
@@ -120,6 +147,27 @@ def match_funder(
                 funder.name,
                 state_code,
                 coj_citation,
+            )
+
+    # State-level broker advance-fee prohibition (FL FCFDL § 559.9614(1)(a)
+    # per docs/compliance/03_florida.md). When a funder's ISO contract
+    # forces AEGIS to charge merchant-side advance fees AND the merchant
+    # is in a state that prohibits them, the deal cannot ship. Hard fail,
+    # parallel to the CoJ ban path. Reason: `fl_broker_advance_fee_prohibited`.
+    if funder.charges_merchant_advance_fees:
+        prohibited, advance_fee_citation = _broker_advance_fee_rule(state_code)
+        if prohibited:
+            criteria_count += 1
+            hard.append(
+                f"fl_broker_advance_fee_prohibited: {advance_fee_citation}"
+            )
+            _log.warning(
+                "funder_charges_merchant_advance_fees_blocked_by_state "
+                "funder_id=%s funder_name=%s merchant_state=%s citation=%s",
+                funder.id,
+                funder.name,
+                state_code,
+                advance_fee_citation,
             )
 
     if funder.min_monthly_revenue is not None:

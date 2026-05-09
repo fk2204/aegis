@@ -91,7 +91,17 @@ class _StrictModel(BaseModel):
     )
 
 
-AprMethod = Literal["actuarial_reg_z", "simple_interest", "not_specified"]
+AprMethod = Literal[
+    "actuarial_reg_z",
+    "simple_interest",
+    "not_specified",
+    # FL FCFDL: § 559.9613 lists 6 required content items; APR is NOT
+    # among them. ``"not_required"`` is a meaningfully different signal
+    # from ``"not_specified"`` — it documents that the regulator
+    # deliberately omitted APR rather than that AEGIS hasn't researched
+    # the method.
+    "not_required",
+]
 CojStatus = Literal["allowed", "banned", "conditional"]
 
 
@@ -173,15 +183,23 @@ class Tier1Regulation(_BaseRegulation):
     regulations_adopted: date | None = None
     mandatory_compliance_date: date | None = None
 
-    # Citations
+    # Citations. Several are optional because not every Tier 1 state has
+    # a separate body of implementing regulations: FL's FCFDL is statute-
+    # self-executing (§ 559.961-559.9615 has no companion CCR-style regs),
+    # and some states are content-based rather than form-prescribed.
     statute_citation: str = Field(min_length=1)
-    regulation_citation: str = Field(min_length=1)
+    regulation_citation: str | None = Field(default=None, min_length=1)
     citation_url_statute: str = Field(min_length=1)
-    citation_url_regulation: str = Field(min_length=1)
-    prescribed_form_section: str = Field(min_length=1)
+    citation_url_regulation: str | None = Field(default=None, min_length=1)
+    # Optional: FL is content-based per § 559.9613 (no prescribed form).
+    prescribed_form_section: str | None = Field(default=None, min_length=1)
 
     # APR + threshold + scope
     apr_calculation_method: AprMethod
+    # FL: no APR is required at all. Default True (CA/NY require APR);
+    # FL flips this False so disclosure renderers and pricing guards can
+    # check one field rather than re-deriving from apr_calculation_method.
+    apr_required: bool = True
     apr_tolerance_percent: Decimal | None = Field(
         default=None,
         description="e.g. NY § 600.4: 0.125 (regular) or 0.250 (irregular)",
@@ -194,13 +212,15 @@ class Tier1Regulation(_BaseRegulation):
 
     # Confession of judgment (CoJ). Tristate per the dossiers:
     #   "allowed"     — CoJ permitted, no state-level restriction
-    #   "banned"      — CoJ unenforceable in this state (CA)
+    #   "banned"      — CoJ unenforceable in this state (CA, FL)
     #   "conditional" — permitted with restrictions (NY: residents only)
     coj_allowed: CojStatus
     coj_citation: str = Field(min_length=1, description="sub-citation for the CoJ rule")
     coj_citation_url: str = Field(min_length=1)
     coj_amendment_bill: str | None = Field(default=None, min_length=1)
-    coj_effective_date: date
+    # Optional: FL § 55.05 is a historic statute (predates MCAs by ~century);
+    # the dossier does not quote a specific effective date.
+    coj_effective_date: date | None = None
 
     # Broker / transmission rules
     requires_unaltered_disclosure_transmission: bool
@@ -210,6 +230,25 @@ class Tier1Regulation(_BaseRegulation):
         default=None,
         description='e.g. "23 NYCRR § 600.21(f)"',
     )
+    # FL FCFDL § 559.9614(1)(a): brokers may not assess, collect, or
+    # solicit advance fees from merchants. Default False (most states are
+    # silent); FL flips True. AEGIS uses this signal to hard-fail any
+    # match where a funder's funder.charges_merchant_advance_fees=True
+    # is paired with a merchant in this state.
+    broker_advance_fees_prohibited: bool = False
+    # FL FCFDL § 559.9614(3): a broker advertising services must disclose
+    # actual address and phone of the broker's business and any forwarding
+    # service used. Operational rule (marketing copy review), not a
+    # runtime computation; flag here so the dashboard can surface it.
+    broker_advertisement_address_disclosure_required: bool = False
+
+    # Enforcement posture (FL: AG-only, no PRA; CA: DFPI; NY: DFS).
+    # ``private_right_of_action`` defaults True because most state UDAP
+    # frameworks include a PRA; states that exclude one (FL FCFDL
+    # § 559.9615) flip it False. ``enforcement_authority`` is a free-form
+    # short label for the dashboard.
+    private_right_of_action: bool = True
+    enforcement_authority: str | None = Field(default=None, min_length=1)
 
     # Amendment chains
     amendments: list[Amendment] = Field(default_factory=list)
@@ -219,7 +258,9 @@ class Tier1Regulation(_BaseRegulation):
     notes: str = Field(min_length=1, max_length=4000)
 
     # AEGIS-internal: filename under compliance/templates/. Boot validator
-    # verifies the file exists.
+    # verifies the file exists. Even content-based states (FL) get a
+    # template — the rendered HTML is just a written disclosure rather
+    # than the regulator's prescribed table.
     template_path: str = Field(
         min_length=1,
         description="filename under compliance/templates/, e.g. ca_sb1235.html.j2",
@@ -472,6 +513,90 @@ STATES["NY"] = Tier1Regulation(
         "60-day bona fide error cure under § 600.22."
     ),
     template_path="ny_cfdl.html.j2",
+    verified_date=SKELETON_VERIFIED_DATE,
+)
+
+
+# Per docs/compliance/03_florida.md: Florida — FCFDL HB 1353 (2023),
+# Fla. Stat. §§ 559.961-559.9615 (Part XIII of Chapter 559). Field-name
+# mapping follows CA/NY convention: dossier's ``state="Florida"`` →
+# ``state_name``; ``abbreviation="FL"`` → ``state``.
+#
+# FL differs from CA/NY in three structural ways the model now reflects:
+#   1. No separate body of regulations — statute self-executing. Hence
+#      ``regulation_citation`` and ``citation_url_regulation`` are None.
+#   2. Content-based, not form-prescribed (§ 559.9613 lists six required
+#      content items; no row/column table mandated). Hence
+#      ``prescribed_form_section`` is None.
+#   3. No APR required (lighter than CA / NY / GA). Hence
+#      ``apr_calculation_method="not_required"`` and ``apr_required=False``.
+#
+# Broker-side fields ``broker_advance_fees_prohibited`` (§ 559.9614(1)(a))
+# and ``broker_advertisement_address_disclosure_required`` (§ 559.9614(3))
+# are FL-specific — neither CA nor NY uses them.
+STATES["FL"] = Tier1Regulation(
+    state="FL",
+    state_name="Florida",
+    tier=1,
+    bill_number="HB 1353",
+    bill_year=2023,
+    chapter="Chapter 2023-290, Laws of Florida",
+    sponsor="DeSantis (signed)",
+    common_name="Florida Commercial Financing Disclosure Law (FCFDL)",
+    effective_date_statute=date(2023, 7, 1),
+    # FL: mandatory compliance on/after 2024-01-01 doubles as the
+    # effective regulations date for the matcher.
+    effective_date_regulations=date(2024, 1, 1),
+    mandatory_compliance_date=date(2024, 1, 1),
+    statute_citation="Fla. Stat. §§ 559.961 - 559.9615 (Part XIII of Chapter 559)",
+    # FL has no separate implementing regulations — statute is
+    # self-executing. Both regulation_citation and the URL are null.
+    regulation_citation=None,
+    citation_url_statute="https://www.flsenate.gov/Laws/Statutes/2024/0559.9613",
+    citation_url_regulation=None,
+    # Content-based, not form-prescribed.
+    prescribed_form_section=None,
+    apr_calculation_method="not_required",
+    apr_required=False,
+    threshold_amount_usd=Decimal("500000"),
+    threshold_test_summary=(
+        "Disclosure required when financing offer <= $500,000 AND "
+        "business located in Florida AND provider consummates more than "
+        "5 commercial financing transactions in Florida per calendar "
+        "year (per Fla. Stat. § 559.9612 + § 559.9611)."
+    ),
+    disclosure_required=True,
+    coj_allowed="banned",
+    coj_citation="Fla. Stat. § 55.05",
+    coj_citation_url="https://www.flsenate.gov/Laws/Statutes/2018/Chapter55/All",
+    # § 55.05 is a historic FL statute (predates MCAs by ~century); no
+    # specific amendment / effective date quoted in the dossier.
+    coj_amendment_bill=None,
+    coj_effective_date=None,
+    requires_unaltered_disclosure_transmission=False,
+    transmission_record_retention_years=0,
+    broker_compensation_disclosure_required=False,
+    broker_advance_fees_prohibited=True,
+    broker_advertisement_address_disclosure_required=True,
+    private_right_of_action=False,
+    enforcement_authority="Florida Attorney General (exclusive)",
+    notes=(
+        "FCFDL is content-based, not form-prescribed — no row/column "
+        "table required; six required content items per § 559.9613(2). "
+        "No APR disclosure required (lighter than CA / NY / GA). "
+        "Lease financing is NOT covered (narrower scope than CA/NY). "
+        "AEGIS as broker: NO upfront broker fees from FL merchants "
+        "(§ 559.9614(1)(a)); address + phone disclosure required in any "
+        "advertisement (§ 559.9614(3)). CoJ banned by historic § 55.05; "
+        "FL Supreme Court in Trauger v. AJ Spagnol Lumber, 442 So.2d 182 "
+        "(Fla. 1983) held § 55.05 cannot block enforcement of an "
+        "out-of-state CoJ judgment under Full Faith and Credit — but FL-"
+        "law CoJs themselves remain void. Penalties: $500/violation, "
+        "$20K aggregate (initial); $1,000/violation, $50K aggregate "
+        "after written notice. AG-only enforcement; no private right of "
+        "action; underlying transaction remains valid even on violation."
+    ),
+    template_path="fl_fcfdl.html.j2",
     verified_date=SKELETON_VERIFIED_DATE,
 )
 

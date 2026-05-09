@@ -95,9 +95,14 @@ def test_ca_merchant_plus_non_coj_funder_passes_coj_check(
 
 
 def test_tier3_state_plus_coj_funder_does_not_block_on_coj() -> None:
-    """Tier 3 / non-Tier-1 states pass the CoJ check entirely — no rule."""
+    """Tier 3 / non-Tier-1 states pass the CoJ check entirely — no rule.
+
+    Use WY (still Tier 3); FL was previously the example state here but
+    promoted to Tier 1 with coj_allowed='banned' per
+    docs/compliance/03_florida.md.
+    """
     funder = FunderRow(name="Coj Funder LLC", requires_coj=True, max_positions=1)
-    deal = _ca_score_input().model_copy(update={"state": "FL"})
+    deal = _ca_score_input().model_copy(update={"state": "WY"})
     match = match_funder(funder, deal, _baseline_score_result())
     assert match is not None
     joined = " | ".join(match.soft_concerns)
