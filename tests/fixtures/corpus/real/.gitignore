@@ -1,0 +1,5 @@
+# Real bank statements carry merchant PII — never commit.
+*
+!.gitignore
+!README.md
+!*.manifest.json

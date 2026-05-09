@@ -18,13 +18,13 @@ test:
 	CORPUS=1 uv run pytest -v
 
 typecheck:
-	uv run mypy src tests
+	uv run mypy src tests scripts
 
 lint:
-	uv run ruff check src tests
+	uv run ruff check src tests scripts
 
 format:
-	uv run ruff format src tests
+	uv run ruff format src tests scripts
 
 # `make check` is the pre-commit / pre-deploy gate.
 # CORPUS=1 is set inside `test` so the operator can never accidentally

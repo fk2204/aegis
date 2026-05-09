@@ -1,0 +1,183 @@
+{
+  "bank": "chase_business",
+  "expected": {
+    "fraud_score": {
+      "max": 80,
+      "min": 25
+    },
+    "num_nsf": 4,
+    "recommendation": "refer",
+    "validation_passed": true
+  },
+  "scenario": "nsf_heavy",
+  "seed": 10002,
+  "summary": {
+    "beginning_balance": "2000.00",
+    "deposit_total": "5200.00",
+    "ending_balance": "-596.00",
+    "period_end": "2026-04-30",
+    "period_start": "2026-04-01",
+    "printed_transaction_count": 17,
+    "withdrawal_total": "7796.00"
+  },
+  "tolerances": {
+    "fraud_score": 5,
+    "money": "1.00"
+  },
+  "transactions": [
+    {
+      "amount": "-799.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-01",
+      "running_balance": "1201.00",
+      "source_line": 1,
+      "source_page": 1
+    },
+    {
+      "amount": "-632.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-03",
+      "running_balance": "569.00",
+      "source_line": 2,
+      "source_page": 1
+    },
+    {
+      "amount": "-35.00",
+      "category": "nsf_fee",
+      "description": "NSF FEE INSUFFICIENT FUNDS",
+      "posted_date": "2026-04-03",
+      "running_balance": "534.00",
+      "source_line": 3,
+      "source_page": 1
+    },
+    {
+      "amount": "835.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-06",
+      "running_balance": "1369.00",
+      "source_line": 4,
+      "source_page": 1
+    },
+    {
+      "amount": "-1119.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-08",
+      "running_balance": "250.00",
+      "source_line": 5,
+      "source_page": 1
+    },
+    {
+      "amount": "-721.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-10",
+      "running_balance": "-471.00",
+      "source_line": 6,
+      "source_page": 1
+    },
+    {
+      "amount": "-35.00",
+      "category": "nsf_fee",
+      "description": "NSF FEE INSUFFICIENT FUNDS",
+      "posted_date": "2026-04-10",
+      "running_balance": "-506.00",
+      "source_line": 7,
+      "source_page": 1
+    },
+    {
+      "amount": "1780.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-13",
+      "running_balance": "1274.00",
+      "source_line": 8,
+      "source_page": 1
+    },
+    {
+      "amount": "-676.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-15",
+      "running_balance": "598.00",
+      "source_line": 9,
+      "source_page": 1
+    },
+    {
+      "amount": "-1140.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-17",
+      "running_balance": "-542.00",
+      "source_line": 10,
+      "source_page": 1
+    },
+    {
+      "amount": "-35.00",
+      "category": "nsf_fee",
+      "description": "NSF FEE INSUFFICIENT FUNDS",
+      "posted_date": "2026-04-17",
+      "running_balance": "-577.00",
+      "source_line": 11,
+      "source_page": 1
+    },
+    {
+      "amount": "1050.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-20",
+      "running_balance": "473.00",
+      "source_line": 12,
+      "source_page": 1
+    },
+    {
+      "amount": "-763.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-22",
+      "running_balance": "-290.00",
+      "source_line": 13,
+      "source_page": 1
+    },
+    {
+      "amount": "-1049.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-24",
+      "running_balance": "-1339.00",
+      "source_line": 14,
+      "source_page": 1
+    },
+    {
+      "amount": "-35.00",
+      "category": "nsf_fee",
+      "description": "NSF FEE INSUFFICIENT FUNDS",
+      "posted_date": "2026-04-24",
+      "running_balance": "-1374.00",
+      "source_line": 15,
+      "source_page": 1
+    },
+    {
+      "amount": "1535.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-27",
+      "running_balance": "161.00",
+      "source_line": 16,
+      "source_page": 1
+    },
+    {
+      "amount": "-757.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-29",
+      "running_balance": "-596.00",
+      "source_line": 17,
+      "source_page": 1
+    }
+  ],
+  "version": "1"
+}
