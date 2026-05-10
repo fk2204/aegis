@@ -166,7 +166,20 @@ class SubmissionPackage(_StrictModel):
     email_body: str
 
 
+class DealMatchResult(_StrictModel):
+    """Combined score + funder matches for a deal.
+
+    Returned by ``POST /deals/score-with-matches``. Lighter than
+    ``SubmissionPackage`` because the dashboard match panel doesn't need
+    the email-template fields.
+    """
+
+    score: ScoreResult
+    matched_funders: list[FunderMatch]
+
+
 __all__ = [
+    "DealMatchResult",
     "FunderMatch",
     "Recommendation",
     "ScoreInput",

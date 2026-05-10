@@ -22,20 +22,30 @@ on localhost only.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from aegis.api.deps import get_funder_repository, get_merchant_repository, get_repository
+from aegis.api.deps import (
+    get_funder_repository,
+    get_llm,
+    get_merchant_repository,
+    get_ofac_client,
+    get_repository,
+)
 from aegis.compliance.states import StateNotServed, validate_state_served
+from aegis.funders.extract import FunderExtractionError, extract_funder_guidelines
+from aegis.funders.models import FunderRow
 from aegis.funders.repository import (
     FunderNotFoundError,
     FunderRepository,
 )
+from aegis.llm import LLMClient
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import (
     MerchantConflictError,
@@ -43,6 +53,10 @@ from aegis.merchants.repository import (
     MerchantRepository,
 )
 from aegis.parser.models import ClassifiedTransaction
+from aegis.scoring.match_funders import match_funder
+from aegis.scoring.models import FunderMatch, ScoreInput
+from aegis.scoring.ofac import OFACClient, OFACStaleError
+from aegis.scoring.score import score_deal
 from aegis.storage import (
     AnalysisRow,
     DocumentNotFoundError,
@@ -289,6 +303,129 @@ async def list_funders_page(
     )
 
 
+@router.get("/funders/import", response_class=HTMLResponse)
+async def funder_import_form(request: Request) -> HTMLResponse:
+    """Phase 7B: upload form for funder-criteria PDFs."""
+    return templates.TemplateResponse(
+        request, "funder_import.html.j2", {"error": None}
+    )
+
+
+_MAX_FUNDER_IMPORT_BYTES = 25 * 1024 * 1024
+
+
+@router.post("/funders/import", response_class=HTMLResponse, response_model=None)
+async def funder_import_review(
+    request: Request,
+    pdf: Annotated[UploadFile, File()],
+    llm: Annotated[LLMClient, Depends(get_llm)],
+) -> HTMLResponse:
+    """Run the LLM extraction pass and render an editable review page.
+
+    Stateless: the rendered form carries every field of the draft so the
+    save endpoint receives the (possibly edited) values directly. Avoids
+    a "drafts" table for Phase 7B.
+    """
+    body = await pdf.read(_MAX_FUNDER_IMPORT_BYTES + 1)
+    if len(body) > _MAX_FUNDER_IMPORT_BYTES:
+        return templates.TemplateResponse(
+            request,
+            "funder_import.html.j2",
+            {"error": f"PDF exceeds {_MAX_FUNDER_IMPORT_BYTES} bytes"},
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
+    if not body:
+        return templates.TemplateResponse(
+            request,
+            "funder_import.html.j2",
+            {"error": "PDF was empty"},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        extraction = extract_funder_guidelines(body, llm)
+    except FunderExtractionError as exc:
+        return templates.TemplateResponse(
+            request,
+            "funder_import.html.j2",
+            {"error": str(exc)},
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "funder_review.html.j2",
+        {"extraction": extraction, "low_confidence_threshold": 60, "form_errors": []},
+    )
+
+
+@router.post("/funders/import/save", response_class=HTMLResponse, response_model=None)
+async def funder_import_save(
+    request: Request,
+    repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    name: Annotated[str, Form()],
+    accepts_stacking: Annotated[str, Form()] = "false",
+    min_monthly_revenue: Annotated[str, Form()] = "",
+    min_avg_daily_balance: Annotated[str, Form()] = "",
+    min_credit_score: Annotated[str, Form()] = "",
+    min_months_in_business: Annotated[str, Form()] = "",
+    max_positions: Annotated[str, Form()] = "",
+    min_advance: Annotated[str, Form()] = "",
+    max_advance: Annotated[str, Form()] = "",
+    max_nsf_tolerance: Annotated[str, Form()] = "",
+    typical_factor_low: Annotated[str, Form()] = "",
+    typical_factor_high: Annotated[str, Form()] = "",
+    typical_holdback_low: Annotated[str, Form()] = "",
+    typical_holdback_high: Annotated[str, Form()] = "",
+    excluded_industries: Annotated[str, Form()] = "",
+    excluded_states: Annotated[str, Form()] = "",
+    notes: Annotated[str, Form()] = "",
+) -> HTMLResponse | RedirectResponse:
+    """Receive the reviewed/edited draft and upsert a FunderRow."""
+    try:
+        funder = FunderRow(
+            name=name,
+            accepts_stacking=accepts_stacking.lower() in {"true", "on", "yes", "1"},
+            min_monthly_revenue=_decimal_or_none(min_monthly_revenue),
+            min_avg_daily_balance=_decimal_or_none(min_avg_daily_balance),
+            min_credit_score=_int_or_none(min_credit_score),
+            min_months_in_business=_int_or_none(min_months_in_business),
+            max_positions=_int_or_none(max_positions),
+            min_advance=_decimal_or_none(min_advance),
+            max_advance=_decimal_or_none(max_advance),
+            max_nsf_tolerance=_int_or_none(max_nsf_tolerance),
+            typical_factor_low=_decimal_or_none(typical_factor_low),
+            typical_factor_high=_decimal_or_none(typical_factor_high),
+            typical_holdback_low=_decimal_or_none(typical_holdback_low),
+            typical_holdback_high=_decimal_or_none(typical_holdback_high),
+            excluded_industries=tuple(
+                s.strip() for s in excluded_industries.split(",") if s.strip()
+            ),
+            excluded_states=tuple(
+                s.strip().upper() for s in excluded_states.split(",") if s.strip()
+            ),
+            notes=notes or None,
+        )
+    except (ValueError, TypeError) as exc:
+        return templates.TemplateResponse(
+            request,
+            "funder_import.html.j2",
+            {"error": f"validation error: {exc}"},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        saved = repo.upsert(funder)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request,
+            "funder_import.html.j2",
+            {"error": f"upsert failed: {exc}"},
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    return RedirectResponse(
+        f"/ui/funders/{saved.id}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
 @router.get("/funders/{funder_id}", response_class=HTMLResponse)
 async def funder_detail(
     request: Request,
@@ -301,6 +438,68 @@ async def funder_detail(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return templates.TemplateResponse(
         request, "funder_detail.html.j2", {"funder": funder}
+    )
+
+
+@router.get("/merchants/{merchant_id}/match", response_class=HTMLResponse)
+async def merchant_match(
+    request: Request,
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+) -> HTMLResponse:
+    """Phase 7B matched-funders panel.
+
+    Builds a ScoreInput from the merchant + latest analysis, scores it,
+    iterates over active funders, and renders Centrex-style cards
+    (eligible / soft-concerns / hard-fails). Operator picks via the API.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    latest_doc, analysis = _find_latest_for_merchant(docs, merchant_id)
+    if latest_doc is None or analysis is None:
+        return templates.TemplateResponse(
+            request,
+            "merchant_match.html.j2",
+            {
+                "merchant": merchant,
+                "missing": "no_document",
+                "score_result": None,
+                "matches": [],
+            },
+        )
+
+    score_input = _score_input_from_dashboard(merchant, latest_doc, analysis)
+    try:
+        score_result = score_deal(score_input, ofac=ofac)
+    except OFACStaleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"ofac_unavailable: {exc}",
+        ) from exc
+
+    cards: list[dict[str, Any]] = []
+    for funder in funder_repo.list_active():
+        m = match_funder(funder, score_input, score_result)
+        if m is None:
+            continue
+        cards.append(_match_card(funder, m))
+    cards.sort(key=lambda c: c["match_score"], reverse=True)
+
+    return templates.TemplateResponse(
+        request,
+        "merchant_match.html.j2",
+        {
+            "merchant": merchant,
+            "missing": None,
+            "score_result": score_result,
+            "matches": cards,
+        },
     )
 
 
@@ -388,6 +587,121 @@ def _find_latest_for_merchant(
         return None, None
     latest = rows[0]
     return latest, docs.get_analysis(latest.id)
+
+
+def _decimal_or_none(value: str) -> Decimal | None:
+    """Parse a form-string to Decimal; return None for empty/whitespace."""
+    s = value.strip()
+    if not s:
+        return None
+    try:
+        return Decimal(s)
+    except Exception as exc:
+        raise ValueError(f"invalid decimal: {value!r}") from exc
+
+
+def _int_or_none(value: str) -> int | None:
+    s = value.strip()
+    if not s:
+        return None
+    return int(s)
+
+
+def _score_input_from_dashboard(
+    merchant: MerchantRow,
+    document: DocumentRow,
+    analysis: AnalysisRow,
+) -> ScoreInput:
+    """Build a ScoreInput for the matched-funders dashboard panel.
+
+    The match panel needs the same shape ``score_deal`` consumes, but the
+    dashboard's "deal" is a derived view (per audit F1) without the
+    operator's requested-amount / requested-factor / requested-term-days
+    inputs. Use sane defaults: midpoint of the funder typical ranges, 120-
+    day term. Operator overrides via the bearer-token API path before any
+    real submission ships.
+    """
+    monthly = _project_monthly(analysis.true_revenue, analysis.statement_days)
+    return ScoreInput(
+        merchant_id=merchant.id,
+        business_name=merchant.business_name,
+        owner_name=merchant.owner_name,
+        state=merchant.state.upper(),
+        industry_naics=merchant.industry_naics,
+        industry_risk_tier=merchant.industry_risk_tier,
+        time_in_business_months=merchant.time_in_business_months,
+        credit_score=merchant.credit_score,
+        avg_daily_balance=analysis.avg_daily_balance,
+        true_revenue=analysis.true_revenue,
+        monthly_revenue=monthly,
+        lowest_balance=analysis.lowest_balance,
+        num_nsf=analysis.num_nsf,
+        days_negative=analysis.days_negative,
+        mca_positions=analysis.mca_positions,
+        mca_daily_total=analysis.mca_daily_total,
+        debt_to_revenue=analysis.debt_to_revenue,
+        payroll_detected=analysis.payroll_detected,
+        returned_ach_count=analysis.returned_ach_count,
+        statement_period_start=analysis.statement_period_start,
+        statement_period_end=analysis.statement_period_end,
+        statement_days=analysis.statement_days,
+        fraud_score=document.fraud_score or 0,
+        eof_markers=1,
+        validation_passed=document.parse_status != "manual_review",
+        extraction_confidence=100,
+        # Operator-input fields not stored in analysis yet: use placeholders
+        # that the funder match doesn't gate on (50K/1.30/120d). Real
+        # submissions go through the API where these come from a form.
+        requested_amount=Decimal("50000.00"),
+        requested_factor=Decimal("1.30"),
+        requested_term_days=120,
+    )
+
+
+def _project_monthly(period_revenue: Decimal, statement_days: int) -> Decimal:
+    if statement_days <= 0:
+        return Decimal("0.00")
+    return (period_revenue / Decimal(statement_days) * Decimal(30)).quantize(
+        Decimal("0.01")
+    )
+
+
+def _match_card(funder: FunderRow, match: FunderMatch) -> dict[str, Any]:
+    """Translate a FunderMatch into a card dict the template renders.
+
+    ``match_funder`` sets ``match_score=0`` exactly when at least one hard
+    fail fired (see ``_likelihood`` + the qualifies branch). When
+    qualified, the ``soft_concerns`` list holds soft signals only; when
+    not qualified it holds hard-fail reasons (matcher unions hard+soft so
+    the operator sees the full picture). We split using ``match_score`` so
+    the template can color-code without re-deriving the rule.
+
+    Color rule:
+      * red    — match_score == 0 (any hard fail)
+      * yellow — match_score > 0 with at least one soft concern
+      * green  — match_score > 0 and zero soft concerns
+    """
+    if match.match_score == 0:
+        color = "red"
+        hard_reasons = list(match.soft_concerns)
+        soft_concerns: list[str] = []
+    elif match.soft_concerns:
+        color = "yellow"
+        hard_reasons = []
+        soft_concerns = list(match.soft_concerns)
+    else:
+        color = "green"
+        hard_reasons = []
+        soft_concerns = []
+
+    return {
+        "funder_id": str(funder.id),
+        "funder_name": funder.name,
+        "match_score": match.match_score,
+        "color": color,
+        "hard_reasons": hard_reasons,
+        "soft_concerns": soft_concerns,
+    }
 
 
 def _validate_merchant_state(state: str) -> str | None:

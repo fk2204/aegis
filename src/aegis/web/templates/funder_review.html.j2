@@ -1,0 +1,82 @@
+{% extends "base.html.j2" %}
+{% block title %}Review Extracted Funder — AEGIS{% endblock %}
+{% block content %}
+  <style>
+    .conf-low { background: #fff4cc; border-left: 3px solid #c89400; padding-left: 8px; }
+    .conf-high { background: #f6f6f6; }
+    .conf-tag { font-size: 11px; color: #666; margin-left: 8px; }
+  </style>
+  <h1>Review Extraction</h1>
+  <p class="src-ref">
+    Overall confidence:
+    <strong>{{ extraction.overall_confidence }}/100</strong>.
+    Fields highlighted in yellow scored under {{ low_confidence_threshold }}.
+    Edit anything before saving.
+  </p>
+
+  {% set d = extraction.draft %}
+  {% set conf = extraction.confidence_by_field %}
+
+  {% macro field(label, name, value, kind="text") %}
+    {% set c = conf.get(name, 100) %}
+    <p class="{% if c < low_confidence_threshold %}conf-low{% else %}conf-high{% endif %}" style="padding: 6px 10px;">
+      <label>
+        {{ label }}<span class="conf-tag">conf {{ c }}/100</span><br>
+        {% if kind == "checkbox" %}
+          <input type="checkbox" name="{{ name }}" {% if value %}checked{% endif %}>
+        {% elif kind == "textarea" %}
+          <textarea name="{{ name }}" rows="3" cols="60">{{ value or "" }}</textarea>
+        {% else %}
+          <input type="{{ kind }}" name="{{ name }}" value="{{ value if value is not none else "" }}">
+        {% endif %}
+      </label>
+    </p>
+  {% endmacro %}
+
+  <form method="post" action="/ui/funders/import/save" style="max-width: 700px;">
+    {{ field("Funder name", "name", d.name) }}
+    {{ field("Min monthly revenue", "min_monthly_revenue", d.min_monthly_revenue, "number") }}
+    {{ field("Min avg daily balance", "min_avg_daily_balance", d.min_avg_daily_balance, "number") }}
+    {{ field("Min credit score", "min_credit_score", d.min_credit_score, "number") }}
+    {{ field("Min months in business", "min_months_in_business", d.min_months_in_business, "number") }}
+    {{ field("Max positions", "max_positions", d.max_positions, "number") }}
+    {{ field("Accepts stacking", "accepts_stacking", d.accepts_stacking, "checkbox") }}
+    {{ field("Max NSF tolerance", "max_nsf_tolerance", d.max_nsf_tolerance, "number") }}
+    {{ field("Min advance", "min_advance", d.min_advance, "number") }}
+    {{ field("Max advance", "max_advance", d.max_advance, "number") }}
+    {{ field("Typical factor low", "typical_factor_low", d.typical_factor_low, "number") }}
+    {{ field("Typical factor high", "typical_factor_high", d.typical_factor_high, "number") }}
+    {{ field("Typical holdback low", "typical_holdback_low", d.typical_holdback_low, "number") }}
+    {{ field("Typical holdback high", "typical_holdback_high", d.typical_holdback_high, "number") }}
+    {{ field(
+      "Excluded industries (comma-separated)",
+      "excluded_industries",
+      d.excluded_industries|join(", "),
+    ) }}
+    {{ field(
+      "Excluded states (comma-separated 2-letter codes)",
+      "excluded_states",
+      d.excluded_states|join(", "),
+    ) }}
+    {{ field("Notes", "notes", d.notes, "textarea") }}
+
+    {% if extraction.unparseable_fragments %}
+      <h3>Unparseable fragments</h3>
+      <p class="src-ref">The LLM returned these as text it couldn't categorize.
+        Operator decides whether they belong in <em>notes</em> or a future
+        field.</p>
+      <ul>
+        {% for frag in extraction.unparseable_fragments %}
+          <li>{{ frag }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    <p style="margin-top: 24px;">
+      <button type="submit" style="padding: 8px 16px; background: #1a1a2e; color: #fff; border: none; border-radius: 4px; font-weight: 600; cursor: pointer;">
+        Save funder
+      </button>
+      <a href="/ui/funders/import" style="margin-left: 12px;">Cancel</a>
+    </p>
+  </form>
+{% endblock %}

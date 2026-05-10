@@ -7,6 +7,7 @@
     {% if merchant.industry_naics %} · NAICS {{ merchant.industry_naics }}{% endif %}
     {% if merchant.zoho_deal_id %} · Zoho {{ merchant.zoho_deal_id }}{% endif %}
     · <a href="/ui/merchants/{{ merchant.id }}/edit">Edit</a>
+    · <a href="/ui/merchants/{{ merchant.id }}/match">Match Funders</a>
   </p>
 
   {% if document is none %}

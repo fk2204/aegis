@@ -1,0 +1,99 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ merchant.business_name }} — Funder Match · AEGIS{% endblock %}
+{% block content %}
+  <style>
+    .match-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin-top: 16px; }
+    .match-card { border: 1px solid #ddd; border-radius: 8px; padding: 14px; background: #fff; }
+    .match-card.green { border-left: 6px solid #1c5e1c; }
+    .match-card.yellow { border-left: 6px solid #c89400; }
+    .match-card.red { border-left: 6px solid #8a1c1c; opacity: 0.85; }
+    .match-card h3 { margin: 0 0 4px 0; font-size: 16px; }
+    .match-card .score { font-size: 22px; font-weight: 700; }
+    .match-card.red .score { color: #8a1c1c; }
+    .match-card.yellow .score { color: #8a6800; }
+    .match-card.green .score { color: #1c5e1c; }
+    .reason-list { font-size: 12px; color: #555; margin: 6px 0 0 0; padding-left: 18px; }
+    .summary-pills { display: flex; gap: 12px; margin: 16px 0; }
+    .summary-pills .tile { margin: 0; min-width: 0; flex: 1; }
+  </style>
+
+  <h1>{{ merchant.business_name }}</h1>
+  <p class="src-ref">
+    <a href="/ui/merchants/{{ merchant.id }}">← back to detail</a> ·
+    {{ merchant.state }} · {{ merchant.owner_name }}
+  </p>
+
+  {% if missing == "no_document" %}
+    <p>No analyzed document yet for this merchant. Upload a statement first.</p>
+  {% else %}
+    <h2>Score</h2>
+    <div class="summary-pills">
+      <div class="tile">
+        <div class="tile-label">Tier</div>
+        <div class="tile-value">{{ score_result.tier }}</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Score</div>
+        <div class="tile-value">{{ score_result.score }}/100</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Recommendation</div>
+        <div class="tile-value">
+          <span class="tag tag-{% if score_result.recommendation == 'approve' %}proceed{% elif score_result.recommendation == 'refer' %}review{% else %}manual_review{% endif %}">
+            {{ score_result.recommendation }}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    {% if score_result.hard_decline_reasons %}
+      <p class="tag tag-manual_review" style="display: block; padding: 10px 14px;">
+        Hard declines:
+        {% for r in score_result.hard_decline_reasons %}
+          {{ r }}{% if not loop.last %}; {% endif %}
+        {% endfor %}
+      </p>
+    {% endif %}
+
+    <h2>Matched Funders</h2>
+    {% if not matches %}
+      <p>No active funders configured. Visit <a href="/ui/funders/import">Import</a>.</p>
+    {% else %}
+      <p class="src-ref">
+        Sorted by match score. Green = clean fit, yellow = soft concerns,
+        red = hard fail (do not submit).
+      </p>
+      <div class="match-grid">
+        {% for c in matches %}
+          <div class="match-card {{ c.color }}">
+            <h3><a href="/ui/funders/{{ c.funder_id }}">{{ c.funder_name }}</a></h3>
+            <div class="score">{{ c.match_score }}/100</div>
+            {% if c.hard_reasons %}
+              <p style="margin: 8px 0 4px 0; font-weight: 600; font-size: 12px; color: #8a1c1c;">
+                Hard fails ({{ c.hard_reasons|length }})
+              </p>
+              <ul class="reason-list">
+                {% for r in c.hard_reasons %}
+                  <li>{{ r }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+            {% if c.soft_concerns %}
+              <p style="margin: 8px 0 4px 0; font-weight: 600; font-size: 12px; color: #8a6800;">
+                Soft concerns ({{ c.soft_concerns|length }})
+              </p>
+              <ul class="reason-list">
+                {% for r in c.soft_concerns %}
+                  <li>{{ r }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+            {% if c.color == "green" %}
+              <p class="src-ref" style="margin-top: 8px;">No blockers.</p>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endif %}
+{% endblock %}

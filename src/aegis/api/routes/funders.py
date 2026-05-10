@@ -9,13 +9,15 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
 from aegis.api.auth import require_bearer
-from aegis.api.deps import get_audit, get_funder_repository
+from aegis.api.deps import get_audit, get_funder_repository, get_llm
 from aegis.audit import AuditLog
-from aegis.funders.models import FunderRow
+from aegis.funders.extract import FunderExtractionError, extract_funder_guidelines
+from aegis.funders.models import FunderGuidelineExtraction, FunderRow
 from aegis.funders.repository import FunderNotFoundError, FunderRepository
+from aegis.llm import LLMClient
 
 router = APIRouter(
     prefix="/funders",
@@ -88,6 +90,58 @@ def update_funder(
         details={"name": saved.name, "active": saved.active},
     )
     return saved
+
+
+_MAX_FUNDER_PDF_BYTES = 25 * 1024 * 1024
+
+
+@router.post(
+    "/extract",
+    response_model=FunderGuidelineExtraction,
+    summary="Extract a draft FunderRow from a funder-criteria PDF.",
+)
+async def extract_funder(
+    pdf: Annotated[UploadFile, File(description="Funder criteria PDF")],
+    llm: Annotated[LLMClient, Depends(get_llm)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+) -> FunderGuidelineExtraction:
+    """Run the LLM extraction pass and return the draft + per-field confidence.
+
+    The operator review/approve step is a separate call (``POST /funders``
+    or ``PUT /funders/{id}``); this endpoint never persists.
+    """
+    body = await pdf.read(_MAX_FUNDER_PDF_BYTES + 1)
+    if len(body) > _MAX_FUNDER_PDF_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"PDF exceeds {_MAX_FUNDER_PDF_BYTES} bytes",
+        )
+    if not body:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="empty PDF"
+        )
+    try:
+        extraction = extract_funder_guidelines(body, llm)
+    except FunderExtractionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+    audit.record(
+        actor="api",
+        action="funder.extract",
+        subject_type="funder",
+        subject_id=extraction.draft.id,
+        details={
+            "draft_name": extraction.draft.name,
+            "overall_confidence": extraction.overall_confidence,
+            "low_confidence_fields": [
+                k for k, v in extraction.confidence_by_field.items() if v < 60
+            ],
+        },
+    )
+    return extraction
 
 
 @router.delete("/{funder_id}", status_code=status.HTTP_204_NO_CONTENT)

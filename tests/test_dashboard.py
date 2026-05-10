@@ -7,8 +7,10 @@ drill-down HTMX partial returns the contributing transactions only.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import cast
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from aegis.api.app import create_app
@@ -317,3 +319,237 @@ def test_funder_detail_404_when_missing(client: TestClient) -> None:
 
     resp = client.get(f"/ui/funders/{uuid4()}")
     assert resp.status_code == 404
+
+
+# --- Phase 7B: funder PDF import + matched-funders panel --------------------
+
+
+@pytest.fixture
+def stub_llm_extraction() -> object:
+    """Canned LLMClient that returns a populated FunderGuidelineExtraction.
+
+    Mirrors the extraction-feed pattern from tests/funders/conftest.py but
+    inlined here so the dashboard tests don't require that conftest to be
+    in scope.
+    """
+
+    class _Stub:
+        def extract_raw_json(
+            self, pdf_bytes: bytes, prompt: str
+        ) -> tuple[dict[str, object], bool]:
+            _ = (pdf_bytes, prompt)
+            return (
+                {
+                    "draft": {
+                        "name": "Imported Capital",
+                        "min_monthly_revenue": 30000,
+                        "min_credit_score": 620,
+                        "accepts_stacking": False,
+                        "excluded_industries": ["adult"],
+                        "excluded_states": ["VT"],
+                        "notes": "Operator review needed.",
+                    },
+                    "confidence_by_field": {
+                        "min_monthly_revenue": 90,
+                        "min_credit_score": 45,  # low → highlighted
+                        "excluded_industries": 80,
+                    },
+                    "unparseable_fragments": ["renewals: case-by-case"],
+                    "overall_confidence": 75,
+                },
+                False,
+            )
+
+        def classify_batch_json(self, prompt: str) -> dict[str, object]:
+            raise NotImplementedError
+
+    return _Stub()
+
+
+def test_funder_import_form_renders(client: TestClient) -> None:
+    resp = client.get("/ui/funders/import")
+    assert resp.status_code == 200
+    assert "Import Funder Criteria" in resp.text
+    assert 'enctype="multipart/form-data"' in resp.text
+
+
+def test_funder_import_review_renders_extraction(
+    client: TestClient, stub_llm_extraction: object
+) -> None:
+    from aegis.api.deps import get_llm
+
+    cast(FastAPI, client.app).dependency_overrides[get_llm] = lambda: stub_llm_extraction
+
+    pdf_bytes = b"%PDF-1.4\n%any-bytes\n%%EOF\n"
+    resp = client.post(
+        "/ui/funders/import",
+        files={"pdf": ("guidelines.pdf", pdf_bytes, "application/pdf")},
+    )
+    assert resp.status_code == 200
+    assert "Imported Capital" in resp.text
+    assert "Review Extraction" in resp.text
+    # Low-confidence field flagged.
+    assert "conf-low" in resp.text
+    # Unparseable fragment surfaced.
+    assert "renewals: case-by-case" in resp.text
+
+
+def test_funder_import_review_rejects_empty_pdf(client: TestClient) -> None:
+    resp = client.post(
+        "/ui/funders/import",
+        files={"pdf": ("empty.pdf", b"", "application/pdf")},
+    )
+    assert resp.status_code == 400
+    assert "empty" in resp.text.lower()
+
+
+def test_funder_import_save_creates_funder(
+    client: TestClient, funder_repo: InMemoryFunderRepository
+) -> None:
+    resp = client.post(
+        "/ui/funders/import/save",
+        data={
+            "name": "Saved Capital",
+            "min_monthly_revenue": "25000",
+            "min_credit_score": "600",
+            "accepts_stacking": "false",
+            "excluded_states": "TX, VT",
+            "excluded_industries": "adult, gambling",
+            "notes": "Saved from import flow.",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith("/ui/funders/")
+    rows = funder_repo.list_active()
+    saved = next((f for f in rows if f.name == "Saved Capital"), None)
+    assert saved is not None
+    assert saved.min_monthly_revenue is not None
+    assert "TX" in saved.excluded_states
+    assert "adult" in saved.excluded_industries
+
+
+def test_funder_import_save_rejects_invalid_decimal(client: TestClient) -> None:
+    resp = client.post(
+        "/ui/funders/import/save",
+        data={
+            "name": "Bad Capital",
+            "min_monthly_revenue": "not-a-number",
+            "accepts_stacking": "false",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "validation" in resp.text.lower() or "invalid" in resp.text.lower()
+
+
+def test_merchant_match_no_document_renders_placeholder(client: TestClient) -> None:
+    """Merchant with no uploaded document → placeholder, not crash."""
+    from aegis.merchants.models import MerchantRow
+
+    repo = InMemoryMerchantRepository()
+    bare = MerchantRow(business_name="Empty Inc", owner_name="No Doc", state="FL")
+    repo.upsert(bare)
+    app = cast(FastAPI, client.app)
+    app.dependency_overrides[get_merchant_repository] = lambda: repo
+    app.dependency_overrides[get_repository] = lambda: InMemoryDocumentRepository()
+
+    resp = client.get(f"/ui/merchants/{bare.id}/match")
+    assert resp.status_code == 200
+    assert "No analyzed document" in resp.text
+
+
+def test_merchant_match_with_funders_renders_cards(
+    client: TestClient,
+    merchant: MerchantRow,
+    funder_repo_seeded: InMemoryFunderRepository,
+) -> None:
+    """Merchant + analyzed doc + funders → match cards rendered with color."""
+    resp = client.get(f"/ui/merchants/{merchant.id}/match")
+    assert resp.status_code == 200
+    assert "Matched Funders" in resp.text
+    # Both seeded funders appear.
+    assert "Test Capital" in resp.text
+    assert "Detail Capital" in resp.text
+    # Score panel is shown.
+    assert "Tier" in resp.text
+
+
+def test_merchant_match_no_funders_shows_import_link(
+    client: TestClient, merchant: MerchantRow
+) -> None:
+    """Default empty funder repo → page shows import link, no cards."""
+    resp = client.get(f"/ui/merchants/{merchant.id}/match")
+    assert resp.status_code == 200
+    assert "No active funders configured" in resp.text
+    assert 'href="/ui/funders/import"' in resp.text
+
+
+def test_api_funders_extract_returns_extraction(
+    client: TestClient, stub_llm_extraction: object
+) -> None:
+    """POST /funders/extract returns a FunderGuidelineExtraction JSON shape."""
+    from aegis.api.deps import get_llm
+
+    cast(FastAPI, client.app).dependency_overrides[get_llm] = lambda: stub_llm_extraction
+
+    pdf_bytes = b"%PDF-1.4\n%any\n%%EOF\n"
+    resp = client.post(
+        "/funders/extract",
+        files={"pdf": ("g.pdf", pdf_bytes, "application/pdf")},
+        headers={"Authorization": "Bearer test-token-not-real"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["draft"]["name"] == "Imported Capital"
+    assert body["overall_confidence"] == 75
+    assert body["confidence_by_field"]["min_credit_score"] == 45
+
+
+def test_api_score_with_matches_returns_combined_payload(
+    client: TestClient,
+    merchant: MerchantRow,
+    funder_repo_seeded: InMemoryFunderRepository,
+) -> None:
+    payload = {
+        "merchant_id": str(merchant.id),
+        "business_name": merchant.business_name,
+        "owner_name": merchant.owner_name,
+        "state": merchant.state,
+        "industry_naics": "238320",
+        "industry_risk_tier": "moderate",
+        "time_in_business_months": 36,
+        "credit_score": 700,
+        "avg_daily_balance": "12000.00",
+        "true_revenue": "90000.00",
+        "monthly_revenue": "90000.00",
+        "lowest_balance": "3000.00",
+        "num_nsf": 1,
+        "days_negative": 0,
+        "mca_positions": 0,
+        "mca_daily_total": "0.00",
+        "debt_to_revenue": "0.05",
+        "payroll_detected": True,
+        "returned_ach_count": 0,
+        "statement_period_start": "2026-04-01",
+        "statement_period_end": "2026-04-30",
+        "statement_days": 30,
+        "fraud_score": 12,
+        "eof_markers": 1,
+        "validation_passed": True,
+        "extraction_confidence": 95,
+        "requested_amount": "40000.00",
+        "requested_factor": "1.30",
+        "requested_term_days": 120,
+    }
+    resp = client.post(
+        "/deals/score-with-matches",
+        json=payload,
+        headers={"Authorization": "Bearer test-token-not-real"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "score" in body
+    assert "matched_funders" in body
+    assert isinstance(body["matched_funders"], list)
+    assert len(funder_repo_seeded.list_active()) >= 1

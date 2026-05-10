@@ -1,10 +1,11 @@
 {% extends "base.html.j2" %}
 {% block title %}Funders — AEGIS{% endblock %}
 {% block content %}
-  <h1>Funders</h1>
+  <h1>Funders <a href="/ui/funders/import" style="font-size: 14px; font-weight: 500;">+ Import PDF</a></h1>
   <p class="src-ref">
-    Active funders. Edits land via the bearer-protected API
-    (<code>POST/PUT/DELETE /funders</code>) until the import-PDF flow ships in 7B.
+    Active funders. Use the <a href="/ui/funders/import">PDF import</a> to
+    extract a draft from a funder's underwriting-criteria sheet, or hit
+    <code>POST /funders</code> programmatically.
   </p>
   {% if not funders %}
     <p>No funders configured. Add one via <code>POST /funders</code> or
