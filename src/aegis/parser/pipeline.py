@@ -16,11 +16,22 @@ to read all thresholds from this module.
 
 Hard-decline triggers
 ---------------------
-- `metadata.eof_markers > 1` (incremental save)
+- `metadata.eof_markers > EOF_HARD_DECLINE` (incremental save spam)
 - `metadata.fraud_score >= 60`
 - `weighted fraud_score >= HARD_DECLINE_THRESHOLD`
 - compound-signal floor (two moderate signals together) elevates score
   to at least HARD_DECLINE_THRESHOLD
+
+EOF threshold
+-------------
+Originally `eof_markers > 1` auto-rejected any PDF with 2+ `%%EOF`
+markers. Real-world testing on operator-supplied bank statements (Nov
+2025 - May 2026, 3 banks) surfaced this as a false-positive factory:
+legitimate online-banking exports routinely have 2 EOFs (the bank's
+export tool writes one, the user's PDF viewer or browser re-saves and
+appends another). The bar is now `EOF_HARD_DECLINE = 2`, so 3+ EOFs
+still hard-fail (genuine incremental-save tampering) but 2 EOFs is
+demoted to a `review` flag the operator can clear.
 """
 
 from __future__ import annotations
@@ -47,6 +58,11 @@ FRAUD_WEIGHTS: Final[dict[str, float]] = {
 HARD_DECLINE_THRESHOLD: Final[int] = 65
 REVIEW_THRESHOLD: Final[int] = 35
 METADATA_HARD_DECLINE: Final[int] = 60
+# EOF marker count above which a PDF is treated as genuinely tampered.
+# 2 EOFs are normal for legit online-banking exports (bank writes one,
+# viewer/browser re-save appends another). 3+ indicates real incremental
+# save tampering.
+EOF_HARD_DECLINE: Final[int] = 2
 
 ParseStatus = Literal["proceed", "review", "manual_review"]
 
@@ -197,13 +213,17 @@ def _decide(
     fraud_score: int,
     validation: ValidationResult,
 ) -> ParseStatus:
-    if metadata.eof_markers > 1:
+    if metadata.eof_markers > EOF_HARD_DECLINE:
         return "manual_review"
     if metadata.fraud_score >= METADATA_HARD_DECLINE:
         return "manual_review"
     if fraud_score >= HARD_DECLINE_THRESHOLD:
         return "manual_review"
-    if fraud_score >= REVIEW_THRESHOLD or not validation.passed:
+    if (
+        fraud_score >= REVIEW_THRESHOLD
+        or not validation.passed
+        or metadata.eof_markers > 1
+    ):
         return "review"
     return "proceed"
 
