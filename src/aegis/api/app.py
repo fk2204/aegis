@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from aegis.api.auth import warn_if_bearer_unconfigured
 from aegis.api.routes import ALL_ROUTERS
 from aegis.compliance.states import validate_states_table
 from aegis.config import get_settings
@@ -31,6 +32,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging()
     validate_states_table()  # boot-time fail-closed compliance check
+    warn_if_bearer_unconfigured()  # once-per-process operator visibility
 
     app.state.arq_pool = None
     if settings.aegis_storage_backend == "supabase":

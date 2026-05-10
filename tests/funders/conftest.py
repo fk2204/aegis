@@ -27,9 +27,11 @@ class _StubLLM:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
 
-    def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> dict[str, Any]:
+    def extract_raw_json(
+        self, pdf_bytes: bytes, prompt: str
+    ) -> tuple[dict[str, Any], bool]:
         _ = (pdf_bytes, prompt)
-        return self._payload
+        return self._payload, False
 
     def classify_batch_json(self, prompt: str) -> dict[str, Any]:
         raise NotImplementedError("funder extraction does not run a classification pass")

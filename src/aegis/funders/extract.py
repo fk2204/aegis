@@ -42,9 +42,15 @@ def extract_funder_guidelines(
         )
 
     try:
-        raw = llm.extract_raw_json(pdf_bytes, FUNDER_GUIDELINE_EXTRACTION_PROMPT)
+        raw, truncated = llm.extract_raw_json(pdf_bytes, FUNDER_GUIDELINE_EXTRACTION_PROMPT)
     except ValueError as exc:
         raise FunderExtractionError(f"LLM returned malformed JSON: {exc}") from exc
+
+    if truncated:
+        raise FunderExtractionError(
+            "LLM extraction was truncated at max_tokens — funder guideline PDF "
+            "exceeds the model's output budget; try a smaller PDF or summary."
+        )
 
     if "draft" not in raw:
         raise FunderExtractionError(

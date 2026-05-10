@@ -63,8 +63,10 @@ def test_extract_rejects_oversize_pdf(stub_llm: object) -> None:
 
 def test_extract_rejects_missing_draft_key() -> None:
     class _BadStub:
-        def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> dict[str, Any]:
-            return {"confidence_by_field": {}}
+        def extract_raw_json(
+            self, pdf_bytes: bytes, prompt: str
+        ) -> tuple[dict[str, Any], bool]:
+            return {"confidence_by_field": {}}, False
 
         def classify_batch_json(self, prompt: str) -> dict[str, Any]:
             raise NotImplementedError
@@ -77,19 +79,24 @@ def test_extract_handles_null_money_fields() -> None:
     """A funder sheet that doesn't list min_monthly_revenue should produce None."""
 
     class _StubMissing:
-        def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> dict[str, Any]:
-            return {
-                "draft": {
-                    "name": "Sparse Fund",
-                    "min_monthly_revenue": None,
-                    "accepts_stacking": False,
-                    "excluded_industries": [],
-                    "excluded_states": [],
+        def extract_raw_json(
+            self, pdf_bytes: bytes, prompt: str
+        ) -> tuple[dict[str, Any], bool]:
+            return (
+                {
+                    "draft": {
+                        "name": "Sparse Fund",
+                        "min_monthly_revenue": None,
+                        "accepts_stacking": False,
+                        "excluded_industries": [],
+                        "excluded_states": [],
+                    },
+                    "confidence_by_field": {"min_monthly_revenue": 0},
+                    "unparseable_fragments": [],
+                    "overall_confidence": 30,
                 },
-                "confidence_by_field": {"min_monthly_revenue": 0},
-                "unparseable_fragments": [],
-                "overall_confidence": 30,
-            }
+                False,
+            )
 
         def classify_batch_json(self, prompt: str) -> dict[str, Any]:
             raise NotImplementedError

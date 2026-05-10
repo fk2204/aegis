@@ -39,7 +39,7 @@ from aegis.api.deps import get_audit, get_repository
 from aegis.audit import AuditLog
 from aegis.config import get_settings
 from aegis.logger import get_logger
-from aegis.storage import DocumentExistsError, DocumentRepository, DocumentRow
+from aegis.storage import DocumentExistsError, DocumentRepository
 
 router = APIRouter(prefix="/upload", tags=["upload"], dependencies=[Depends(require_bearer)])
 
@@ -175,14 +175,18 @@ async def _read_with_cap(upload: UploadFile, cap_bytes: int) -> bytes:
 def _resolve_actor(request: Request) -> str:
     """Identify who initiated this upload for the audit log.
 
-    Until SSO claims are wired in, we record the bearer-token tag (the
-    last 4 chars) so audit rows still distinguish operators using
-    different tokens. Authorization header is already validated by the
-    router-level ``require_bearer`` dependency.
+    Until SSO claims are wired in, we record a stable, non-reversible
+    fingerprint of the bearer token (first 8 hex chars of SHA-256) so
+    audit rows still distinguish operators using different tokens
+    without ever logging token material. Authorization header is
+    already validated by the router-level ``require_bearer`` dependency.
     """
     auth = request.headers.get("authorization", "")
     token = auth.removeprefix("Bearer ").strip()
-    return f"token:{token[-4:]}" if token else "system"
+    if not token:
+        return "system"
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"token:{digest[:8]}"
 
 
 async def _enqueue_parse_job(
@@ -205,15 +209,6 @@ async def _enqueue_parse_job(
         pending = []
         request.app.state.pending_jobs = pending
     pending.append({"document_id": str(document_id), "pdf_path": pdf_path})
-
-
-def _document_to_response(row: DocumentRow, *, duplicate: bool) -> UploadResponse:
-    """Helper kept for symmetric construction across success branches."""
-    return UploadResponse(
-        document_id=row.id,
-        parse_status=row.parse_status,
-        duplicate_of_existing=duplicate,
-    )
 
 
 __all__ = ["UploadResponse", "router"]

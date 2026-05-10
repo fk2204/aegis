@@ -89,7 +89,9 @@ You are classifying bank transactions into one of these categories:
   deposit, payroll, ach_credit, mca_debit, nsf_fee, wire_in, wire_out,
   transfer, fee, chargeback, refund, other.
 
-Return ONLY valid JSON, no markdown.
+Return ONLY valid JSON, no markdown. The top-level value MUST be a JSON
+object wrapping the results in a `classifications` key — never a bare
+array. A response that starts with `[` will be rejected.
 
 Schema:
 {

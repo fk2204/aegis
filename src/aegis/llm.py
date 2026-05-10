@@ -8,6 +8,15 @@ Boot guard: importing this module triggers `get_settings()` so the
 data-residency check runs before any LLM call can be issued. Independently,
 `BedrockClient.__init__` re-checks that the model id starts with "us." —
 defense in depth in case settings get mutated.
+
+Resilience
+----------
+Bedrock occasionally returns transient HTTP errors (429 throttling, 5xx
+internal, gateway timeouts) and the underlying httpx transport can hiccup
+on flaky networks. Both LLM entry points are wrapped with `tenacity` to
+retry up to 3 times with exponential backoff. We deliberately do NOT retry
+on `ValidationError` or `DataResidencyError` — those are deterministic
+configuration / schema bugs and retrying makes them worse, not better.
 """
 
 from __future__ import annotations
@@ -16,8 +25,37 @@ import json
 from typing import Any, Protocol
 
 import anthropic
+import httpx
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from aegis.config import DataResidencyError, get_settings
+
+# HTTP status codes that indicate a transient Bedrock failure worth retrying.
+# 429 = rate limit / throttling, 500/502/503/504 = upstream / gateway issues.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+def _is_retryable_bedrock_error(exc: BaseException) -> bool:
+    """Return True iff the exception is a transient Bedrock / network failure.
+
+    Retried:
+      - `anthropic.APIStatusError` with status_code in _RETRYABLE_STATUS
+      - `httpx.TransportError` (connection reset, dns failure, timeout, …)
+
+    Not retried (deterministic / config bugs):
+      - 4xx other than 429 (BadRequest, Auth, Permission, NotFound, …)
+      - `DataResidencyError`, `ValueError` (malformed JSON), Pydantic errors
+    """
+    if isinstance(exc, anthropic.APIStatusError):
+        return exc.status_code in _RETRYABLE_STATUS
+    if isinstance(exc, httpx.TransportError):
+        return True
+    return False
 
 
 class LLMClient(Protocol):
@@ -27,8 +65,15 @@ class LLMClient(Protocol):
     Tests provide stubs implementing this Protocol.
     """
 
-    def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> dict[str, Any]:
-        """Run the extraction pass: PDF in, raw JSON out (pre-Pydantic validation)."""
+    def extract_raw_json(
+        self, pdf_bytes: bytes, prompt: str
+    ) -> tuple[dict[str, Any], bool]:
+        """Run the extraction pass: PDF in, raw JSON + truncation flag out.
+
+        The bool is True iff Bedrock cut output at `max_tokens`. The
+        validator surfaces this as `extraction_truncated_retry_required`
+        instead of letting truncation get misdiagnosed as a math failure.
+        """
 
     def classify_batch_json(self, prompt: str) -> dict[str, Any]:
         """Run a classification batch: instructions+payload in, classification JSON out."""
@@ -51,11 +96,24 @@ class BedrockClient:
         self._model = settings.bedrock_model_id
         self._client = anthropic.AnthropicBedrock(aws_region=settings.aws_region)
 
-    def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> dict[str, Any]:
+    @retry(
+        retry=retry_if_exception(_is_retryable_bedrock_error),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
+    def extract_raw_json(
+        self, pdf_bytes: bytes, prompt: str
+    ) -> tuple[dict[str, Any], bool]:
         """Send a PDF document block + extraction prompt; parse the first JSON object out.
 
         Uses streaming because real bank statements can produce >16K tokens of
         JSON output, which exceeds Bedrock's non-streaming 10-minute SLA window.
+
+        Returns a (parsed_json, truncated) tuple. `truncated` is True when
+        Bedrock stopped at `max_tokens` — downstream validation surfaces
+        this as a dedicated failure code so a cut-off response doesn't get
+        misdiagnosed as a math reconciliation bug.
         """
         import base64
 
@@ -80,8 +138,15 @@ class BedrockClient:
             ],
         ) as stream:
             response = stream.get_final_message()
-        return _first_json_object(_text_blocks(response))
+        truncated = getattr(response, "stop_reason", None) == "max_tokens"
+        return _first_json_object(_text_blocks(response)), truncated
 
+    @retry(
+        retry=retry_if_exception(_is_retryable_bedrock_error),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
     def classify_batch_json(self, prompt: str) -> dict[str, Any]:
         response = self._client.messages.create(
             model=self._model,
@@ -101,9 +166,25 @@ def _text_blocks(response: object) -> str:
 
 
 def _first_json_object(text: str) -> dict[str, Any]:
-    """Extract the first {...} JSON object in a text response."""
+    """Extract the first {...} JSON object in a text response.
+
+    If the response parses to a top-level JSON array, raise a clear error
+    pointing at `parser/prompts.py` so operators know the prompt — not the
+    parser — is the place to fix the schema mismatch.
+    """
     start = text.find("{")
     end = text.rfind("}")
+    bracket_start = text.find("[")
+    # If the response is a bare array (no object wrapper), give a clearer
+    # error than "no JSON object". This lands in `aegis.parser.extract`
+    # logs as `LLM returned malformed JSON: ...`, and the operator's first
+    # action should be to inspect / amend the prompt.
+    if (start == -1 or end == -1 or end < start) and bracket_start != -1:
+        raise ValueError(
+            "LLM returned a top-level JSON array; expected an object. "
+            "Fix the prompt in `aegis/parser/prompts.py` to require an "
+            "object wrapper (e.g. {\"classifications\": [...]})."
+        )
     if start == -1 or end == -1 or end < start:
         raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
     snippet = text[start : end + 1]
@@ -112,7 +193,11 @@ def _first_json_object(text: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"could not parse JSON: {exc}; raw={snippet[:200]!r}") from exc
     if not isinstance(parsed, dict):
-        raise ValueError(f"top-level JSON is not an object: got {type(parsed).__name__}")
+        raise ValueError(
+            "top-level JSON is not an object: got "
+            f"{type(parsed).__name__}. Fix the prompt in "
+            "`aegis/parser/prompts.py` to require an object wrapper."
+        )
     return parsed
 
 

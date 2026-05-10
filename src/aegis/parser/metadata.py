@@ -26,7 +26,13 @@ from typing import Any
 
 import pikepdf
 
-# Editors that show up in tampered PDFs more often than not.
+# Editors / toolchains that show up in tampered PDFs more often than not.
+# `reportlab` is INTENTIONALLY excluded: AEGIS's synthetic corpus is built
+# with reportlab and the library leaks "ReportLab PDF Library - (opensource)"
+# in /Producer even when invariant=True is set, which would flag every
+# corpus PDF as a hard editor signal. If a real merchant statement ever
+# arrives with reportlab in /Producer, the medium-editor heuristic plus
+# stripped-metadata / personal-author signals still fire.
 _HARD_EDITORS = (
     "foxit phantompdf",
     "nitro pro",
@@ -37,6 +43,11 @@ _HARD_EDITORS = (
     "pdf-xchange editor",
     "cutepdf",
     "pdfill",
+    "itext",
+    "pdflib",
+    "pypdf2",
+    "pypdf",
+    "ghostscript",
 )
 
 # Editors a merchant might legitimately use to view/save, but still a signal.
@@ -83,6 +94,13 @@ _PERSONAL_NAME_PATTERNS = (
     re.compile(r"^[A-Z][a-z]+\s+[A-Z][a-z]+\s+[A-Z][a-z]+$"),  # First Middle Last
 )
 
+# Per the PDF spec, every trailer ends with `%%EOF` followed by EOL or
+# end-of-file. A naive `b"%%EOF"` substring count was over-reporting because
+# the byte sequence can appear inside content streams or inline binary
+# (font programs, embedded images). Anchoring the match on whitespace +
+# (newline | end-of-file) restricts the count to genuine trailer ends.
+_EOF_PATTERN = re.compile(rb"%%EOF\s*(?:\r\n|\r|\n|\Z)")
+
 
 class PdfEncryptedError(RuntimeError):
     """Raised when a PDF is encrypted and cannot be inspected."""
@@ -120,8 +138,13 @@ def _is_personal_author(author: str) -> bool:
 
 
 def _count_eof_markers(raw: bytes) -> int:
-    """%%EOF markers > 1 imply incremental saves (tampering signal)."""
-    return raw.count(b"%%EOF")
+    """%%EOF markers > 1 imply incremental saves (tampering signal).
+
+    Uses a regex anchored on EOL / end-of-file so we only count the marker
+    when it appears as a real trailer terminator, not as an incidental byte
+    sequence inside a content stream or font binary.
+    """
+    return len(_EOF_PATTERN.findall(raw))
 
 
 def _xref_offset_aligned(raw: bytes) -> bool:

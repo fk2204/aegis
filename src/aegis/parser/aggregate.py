@@ -16,8 +16,11 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
+from aegis.logger import get_logger
 from aegis.money import safe_divide
 from aegis.parser.models import Aggregates, ClassifiedTransaction
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -44,12 +47,13 @@ def aggregate(
     beginning_balance: Decimal,
 ) -> Aggregates:
     """Compute the canonical aggregates with full source attribution."""
+    period_days = max(1, (period_end - period_start).days + 1)
     avg_dbl = _avg_daily_balance(transactions, beginning_balance, period_start, period_end)
     revenue = _true_revenue(transactions)
     nsf = _num_nsf(transactions)
     days_neg = _days_negative(transactions, beginning_balance, period_start, period_end)
     mca_daily = _mca_daily_total(transactions, period_start, period_end)
-    debt_to_revenue = _debt_to_revenue(mca_daily.value, revenue.value)
+    debt_to_revenue = _debt_to_revenue(mca_daily.value, revenue.value, period_days)
 
     return Aggregates(
         avg_daily_balance={"value": avg_dbl.value, "source_ids": avg_dbl.source_ids},
@@ -72,17 +76,35 @@ def _avg_daily_balance(
 ) -> _Sourced:
     """Time-weighted average of the running balance series.
 
-    For days with multiple transactions, the closing running_balance is
-    used. For days without any transaction, the previous day's closing
-    balance carries forward. Source ids = every transaction whose
-    running_balance contributed to the closing series.
+    Mode is detected once at the start of the period:
+
+    * **printed mode** — if ANY in-period transaction has ``running_balance``,
+      we require the LAST row of every transaction-day to carry one. Days
+      that fail this requirement are *skipped* (they do not contribute to
+      the average) and a warning is logged so the operator can investigate
+      partial balance printing. Carry-forward is NOT used in printed mode
+      because mixing the two silently masks reconciliation drift.
+    * **carry-forward mode** — if NO in-period transaction has a
+      running_balance, the closing balance is computed by adding signed
+      amounts to the previous day's close.
+
+    Source ids = every transaction whose row contributed to the closing
+    series.
     """
     if period_end < period_start:
         return _Sourced(value=Decimal("0.00"), source_ids=[])
 
     by_day: defaultdict[date, list[ClassifiedTransaction]] = defaultdict(list)
     for t in transactions:
-        by_day[t.posted_date].append(t)
+        if period_start <= t.posted_date <= period_end:
+            by_day[t.posted_date].append(t)
+
+    # Detect mode from in-period rows. Mixing modes silently masks drift,
+    # so once any printed running_balance is present we commit to printed
+    # mode and require it on every day's last row.
+    printed_mode = any(
+        r.running_balance is not None for rows in by_day.values() for r in rows
+    )
 
     sources: list[UUID] = []
     closing = beginning_balance
@@ -93,13 +115,25 @@ def _avg_daily_balance(
     while cursor <= period_end:
         rows = by_day.get(cursor, [])
         if rows:
-            last_with_balance = next(
-                (r for r in reversed(rows) if r.running_balance is not None), None
-            )
-            if last_with_balance is not None:
-                closing = last_with_balance.running_balance  # type: ignore[assignment]
+            if printed_mode:
+                last_row = rows[-1]
+                if last_row.running_balance is None:
+                    # Mode-mix: printed balances exist elsewhere but this
+                    # day's closing row has none. Skip rather than fall
+                    # back to carry-forward, which would silently override
+                    # a later printed value with accumulated drift.
+                    logger.warning(
+                        "avg_daily_balance: skipping %s — printed mode but "
+                        "last row has no running_balance",
+                        cursor.isoformat(),
+                    )
+                    cursor = _next_day(cursor)
+                    continue
+                closing = last_row.running_balance
                 sources.extend(r.id for r in rows)
             else:
+                # Carry-forward mode: no printed balances anywhere in the
+                # period, so we sum signed amounts onto yesterday's close.
                 closing += sum((r.amount for r in rows), Decimal("0"))
                 sources.extend(r.id for r in rows)
         total += closing
@@ -111,17 +145,26 @@ def _avg_daily_balance(
 
 
 def _true_revenue(transactions: list[ClassifiedTransaction]) -> _Sourced:
-    """Deposits net of transfers and chargebacks. Source ids = contributing rows."""
+    """Deposits net of transfers and chargebacks. Source ids = contributing rows.
+
+    Excluded categories (transfer, chargeback) are subtracted by their
+    *absolute* amount regardless of sign. A chargeback posted as ``-$X``
+    already debits the deposit history, so revenue must be reduced by
+    ``$X`` either way — otherwise debit-side chargebacks are silently
+    ignored.
+    """
     total = Decimal("0")
     sources: list[UUID] = []
     for t in transactions:
         if t.category in _REVENUE_INCLUDED and t.amount > 0:
             total += t.amount
             sources.append(t.id)
-        elif t.category in _REVENUE_EXCLUDED and t.amount > 0:
-            # Subtract owner transfers / chargeback credits even though they
-            # show as positive amounts — they're not real revenue.
-            total -= t.amount
+        elif t.category in _REVENUE_EXCLUDED:
+            # Subtract owner transfers / chargebacks regardless of sign:
+            # a +$X transfer-credit and a -$X chargeback-debit both
+            # represent non-revenue activity to remove from the deposit
+            # stream.
+            total -= abs(t.amount)
             sources.append(t.id)
     return _Sourced(value=total.quantize(Decimal("0.01")), source_ids=sources)
 
@@ -178,26 +221,44 @@ def _mca_daily_total(
 ) -> _Sourced:
     """Total MCA debit per day, averaged over the period.
 
-    Source ids = every classified mca_debit row.
+    Filters transactions to ``period_start <= posted_date <= period_end``
+    to avoid silently inflating the daily average with stray rows from
+    outside the period (an upstream-validator concern, but we are
+    defensive here).
+
+    Source ids = every classified mca_debit row inside the period.
     """
     period_days = max(1, (period_end - period_start).days + 1)
+    in_period = [
+        t for t in transactions if period_start <= t.posted_date <= period_end
+    ]
     total = sum(
-        (-t.amount for t in transactions if t.category == "mca_debit" and t.amount < 0),
+        (-t.amount for t in in_period if t.category == "mca_debit" and t.amount < 0),
         Decimal("0"),
     )
-    sources = [t.id for t in transactions if t.category == "mca_debit"]
+    sources = [t.id for t in in_period if t.category == "mca_debit"]
     avg_per_day = safe_divide(total, Decimal(period_days))
     return _Sourced(value=avg_per_day, source_ids=sources)
 
 
-def _debt_to_revenue(mca_daily: Decimal, true_revenue: Decimal) -> Decimal:
-    """MCA monthly burden / true_revenue. 22 trading days per month convention.
+def _debt_to_revenue(
+    mca_daily: Decimal, true_revenue: Decimal, period_days: int
+) -> Decimal:
+    """MCA monthly burden / monthly revenue.
 
-    Returns 0 when revenue is zero (avoids divide-by-zero; presence of MCA
-    burden with zero revenue is caught by separate validators).
+    Both numerator and denominator are normalized to a 30-day month so
+    the ratio is length-invariant: a 14-day statement and a 31-day
+    statement of the same merchant must yield the same ratio. Without
+    normalization the period revenue is biased low for short statements,
+    inflating the ratio. 22 trading days/month is the MCA convention for
+    the burden side; 30 calendar days/month for revenue.
+
+    Returns 0 when revenue is zero (avoids divide-by-zero; presence of
+    MCA burden with zero revenue is caught by separate validators).
     """
     monthly_burden = mca_daily * Decimal(22)
-    return safe_divide(monthly_burden, true_revenue)
+    revenue_monthly = safe_divide(true_revenue * Decimal(30), Decimal(period_days))
+    return safe_divide(monthly_burden, revenue_monthly)
 
 
 def _next_day(d: date) -> date:

@@ -153,12 +153,20 @@ class _StubLLM:
     are echoed back correctly).
     """
 
-    def __init__(self, extraction_payload: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        extraction_payload: dict[str, Any],
+        *,
+        truncated: bool = False,
+    ) -> None:
         self._extraction = extraction_payload
+        self._truncated = truncated
 
-    def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> dict[str, Any]:
+    def extract_raw_json(
+        self, pdf_bytes: bytes, prompt: str
+    ) -> tuple[dict[str, Any], bool]:
         _ = (pdf_bytes, prompt)
-        return self._extraction
+        return self._extraction, self._truncated
 
     def classify_batch_json(self, prompt: str) -> dict[str, Any]:
         # The header ends with "(JSON array follows):" then a newline + the

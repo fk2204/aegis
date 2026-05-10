@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from redis.exceptions import RedisError
+
 if TYPE_CHECKING:
     from arq.connections import RedisSettings
 
@@ -163,12 +165,15 @@ def _populate_worker_attributes() -> None:
     WorkerSettings.redis_settings = build_redis_settings()  # type: ignore[attr-defined]
 
 
-# Only populate when not in a test path that hasn't supplied AEGIS_DATA_RESIDENCY_CONFIRMED.
-# Tests import this module via the workers test which sets the residency flag in conftest.
+# Allow import when Redis is unreachable (tests inject their own ctx, and
+# CI machines without a local Redis still need to import the module). We
+# narrowly catch only redis-connection problems so that genuine config
+# validation errors (e.g. ``DataResidencyError`` from ``get_settings``)
+# still propagate at import — that's the fail-closed contract from
+# CLAUDE.md.
 try:
     _populate_worker_attributes()
-except Exception:
-    # Allow import without redis configured (tests inject their own ctx).
+except (RedisError, ConnectionError):
     _log.debug("worker.attributes_deferred", exc_info=True)
 
 

@@ -24,17 +24,25 @@ class ExtractionError(RuntimeError):
 # can react to "INJECTION_ATTEMPT" / "PROCESSOR_HOLDBACK_SUSPECTED" without
 # mixing them into the extraction's strict Pydantic shape.
 class ExtractionPass1Result:
-    """Container for pass 1 output (statement + advisory indicators)."""
+    """Container for pass 1 output (statement + advisory indicators).
 
-    __slots__ = ("statement", "synthetic_risk_indicators")
+    `truncated` is True when Bedrock cut the response off at max_tokens.
+    Downstream `validate_extraction(...)` consumes this so a truncated
+    response is surfaced as `extraction_truncated_retry_required` rather
+    than getting misdiagnosed as a math reconciliation failure.
+    """
+
+    __slots__ = ("statement", "synthetic_risk_indicators", "truncated")
 
     def __init__(
         self,
         statement: ExtractedStatement,
         synthetic_risk_indicators: list[str],
+        truncated: bool = False,
     ) -> None:
         self.statement = statement
         self.synthetic_risk_indicators = synthetic_risk_indicators
+        self.truncated = truncated
 
 
 # Defensive cap. Pass 1 should never need more than the document itself.
@@ -65,7 +73,7 @@ def extract_statement(pdf_bytes: bytes, llm: LLMClient) -> ExtractionPass1Result
         )
 
     try:
-        raw = llm.extract_raw_json(pdf_bytes, EXTRACTION_PROMPT)
+        raw, truncated = llm.extract_raw_json(pdf_bytes, EXTRACTION_PROMPT)
     except ValueError as exc:
         raise ExtractionError(f"LLM returned malformed JSON: {exc}") from exc
 
@@ -88,7 +96,11 @@ def extract_statement(pdf_bytes: bytes, llm: LLMClient) -> ExtractionPass1Result
 
     _enforce_source_attribution(statement)
 
-    return ExtractionPass1Result(statement=statement, synthetic_risk_indicators=indicators)
+    return ExtractionPass1Result(
+        statement=statement,
+        synthetic_risk_indicators=indicators,
+        truncated=truncated,
+    )
 
 
 def _coerce_indicators(value: object) -> list[str]:

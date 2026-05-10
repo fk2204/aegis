@@ -81,7 +81,11 @@ def run_pipeline(
     pdf_bytes = _read_pdf(pdf_path)
     extraction = extract_statement(pdf_bytes, llm)
 
-    validation = validate_extraction(extraction.statement, today=today)
+    validation = validate_extraction(
+        extraction.statement,
+        truncated=extraction.truncated,
+        today=today,
+    )
 
     if not validation.passed:
         return PipelineResult(

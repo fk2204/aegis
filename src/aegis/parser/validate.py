@@ -26,7 +26,9 @@ Failure codes (start of string is parsed by `pipeline.py` for severity)
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
@@ -41,6 +43,15 @@ MAX_STATEMENT_DAYS = 50
 
 # Period-tie-out tolerance: $1.00. Per-day reconciliation also $1.00.
 _TOL = Decimal("1.00")
+
+# Word-boundary "deposit" — avoids matching inside "DEPOSITED",
+# "REDEPOSIT" etc. Combined with the exclusion set below, this drops the
+# false-positive on rows like "DEPOSIT REVERSAL" / "NSF FEE - LATE
+# DEPOSIT" which legitimately carry a negative amount.
+_DEPOSIT_WORD = re.compile(r"\bdeposit\b", re.IGNORECASE)
+_DEPOSIT_NEG_EXCLUSIONS = frozenset(
+    {"reversal", "return", "nsf", "fee", "withdrawal"}
+)
 
 
 @dataclass
@@ -62,14 +73,24 @@ def validate_extraction(
     *,
     truncated: bool = False,
     today: date | None = None,
+    clock: Callable[[], date] | None = None,
 ) -> ValidationResult:
     """Run the deterministic gate. Returns ValidationResult.
 
     `truncated` is true if pass 1 hit max_tokens (LLM output cut off).
     `today` is injectable for deterministic testing.
+    `clock`, when provided, takes precedence over `today` and is invoked to
+    obtain the current date. Useful when callers want to inject a
+    timezone-aware clock (e.g. always UTC) instead of relying on the worker's
+    server-local timezone — `datetime.now().date()` is local time, so a worker
+    running in UTC inspecting a statement that closed in EST can otherwise
+    falsely flag `future_dated`.
     """
     ctx = _ValidationContext()
-    today = today or datetime.now().date()
+    if clock is not None:
+        today = clock()
+    elif today is None:
+        today = datetime.now().date()
 
     _check_period(statement, today, ctx)
     _check_period_reconciliation(statement, ctx)
@@ -156,14 +177,26 @@ def _check_listed_vs_summary(
 def _check_negative_deposits(
     statement: ExtractedStatement, ctx: _ValidationContext
 ) -> None:
-    """Sanity: rows printed as deposits should not be negative."""
-    # Heuristic: in our amount convention, deposits are positive. If the LLM
-    # ever swaps signs we want the gate to catch it.
+    """Sanity: rows printed as deposits should not be negative.
+
+    Heuristic — emitted as a warning, not a failure. We want to flag the
+    case where the LLM swaps signs on a real deposit, but NOT trip on
+    rows whose description happens to contain the word "deposit" while
+    legitimately carrying a negative amount (e.g. "DEPOSIT REVERSAL",
+    "NSF FEE - LATE DEPOSIT", "DEPOSIT RETURN", "WITHDRAWAL OF DEPOSIT").
+    """
     for txn in statement.transactions:
-        if txn.amount < 0 and "deposit" in txn.description.lower():
-            ctx.warnings.append(
-                f"negative_deposit_signal: row '{txn.description[:40]}' has amount={txn.amount}"
-            )
+        if txn.amount >= 0:
+            continue
+        desc = txn.description
+        if not _DEPOSIT_WORD.search(desc):
+            continue
+        desc_lower = desc.lower()
+        if any(token in desc_lower for token in _DEPOSIT_NEG_EXCLUSIONS):
+            continue
+        ctx.warnings.append(
+            f"negative_deposit_signal: row '{desc[:40]}' has amount={txn.amount}"
+        )
 
 
 def _check_source_attribution(
