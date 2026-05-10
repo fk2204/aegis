@@ -118,7 +118,7 @@ async def upload_submit(
     repository: Annotated[DocumentRepository, Depends(get_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
     merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-    files: Annotated[list[UploadFile], File()],
+    files: Annotated[list[UploadFile] | None, File()] = None,
     merchant_id: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     """Browser-friendly multi-file upload — no bearer (Cloudflare Access in prod).
@@ -128,6 +128,10 @@ async def upload_submit(
     summary with each file's status. ``merchant_id`` is optional from
     this route — operators uploading ad-hoc may not have the merchant
     record yet (see ``/ui/intake`` for the combined create + upload flow).
+
+    ``files`` is typed as ``| None`` so a browser submit with no file
+    selected falls into the friendly HTML error branch below instead of
+    bouncing off FastAPI's 422 validation gate as opaque JSON.
     """
     if not files or all(not f.filename for f in files):
         return templates.TemplateResponse(
