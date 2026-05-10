@@ -60,9 +60,25 @@ echo "==> 5/8  Creating aegis user + dirs"
 if ! id aegis >/dev/null 2>&1; then
   useradd --system --create-home --home-dir /home/aegis --shell /usr/sbin/nologin aegis
 fi
+# /home/aegis explicit: useradd --create-home only fires on first run.
+# If a prior install left the user without a home dir, or some external
+# tool created /home/aegis with wrong ownership, this fixes it. Required
+# because the install-time `uv sync` below runs as the aegis user
+# OUTSIDE systemd (no ProtectHome here) and uv defaults its cache to
+# ~/.cache/uv until UV_CACHE_DIR overrides — without an aegis-owned
+# /home/aegis the cache init crashes with "Permission denied".
+install -d -o aegis -g aegis -m 0755 /home/aegis
 install -d -o aegis -g aegis -m 0755 /opt/aegis
 install -d -o root  -g root  -m 0755 /etc/aegis
 install -d -o aegis -g aegis -m 0750 /var/log/aegis
+# /var/lib/aegis tree: uploads/ holds incoming PDFs (worker deletes
+# them in a finally block — never long-lived); uv-cache/ is the
+# managed UV_CACHE_DIR target referenced from /etc/aegis/aegis.env so
+# runtime uv invocations under systemd (which has ProtectHome=true)
+# can still write cache.
+install -d -o aegis -g aegis -m 0750 /var/lib/aegis
+install -d -o aegis -g aegis -m 0750 /var/lib/aegis/uploads
+install -d -o aegis -g aegis -m 0750 /var/lib/aegis/uv-cache
 
 if [[ ! -f /etc/aegis/aegis.env ]]; then
   cat <<'EOF' >/etc/aegis/aegis.env
@@ -81,6 +97,10 @@ ZOHO_WEBHOOK_SECRET=
 REDIS_URL=redis://127.0.0.1:6379
 AEGIS_STORAGE_BACKEND=supabase
 AEGIS_UPLOAD_DIR=/var/lib/aegis/uploads
+# uv cache — must be a path the systemd-managed process can write to
+# (see ReadWritePaths in aegis-{web,worker}.service). Default /home is
+# blocked by ProtectHome=true.
+UV_CACHE_DIR=/var/lib/aegis/uv-cache
 EOF
   chmod 0640 /etc/aegis/aegis.env
   chown root:aegis /etc/aegis/aegis.env

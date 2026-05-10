@@ -28,7 +28,11 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 PrivateTmp=true
-ReadWritePaths=/var/log/aegis /tmp
+# /var/lib/aegis: holds uploaded PDFs (uploads/) AND the uv cache
+# (uv-cache/, set via UV_CACHE_DIR in /etc/aegis/aegis.env). Without
+# this, ProtectSystem=strict + ProtectHome=true block uv's runtime
+# cache init and the unit crash-loops with "Permission denied".
+ReadWritePaths=/var/log/aegis /var/lib/aegis /tmp
 
 # Logs land in journalctl by default; the app also writes structured JSON
 # to /var/log/aegis/app.log via the project logger configuration.
