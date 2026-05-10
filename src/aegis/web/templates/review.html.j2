@@ -1,0 +1,51 @@
+{% extends "base.html.j2" %}
+{% block title %}Manual Review — AEGIS{% endblock %}
+{% block content %}
+  <h1>Manual Review Queue</h1>
+  <p class="src-ref">
+    Documents whose parse pipeline returned <code>parse_status=manual_review</code>.
+    Re-upload after fixing the source PDF, or open the merchant detail page to
+    inspect the underlying flags.
+  </p>
+  {% if not rows %}
+    <p>No documents in manual-review state. Pipeline is clean.</p>
+  {% else %}
+    <table>
+      <thead>
+        <tr>
+          <th>Uploaded</th>
+          <th>Merchant</th>
+          <th>File</th>
+          <th>Fraud</th>
+          <th>Flags</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>{{ r.uploaded_at }}</td>
+          <td>{{ r.merchant_label }}</td>
+          <td><span class="src-ref">{{ r.filename }}</span></td>
+          <td><span class="tag tag-manual_review">{{ r.fraud_score }}</span></td>
+          <td>
+            {% if r.flags %}
+              {% for f in r.flags[:5] %}
+                <span class="src-ref">{{ f }}</span><br>
+              {% endfor %}
+              {% if r.flags|length > 5 %}
+                <span class="src-ref">+ {{ r.flags|length - 5 }} more</span>
+              {% endif %}
+            {% else %}
+              <span class="src-ref">—</span>
+            {% endif %}
+          </td>
+          <td>
+            <a href="/ui/upload">Re-upload</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

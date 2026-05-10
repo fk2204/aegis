@@ -1,0 +1,40 @@
+{% extends "base.html.j2" %}
+{% block title %}Deals — AEGIS{% endblock %}
+{% block content %}
+  <h1>Deals</h1>
+  <p class="src-ref">
+    A "deal" is a merchant joined with their most recent uploaded document.
+    Tier shown here is a quick proxy from parsed analysis numbers; click a
+    row to score the deal authoritatively via <code>POST /deals/score</code>.
+  </p>
+  {% if not rows %}
+    <p>No deals yet. Add a merchant and upload their bank statement.</p>
+  {% else %}
+    <table>
+      <thead>
+        <tr>
+          <th>Merchant</th>
+          <th>State</th>
+          <th>Latest Upload</th>
+          <th>Parse Status</th>
+          <th>Fraud</th>
+          <th>Tier (proxy)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td><a href="/ui/merchants/{{ r.merchant_id }}">{{ r.business_name }}</a></td>
+          <td>{{ r.state }}</td>
+          <td>{{ r.uploaded_at }}</td>
+          <td>
+            <span class="tag tag-{{ r.parse_status }}">{{ r.parse_status }}</span>
+          </td>
+          <td>{{ r.fraud_score }}</td>
+          <td>{{ r.tier_proxy }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

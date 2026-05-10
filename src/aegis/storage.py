@@ -148,6 +148,20 @@ class DocumentRepository(Protocol):
     ) -> list[ClassifiedTransaction]:
         """Return classified rows for the document, optionally filtered by category."""
 
+    def list_documents(
+        self,
+        *,
+        parse_status: ParseStatus | None = None,
+        merchant_id: UUID | None = None,
+        limit: int = 100,
+    ) -> list[DocumentRow]:
+        """Return documents most-recent first, optionally filtered.
+
+        ``parse_status`` powers the ``/ui/review`` queue (filter for
+        ``"manual_review"``). ``merchant_id`` powers the ``/ui/deals``
+        derived view. ``limit`` caps page size.
+        """
+
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None: ...
 
 
@@ -242,6 +256,21 @@ class InMemoryDocumentRepository:
         if category is None:
             return list(rows)
         return [t for t in rows if t.category == category]
+
+    def list_documents(
+        self,
+        *,
+        parse_status: ParseStatus | None = None,
+        merchant_id: UUID | None = None,
+        limit: int = 100,
+    ) -> list[DocumentRow]:
+        rows = list(self._docs.values())
+        if parse_status is not None:
+            rows = [r for r in rows if r.parse_status == parse_status]
+        if merchant_id is not None:
+            rows = [r for r in rows if r.merchant_id == merchant_id]
+        rows.sort(key=lambda r: r.uploaded_at, reverse=True)
+        return rows[:limit]
 
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None:
         return self._analyses.get(document_id)
@@ -383,6 +412,30 @@ class SupabaseDocumentRepository:
         result = query.execute()
         return [
             _db_row_to_classified(cast(dict[str, Any], r))
+            for r in (result.data or [])
+        ]
+
+    def list_documents(
+        self,
+        *,
+        parse_status: ParseStatus | None = None,
+        merchant_id: UUID | None = None,
+        limit: int = 100,
+    ) -> list[DocumentRow]:
+        query = (
+            get_supabase()
+            .table("documents")
+            .select("*")
+            .order("uploaded_at", desc=True)
+            .limit(limit)
+        )
+        if parse_status is not None:
+            query = query.eq("parse_status", parse_status)
+        if merchant_id is not None:
+            query = query.eq("merchant_id", str(merchant_id))
+        result = query.execute()
+        return [
+            _row_to_document(cast(dict[str, Any], r))
             for r in (result.data or [])
         ]
 

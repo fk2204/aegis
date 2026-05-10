@@ -1,0 +1,82 @@
+{% extends "base.html.j2" %}
+{% set is_edit = merchant is not none %}
+{% set form_data = form if form is defined else {} %}
+{% block title %}
+  {% if is_edit %}Edit {{ merchant.business_name }}{% else %}New Merchant{% endif %} — AEGIS
+{% endblock %}
+{% block content %}
+  <h1>{% if is_edit %}Edit Merchant{% else %}New Merchant{% endif %}</h1>
+
+  {% if error %}
+    <p class="tag tag-manual_review" style="display: block; padding: 8px 12px;">
+      {{ error }}
+    </p>
+  {% endif %}
+
+  {% set action = "/ui/merchants/" ~ merchant.id ~ "/edit" if is_edit else "/ui/merchants/new" %}
+  <form method="post" action="{{ action }}" style="max-width: 600px;">
+    <p>
+      <label>Business name<br>
+        <input name="business_name" required value="{{ form_data.get('business_name') or (merchant.business_name if is_edit else '') }}">
+      </label>
+    </p>
+    <p>
+      <label>DBA<br>
+        <input name="dba" value="{{ form_data.get('dba') or (merchant.dba if is_edit and merchant.dba else '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Owner name<br>
+        <input name="owner_name" required value="{{ form_data.get('owner_name') or (merchant.owner_name if is_edit else '') }}">
+      </label>
+    </p>
+    <p>
+      <label>State (2-letter)<br>
+        <input name="state" required maxlength="2" minlength="2" style="text-transform: uppercase;"
+               value="{{ form_data.get('state') or (merchant.state if is_edit else '') }}">
+      </label>
+      <span class="src-ref">
+        Served: 45 states. TX/VA/CT/UT/MO/DC and territories rejected.
+      </span>
+    </p>
+    <p>
+      <label>NAICS code<br>
+        <input name="industry_naics" value="{{ form_data.get('industry_naics') or (merchant.industry_naics if is_edit and merchant.industry_naics else '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Credit score (300–850)<br>
+        <input name="credit_score" type="number" min="300" max="850"
+               value="{{ form_data.get('credit_score') or (merchant.credit_score if is_edit and merchant.credit_score else '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Time in business (months)<br>
+        <input name="time_in_business_months" type="number" min="0"
+               value="{{ form_data.get('time_in_business_months') or (merchant.time_in_business_months if is_edit and merchant.time_in_business_months else '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Email<br>
+        <input name="email" type="email"
+               value="{{ form_data.get('email') or (merchant.email if is_edit and merchant.email else '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Phone<br>
+        <input name="phone"
+               value="{{ form_data.get('phone') or (merchant.phone if is_edit and merchant.phone else '') }}">
+      </label>
+    </p>
+    <p>
+      <button type="submit" style="padding: 8px 16px; background: #1a1a2e; color: #fff; border: none; border-radius: 4px; font-weight: 600; cursor: pointer;">
+        {% if is_edit %}Save{% else %}Create{% endif %}
+      </button>
+      {% if is_edit %}
+        <a href="/ui/merchants/{{ merchant.id }}" style="margin-left: 12px;">Cancel</a>
+      {% else %}
+        <a href="/ui/merchants" style="margin-left: 12px;">Cancel</a>
+      {% endif %}
+    </p>
+  </form>
+{% endblock %}

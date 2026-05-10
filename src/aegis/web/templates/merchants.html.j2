@@ -1,9 +1,9 @@
 {% extends "base.html.j2" %}
 {% block title %}Merchants — AEGIS{% endblock %}
 {% block content %}
-  <h1>Merchants</h1>
+  <h1>Merchants <a href="/ui/merchants/new" style="font-size: 14px; font-weight: 500;">+ New</a></h1>
   {% if not merchants %}
-    <p>No merchants yet. Upload a statement and create one to begin.</p>
+    <p>No merchants yet. <a href="/ui/merchants/new">Create one</a> to begin.</p>
   {% else %}
     <table>
       <thead>

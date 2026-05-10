@@ -1,0 +1,49 @@
+{% extends "base.html.j2" %}
+{% block title %}Funders — AEGIS{% endblock %}
+{% block content %}
+  <h1>Funders</h1>
+  <p class="src-ref">
+    Active funders. Edits land via the bearer-protected API
+    (<code>POST/PUT/DELETE /funders</code>) until the import-PDF flow ships in 7B.
+  </p>
+  {% if not funders %}
+    <p>No funders configured. Add one via <code>POST /funders</code> or
+       wait for the Phase 7B PDF-import UI.</p>
+  {% else %}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Min Revenue</th>
+          <th>Min Credit</th>
+          <th>Min TIB</th>
+          <th>Max Pos</th>
+          <th>Stacking</th>
+          <th>Excludes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in funders %}
+        <tr>
+          <td><a href="/ui/funders/{{ f.id }}">{{ f.name }}</a></td>
+          <td>{{ "${:,.0f}".format(f.min_monthly_revenue) if f.min_monthly_revenue else "—" }}</td>
+          <td>{{ f.min_credit_score or "—" }}</td>
+          <td>{{ f.min_months_in_business or "—" }}</td>
+          <td>{{ f.max_positions if f.max_positions is not none else "—" }}</td>
+          <td>
+            {% if f.accepts_stacking %}
+              <span class="tag tag-proceed">yes</span>
+            {% else %}
+              <span class="tag tag-manual_review">no</span>
+            {% endif %}
+          </td>
+          <td class="src-ref">
+            {% if f.excluded_states %}States: {{ f.excluded_states|length }}{% endif %}
+            {% if f.excluded_industries %} · Industries: {{ f.excluded_industries|length }}{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

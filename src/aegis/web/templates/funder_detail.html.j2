@@ -1,0 +1,108 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ funder.name }} — Funder · AEGIS{% endblock %}
+{% block content %}
+  <h1>{{ funder.name }}</h1>
+  <p class="src-ref">
+    Funder ID {{ funder.id }} ·
+    {% if funder.active %}<span class="tag tag-proceed">active</span>{% else %}<span class="tag tag-manual_review">inactive</span>{% endif %}
+  </p>
+
+  <h3>Hard Gates</h3>
+  <div>
+    <div class="tile">
+      <div class="tile-label">Min Monthly Revenue</div>
+      <div class="tile-value">{{ "${:,.0f}".format(funder.min_monthly_revenue) if funder.min_monthly_revenue else "—" }}</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Min Avg Daily Balance</div>
+      <div class="tile-value">{{ "${:,.0f}".format(funder.min_avg_daily_balance) if funder.min_avg_daily_balance else "—" }}</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Min Credit</div>
+      <div class="tile-value">{{ funder.min_credit_score or "—" }}</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Min TIB (months)</div>
+      <div class="tile-value">{{ funder.min_months_in_business or "—" }}</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Max Positions</div>
+      <div class="tile-value">{{ funder.max_positions if funder.max_positions is not none else "—" }}</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Stacking</div>
+      <div class="tile-value">{{ "yes" if funder.accepts_stacking else "no" }}</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Max NSF</div>
+      <div class="tile-value">{{ funder.max_nsf_tolerance if funder.max_nsf_tolerance is not none else "—" }}</div>
+    </div>
+  </div>
+
+  <h3>Pricing Envelope</h3>
+  <div>
+    <div class="tile">
+      <div class="tile-label">Advance Range</div>
+      <div class="tile-value">
+        {% if funder.min_advance and funder.max_advance %}
+          ${{ "{:,.0f}".format(funder.min_advance) }} – ${{ "{:,.0f}".format(funder.max_advance) }}
+        {% else %}—{% endif %}
+      </div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Factor Range</div>
+      <div class="tile-value">
+        {% if funder.typical_factor_low and funder.typical_factor_high %}
+          {{ funder.typical_factor_low }} – {{ funder.typical_factor_high }}
+        {% else %}—{% endif %}
+      </div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">Holdback Range</div>
+      <div class="tile-value">
+        {% if funder.typical_holdback_low and funder.typical_holdback_high %}
+          {{ "{:.0%}".format(funder.typical_holdback_low) }} – {{ "{:.0%}".format(funder.typical_holdback_high) }}
+        {% else %}—{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <h3>Compliance</h3>
+  <p>
+    Requires CoJ:
+    {% if funder.requires_coj %}<span class="tag tag-review">yes</span>{% else %}<span class="src-ref">no</span>{% endif %}
+    · Charges merchant advance fees:
+    {% if funder.charges_merchant_advance_fees %}<span class="tag tag-manual_review">yes (FL/GA hard-fail)</span>{% else %}<span class="src-ref">no</span>{% endif %}
+  </p>
+  {% if funder.aegis_compensation_disclosure_text %}
+    <p class="src-ref">
+      <strong>NY broker compensation disclosure:</strong>
+      {{ funder.aegis_compensation_disclosure_text }}
+    </p>
+  {% endif %}
+
+  {% if funder.excluded_states or funder.excluded_industries %}
+    <h3>Exclusions</h3>
+    {% if funder.excluded_states %}
+      <p><strong>States:</strong> {{ funder.excluded_states|join(", ") }}</p>
+    {% endif %}
+    {% if funder.excluded_industries %}
+      <p><strong>Industries:</strong> {{ funder.excluded_industries|join(", ") }}</p>
+    {% endif %}
+  {% endif %}
+
+  {% if funder.notes %}
+    <h3>Notes</h3>
+    <p>{{ funder.notes }}</p>
+  {% endif %}
+
+  <p class="src-ref" style="margin-top: 32px;">
+    Last extracted from PDF
+    {% if funder.guidelines_extracted_at %}
+      on {{ funder.guidelines_extracted_at }}
+    {% else %}—{% endif %}
+    {% if funder.guidelines_source_pdf_hash %}
+      · sha256 {{ funder.guidelines_source_pdf_hash[:12] }}…
+    {% endif %}
+  </p>
+{% endblock %}
