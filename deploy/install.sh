@@ -26,9 +26,18 @@ echo "==> 1/8  Updating apt index"
 apt-get update -y
 
 echo "==> 2/8  Installing system packages"
+# Python toolchain + native build deps for any wheels that need them
+# (pikepdf, weasyprint dependencies). build-essential pulls gcc/make.
+# rsync + git: needed by scripts/deploy.sh on the remote (subsequent
+# pulls + sync). curl + ca-certificates: needed by the uv installer
+# below and any HTTPS fetch (TLS chain). WeasyPrint needs Pango /
+# Cairo / HarfBuzz native libs — without them Tier 1 disclosure
+# renders fail at runtime.
 apt-get install -y \
-  python3.12 python3.12-venv python3-pip \
+  python3.12 python3.12-venv python3.12-dev python3-pip \
+  build-essential \
   redis-server \
+  rsync git \
   curl ca-certificates \
   libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b \
   libcairo2 libgdk-pixbuf-2.0-0 fonts-liberation \
@@ -96,12 +105,22 @@ install -m 0644 "$REPO_ROOT/deploy/aegis-worker.service"  /etc/systemd/system/ae
 install -m 0644 "$REPO_ROOT/deploy/logrotate.aegis"       /etc/logrotate.d/aegis
 
 systemctl daemon-reload
+
+# Enable all three units so they come up on reboot, but only START
+# redis-server here. aegis-web and aegis-worker would fail their
+# data-residency boot guard until the operator populates
+# /etc/aegis/aegis.env (AEGIS_DATA_RESIDENCY_CONFIRMED, AWS creds,
+# SUPABASE_*, API_BEARER_TOKEN). They start in the operator-driven
+# step below.
 systemctl enable redis-server aegis-web aegis-worker
-systemctl restart redis-server
+systemctl start redis-server
 
 echo
 echo "Install complete. Next steps:"
-echo "  1. Populate /etc/aegis/aegis.env with prod secrets."
-echo "  2. Configure cloudflared (see deploy/cloudflared-config.yml.example)."
-echo "  3. systemctl start aegis-web aegis-worker"
-echo "  4. curl http://127.0.0.1:5555/healthz   # should return {\"ok\": true}"
+echo "  1) populate /etc/aegis/aegis.env from /opt/aegis/deploy/aegis.env.example"
+echo "  2) systemctl start aegis-web aegis-worker"
+echo "  3) systemctl status aegis-web --no-pager"
+echo "  4) curl http://127.0.0.1:5555/healthz"
+echo
+echo "  Cloudflare Tunnel (separate, before the box is reachable externally):"
+echo "    see /opt/aegis/deploy/cloudflared-config.yml.example"
