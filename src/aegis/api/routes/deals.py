@@ -16,10 +16,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from aegis.api.auth import require_bearer
-from aegis.api.deps import get_audit
+from aegis.api.deps import get_audit, get_ofac_client
 from aegis.audit import AuditLog
 from aegis.scoring.models import ScoreInput, ScoreResult
-from aegis.scoring.ofac import OFACStaleError
+from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
 
 router = APIRouter(prefix="/deals", tags=["deals"], dependencies=[Depends(require_bearer)])
@@ -33,11 +33,10 @@ router = APIRouter(prefix="/deals", tags=["deals"], dependencies=[Depends(requir
 def score(
     deal: ScoreInput,
     audit: Annotated[AuditLog, Depends(get_audit)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
 ) -> ScoreResult:
-    # OFAC client wiring lands in a follow-up route param + factory; the
-    # scorer handles ofac=None by skipping that hard-decline rule.
     try:
-        result = score_deal(deal, ofac=None)
+        result = score_deal(deal, ofac=ofac)
     except OFACStaleError as exc:
         # OFAC list could not refresh and the cache is too old — fail
         # closed so a sanctioned name cannot slip through.
@@ -56,6 +55,7 @@ def score(
             "tier": result.tier,
             "recommendation": result.recommendation,
             "hard_decline_reasons": result.hard_decline_reasons,
+            "ofac_consulted": ofac is not None,
         },
     )
     return result

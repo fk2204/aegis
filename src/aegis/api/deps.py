@@ -26,6 +26,7 @@ from aegis.merchants.repository import (
     MerchantRepository,
     SupabaseMerchantRepository,
 )
+from aegis.scoring.ofac import OFACClient
 from aegis.storage import (
     DocumentRepository,
     InMemoryDocumentRepository,
@@ -71,6 +72,21 @@ def get_llm() -> LLMClient:
     return BedrockClient()
 
 
+@lru_cache(maxsize=1)
+def get_ofac_client() -> OFACClient | None:
+    """OFAC SDN screening client. Returns ``None`` in in-memory test mode so
+    the deals route doesn't hit the Treasury feed during unit tests; tests
+    that need OFAC behavior override this dependency with a fake client.
+    Production (storage_backend == "supabase") returns a real client whose
+    cache lives at ``settings.aegis_ofac_cache_path``.
+    """
+    settings = get_settings()
+    if settings.aegis_storage_backend == "memory":
+        return None
+    settings.aegis_ofac_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    return OFACClient(cache_path=settings.aegis_ofac_cache_path)
+
+
 def reset_dependency_caches() -> None:
     """Drop the lru_cache singletons. For tests that swap settings."""
     get_repository.cache_clear()
@@ -78,6 +94,7 @@ def reset_dependency_caches() -> None:
     get_funder_repository.cache_clear()
     get_audit.cache_clear()
     get_llm.cache_clear()
+    get_ofac_client.cache_clear()
 
 
 __all__ = [
@@ -85,6 +102,7 @@ __all__ = [
     "get_funder_repository",
     "get_llm",
     "get_merchant_repository",
+    "get_ofac_client",
     "get_repository",
     "reset_dependency_caches",
 ]

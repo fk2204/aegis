@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     # Hard cap on uploaded PDF size (per CLAUDE.md security rules).
     aegis_max_upload_bytes: int = Field(default=25 * 1024 * 1024, gt=0)
 
+    # OFAC SDN cache. Refresh window 24h, hard cutoff 7d (see scoring/ofac.py).
+    # Cache file is created on first refresh; the parent dir is auto-mkdir'd
+    # by the get_ofac_client dependency.
+    aegis_ofac_cache_path: Path = Field(
+        default_factory=lambda: Path(tempfile.gettempdir()) / "aegis-ofac" / "sdn.json"
+    )
+
     # Worker tuning
     aegis_worker_max_concurrent: int = Field(default=4, ge=1, le=32)
     aegis_worker_job_timeout: int = Field(
