@@ -52,12 +52,16 @@ class BedrockClient:
         self._client = anthropic.AnthropicBedrock(aws_region=settings.aws_region)
 
     def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> dict[str, Any]:
-        """Send a PDF document block + extraction prompt; parse the first JSON object out."""
+        """Send a PDF document block + extraction prompt; parse the first JSON object out.
+
+        Uses streaming because real bank statements can produce >16K tokens of
+        JSON output, which exceeds Bedrock's non-streaming 10-minute SLA window.
+        """
         import base64
 
-        response = self._client.messages.create(
+        with self._client.messages.stream(
             model=self._model,
-            max_tokens=16384,
+            max_tokens=64000,
             messages=[
                 {
                     "role": "user",
@@ -74,7 +78,8 @@ class BedrockClient:
                     ],
                 }
             ],
-        )
+        ) as stream:
+            response = stream.get_final_message()
         return _first_json_object(_text_blocks(response))
 
     def classify_batch_json(self, prompt: str) -> dict[str, Any]:
