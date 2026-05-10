@@ -1,0 +1,83 @@
+{
+  "bank": "boa_business",
+  "expected": {
+    "fraud_score": {
+      "max": 50,
+      "min": 0
+    },
+    "recommendation": "refer",
+    "validation_passed": true
+  },
+  "scenario": "very_new_account",
+  "seed": 20006,
+  "summary": {
+    "beginning_balance": "0.00",
+    "deposit_total": "9296.00",
+    "ending_balance": "8477.00",
+    "period_end": "2026-04-30",
+    "period_start": "2026-04-01",
+    "printed_transaction_count": 6,
+    "withdrawal_total": "819.00"
+  },
+  "tolerances": {
+    "fraud_score": 5,
+    "money": "1.00"
+  },
+  "transactions": [
+    {
+      "amount": "8000.00",
+      "category": "deposit",
+      "description": "OPENING DEPOSIT",
+      "posted_date": "2026-04-15",
+      "running_balance": "8000.00",
+      "source_line": 1,
+      "source_page": 1
+    },
+    {
+      "amount": "-343.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-16",
+      "running_balance": "7657.00",
+      "source_line": 2,
+      "source_page": 1
+    },
+    {
+      "amount": "416.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-20",
+      "running_balance": "8073.00",
+      "source_line": 3,
+      "source_page": 1
+    },
+    {
+      "amount": "-326.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-23",
+      "running_balance": "7747.00",
+      "source_line": 4,
+      "source_page": 1
+    },
+    {
+      "amount": "880.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-27",
+      "running_balance": "8627.00",
+      "source_line": 5,
+      "source_page": 1
+    },
+    {
+      "amount": "-150.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-30",
+      "running_balance": "8477.00",
+      "source_line": 6,
+      "source_page": 1
+    }
+  ],
+  "version": "1"
+}

@@ -1,0 +1,165 @@
+{
+  "bank": "credit_union_business",
+  "expected": {
+    "fraud_score": {
+      "max": 80,
+      "min": 25
+    },
+    "num_nsf": 2,
+    "recommendation": "refer",
+    "validation_passed": true
+  },
+  "scenario": "nsf_heavy",
+  "seed": 60002,
+  "summary": {
+    "beginning_balance": "2000.00",
+    "deposit_total": "4661.00",
+    "ending_balance": "-368.00",
+    "period_end": "2026-04-30",
+    "period_start": "2026-04-01",
+    "printed_transaction_count": 15,
+    "withdrawal_total": "7029.00"
+  },
+  "tolerances": {
+    "fraud_score": 5,
+    "money": "1.00"
+  },
+  "transactions": [
+    {
+      "amount": "-893.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-01",
+      "running_balance": "1107.00",
+      "source_line": 1,
+      "source_page": 1
+    },
+    {
+      "amount": "-402.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-03",
+      "running_balance": "705.00",
+      "source_line": 2,
+      "source_page": 1
+    },
+    {
+      "amount": "-35.00",
+      "category": "nsf_fee",
+      "description": "NSF FEE INSUFFICIENT FUNDS",
+      "posted_date": "2026-04-03",
+      "running_balance": "670.00",
+      "source_line": 3,
+      "source_page": 1
+    },
+    {
+      "amount": "1422.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-06",
+      "running_balance": "2092.00",
+      "source_line": 4,
+      "source_page": 1
+    },
+    {
+      "amount": "-619.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-08",
+      "running_balance": "1473.00",
+      "source_line": 5,
+      "source_page": 1
+    },
+    {
+      "amount": "-1067.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-10",
+      "running_balance": "406.00",
+      "source_line": 6,
+      "source_page": 1
+    },
+    {
+      "amount": "-35.00",
+      "category": "nsf_fee",
+      "description": "NSF FEE INSUFFICIENT FUNDS",
+      "posted_date": "2026-04-10",
+      "running_balance": "371.00",
+      "source_line": 7,
+      "source_page": 1
+    },
+    {
+      "amount": "1324.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-13",
+      "running_balance": "1695.00",
+      "source_line": 8,
+      "source_page": 1
+    },
+    {
+      "amount": "-1192.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-15",
+      "running_balance": "503.00",
+      "source_line": 9,
+      "source_page": 1
+    },
+    {
+      "amount": "-654.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-17",
+      "running_balance": "-151.00",
+      "source_line": 10,
+      "source_page": 1
+    },
+    {
+      "amount": "1115.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-20",
+      "running_balance": "964.00",
+      "source_line": 11,
+      "source_page": 1
+    },
+    {
+      "amount": "-661.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-22",
+      "running_balance": "303.00",
+      "source_line": 12,
+      "source_page": 1
+    },
+    {
+      "amount": "-424.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-24",
+      "running_balance": "-121.00",
+      "source_line": 13,
+      "source_page": 1
+    },
+    {
+      "amount": "800.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-27",
+      "running_balance": "679.00",
+      "source_line": 14,
+      "source_page": 1
+    },
+    {
+      "amount": "-1047.00",
+      "category": "fee",
+      "description": "DEBIT CARD POS",
+      "posted_date": "2026-04-29",
+      "running_balance": "-368.00",
+      "source_line": 15,
+      "source_page": 1
+    }
+  ],
+  "version": "1"
+}

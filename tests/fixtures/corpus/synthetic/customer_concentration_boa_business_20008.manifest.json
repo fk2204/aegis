@@ -1,0 +1,227 @@
+{
+  "bank": "boa_business",
+  "expected": {
+    "fraud_score": {
+      "max": 50,
+      "min": 5
+    },
+    "recommendation": "refer",
+    "validation_passed": true
+  },
+  "scenario": "customer_concentration",
+  "seed": 20008,
+  "summary": {
+    "beginning_balance": "4500.00",
+    "deposit_total": "40474.00",
+    "ending_balance": "40753.00",
+    "period_end": "2026-04-30",
+    "period_start": "2026-04-01",
+    "printed_transaction_count": 22,
+    "withdrawal_total": "4221.00"
+  },
+  "tolerances": {
+    "fraud_score": 5,
+    "money": "1.00"
+  },
+  "transactions": [
+    {
+      "amount": "277.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MISC",
+      "posted_date": "2026-04-01",
+      "running_balance": "4777.00",
+      "source_line": 1,
+      "source_page": 1
+    },
+    {
+      "amount": "-623.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-02",
+      "running_balance": "4154.00",
+      "source_line": 2,
+      "source_page": 1
+    },
+    {
+      "amount": "309.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MISC",
+      "posted_date": "2026-04-03",
+      "running_balance": "4463.00",
+      "source_line": 3,
+      "source_page": 1
+    },
+    {
+      "amount": "9500.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MEGACORP CONTRACT 7714",
+      "posted_date": "2026-04-06",
+      "running_balance": "13963.00",
+      "source_line": 4,
+      "source_page": 1
+    },
+    {
+      "amount": "-464.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-07",
+      "running_balance": "13499.00",
+      "source_line": 5,
+      "source_page": 1
+    },
+    {
+      "amount": "288.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MISC",
+      "posted_date": "2026-04-08",
+      "running_balance": "13787.00",
+      "source_line": 6,
+      "source_page": 1
+    },
+    {
+      "amount": "-372.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-09",
+      "running_balance": "13415.00",
+      "source_line": 7,
+      "source_page": 1
+    },
+    {
+      "amount": "381.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MISC",
+      "posted_date": "2026-04-10",
+      "running_balance": "13796.00",
+      "source_line": 8,
+      "source_page": 1
+    },
+    {
+      "amount": "9500.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MEGACORP CONTRACT 7714",
+      "posted_date": "2026-04-13",
+      "running_balance": "23296.00",
+      "source_line": 9,
+      "source_page": 1
+    },
+    {
+      "amount": "-303.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-14",
+      "running_balance": "22993.00",
+      "source_line": 10,
+      "source_page": 1
+    },
+    {
+      "amount": "152.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MISC",
+      "posted_date": "2026-04-15",
+      "running_balance": "23145.00",
+      "source_line": 11,
+      "source_page": 1
+    },
+    {
+      "amount": "-316.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-16",
+      "running_balance": "22829.00",
+      "source_line": 12,
+      "source_page": 1
+    },
+    {
+      "amount": "229.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MISC",
+      "posted_date": "2026-04-17",
+      "running_balance": "23058.00",
+      "source_line": 13,
+      "source_page": 1
+    },
+    {
+      "amount": "9500.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MEGACORP CONTRACT 7714",
+      "posted_date": "2026-04-20",
+      "running_balance": "32558.00",
+      "source_line": 14,
+      "source_page": 1
+    },
+    {
+      "amount": "-335.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-21",
+      "running_balance": "32223.00",
+      "source_line": 15,
+      "source_page": 1
+    },
+    {
+      "amount": "358.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MISC",
+      "posted_date": "2026-04-22",
+      "running_balance": "32581.00",
+      "source_line": 16,
+      "source_page": 1
+    },
+    {
+      "amount": "-725.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-23",
+      "running_balance": "31856.00",
+      "source_line": 17,
+      "source_page": 1
+    },
+    {
+      "amount": "320.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MISC",
+      "posted_date": "2026-04-24",
+      "running_balance": "32176.00",
+      "source_line": 18,
+      "source_page": 1
+    },
+    {
+      "amount": "9500.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MEGACORP CONTRACT 7714",
+      "posted_date": "2026-04-27",
+      "running_balance": "41676.00",
+      "source_line": 19,
+      "source_page": 1
+    },
+    {
+      "amount": "-502.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-28",
+      "running_balance": "41174.00",
+      "source_line": 20,
+      "source_page": 1
+    },
+    {
+      "amount": "160.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT MISC",
+      "posted_date": "2026-04-29",
+      "running_balance": "41334.00",
+      "source_line": 21,
+      "source_page": 1
+    },
+    {
+      "amount": "-581.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-30",
+      "running_balance": "40753.00",
+      "source_line": 22,
+      "source_page": 1
+    }
+  ],
+  "version": "1"
+}

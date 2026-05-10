@@ -1,0 +1,83 @@
+{
+  "bank": "wells_fargo_business",
+  "expected": {
+    "fraud_score": {
+      "max": 50,
+      "min": 0
+    },
+    "recommendation": "refer",
+    "validation_passed": true
+  },
+  "scenario": "very_new_account",
+  "seed": 30006,
+  "summary": {
+    "beginning_balance": "0.00",
+    "deposit_total": "9464.00",
+    "ending_balance": "8493.00",
+    "period_end": "2026-04-30",
+    "period_start": "2026-04-01",
+    "printed_transaction_count": 6,
+    "withdrawal_total": "971.00"
+  },
+  "tolerances": {
+    "fraud_score": 5,
+    "money": "1.00"
+  },
+  "transactions": [
+    {
+      "amount": "8000.00",
+      "category": "deposit",
+      "description": "OPENING DEPOSIT",
+      "posted_date": "2026-04-15",
+      "running_balance": "8000.00",
+      "source_line": 1,
+      "source_page": 1
+    },
+    {
+      "amount": "-334.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-16",
+      "running_balance": "7666.00",
+      "source_line": 2,
+      "source_page": 1
+    },
+    {
+      "amount": "805.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-20",
+      "running_balance": "8471.00",
+      "source_line": 3,
+      "source_page": 1
+    },
+    {
+      "amount": "-337.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-23",
+      "running_balance": "8134.00",
+      "source_line": 4,
+      "source_page": 1
+    },
+    {
+      "amount": "659.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-27",
+      "running_balance": "8793.00",
+      "source_line": 5,
+      "source_page": 1
+    },
+    {
+      "amount": "-300.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-30",
+      "running_balance": "8493.00",
+      "source_line": 6,
+      "source_page": 1
+    }
+  ],
+  "version": "1"
+}

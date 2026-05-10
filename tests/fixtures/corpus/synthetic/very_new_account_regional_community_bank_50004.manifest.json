@@ -1,0 +1,83 @@
+{
+  "bank": "regional_community_bank",
+  "expected": {
+    "fraud_score": {
+      "max": 50,
+      "min": 0
+    },
+    "recommendation": "refer",
+    "validation_passed": true
+  },
+  "scenario": "very_new_account",
+  "seed": 50004,
+  "summary": {
+    "beginning_balance": "0.00",
+    "deposit_total": "9264.00",
+    "ending_balance": "8309.00",
+    "period_end": "2026-04-30",
+    "period_start": "2026-04-01",
+    "printed_transaction_count": 6,
+    "withdrawal_total": "955.00"
+  },
+  "tolerances": {
+    "fraud_score": 5,
+    "money": "1.00"
+  },
+  "transactions": [
+    {
+      "amount": "8000.00",
+      "category": "deposit",
+      "description": "OPENING DEPOSIT",
+      "posted_date": "2026-04-15",
+      "running_balance": "8000.00",
+      "source_line": 1,
+      "source_page": 1
+    },
+    {
+      "amount": "-354.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-16",
+      "running_balance": "7646.00",
+      "source_line": 2,
+      "source_page": 1
+    },
+    {
+      "amount": "476.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-20",
+      "running_balance": "8122.00",
+      "source_line": 3,
+      "source_page": 1
+    },
+    {
+      "amount": "-288.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-23",
+      "running_balance": "7834.00",
+      "source_line": 4,
+      "source_page": 1
+    },
+    {
+      "amount": "788.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-27",
+      "running_balance": "8622.00",
+      "source_line": 5,
+      "source_page": 1
+    },
+    {
+      "amount": "-313.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-30",
+      "running_balance": "8309.00",
+      "source_line": 6,
+      "source_page": 1
+    }
+  ],
+  "version": "1"
+}

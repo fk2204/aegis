@@ -1,0 +1,462 @@
+{
+  "bank": "wells_fargo_business",
+  "expected": {
+    "fraud_score": {
+      "max": 90,
+      "min": 30
+    },
+    "mca_positions_min": 2,
+    "recommendation": "decline",
+    "validation_passed": true
+  },
+  "scenario": "mca_stacked",
+  "seed": 30003,
+  "summary": {
+    "beginning_balance": "8000.00",
+    "deposit_total": "13434.00",
+    "ending_balance": "11974.00",
+    "period_end": "2026-04-30",
+    "period_start": "2026-04-01",
+    "printed_transaction_count": 48,
+    "withdrawal_total": "9460.00"
+  },
+  "tolerances": {
+    "fraud_score": 5,
+    "money": "1.00"
+  },
+  "transactions": [
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-01",
+      "running_balance": "7750.00",
+      "source_line": 1,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-01",
+      "running_balance": "7570.00",
+      "source_line": 2,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-02",
+      "running_balance": "7320.00",
+      "source_line": 3,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-02",
+      "running_balance": "7140.00",
+      "source_line": 4,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-03",
+      "running_balance": "6890.00",
+      "source_line": 5,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-03",
+      "running_balance": "6710.00",
+      "source_line": 6,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-06",
+      "running_balance": "6460.00",
+      "source_line": 7,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-06",
+      "running_balance": "6280.00",
+      "source_line": 8,
+      "source_page": 1
+    },
+    {
+      "amount": "2805.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-06",
+      "running_balance": "9085.00",
+      "source_line": 9,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-07",
+      "running_balance": "8835.00",
+      "source_line": 10,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-07",
+      "running_balance": "8655.00",
+      "source_line": 11,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-08",
+      "running_balance": "8405.00",
+      "source_line": 12,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-08",
+      "running_balance": "8225.00",
+      "source_line": 13,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-09",
+      "running_balance": "7975.00",
+      "source_line": 14,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-09",
+      "running_balance": "7795.00",
+      "source_line": 15,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-10",
+      "running_balance": "7545.00",
+      "source_line": 16,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-10",
+      "running_balance": "7365.00",
+      "source_line": 17,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-13",
+      "running_balance": "7115.00",
+      "source_line": 18,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-13",
+      "running_balance": "6935.00",
+      "source_line": 19,
+      "source_page": 1
+    },
+    {
+      "amount": "2977.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-13",
+      "running_balance": "9912.00",
+      "source_line": 20,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-14",
+      "running_balance": "9662.00",
+      "source_line": 21,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-14",
+      "running_balance": "9482.00",
+      "source_line": 22,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-15",
+      "running_balance": "9232.00",
+      "source_line": 23,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-15",
+      "running_balance": "9052.00",
+      "source_line": 24,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-16",
+      "running_balance": "8802.00",
+      "source_line": 25,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-16",
+      "running_balance": "8622.00",
+      "source_line": 26,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-17",
+      "running_balance": "8372.00",
+      "source_line": 27,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-17",
+      "running_balance": "8192.00",
+      "source_line": 28,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-20",
+      "running_balance": "7942.00",
+      "source_line": 29,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-20",
+      "running_balance": "7762.00",
+      "source_line": 30,
+      "source_page": 1
+    },
+    {
+      "amount": "4161.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-20",
+      "running_balance": "11923.00",
+      "source_line": 31,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-21",
+      "running_balance": "11673.00",
+      "source_line": 32,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-21",
+      "running_balance": "11493.00",
+      "source_line": 33,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-22",
+      "running_balance": "11243.00",
+      "source_line": 34,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-22",
+      "running_balance": "11063.00",
+      "source_line": 35,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-23",
+      "running_balance": "10813.00",
+      "source_line": 36,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-23",
+      "running_balance": "10633.00",
+      "source_line": 37,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-24",
+      "running_balance": "10383.00",
+      "source_line": 38,
+      "source_page": 1
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-24",
+      "running_balance": "10203.00",
+      "source_line": 39,
+      "source_page": 1
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-27",
+      "running_balance": "9953.00",
+      "source_line": 1,
+      "source_page": 2
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-27",
+      "running_balance": "9773.00",
+      "source_line": 2,
+      "source_page": 2
+    },
+    {
+      "amount": "3491.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT",
+      "posted_date": "2026-04-27",
+      "running_balance": "13264.00",
+      "source_line": 3,
+      "source_page": 2
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-28",
+      "running_balance": "13014.00",
+      "source_line": 4,
+      "source_page": 2
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-28",
+      "running_balance": "12834.00",
+      "source_line": 5,
+      "source_page": 2
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-29",
+      "running_balance": "12584.00",
+      "source_line": 6,
+      "source_page": 2
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-29",
+      "running_balance": "12404.00",
+      "source_line": 7,
+      "source_page": 2
+    },
+    {
+      "amount": "-250.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "posted_date": "2026-04-30",
+      "running_balance": "12154.00",
+      "source_line": 8,
+      "source_page": 2
+    },
+    {
+      "amount": "-180.00",
+      "category": "mca_debit",
+      "description": "ACH DEBIT MCA FUNDER BETA",
+      "posted_date": "2026-04-30",
+      "running_balance": "11974.00",
+      "source_line": 9,
+      "source_page": 2
+    }
+  ],
+  "version": "1"
+}

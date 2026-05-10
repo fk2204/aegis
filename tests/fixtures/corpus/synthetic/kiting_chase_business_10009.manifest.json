@@ -1,0 +1,299 @@
+{
+  "bank": "chase_business",
+  "expected": {
+    "fraud_score": {
+      "max": 100,
+      "min": 40
+    },
+    "recommendation": "decline",
+    "validation_passed": true
+  },
+  "scenario": "kiting",
+  "seed": 10009,
+  "summary": {
+    "beginning_balance": "5000.00",
+    "deposit_total": "149337.00",
+    "ending_balance": "7049.00",
+    "period_end": "2026-04-30",
+    "period_start": "2026-04-01",
+    "printed_transaction_count": 30,
+    "withdrawal_total": "147288.00"
+  },
+  "tolerances": {
+    "fraud_score": 5,
+    "money": "1.00"
+  },
+  "transactions": [
+    {
+      "amount": "10611.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-01",
+      "running_balance": "15611.00",
+      "source_line": 1,
+      "source_page": 1
+    },
+    {
+      "amount": "-10611.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-01",
+      "running_balance": "5000.00",
+      "source_line": 2,
+      "source_page": 1
+    },
+    {
+      "amount": "9710.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-03",
+      "running_balance": "14710.00",
+      "source_line": 3,
+      "source_page": 1
+    },
+    {
+      "amount": "-9710.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-03",
+      "running_balance": "5000.00",
+      "source_line": 4,
+      "source_page": 1
+    },
+    {
+      "amount": "10822.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-06",
+      "running_balance": "15822.00",
+      "source_line": 5,
+      "source_page": 1
+    },
+    {
+      "amount": "-10822.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-06",
+      "running_balance": "5000.00",
+      "source_line": 6,
+      "source_page": 1
+    },
+    {
+      "amount": "456.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT CUSTOMER",
+      "posted_date": "2026-04-07",
+      "running_balance": "5456.00",
+      "source_line": 7,
+      "source_page": 1
+    },
+    {
+      "amount": "8866.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-08",
+      "running_balance": "14322.00",
+      "source_line": 8,
+      "source_page": 1
+    },
+    {
+      "amount": "-8866.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-08",
+      "running_balance": "5456.00",
+      "source_line": 9,
+      "source_page": 1
+    },
+    {
+      "amount": "13136.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-10",
+      "running_balance": "18592.00",
+      "source_line": 10,
+      "source_page": 1
+    },
+    {
+      "amount": "-13136.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-10",
+      "running_balance": "5456.00",
+      "source_line": 11,
+      "source_page": 1
+    },
+    {
+      "amount": "14908.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-13",
+      "running_balance": "20364.00",
+      "source_line": 12,
+      "source_page": 1
+    },
+    {
+      "amount": "-14908.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-13",
+      "running_balance": "5456.00",
+      "source_line": 13,
+      "source_page": 1
+    },
+    {
+      "amount": "651.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT CUSTOMER",
+      "posted_date": "2026-04-14",
+      "running_balance": "6107.00",
+      "source_line": 14,
+      "source_page": 1
+    },
+    {
+      "amount": "11334.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-15",
+      "running_balance": "17441.00",
+      "source_line": 15,
+      "source_page": 1
+    },
+    {
+      "amount": "-11334.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-15",
+      "running_balance": "6107.00",
+      "source_line": 16,
+      "source_page": 1
+    },
+    {
+      "amount": "10228.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-17",
+      "running_balance": "16335.00",
+      "source_line": 17,
+      "source_page": 1
+    },
+    {
+      "amount": "-10228.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-17",
+      "running_balance": "6107.00",
+      "source_line": 18,
+      "source_page": 1
+    },
+    {
+      "amount": "11894.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-20",
+      "running_balance": "18001.00",
+      "source_line": 19,
+      "source_page": 1
+    },
+    {
+      "amount": "-11894.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-20",
+      "running_balance": "6107.00",
+      "source_line": 20,
+      "source_page": 1
+    },
+    {
+      "amount": "402.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT CUSTOMER",
+      "posted_date": "2026-04-21",
+      "running_balance": "6509.00",
+      "source_line": 21,
+      "source_page": 1
+    },
+    {
+      "amount": "10381.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-22",
+      "running_balance": "16890.00",
+      "source_line": 22,
+      "source_page": 1
+    },
+    {
+      "amount": "-10381.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-22",
+      "running_balance": "6509.00",
+      "source_line": 23,
+      "source_page": 1
+    },
+    {
+      "amount": "12859.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-24",
+      "running_balance": "19368.00",
+      "source_line": 24,
+      "source_page": 1
+    },
+    {
+      "amount": "-12859.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-24",
+      "running_balance": "6509.00",
+      "source_line": 25,
+      "source_page": 1
+    },
+    {
+      "amount": "10023.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-27",
+      "running_balance": "16532.00",
+      "source_line": 26,
+      "source_page": 1
+    },
+    {
+      "amount": "-10023.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-27",
+      "running_balance": "6509.00",
+      "source_line": 27,
+      "source_page": 1
+    },
+    {
+      "amount": "540.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT CUSTOMER",
+      "posted_date": "2026-04-28",
+      "running_balance": "7049.00",
+      "source_line": 28,
+      "source_page": 1
+    },
+    {
+      "amount": "12516.00",
+      "category": "wire_in",
+      "description": "WIRE TRANSFER FROM ACME LLC",
+      "posted_date": "2026-04-29",
+      "running_balance": "19565.00",
+      "source_line": 29,
+      "source_page": 1
+    },
+    {
+      "amount": "-12516.00",
+      "category": "wire_out",
+      "description": "WIRE TRANSFER TO ACME LLC",
+      "posted_date": "2026-04-29",
+      "running_balance": "7049.00",
+      "source_line": 30,
+      "source_page": 1
+    }
+  ],
+  "version": "1"
+}

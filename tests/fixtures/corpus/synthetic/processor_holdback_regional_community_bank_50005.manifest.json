@@ -1,0 +1,425 @@
+{
+  "bank": "regional_community_bank",
+  "expected": {
+    "fraud_score": {
+      "max": 45,
+      "min": 5
+    },
+    "recommendation": "approve",
+    "validation_passed": true
+  },
+  "scenario": "processor_holdback",
+  "seed": 50005,
+  "summary": {
+    "beginning_balance": "3500.00",
+    "deposit_total": "31616.00",
+    "ending_balance": "32366.00",
+    "period_end": "2026-04-30",
+    "period_start": "2026-04-01",
+    "printed_transaction_count": 44,
+    "withdrawal_total": "2750.00"
+  },
+  "tolerances": {
+    "fraud_score": 5,
+    "money": "1.00"
+  },
+  "transactions": [
+    {
+      "amount": "1563.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-01",
+      "running_balance": "5063.00",
+      "source_line": 1,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-01",
+      "running_balance": "4938.00",
+      "source_line": 2,
+      "source_page": 1
+    },
+    {
+      "amount": "1631.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-02",
+      "running_balance": "6569.00",
+      "source_line": 3,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-02",
+      "running_balance": "6444.00",
+      "source_line": 4,
+      "source_page": 1
+    },
+    {
+      "amount": "1678.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-03",
+      "running_balance": "8122.00",
+      "source_line": 5,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-03",
+      "running_balance": "7997.00",
+      "source_line": 6,
+      "source_page": 1
+    },
+    {
+      "amount": "1613.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-06",
+      "running_balance": "9610.00",
+      "source_line": 7,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-06",
+      "running_balance": "9485.00",
+      "source_line": 8,
+      "source_page": 1
+    },
+    {
+      "amount": "1426.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-07",
+      "running_balance": "10911.00",
+      "source_line": 9,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-07",
+      "running_balance": "10786.00",
+      "source_line": 10,
+      "source_page": 1
+    },
+    {
+      "amount": "1189.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-08",
+      "running_balance": "11975.00",
+      "source_line": 11,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-08",
+      "running_balance": "11850.00",
+      "source_line": 12,
+      "source_page": 1
+    },
+    {
+      "amount": "1483.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-09",
+      "running_balance": "13333.00",
+      "source_line": 13,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-09",
+      "running_balance": "13208.00",
+      "source_line": 14,
+      "source_page": 1
+    },
+    {
+      "amount": "1055.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-10",
+      "running_balance": "14263.00",
+      "source_line": 15,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-10",
+      "running_balance": "14138.00",
+      "source_line": 16,
+      "source_page": 1
+    },
+    {
+      "amount": "1464.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-13",
+      "running_balance": "15602.00",
+      "source_line": 17,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-13",
+      "running_balance": "15477.00",
+      "source_line": 18,
+      "source_page": 1
+    },
+    {
+      "amount": "1666.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-14",
+      "running_balance": "17143.00",
+      "source_line": 19,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-14",
+      "running_balance": "17018.00",
+      "source_line": 20,
+      "source_page": 1
+    },
+    {
+      "amount": "1504.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-15",
+      "running_balance": "18522.00",
+      "source_line": 21,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-15",
+      "running_balance": "18397.00",
+      "source_line": 22,
+      "source_page": 1
+    },
+    {
+      "amount": "979.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-16",
+      "running_balance": "19376.00",
+      "source_line": 23,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-16",
+      "running_balance": "19251.00",
+      "source_line": 24,
+      "source_page": 1
+    },
+    {
+      "amount": "1286.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-17",
+      "running_balance": "20537.00",
+      "source_line": 25,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-17",
+      "running_balance": "20412.00",
+      "source_line": 26,
+      "source_page": 1
+    },
+    {
+      "amount": "1339.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-20",
+      "running_balance": "21751.00",
+      "source_line": 27,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-20",
+      "running_balance": "21626.00",
+      "source_line": 28,
+      "source_page": 1
+    },
+    {
+      "amount": "1164.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-21",
+      "running_balance": "22790.00",
+      "source_line": 29,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-21",
+      "running_balance": "22665.00",
+      "source_line": 30,
+      "source_page": 1
+    },
+    {
+      "amount": "1675.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-22",
+      "running_balance": "24340.00",
+      "source_line": 31,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-22",
+      "running_balance": "24215.00",
+      "source_line": 32,
+      "source_page": 1
+    },
+    {
+      "amount": "1484.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-23",
+      "running_balance": "25699.00",
+      "source_line": 33,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-23",
+      "running_balance": "25574.00",
+      "source_line": 34,
+      "source_page": 1
+    },
+    {
+      "amount": "1315.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-24",
+      "running_balance": "26889.00",
+      "source_line": 35,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-24",
+      "running_balance": "26764.00",
+      "source_line": 36,
+      "source_page": 1
+    },
+    {
+      "amount": "1769.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-27",
+      "running_balance": "28533.00",
+      "source_line": 37,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-27",
+      "running_balance": "28408.00",
+      "source_line": 38,
+      "source_page": 1
+    },
+    {
+      "amount": "1059.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-28",
+      "running_balance": "29467.00",
+      "source_line": 39,
+      "source_page": 1
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-28",
+      "running_balance": "29342.00",
+      "source_line": 1,
+      "source_page": 2
+    },
+    {
+      "amount": "1691.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-29",
+      "running_balance": "31033.00",
+      "source_line": 2,
+      "source_page": 2
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-29",
+      "running_balance": "30908.00",
+      "source_line": 3,
+      "source_page": 2
+    },
+    {
+      "amount": "1583.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT PROCESSOR SETTLEMENT",
+      "posted_date": "2026-04-30",
+      "running_balance": "32491.00",
+      "source_line": 4,
+      "source_page": 2
+    },
+    {
+      "amount": "-125.00",
+      "category": "fee",
+      "description": "ACH DEBIT PROCESSOR HOLDBACK",
+      "posted_date": "2026-04-30",
+      "running_balance": "32366.00",
+      "source_line": 5,
+      "source_page": 2
+    }
+  ],
+  "version": "1"
+}

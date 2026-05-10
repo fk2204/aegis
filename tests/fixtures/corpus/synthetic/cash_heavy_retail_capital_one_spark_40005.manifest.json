@@ -1,0 +1,335 @@
+{
+  "bank": "capital_one_spark",
+  "expected": {
+    "fraud_score": {
+      "max": 30
+    },
+    "hard_decline_reasons": [],
+    "recommendation": "approve",
+    "validation_passed": true
+  },
+  "scenario": "cash_heavy_retail",
+  "seed": 40005,
+  "summary": {
+    "beginning_balance": "3000.00",
+    "deposit_total": "41638.00",
+    "ending_balance": "41068.00",
+    "period_end": "2026-04-30",
+    "period_start": "2026-04-01",
+    "printed_transaction_count": 34,
+    "withdrawal_total": "3570.00"
+  },
+  "tolerances": {
+    "fraud_score": 5,
+    "money": "1.00"
+  },
+  "transactions": [
+    {
+      "amount": "2164.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-01",
+      "running_balance": "5164.00",
+      "source_line": 1,
+      "source_page": 1
+    },
+    {
+      "amount": "1968.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-02",
+      "running_balance": "7132.00",
+      "source_line": 2,
+      "source_page": 1
+    },
+    {
+      "amount": "2000.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-03",
+      "running_balance": "9132.00",
+      "source_line": 3,
+      "source_page": 1
+    },
+    {
+      "amount": "-556.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT WHOLESALE",
+      "posted_date": "2026-04-03",
+      "running_balance": "8576.00",
+      "source_line": 4,
+      "source_page": 1
+    },
+    {
+      "amount": "1666.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-04",
+      "running_balance": "10242.00",
+      "source_line": 5,
+      "source_page": 1
+    },
+    {
+      "amount": "1492.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-06",
+      "running_balance": "11734.00",
+      "source_line": 6,
+      "source_page": 1
+    },
+    {
+      "amount": "915.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-07",
+      "running_balance": "12649.00",
+      "source_line": 7,
+      "source_page": 1
+    },
+    {
+      "amount": "-216.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT WHOLESALE",
+      "posted_date": "2026-04-07",
+      "running_balance": "12433.00",
+      "source_line": 8,
+      "source_page": 1
+    },
+    {
+      "amount": "1121.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-08",
+      "running_balance": "13554.00",
+      "source_line": 9,
+      "source_page": 1
+    },
+    {
+      "amount": "2065.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-09",
+      "running_balance": "15619.00",
+      "source_line": 10,
+      "source_page": 1
+    },
+    {
+      "amount": "2135.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-10",
+      "running_balance": "17754.00",
+      "source_line": 11,
+      "source_page": 1
+    },
+    {
+      "amount": "-517.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT WHOLESALE",
+      "posted_date": "2026-04-10",
+      "running_balance": "17237.00",
+      "source_line": 12,
+      "source_page": 1
+    },
+    {
+      "amount": "2174.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-11",
+      "running_balance": "19411.00",
+      "source_line": 13,
+      "source_page": 1
+    },
+    {
+      "amount": "1800.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-13",
+      "running_balance": "21211.00",
+      "source_line": 14,
+      "source_page": 1
+    },
+    {
+      "amount": "1667.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-14",
+      "running_balance": "22878.00",
+      "source_line": 15,
+      "source_page": 1
+    },
+    {
+      "amount": "-379.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT WHOLESALE",
+      "posted_date": "2026-04-14",
+      "running_balance": "22499.00",
+      "source_line": 16,
+      "source_page": 1
+    },
+    {
+      "amount": "2183.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-15",
+      "running_balance": "24682.00",
+      "source_line": 17,
+      "source_page": 1
+    },
+    {
+      "amount": "1992.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-16",
+      "running_balance": "26674.00",
+      "source_line": 18,
+      "source_page": 1
+    },
+    {
+      "amount": "1742.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-17",
+      "running_balance": "28416.00",
+      "source_line": 19,
+      "source_page": 1
+    },
+    {
+      "amount": "-341.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT WHOLESALE",
+      "posted_date": "2026-04-17",
+      "running_balance": "28075.00",
+      "source_line": 20,
+      "source_page": 1
+    },
+    {
+      "amount": "2157.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-18",
+      "running_balance": "30232.00",
+      "source_line": 21,
+      "source_page": 1
+    },
+    {
+      "amount": "800.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-20",
+      "running_balance": "31032.00",
+      "source_line": 22,
+      "source_page": 1
+    },
+    {
+      "amount": "1046.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-21",
+      "running_balance": "32078.00",
+      "source_line": 23,
+      "source_page": 1
+    },
+    {
+      "amount": "-688.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT WHOLESALE",
+      "posted_date": "2026-04-21",
+      "running_balance": "31390.00",
+      "source_line": 24,
+      "source_page": 1
+    },
+    {
+      "amount": "837.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-22",
+      "running_balance": "32227.00",
+      "source_line": 25,
+      "source_page": 1
+    },
+    {
+      "amount": "1192.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-23",
+      "running_balance": "33419.00",
+      "source_line": 26,
+      "source_page": 1
+    },
+    {
+      "amount": "1420.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-24",
+      "running_balance": "34839.00",
+      "source_line": 27,
+      "source_page": 1
+    },
+    {
+      "amount": "-339.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT WHOLESALE",
+      "posted_date": "2026-04-24",
+      "running_balance": "34500.00",
+      "source_line": 28,
+      "source_page": 1
+    },
+    {
+      "amount": "993.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-25",
+      "running_balance": "35493.00",
+      "source_line": 29,
+      "source_page": 1
+    },
+    {
+      "amount": "1678.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-27",
+      "running_balance": "37171.00",
+      "source_line": 30,
+      "source_page": 1
+    },
+    {
+      "amount": "1662.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-28",
+      "running_balance": "38833.00",
+      "source_line": 31,
+      "source_page": 1
+    },
+    {
+      "amount": "-534.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT WHOLESALE",
+      "posted_date": "2026-04-28",
+      "running_balance": "38299.00",
+      "source_line": 32,
+      "source_page": 1
+    },
+    {
+      "amount": "917.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-29",
+      "running_balance": "39216.00",
+      "source_line": 33,
+      "source_page": 1
+    },
+    {
+      "amount": "1852.00",
+      "category": "deposit",
+      "description": "CASH DEPOSIT BRANCH",
+      "posted_date": "2026-04-30",
+      "running_balance": "41068.00",
+      "source_line": 34,
+      "source_page": 1
+    }
+  ],
+  "version": "1"
+}
