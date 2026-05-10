@@ -7,7 +7,7 @@
 #   2. Installs python3.12, uv, redis-server, cloudflared, and the
 #      WeasyPrint native runtime (Pango/Cairo/HarfBuzz) — without those
 #      libs the Tier-1 disclosure renders fail at runtime.
-#   3. Lays out /srv/aegis (code), /etc/aegis (env), /var/log/aegis (logs).
+#   3. Lays out /opt/aegis (code), /etc/aegis (env), /var/log/aegis (logs).
 #   4. Installs the systemd units + logrotate config.
 #
 # Idempotent: re-running is safe. Reinstalls dependencies that are
@@ -51,7 +51,7 @@ echo "==> 5/8  Creating aegis user + dirs"
 if ! id aegis >/dev/null 2>&1; then
   useradd --system --create-home --home-dir /home/aegis --shell /usr/sbin/nologin aegis
 fi
-install -d -o aegis -g aegis -m 0755 /srv/aegis
+install -d -o aegis -g aegis -m 0755 /opt/aegis
 install -d -o root  -g root  -m 0755 /etc/aegis
 install -d -o aegis -g aegis -m 0750 /var/log/aegis
 
@@ -78,17 +78,17 @@ EOF
   echo "    wrote skeleton /etc/aegis/aegis.env — POPULATE BEFORE STARTING SERVICES"
 fi
 
-echo "==> 6/8  Syncing repo into /srv/aegis"
+echo "==> 6/8  Syncing repo into /opt/aegis"
 rsync -a --delete \
   --exclude '.venv' \
   --exclude '__pycache__' \
   --exclude '.pytest_cache' \
   --exclude '.git' \
-  "$REPO_ROOT/" /srv/aegis/
-chown -R aegis:aegis /srv/aegis
+  "$REPO_ROOT/" /opt/aegis/
+chown -R aegis:aegis /opt/aegis
 
 echo "==> 7/8  Installing Python deps via uv"
-sudo -u aegis -H bash -lc 'cd /srv/aegis && uv sync'
+sudo -u aegis -H bash -lc 'cd /opt/aegis && uv sync'
 
 echo "==> 8/8  Installing systemd units + logrotate"
 install -m 0644 "$REPO_ROOT/deploy/aegis-web.service"     /etc/systemd/system/aegis-web.service

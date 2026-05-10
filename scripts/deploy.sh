@@ -22,7 +22,7 @@
 set -euo pipefail
 
 AEGIS_HOST="${AEGIS_HOST:-aegis@aegis.commerafunding.com}"
-AEGIS_REMOTE_PATH="${AEGIS_REMOTE_PATH:-/srv/aegis}"
+AEGIS_REMOTE_PATH="${AEGIS_REMOTE_PATH:-/opt/aegis}"
 AEGIS_HEALTH_URL="${AEGIS_HEALTH_URL:-http://127.0.0.1:5555/healthz}"
 
 log() { printf '\033[1;34m[deploy]\033[0m %s\n' "$*" >&2; }

@@ -210,16 +210,17 @@ aegis/
   REWRITE_PLAN.md
   COMPLIANCE.md           # statute citations for every state
   CORPUS_FINDINGS.md      # bugs surfaced by Phase 5.5 corpus + their fixes
-  RUNBOOK.md              # ops procedures (ssh, logs, rollback, key rotation)
   Makefile
 
   deploy/
     aegis-web.service          # systemd unit (uvicorn)
     aegis-worker.service       # systemd unit (arq)
+    aegis.env.example          # full env reference for /etc/aegis/aegis.env
     install.sh                 # idempotent first-time setup on fresh Hetzner box
     cloudflared-config.yml.example
     iam-policy.json            # AWS IAM policy for the aegis-bedrock user
     logrotate.aegis            # /etc/logrotate.d/aegis config
+    RUNBOOK.md                 # ops procedures (ssh, logs, rollback, key rotation)
 
   scripts/
     deploy.sh               # pre-flight checks + ssh + git pull + restart + smoke

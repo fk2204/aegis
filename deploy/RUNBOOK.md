@@ -69,7 +69,7 @@ restarts both units, then smoke-checks `/healthz` over the tunnel.
 ### Roll back to the previous SHA
 ```bash
 ssh aegis@aegis.commerafunding.com
-cd /srv/aegis
+cd /opt/aegis
 git log --oneline -n 5
 git checkout <PREVIOUS_SHA>
 sudo systemctl restart aegis-web aegis-worker
@@ -164,7 +164,7 @@ Confirm Redis is up + reachable from the worker:
 ```bash
 sudo systemctl status redis-server
 redis-cli -u redis://127.0.0.1:6379 ping     # → PONG
-sudo -u aegis bash -lc 'cd /srv/aegis && uv run python -c "from arq.connections import RedisSettings; print(RedisSettings.from_dsn(\"redis://127.0.0.1:6379\"))"'
+sudo -u aegis bash -lc 'cd /opt/aegis && uv run python -c "from arq.connections import RedisSettings; print(RedisSettings.from_dsn(\"redis://127.0.0.1:6379\"))"'
 ```
 If those all work but the queue is full, the worker process is wedged.
 `sudo systemctl restart aegis-worker` and watch

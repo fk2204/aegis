@@ -431,7 +431,7 @@ reviewable. No live machine yet.
   exists, `make check` passes locally), then ssh to the box, `git pull`,
   `uv sync`, `systemctl restart aegis-web aegis-worker`, smoke-check
   `/healthz` returns 200, abort on failure.
-- [ ] `RUNBOOK.md`: how to ssh in, how to read logs (`journalctl -u
+- [ ] `deploy/RUNBOOK.md`: how to ssh in, how to read logs (`journalctl -u
   aegis-web -f`), how to roll back (`git checkout PREVIOUS_SHA &&
   systemctl restart`), how to drain the queue before maintenance, how to
   rotate the bearer token, how to renew Cloudflare Tunnel credentials.
@@ -446,7 +446,7 @@ reviewable. No live machine yet.
 
 **Done when:** All deployment artifacts exist, `scripts/deploy.sh` dry-runs
 its pre-flight checks against the local checkout without error, and
-RUNBOOK.md is reviewed by the operator.
+`deploy/RUNBOOK.md` is reviewed by the operator.
 
 **STOP. Review with operator before Phase 6B.**
 
@@ -459,7 +459,7 @@ Goal: AEGIS is live behind Cloudflare Access on the Hetzner box.
 - [ ] Provision a fresh Hetzner CPX21 with Ubuntu 24 LTS.
 - [ ] Run `deploy/install.sh` on the box.
 - [ ] Set up Cloudflare Tunnel + Access (operator does this in Cloudflare
-  dashboard; RUNBOOK has the steps).
+  dashboard; deploy/RUNBOOK.md has the steps).
 - [ ] Populate `/etc/aegis/aegis.env` with prod secrets.
 - [ ] First deploy: `scripts/deploy.sh`. Verify `/healthz` returns 200
   through the tunnel.
