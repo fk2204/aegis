@@ -3,6 +3,12 @@
 .env.*
 !.env.example
 
+# Operator-only PowerShell helpers with hardcoded tokens (bearer, Cloudflare
+# tunnel). These live on the operator box and are never in version control.
+install-cloudflare-tunnel.ps1
+upload-statements.ps1
+upload-statements-*.ps1
+
 # Python
 __pycache__/
 *.pyc
