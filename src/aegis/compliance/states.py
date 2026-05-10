@@ -136,6 +136,41 @@ class PendingAmendment(_StrictModel):
     citation_url: str = Field(min_length=1)
 
 
+class PendingLegislation(_StrictModel):
+    """A pending bill that would CREATE a new MCA-specific law for a state.
+
+    Distinct from ``PendingAmendment``, which amends an existing Tier 1
+    statute. ``PendingLegislation`` lives on Tier 2 entries so the
+    operator dashboard can surface "this state may move to Tier 1" and
+    so the quarterly review job can flag states whose pending bills
+    have advanced.
+
+    Per IL dossier: HB 3477 (2025-2026, "Small Business Financing
+    Transparency Act") would create IL's first MCA disclosure law.
+    Predecessor SB 2234 died sine die at end of 103rd GA — recorded
+    here as ``status="died"`` for institutional memory.
+    """
+
+    bill_number: str = Field(min_length=1, description='e.g. "HB 3477"')
+    year: int = Field(ge=1900, le=2100)
+    session: str | None = Field(
+        default=None, min_length=1, description='e.g. "2025-2026", "103rd GA"'
+    )
+    common_name: str | None = Field(default=None, min_length=1)
+    status: Literal[
+        "introduced",
+        "pending",
+        "in_committee",
+        "passed_one_chamber",
+        "died",
+    ] = "introduced"
+    # The tier the state would be promoted to if this bill is enacted.
+    # Most pending CFDLs would create a Tier 1 entry; record explicitly
+    # so the dashboard can rank by impact.
+    would_promote_to_tier: Literal[1, 2] | None = None
+    citation_url: str = Field(min_length=1)
+
+
 class _BaseRegulation(_StrictModel):
     state: str = Field(min_length=2, max_length=2, description="USPS code, uppercase")
     state_name: str = Field(min_length=1)
@@ -294,13 +329,60 @@ class Tier1Regulation(_BaseRegulation):
 
 
 class Tier2Regulation(_BaseRegulation):
-    """General state law applies; no MCA-specific statute."""
+    """General state law applies; no MCA-specific statute.
+
+    Tier 2 carries the same kind of operational metadata Tier 1 does for
+    state-policy fields the matcher / dashboard care about (CoJ posture,
+    loan-broker registration, pending bills) — every field optional with
+    sensible defaults so existing Tier 2 promotions don't need updating.
+    """
 
     tier: Literal[2] = 2
     general_law_citation: str = Field(min_length=1)
     citation_url: str = Field(min_length=1)
     disclosure_required: Literal[False] = False
-    notes: str = Field(min_length=1, max_length=600)
+    notes: str = Field(min_length=1, max_length=2000)
+
+    # CoJ posture under general state law. Defaults conservative: many
+    # Tier 2 states have not been researched on this axis. IL flips
+    # ``coj_allowed="allowed"`` per 735 ILCS 5/2-1301(c) (commercial
+    # only). The matcher does NOT block on Tier 2 CoJ status — Tier 2
+    # is metadata-only for CoJ until promoted to Tier 1. Documented
+    # here so the operator dashboard can surface posture without a
+    # second source of truth.
+    coj_allowed: CojStatus | None = None
+    coj_citation: str | None = Field(default=None, min_length=1)
+    coj_citation_url: str | None = Field(default=None, min_length=1)
+    # Some states (IL) ban CoJs in CONSUMER transactions while permitting
+    # them in commercial ones. Recorded for completeness — AEGIS only
+    # handles commercial deals, but the field documents the consumer carve.
+    coj_consumer_ban: bool = False
+
+    # Loan-broker registration regime — applies in some states (IL,
+    # potentially others). Defaults None (not researched / not
+    # applicable). When required, the operator must register before
+    # serving deals from that state.
+    loan_broker_registration_authority: str | None = Field(
+        default=None, min_length=1
+    )
+    loan_broker_registration_required: Literal[
+        "yes", "no", "verify_before_first_deal"
+    ] | None = None
+    loan_broker_bond_required_usd: Decimal | None = Field(
+        default=None, ge=Decimal("0")
+    )
+
+    # Bills that would create an MCA-specific disclosure law in this
+    # state. When any entry's status changes to "passed both chambers"
+    # or similar, the operator should re-research the state and consider
+    # promoting to Tier 1.
+    pending_legislation: list[PendingLegislation] = Field(default_factory=list)
+
+    # Quarterly review hook. Set True when pending_legislation is
+    # non-empty AND active (not all "died"). The compliance calendar
+    # job reads this flag to decide which states to re-check each
+    # quarter (per docs/compliance/15_aegis_compliance_posture.md).
+    quarterly_review_required: bool = False
 
 
 class Tier3Regulation(_BaseRegulation):
@@ -723,6 +805,95 @@ STATES["GA"] = Tier1Regulation(
 )
 
 
+# Per docs/compliance/05_illinois.md: Illinois — TIER 2.
+#
+# Illinois has NOT enacted an MCA-specific disclosure law. Multiple
+# attempts (HB 3064 2023; SB 2234 2023-2024 died sine die 2025-01-07;
+# HB 3477 2025-2026 pending). General state law applies — Consumer
+# Fraud and Deceptive Business Practices Act, Loan Brokers Act of
+# 1995, commercial usury rules, and 735 ILCS 5/2-1301 governing CoJs
+# in commercial transactions. The disclosure router renders the
+# generic Tier 2 acknowledgment for IL deals.
+#
+# IL is the first Tier 2 entry to populate the new Tier 2 metadata
+# fields (CoJ posture, loan-broker registration, pending legislation,
+# quarterly review). Future Tier 2 promotions (per dossier 15) follow
+# this pattern.
+STATES["IL"] = Tier2Regulation(
+    state="IL",
+    state_name="Illinois",
+    tier=2,
+    general_law_citation=(
+        "Illinois Consumer Fraud and Deceptive Business Practices Act "
+        "(815 ILCS 505/); Illinois Loan Brokers Act of 1995 "
+        "(815 ILCS 175/); Illinois Code of Civil Procedure on "
+        "confessions of judgment (735 ILCS 5/2-1301)"
+    ),
+    citation_url=(
+        "https://codes.findlaw.com/il/chapter-735-civil-procedure/"
+        "il-st-sect-735-5-2-1301/"
+    ),
+    disclosure_required=False,
+    coj_allowed="allowed",
+    coj_citation="735 ILCS 5/2-1301(c)",
+    coj_citation_url=(
+        "https://codes.findlaw.com/il/chapter-735-civil-procedure/"
+        "il-st-sect-735-5-2-1301/"
+    ),
+    coj_consumer_ban=True,
+    loan_broker_registration_authority="Illinois Secretary of State",
+    loan_broker_registration_required="verify_before_first_deal",
+    loan_broker_bond_required_usd=Decimal("25000"),
+    pending_legislation=[
+        PendingLegislation(
+            bill_number="HB 3477",
+            year=2025,
+            session="2025-2026",
+            common_name="Small Business Financing Transparency Act",
+            status="introduced",
+            would_promote_to_tier=1,
+            citation_url=(
+                "https://legiscan.com/IL/text/HB3477/id/3109034/"
+                "Illinois-2025-HB3477-Introduced.html"
+            ),
+        ),
+        PendingLegislation(
+            bill_number="SB 2234",
+            year=2023,
+            session="103rd GA",
+            common_name="Small Business Truth in Lending Act",
+            status="died",
+            would_promote_to_tier=1,
+            citation_url=(
+                "https://www.ilga.gov/legislation/billstatus.asp"
+                "?DocNum=2234&GAID=17&GA=103&DocTypeID=SB"
+                "&LegID=147119&SessionID=112"
+            ),
+        ),
+    ],
+    quarterly_review_required=True,
+    notes=(
+        "Illinois has NOT enacted an MCA-specific disclosure law. Multiple "
+        "attempts (HB 3064 2023; SB 2234 2023-2024 died sine die 2025-01-07; "
+        "HB 3477 2025-2026 pending). AEGIS treats IL as Tier 2 until "
+        "enactment. CoJs PERMITTED in commercial MCA transactions per "
+        "735 ILCS 5/2-1301(c) — venue restricted to county of execution, "
+        "county of defendant residence, or county where defendant has "
+        "property; conspicuousness required by IL case law. CoJs BANNED "
+        "in consumer transactions since 1979-09-24. Loan broker "
+        "registration with IL Secretary of State Securities Department "
+        "may apply — operator must verify whether AEGIS qualifies as a "
+        "'loan broker' under 815 ILCS 175/ before serving first IL "
+        "deal; if so, $25,000 surety bond + annual renewal required. "
+        "Generic Tier 2 acknowledgment receipt only — no IL-specific "
+        "prescribed form. Quarterly review required: monitor HB 3477 "
+        "status; if enacted, promote IL to Tier 1 and build the "
+        "disclosure template based on the enacted text."
+    ),
+    verified_date=SKELETON_VERIFIED_DATE,
+)
+
+
 # Validators -------------------------------------------------------------------
 
 
@@ -811,6 +982,7 @@ __all__ = [
     "CojStatus",
     "CompliancePolicyError",
     "PendingAmendment",
+    "PendingLegislation",
     "StateNotAudited",
     "StateNotServed",
     "StateRegulation",

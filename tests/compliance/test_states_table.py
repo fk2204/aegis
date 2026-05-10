@@ -43,17 +43,21 @@ def test_all_45_states_present() -> None:
 
 
 def test_skeleton_states_are_all_tier_3_except_promoted() -> None:
-    """Skeleton: every state starts Tier 3; promoted states are Tier 1.
+    """Skeleton: every state starts Tier 3; promoted states moved up.
 
-    CA promoted per docs/compliance/01_california.md.
-    NY promoted per docs/compliance/02_new_york.md.
-    FL promoted per docs/compliance/03_florida.md.
-    GA promoted per docs/compliance/04_georgia.md.
+    CA promoted Tier 1 per docs/compliance/01_california.md.
+    NY promoted Tier 1 per docs/compliance/02_new_york.md.
+    FL promoted Tier 1 per docs/compliance/03_florida.md.
+    GA promoted Tier 1 per docs/compliance/04_georgia.md.
+    IL promoted Tier 2 per docs/compliance/05_illinois.md.
     """
     promoted_to_tier_1 = {"CA", "NY", "FL", "GA"}
+    promoted_to_tier_2 = {"IL"}
     for abbr, reg in STATES.items():
         if abbr in promoted_to_tier_1:
             assert reg.tier == 1, f"{abbr} should be promoted to Tier 1"
+        elif abbr in promoted_to_tier_2:
+            assert reg.tier == 2, f"{abbr} should be promoted to Tier 2"
         else:
             assert reg.tier == 3, f"{abbr} should default to Tier 3"
         assert reg.verified_date == SKELETON_VERIFIED_DATE
