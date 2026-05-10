@@ -68,6 +68,65 @@
                value="{{ form_data.get('phone') or (merchant.phone if is_edit and merchant.phone else '') }}">
       </label>
     </p>
+
+    <h3>Intake context</h3>
+    <p>
+      <label>Entity type<br>
+        <select name="entity_type">
+          {% set selected_entity = form_data.get('entity_type') or (merchant.entity_type if is_edit and merchant.entity_type else '') %}
+          <option value="" {% if not selected_entity %}selected{% endif %}>—</option>
+          {% for opt in ["llc", "corp", "sole_prop", "partnership", "other"] %}
+            <option value="{{ opt }}" {% if selected_entity == opt %}selected{% endif %}>{{ opt }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </p>
+    <p>
+      <label>EIN<br>
+        <input name="ein" placeholder="XX-XXXXXXX"
+               value="{{ form_data.get('ein') or (merchant.ein if is_edit and merchant.ein else '') }}">
+      </label>
+      <span class="src-ref">PII — masked in logs and excluded from CSV/JSON exports.</span>
+    </p>
+    <p>
+      <label>Requested advance ($)<br>
+        <input name="requested_amount" type="number" step="0.01" min="0"
+               value="{{ form_data.get('requested_amount') or (merchant.requested_amount if is_edit and merchant.requested_amount else '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Requested factor (e.g. 1.30)<br>
+        <input name="requested_factor" type="number" step="0.01" min="1"
+               value="{{ form_data.get('requested_factor') or (merchant.requested_factor if is_edit and merchant.requested_factor else '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Requested term (days)<br>
+        <input name="requested_term_days" type="number" min="1"
+               value="{{ form_data.get('requested_term_days') or (merchant.requested_term_days if is_edit and merchant.requested_term_days else '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Source / broker<br>
+        <input name="broker_source" placeholder="John @ ABC Brokers"
+               value="{{ form_data.get('broker_source') or (merchant.broker_source if is_edit and merchant.broker_source else '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Intake date<br>
+        <input name="intake_date" type="date"
+               value="{{ form_data.get('intake_date') or (merchant.intake_date if is_edit and merchant.intake_date else '') }}">
+      </label>
+    </p>
+    <p>
+      {% set is_renewal = form_data.get('is_renewal') in ['true','on','yes','1'] or (is_edit and merchant.is_renewal) %}
+      <label>
+        <input type="checkbox" name="is_renewal" value="true"
+               {% if is_renewal %}checked{% endif %}>
+        Renewal of a prior AEGIS-served deal
+      </label>
+    </p>
+
     <p>
       <button type="submit" style="padding: 8px 16px; background: #1a1a2e; color: #fff; border: none; border-radius: 4px; font-weight: 600; cursor: pointer;">
         {% if is_edit %}Save{% else %}Create{% endif %}

@@ -1,27 +1,81 @@
 {% extends "base.html.j2" %}
-{% block title %}Upload statement — AEGIS{% endblock %}
+{% block title %}Upload statements — AEGIS{% endblock %}
 {% block content %}
-  <h1>Upload bank statement</h1>
-  <p class="src-ref">PDF only, max 25 MB. The file is hashed; re-uploads
-  are deduped to the existing document id.</p>
+  <h1>Upload bank statements</h1>
+  <p class="src-ref">
+    PDF only, per-file cap 25 MB, batch cap 100 MB. Drop 3–4 months at
+    once and pick the merchant they belong to. The file is hashed; re-uploads
+    of the same bytes dedupe to the existing document id.
+  </p>
 
-  <form action="/upload"
-        method="post"
-        enctype="multipart/form-data"
-        hx-post="/upload"
-        hx-encoding="multipart/form-data"
-        hx-target="#upload-result"
-        hx-swap="innerHTML">
-    <input type="file" name="file" accept="application/pdf" required>
-    <input type="hidden" name="dummy" value="x">
-    <button type="submit">Upload</button>
+  {% if error %}
+    <p class="tag tag-manual_review" style="display: block; padding: 8px 12px;">
+      {{ error }}
+    </p>
+  {% endif %}
+
+  <form action="/ui/upload" method="post" enctype="multipart/form-data" style="max-width: 600px;">
+    <p>
+      <label>Merchant<br>
+        <select name="merchant_id">
+          <option value="">(no merchant — orphan upload, link later)</option>
+          {% for m in merchants %}
+            <option value="{{ m.id }}">{{ m.business_name }} ({{ m.state }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <span class="src-ref">
+        Or
+        <a href="/ui/intake">create merchant + upload in one step</a>.
+      </span>
+    </p>
+    <p>
+      <label>Statement PDFs (one or more)<br>
+        <input type="file" name="files" accept="application/pdf" multiple required>
+      </label>
+    </p>
+    <p>
+      <button type="submit" style="padding: 8px 16px; background: #1a1a2e; color: #fff; border: none; border-radius: 4px; font-weight: 600; cursor: pointer;">
+        Upload &amp; queue parse
+      </button>
+    </p>
   </form>
 
-  <div id="upload-result" style="margin-top: 16px;"></div>
-
-  <p class="src-ref" style="margin-top: 24px;">
-    The bearer token must be supplied in the Authorization header by your
-    proxy / browser plugin in dev. In production, Cloudflare Access
-    handles SSO before the request reaches the app.
-  </p>
+  {% if results %}
+    <h2 style="margin-top: 24px;">Upload results</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Status</th>
+          <th>Detail</th>
+          <th>Document</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in results %}
+        <tr>
+          <td>{{ r.filename }}</td>
+          <td>
+            {% if r.status == "ok" %}
+              <span class="tag tag-proceed">ok</span>
+            {% elif r.status == "duplicate" %}
+              <span class="tag tag-review">duplicate</span>
+            {% else %}
+              <span class="tag tag-manual_review">error</span>
+            {% endif %}
+          </td>
+          <td class="src-ref">{{ r.detail }}</td>
+          <td>
+            {% if r.document_id %}
+              <span class="src-ref">{{ r.document_id[:8] }}…</span>
+            {% else %}
+              —
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
 {% endblock %}

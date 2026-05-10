@@ -1,0 +1,147 @@
+{% extends "base.html.j2" %}
+{% block title %}Intake — AEGIS{% endblock %}
+{% block content %}
+  <h1>Intake — new merchant + statements</h1>
+  <p class="src-ref">
+    One-shot intake: create the merchant and drop their bank statements
+    in a single submit. The 5–6 fields below are minimum; everything
+    else can be edited later from the merchant page.
+  </p>
+
+  {% if error %}
+    <p class="tag tag-manual_review" style="display: block; padding: 8px 12px;">
+      {{ error }}
+    </p>
+  {% endif %}
+
+  <form method="post" action="/ui/intake" enctype="multipart/form-data" style="max-width: 720px;">
+    <h3>Merchant</h3>
+    <p>
+      <label>Business name<br>
+        <input name="business_name" required value="{{ form.get('business_name', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>DBA<br>
+        <input name="dba" value="{{ form.get('dba', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Owner name<br>
+        <input name="owner_name" required value="{{ form.get('owner_name', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>State (2-letter)<br>
+        <input name="state" required maxlength="2" minlength="2"
+               style="text-transform: uppercase;"
+               value="{{ form.get('state', '') }}">
+      </label>
+      <span class="src-ref">
+        Served: 45 states. TX/VA/CT/UT/MO/DC and territories rejected.
+      </span>
+    </p>
+    <p>
+      <label>Entity type<br>
+        <select name="entity_type">
+          <option value="">—</option>
+          {% for opt in ["llc", "corp", "sole_prop", "partnership", "other"] %}
+            <option value="{{ opt }}" {% if form.get('entity_type') == opt %}selected{% endif %}>
+              {{ opt }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+    </p>
+    <p>
+      <label>EIN<br>
+        <input name="ein" placeholder="XX-XXXXXXX"
+               value="{{ form.get('ein', '') }}">
+      </label>
+      <span class="src-ref">PII — masked in logs and excluded from CSV/JSON exports.</span>
+    </p>
+    <p>
+      <label>NAICS code<br>
+        <input name="industry_naics" value="{{ form.get('industry_naics', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Owner credit score (300–850)<br>
+        <input name="credit_score" type="number" min="300" max="850"
+               value="{{ form.get('credit_score', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Time in business (months)<br>
+        <input name="time_in_business_months" type="number" min="0"
+               value="{{ form.get('time_in_business_months', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Email<br>
+        <input name="email" type="email" value="{{ form.get('email', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Phone<br>
+        <input name="phone" value="{{ form.get('phone', '') }}">
+      </label>
+    </p>
+
+    <h3>Underwriting target</h3>
+    <p>
+      <label>Requested advance ($)<br>
+        <input name="requested_amount" type="number" step="0.01" min="0"
+               value="{{ form.get('requested_amount', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Requested factor (e.g. 1.30)<br>
+        <input name="requested_factor" type="number" step="0.01" min="1"
+               value="{{ form.get('requested_factor', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Requested term (days)<br>
+        <input name="requested_term_days" type="number" min="1"
+               value="{{ form.get('requested_term_days', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Source / broker<br>
+        <input name="broker_source" placeholder="John @ ABC Brokers"
+               value="{{ form.get('broker_source', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>Intake date<br>
+        <input name="intake_date" type="date"
+               value="{{ form.get('intake_date', '') }}">
+      </label>
+    </p>
+    <p>
+      <label>
+        <input type="checkbox" name="is_renewal" value="true"
+               {% if form.get('is_renewal') in ['true','on','yes','1'] %}checked{% endif %}>
+        Renewal of a prior AEGIS-served deal
+      </label>
+    </p>
+
+    <h3>Statements</h3>
+    <p>
+      <label>Bank statement PDFs (drop 3–4 months at once)<br>
+        <input type="file" name="files" accept="application/pdf" multiple>
+      </label>
+      <span class="src-ref">
+        Optional at intake — you can also upload later from the merchant page.
+      </span>
+    </p>
+
+    <p style="margin-top: 24px;">
+      <button type="submit" style="padding: 8px 16px; background: #1a1a2e; color: #fff; border: none; border-radius: 4px; font-weight: 600; cursor: pointer;">
+        Create merchant &amp; queue parse
+      </button>
+      <a href="/ui/merchants" style="margin-left: 12px;">Cancel</a>
+    </p>
+  </form>
+{% endblock %}

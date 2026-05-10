@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     # Hard cap on uploaded PDF size (per CLAUDE.md security rules).
     aegis_max_upload_bytes: int = Field(default=25 * 1024 * 1024, gt=0)
 
+    # Hard cap on TOTAL bytes accepted in one multi-statement intake
+    # request. Lets the operator drop 3-4 statements at once without
+    # uncapping individual file size. Default 100 MB = 4 statements at
+    # the per-file cap.
+    aegis_max_intake_total_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
+
     # OFAC SDN cache. Refresh window 24h, hard cutoff 7d (see scoring/ofac.py).
     # Cache file is created on first refresh; the parent dir is auto-mkdir'd
     # by the get_ofac_client dependency.

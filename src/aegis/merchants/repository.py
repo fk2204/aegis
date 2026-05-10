@@ -139,6 +139,8 @@ class SupabaseMerchantRepository:
 
 
 def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
+    from decimal import Decimal as _Decimal
+
     return MerchantRow(
         id=UUID(row["id"]),
         business_name=row["business_name"],
@@ -151,10 +153,43 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         credit_score=row.get("credit_score"),
         email=row.get("email"),
         phone=row.get("phone"),
+        entity_type=row.get("entity_type"),
+        ein=row.get("ein"),
+        requested_amount=(
+            _Decimal(str(row["requested_amount"]))
+            if row.get("requested_amount") is not None
+            else None
+        ),
+        requested_factor=(
+            _Decimal(str(row["requested_factor"]))
+            if row.get("requested_factor") is not None
+            else None
+        ),
+        requested_term_days=row.get("requested_term_days"),
+        broker_source=row.get("broker_source"),
+        intake_date=_parse_date(row.get("intake_date")),
+        is_renewal=bool(row.get("is_renewal", False)),
+        preferred_funder_id=(
+            UUID(row["preferred_funder_id"])
+            if row.get("preferred_funder_id")
+            else None
+        ),
         zoho_deal_id=row.get("zoho_deal_id"),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
     )
+
+
+def _parse_date(value: object) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        return date.fromisoformat(value)
+    return None
 
 
 def _parse_dt(value: object) -> datetime | None:
@@ -182,6 +217,17 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "credit_score": m.credit_score,
         "email": m.email,
         "phone": m.phone,
+        "entity_type": m.entity_type,
+        "ein": m.ein,
+        "requested_amount": str(m.requested_amount) if m.requested_amount is not None else None,
+        "requested_factor": str(m.requested_factor) if m.requested_factor is not None else None,
+        "requested_term_days": m.requested_term_days,
+        "broker_source": m.broker_source,
+        "intake_date": m.intake_date.isoformat() if m.intake_date else None,
+        "is_renewal": m.is_renewal,
+        "preferred_funder_id": (
+            str(m.preferred_funder_id) if m.preferred_funder_id else None
+        ),
         "zoho_deal_id": m.zoho_deal_id,
     }
     return payload

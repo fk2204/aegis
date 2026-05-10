@@ -1,0 +1,67 @@
+{# Stacking summary card.
+
+  Inputs:
+    - stacking: StackingCard | None  (None hides the card entirely)
+#}
+{% if stacking is not none %}
+  <div class="stacking-card">
+    <div class="stacking-summary">
+      <div class="tile">
+        <div class="tile-label">Daily MCA Burden</div>
+        <div class="tile-value">${{ stacking.daily_total }}</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Monthly Projection (×22)</div>
+        <div class="tile-value">${{ stacking.monthly_burden }}</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Active Positions</div>
+        <div class="tile-value">{{ stacking.position_count }}</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">MCA Debits Found</div>
+        <div class="tile-value">{{ stacking.debit_count }}</div>
+      </div>
+    </div>
+
+    {% if stacking.debits %}
+      <details style="margin-top: 12px;">
+        <summary class="src-ref" style="cursor: pointer;">
+          {{ stacking.debits|length }} contributing debit row(s) — click to expand
+        </summary>
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Lender (best-effort)</th>
+              <th style="text-align: right;">Amount</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in stacking.debits %}
+              <tr>
+                <td>{{ d.posted_date }}</td>
+                <td>{{ d.lender_label }}</td>
+                <td style="text-align: right;">{{ d.amount }}</td>
+                <td class="src-ref">p{{ d.source_page }} L{{ d.source_line }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </details>
+    {% endif %}
+  </div>
+
+  <style>
+    .stacking-card {
+      border: 1px solid #f5b8b8;
+      border-radius: 8px;
+      padding: 12px 16px;
+      background: #fff8f8;
+      margin-bottom: 16px;
+    }
+    .stacking-summary { display: flex; flex-wrap: wrap; gap: 8px; }
+    .stacking-card .tile { background: #fff; }
+  </style>
+{% endif %}

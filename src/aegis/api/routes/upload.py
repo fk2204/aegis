@@ -27,6 +27,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     HTTPException,
     Request,
     UploadFile,
@@ -69,18 +70,57 @@ async def upload_pdf(
     file: Annotated[UploadFile, File(description="Bank statement PDF")],
     repository: Annotated[DocumentRepository, Depends(get_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    merchant_id: Annotated[UUID | None, Form()] = None,
 ) -> UploadResponse:
+    """Single-file bearer-protected upload.
+
+    The dashboard's no-bearer multi-file path (``POST /ui/upload``) calls
+    ``persist_pdf_upload`` directly and bypasses this route, but exposes
+    the same hashing/dedup/audit semantics via the shared helper.
+    """
     settings = get_settings()
     actor = _resolve_actor(request)
-
     body = await _read_with_cap(file, settings.aegis_max_upload_bytes)
+    return await persist_pdf_upload(
+        request=request,
+        body=body,
+        original_filename=file.filename or "unknown.pdf",
+        repository=repository,
+        audit=audit,
+        actor=actor,
+        merchant_id=merchant_id,
+    )
 
+
+async def persist_pdf_upload(
+    *,
+    request: Request,
+    body: bytes,
+    original_filename: str,
+    repository: DocumentRepository,
+    audit: AuditLog,
+    actor: str,
+    merchant_id: UUID | None = None,
+) -> UploadResponse:
+    """Hash, dedup, persist + audit + enqueue a single PDF.
+
+    Shared by the bearer ``POST /upload`` and the dashboard
+    ``POST /ui/upload`` and ``POST /ui/intake`` routes. Raises
+    ``HTTPException`` on size/format violations so callers don't have to
+    re-implement the validation. The caller owns reading bytes off the
+    wire (so multi-file batches can enforce a per-batch total cap).
+    """
+    if not body:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="upload is empty"
+        )
     if not body.startswith(_PDF_MAGIC):
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail="upload is not a PDF (missing %PDF- magic bytes)",
         )
 
+    settings = get_settings()
     file_hash = hashlib.sha256(body).hexdigest()
 
     existing = repository.find_by_hash(file_hash)
@@ -102,19 +142,17 @@ async def upload_pdf(
     upload_dir.mkdir(parents=True, exist_ok=True)
     temp_path = upload_dir / f"{uuid4().hex}.pdf"
 
-    # Write first, then enqueue. If insert or enqueue fails, delete the
-    # temp file so we don't leave PDFs sitting on disk.
     try:
         temp_path.write_bytes(body)
         try:
             row = repository.create_document(
                 file_hash=file_hash,
                 byte_size=len(body),
-                original_filename=file.filename or "unknown.pdf",
+                original_filename=original_filename,
                 uploaded_by=actor,
+                merchant_id=merchant_id,
             )
         except DocumentExistsError:
-            # Race with a concurrent upload of the same file — re-fetch.
             existing = repository.find_by_hash(file_hash)
             if existing is None:
                 raise
@@ -132,7 +170,8 @@ async def upload_pdf(
             details={
                 "file_hash": file_hash,
                 "byte_size": len(body),
-                "original_filename": file.filename,
+                "original_filename": original_filename,
+                "merchant_id": str(merchant_id) if merchant_id else None,
             },
         )
 
@@ -144,7 +183,6 @@ async def upload_pdf(
             duplicate_of_existing=False,
         )
     except Exception:
-        # Make sure we don't leak the PDF when something downstream fails.
         if temp_path.exists():
             try:
                 temp_path.unlink()
@@ -211,4 +249,4 @@ async def _enqueue_parse_job(
     pending.append({"document_id": str(document_id), "pdf_path": pdf_path})
 
 
-__all__ = ["UploadResponse", "router"]
+__all__ = ["UploadResponse", "persist_pdf_upload", "router"]

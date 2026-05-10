@@ -122,7 +122,10 @@ def test_dashboard_upload_page_has_form(client: TestClient) -> None:
     resp = client.get("/ui/upload")
     assert resp.status_code == 200
     assert 'enctype="multipart/form-data"' in resp.text
-    assert 'action="/upload"' in resp.text
+    # Browser-friendly route — POSTs to /ui/upload (no bearer), not /upload (bearer-only).
+    assert 'action="/ui/upload"' in resp.text
+    # Multi-file upload supported.
+    assert "multiple" in resp.text
 
 
 def test_dashboard_lists_merchants(client: TestClient, merchant: MerchantRow) -> None:

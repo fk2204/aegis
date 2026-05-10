@@ -21,24 +21,29 @@ on localhost only.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from aegis.api.deps import (
+    get_audit,
     get_funder_repository,
     get_llm,
     get_merchant_repository,
     get_ofac_client,
     get_repository,
 )
-from aegis.compliance.states import StateNotServed, validate_state_served
+from aegis.api.routes.upload import persist_pdf_upload
+from aegis.audit import AuditLog
+from aegis.compliance.states import STATES, StateNotServed, validate_state_served
+from aegis.config import get_settings
 from aegis.funders.extract import FunderExtractionError, extract_funder_guidelines
 from aegis.funders.models import FunderRow
 from aegis.funders.repository import (
@@ -46,7 +51,7 @@ from aegis.funders.repository import (
     FunderRepository,
 )
 from aegis.llm import LLMClient
-from aegis.merchants.models import MerchantRow
+from aegis.merchants.models import EntityType, MerchantRow
 from aegis.merchants.repository import (
     MerchantConflictError,
     MerchantNotFoundError,
@@ -63,6 +68,7 @@ from aegis.storage import (
     DocumentRepository,
     DocumentRow,
 )
+from aegis.web._stacking_card import build_stacking_card
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
@@ -95,8 +101,212 @@ async def index(request: Request) -> HTMLResponse:
 
 
 @router.get("/upload", response_class=HTMLResponse)
-async def upload_form(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "upload.html.j2", {})
+async def upload_form(
+    request: Request,
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "upload.html.j2",
+        {"merchants": merchants_repo.list_all(), "results": None, "error": None},
+    )
+
+
+@router.post("/upload", response_class=HTMLResponse, response_model=None)
+async def upload_submit(
+    request: Request,
+    repository: Annotated[DocumentRepository, Depends(get_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    files: Annotated[list[UploadFile], File()],
+    merchant_id: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Browser-friendly multi-file upload — no bearer (Cloudflare Access in prod).
+
+    Streams up to N PDFs in one multipart request, hashes/dedups each via
+    the shared ``persist_pdf_upload`` helper, and renders an inline
+    summary with each file's status. ``merchant_id`` is optional from
+    this route — operators uploading ad-hoc may not have the merchant
+    record yet (see ``/ui/intake`` for the combined create + upload flow).
+    """
+    if not files or all(not f.filename for f in files):
+        return templates.TemplateResponse(
+            request,
+            "upload.html.j2",
+            {
+                "merchants": merchants_repo.list_all(),
+                "results": None,
+                "error": "No files provided.",
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    parsed_merchant_id: UUID | None = None
+    if merchant_id.strip():
+        try:
+            parsed_merchant_id = UUID(merchant_id.strip())
+            merchants_repo.get(parsed_merchant_id)
+        except (ValueError, MerchantNotFoundError):
+            return templates.TemplateResponse(
+                request,
+                "upload.html.j2",
+                {
+                    "merchants": merchants_repo.list_all(),
+                    "results": None,
+                    "error": f"Unknown merchant_id {merchant_id!r}.",
+                },
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+    settings = get_settings()
+    results, total_error = await _persist_uploads(
+        request=request,
+        files=files,
+        repository=repository,
+        audit=audit,
+        actor="dashboard",
+        merchant_id=parsed_merchant_id,
+        per_file_cap=settings.aegis_max_upload_bytes,
+        total_cap=settings.aegis_max_intake_total_bytes,
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "upload.html.j2",
+        {
+            "merchants": merchants_repo.list_all(),
+            "results": results,
+            "error": total_error,
+        },
+        status_code=(
+            status.HTTP_200_OK if not total_error else status.HTTP_400_BAD_REQUEST
+        ),
+    )
+
+
+@router.get("/intake", response_class=HTMLResponse)
+async def intake_form(request: Request) -> HTMLResponse:
+    """Combined intake: create merchant + upload N statements in one POST."""
+    return templates.TemplateResponse(
+        request, "intake.html.j2", {"error": None, "form": {}}
+    )
+
+
+@router.post("/intake", response_class=HTMLResponse, response_model=None)
+async def intake_submit(
+    request: Request,
+    repository: Annotated[DocumentRepository, Depends(get_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    business_name: Annotated[str, Form()],
+    owner_name: Annotated[str, Form()],
+    state: Annotated[str, Form()],
+    files: Annotated[list[UploadFile] | None, File()] = None,
+    dba: Annotated[str, Form()] = "",
+    industry_naics: Annotated[str, Form()] = "",
+    credit_score: Annotated[str, Form()] = "",
+    time_in_business_months: Annotated[str, Form()] = "",
+    email: Annotated[str, Form()] = "",
+    phone: Annotated[str, Form()] = "",
+    entity_type: Annotated[str, Form()] = "",
+    ein: Annotated[str, Form()] = "",
+    requested_amount: Annotated[str, Form()] = "",
+    requested_factor: Annotated[str, Form()] = "",
+    requested_term_days: Annotated[str, Form()] = "",
+    broker_source: Annotated[str, Form()] = "",
+    intake_date: Annotated[str, Form()] = "",
+    is_renewal: Annotated[str, Form()] = "false",
+) -> HTMLResponse | RedirectResponse:
+    """Create merchant + upload N statements atomically.
+
+    On any validation error the merchant is NOT created and the form
+    re-renders with the entered values preserved. On success the
+    operator lands on the merchant findings page with all uploaded
+    documents already persisted.
+    """
+    form_payload: dict[str, Any] = {
+        "business_name": business_name,
+        "owner_name": owner_name,
+        "state": state,
+        "dba": dba,
+        "industry_naics": industry_naics,
+        "credit_score": credit_score,
+        "time_in_business_months": time_in_business_months,
+        "email": email,
+        "phone": phone,
+        "entity_type": entity_type,
+        "ein": ein,
+        "requested_amount": requested_amount,
+        "requested_factor": requested_factor,
+        "requested_term_days": requested_term_days,
+        "broker_source": broker_source,
+        "intake_date": intake_date,
+        "is_renewal": is_renewal,
+    }
+
+    state_err = _validate_merchant_state(state)
+    if state_err is not None:
+        return _intake_form_error(request, state_err, form_payload)
+
+    try:
+        merchant = MerchantRow(
+            business_name=business_name,
+            owner_name=owner_name,
+            state=state.upper(),
+            dba=dba or None,
+            industry_naics=industry_naics or None,
+            credit_score=int(credit_score) if credit_score else None,
+            time_in_business_months=int(time_in_business_months)
+            if time_in_business_months
+            else None,
+            email=email or None,
+            phone=phone or None,
+            entity_type=_entity_type_or_none(entity_type),
+            ein=ein or None,
+            requested_amount=Decimal(requested_amount) if requested_amount else None,
+            requested_factor=Decimal(requested_factor) if requested_factor else None,
+            requested_term_days=int(requested_term_days) if requested_term_days else None,
+            broker_source=broker_source or None,
+            intake_date=date.fromisoformat(intake_date) if intake_date else None,
+            is_renewal=is_renewal.lower() in {"true", "on", "yes", "1"},
+        )
+    except (ValueError, TypeError) as exc:
+        return _intake_form_error(request, str(exc), form_payload)
+    try:
+        merchant = merchants_repo.upsert(merchant)
+    except MerchantConflictError as exc:
+        return _intake_form_error(request, str(exc), form_payload)
+
+    # Files are optional at intake — operator can create merchant first
+    # and upload later.
+    valid_files = [f for f in (files or []) if f.filename]
+    if valid_files:
+        settings = get_settings()
+        results, total_error = await _persist_uploads(
+            request=request,
+            files=valid_files,
+            repository=repository,
+            audit=audit,
+            actor="dashboard",
+            merchant_id=merchant.id,
+            per_file_cap=settings.aegis_max_upload_bytes,
+            total_cap=settings.aegis_max_intake_total_bytes,
+        )
+        if total_error:
+            # Merchant created but uploads failed; surface the error and
+            # redirect to merchant detail so operator can retry uploads
+            # individually from /ui/upload.
+            audit.record(
+                actor="dashboard",
+                action="intake.partial_failure",
+                subject_type="merchant",
+                subject_id=merchant.id,
+                details={"error": total_error, "results_count": len(results)},
+            )
+
+    return RedirectResponse(
+        f"/ui/merchants/{merchant.id}", status_code=status.HTTP_303_SEE_OTHER
+    )
 
 
 @router.get("/merchants", response_class=HTMLResponse)
@@ -198,6 +408,14 @@ async def merchant_new_submit(
     time_in_business_months: Annotated[str, Form()] = "",
     email: Annotated[str, Form()] = "",
     phone: Annotated[str, Form()] = "",
+    entity_type: Annotated[str, Form()] = "",
+    ein: Annotated[str, Form()] = "",
+    requested_amount: Annotated[str, Form()] = "",
+    requested_factor: Annotated[str, Form()] = "",
+    requested_term_days: Annotated[str, Form()] = "",
+    broker_source: Annotated[str, Form()] = "",
+    intake_date: Annotated[str, Form()] = "",
+    is_renewal: Annotated[str, Form()] = "false",
 ) -> HTMLResponse | RedirectResponse:
     error = _validate_merchant_state(state)
     if error is not None:
@@ -215,6 +433,14 @@ async def merchant_new_submit(
             else None,
             email=email or None,
             phone=phone or None,
+            entity_type=_entity_type_or_none(entity_type),
+            ein=ein or None,
+            requested_amount=Decimal(requested_amount) if requested_amount else None,
+            requested_factor=Decimal(requested_factor) if requested_factor else None,
+            requested_term_days=int(requested_term_days) if requested_term_days else None,
+            broker_source=broker_source or None,
+            intake_date=date.fromisoformat(intake_date) if intake_date else None,
+            is_renewal=is_renewal.lower() in {"true", "on", "yes", "1"},
         )
     except (ValueError, TypeError) as exc:
         return _merchant_form_error(request, str(exc), _form_dict_from_locals(locals()))
@@ -254,6 +480,14 @@ async def merchant_edit_submit(
     time_in_business_months: Annotated[str, Form()] = "",
     email: Annotated[str, Form()] = "",
     phone: Annotated[str, Form()] = "",
+    entity_type: Annotated[str, Form()] = "",
+    ein: Annotated[str, Form()] = "",
+    requested_amount: Annotated[str, Form()] = "",
+    requested_factor: Annotated[str, Form()] = "",
+    requested_term_days: Annotated[str, Form()] = "",
+    broker_source: Annotated[str, Form()] = "",
+    intake_date: Annotated[str, Form()] = "",
+    is_renewal: Annotated[str, Form()] = "false",
 ) -> HTMLResponse | RedirectResponse:
     try:
         existing = repo.get(merchant_id)
@@ -278,6 +512,14 @@ async def merchant_edit_submit(
                 else None,
                 "email": email or None,
                 "phone": phone or None,
+                "entity_type": _entity_type_or_none(entity_type),
+                "ein": ein or None,
+                "requested_amount": Decimal(requested_amount) if requested_amount else None,
+                "requested_factor": Decimal(requested_factor) if requested_factor else None,
+                "requested_term_days": int(requested_term_days) if requested_term_days else None,
+                "broker_source": broker_source or None,
+                "intake_date": date.fromisoformat(intake_date) if intake_date else None,
+                "is_renewal": is_renewal.lower() in {"true", "on", "yes", "1"},
             }
         )
     except (ValueError, TypeError) as exc:
@@ -509,22 +751,79 @@ async def merchant_detail(
     merchant_id: UUID,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     docs: Annotated[DocumentRepository, Depends(get_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
 ) -> HTMLResponse:
     try:
         merchant = merchants.get(merchant_id)
     except MerchantNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-    latest_doc, latest_analysis = _find_latest_for_merchant(docs, merchant_id)
+    all_docs = docs.list_documents(merchant_id=merchant_id, limit=50)
+    documents_table: list[dict[str, Any]] = []
+    for d in all_docs:
+        documents_table.append(
+            {"document": d, "analysis": docs.get_analysis(d.id)}
+        )
+
+    latest_doc = all_docs[0] if all_docs else None
+    latest_analysis = docs.get_analysis(latest_doc.id) if latest_doc else None
+
+    score_result = None
+    stacking = None
+    if latest_doc is not None and latest_analysis is not None:
+        score_input = _score_input_from_dashboard(merchant, latest_doc, latest_analysis)
+        try:
+            score_result = score_deal(score_input, ofac=ofac)
+        except OFACStaleError:
+            score_result = None
+        stacking = build_stacking_card(
+            latest_analysis, docs.list_transactions(latest_doc.id)
+        )
+
+    state_tier = _state_tier(merchant.state)
+    ofac_status, ofac_match = _ofac_ribbon_status(ofac, merchant.business_name)
+
     return templates.TemplateResponse(
         request,
         "merchant_detail.html.j2",
         {
             "merchant": merchant,
+            "documents": documents_table,
             "document": latest_doc,
             "analysis": latest_analysis,
             "aggregate_labels": _AGGREGATE_LABELS,
+            "score_result": score_result,
+            "stacking": stacking,
+            "state_tier": state_tier,
+            "ofac_status": ofac_status,
+            "ofac_match": ofac_match,
         },
+    )
+
+
+@router.get("/merchants/{merchant_id}/findings.csv")
+async def merchant_findings_csv(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+) -> Response:
+    """CSV download of the findings payload (no bearer; same trust model as the panel)."""
+    from aegis.api.routes.findings import build_merchant_findings
+    from aegis.web._findings_csv import findings_to_csv
+
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    findings = build_merchant_findings(merchant=merchant, docs=docs, ofac=ofac)
+    body = findings_to_csv(findings)
+    filename = f"findings_{_slugify(merchant.business_name)}.csv"
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"content-disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -704,6 +1003,100 @@ def _match_card(funder: FunderRow, match: FunderMatch) -> dict[str, Any]:
     }
 
 
+@dataclass
+class _UploadResult:
+    """Per-file outcome surfaced to the operator on the upload form."""
+
+    filename: str
+    status: str  # "ok" | "duplicate" | "error"
+    document_id: str | None
+    detail: str  # human-readable summary or error message
+
+
+async def _persist_uploads(
+    *,
+    request: Request,
+    files: list[UploadFile],
+    repository: DocumentRepository,
+    audit: AuditLog,
+    actor: str,
+    merchant_id: UUID | None,
+    per_file_cap: int,
+    total_cap: int,
+) -> tuple[list[_UploadResult], str | None]:
+    """Read N files, persist each via ``persist_pdf_upload``, return per-file
+    outcomes plus an optional batch-level error.
+
+    Per-file failures (oversize, non-PDF, dedup-race) become an entry in
+    the result list with ``status="error"``; the batch keeps going so a
+    bad file doesn't kill 3 good ones. A batch-level error (total cap
+    exceeded) short-circuits and returns no results.
+    """
+    bodies: list[tuple[str, bytes]] = []
+    running_total = 0
+    for f in files:
+        body = await f.read(per_file_cap + 1)
+        if len(body) > per_file_cap:
+            return (
+                [],
+                f"{f.filename or 'unnamed'} exceeds the per-file cap of {per_file_cap} bytes",
+            )
+        running_total += len(body)
+        if running_total > total_cap:
+            return (
+                [],
+                f"total upload size exceeds the {total_cap}-byte batch cap",
+            )
+        bodies.append((f.filename or "unnamed.pdf", body))
+
+    results: list[_UploadResult] = []
+    for filename, body in bodies:
+        try:
+            resp = await persist_pdf_upload(
+                request=request,
+                body=body,
+                original_filename=filename,
+                repository=repository,
+                audit=audit,
+                actor=actor,
+                merchant_id=merchant_id,
+            )
+        except HTTPException as exc:
+            results.append(
+                _UploadResult(
+                    filename=filename,
+                    status="error",
+                    document_id=None,
+                    detail=str(exc.detail),
+                )
+            )
+            continue
+        results.append(
+            _UploadResult(
+                filename=filename,
+                status="duplicate" if resp.duplicate_of_existing else "ok",
+                document_id=str(resp.document_id),
+                detail=(
+                    "deduped to existing document"
+                    if resp.duplicate_of_existing
+                    else f"queued (parse_status={resp.parse_status})"
+                ),
+            )
+        )
+    return results, None
+
+
+def _intake_form_error(
+    request: Request, error: str, form: dict[str, Any]
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "intake.html.j2",
+        {"error": error, "form": form},
+        status_code=status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def _validate_merchant_state(state: str) -> str | None:
     """Return an error string if the state isn't served, else None."""
     try:
@@ -723,6 +1116,14 @@ _FORM_FIELDS: tuple[str, ...] = (
     "time_in_business_months",
     "email",
     "phone",
+    "entity_type",
+    "ein",
+    "requested_amount",
+    "requested_factor",
+    "requested_term_days",
+    "broker_source",
+    "intake_date",
+    "is_renewal",
 )
 
 
@@ -749,6 +1150,64 @@ def _merchant_form_error(
         {"merchant": merchant, "error": error, "form": form},
         status_code=status.HTTP_400_BAD_REQUEST,
     )
+
+
+def _slugify(text: str) -> str:
+    """ASCII-safe slug for the CSV ``content-disposition`` filename."""
+    out: list[str] = []
+    for ch in text.lower():
+        if ch.isalnum():
+            out.append(ch)
+        elif out and out[-1] != "_":
+            out.append("_")
+    return "".join(out).strip("_") or "merchant"
+
+
+def _entity_type_or_none(value: str) -> EntityType | None:
+    """Coerce a form-string to ``EntityType`` or ``None``.
+
+    Strict-cast: anything outside the literal set returns ``None`` so a
+    mistyped entity_type doesn't crash the intake flow. Callers pass
+    user input directly from the form, where the ``<select>`` constrains
+    valid values, but defense-in-depth is cheap here.
+    """
+    v = value.strip().lower()
+    if v in {"llc", "corp", "sole_prop", "partnership", "other"}:
+        return cast(EntityType, v)
+    return None
+
+
+def _state_tier(state: str) -> int | str:
+    """Resolve the state regulation tier for the ribbon.
+
+    Returns 1/2/3 for served states; "unserved" if the state isn't in the
+    served set. Pure read of ``STATES`` — no side effects.
+    """
+    reg = STATES.get(state.upper())
+    if reg is None:
+        return "unserved"
+    return int(reg.tier)
+
+
+def _ofac_ribbon_status(
+    ofac: OFACClient | None, business_name: str
+) -> tuple[str, bool | None]:
+    """Best-effort OFAC indicator for the ribbon.
+
+    Returns a (status, match) tuple where status is one of:
+      * ``"checked"``  — query succeeded; ``match`` carries the boolean
+      * ``"stale"``    — cache was stale and refresh failed
+      * ``"unavailable"`` — query raised something else (treated as no info)
+      * ``"not_consulted"`` — no client wired (dev/offline)
+    """
+    if ofac is None:
+        return ("not_consulted", None)
+    try:
+        return ("checked", ofac.is_match(business_name))
+    except OFACStaleError:
+        return ("stale", None)
+    except Exception:
+        return ("unavailable", None)
 
 
 def _tier_proxy(analysis: AnalysisRow | None) -> str:
