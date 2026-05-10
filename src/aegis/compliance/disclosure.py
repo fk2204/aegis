@@ -32,6 +32,12 @@ from jinja2 import (
 from pydantic import BaseModel, ConfigDict
 
 from aegis.compliance._generic_templates import TIER2_GENERIC_ACKNOWLEDGMENT
+from aegis.compliance.renewal import (
+    RenewalContext,
+    RenewalContextRequiredError,
+    TransactionType,
+    build_state_renewal_context,
+)
 from aegis.compliance.states import (
     STATES,
     TEMPLATES_DIR,
@@ -54,6 +60,7 @@ class RenderedDisclosure(BaseModel):
     tier: int
     html: str
     citation: str
+    transaction_type: TransactionType = TransactionType.NEW
 
 
 def _build_environment() -> Environment:
@@ -101,6 +108,8 @@ def render_disclosure(
     score: ScoreResult,
     *,
     rendered_at: datetime | None = None,
+    transaction_type: TransactionType = TransactionType.NEW,
+    renewal: RenewalContext | None = None,
 ) -> RenderedDisclosure:
     """Render the state's disclosure for a scored deal.
 
@@ -108,9 +117,23 @@ def render_disclosure(
     identity + requested terms. `score` carries the tier-derived factor +
     holdback the disclosure cites.
 
+    Renewal handling
+    ----------------
+    Pass ``transaction_type=TransactionType.RENEWAL`` and a populated
+    ``renewal=RenewalContext(...)`` for renewal financings. State-specific
+    behavior:
+      * **NY** — anti-double-dipping content (§ 600.6(b)(3)(v)) is
+        computed and merged into the template context. ``renewal`` is
+        REQUIRED when ``transaction_type == RENEWAL`` for NY merchants.
+      * **CA / FL / GA** — fresh disclosure is generated as for any new
+        transaction (renewals are new commercial financing transactions
+        in these states); no renewal-only template content per dossier
+        14 + CORRECTIONS Correction 3.
+
     Raises:
-      StateNotServed   — state not in the 45 served states.
-      StateNotAudited  — state is in STATES but currently Tier 3.
+      StateNotServed              — state not in the 45 served states.
+      StateNotAudited             — state is in STATES but Tier 3.
+      RenewalContextRequiredError — NY renewal without RenewalContext.
     """
     abbr = (state or "").upper()
     reg = STATES.get(abbr)
@@ -123,11 +146,28 @@ def render_disclosure(
     rendered_at = rendered_at or datetime.now(UTC)
     context = _build_context(reg, deal, score, rendered_at.date())
 
+    # Renewal context merge — only injects state-specific keys when
+    # the state actually has renewal-only template content (NY today).
+    # CA / FL / GA renewals get logged but no template-context change.
+    is_renewal = transaction_type == TransactionType.RENEWAL
+    if is_renewal and abbr == "NY" and renewal is None:
+        raise RenewalContextRequiredError(
+            "NY renewal disclosure requires RenewalContext "
+            "(§ 600.6(b)(3)(v) anti-double-dipping computation)"
+        )
+    context.update(
+        build_state_renewal_context(abbr, renewal if is_renewal else None)
+    )
+
     if isinstance(reg, Tier1Regulation):
         template = _ENV.get_template(reg.template_path)
         html = template.render(**context)
         return RenderedDisclosure(
-            state=abbr, tier=1, html=html, citation=reg.bill_number
+            state=abbr,
+            tier=1,
+            html=html,
+            citation=reg.bill_number,
+            transaction_type=transaction_type,
         )
 
     if not isinstance(reg, Tier2Regulation):  # defensive — Tier 3 handled above
@@ -137,7 +177,11 @@ def render_disclosure(
     template = _ENV.get_template(_GENERIC_TEMPLATE_KEY)
     html = template.render(**context)
     return RenderedDisclosure(
-        state=abbr, tier=2, html=html, citation=reg.general_law_citation
+        state=abbr,
+        tier=2,
+        html=html,
+        citation=reg.general_law_citation,
+        transaction_type=transaction_type,
     )
 
 
