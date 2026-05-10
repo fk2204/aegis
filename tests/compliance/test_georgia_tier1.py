@@ -88,6 +88,7 @@ def test_georgia_threshold_is_500k() -> None:
     ga = STATES["GA"]
     assert isinstance(ga, Tier1Regulation)
     assert ga.threshold_amount_usd == Decimal("500000")
+    assert ga.threshold_test_summary is not None
     assert (
         "500,000" in ga.threshold_test_summary
         or "$500,000" in ga.threshold_test_summary

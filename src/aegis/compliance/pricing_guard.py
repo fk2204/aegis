@@ -66,7 +66,9 @@ class PricingComplianceError(RuntimeError):
     once across all covered states.
     """
 
-    citation: Final[str] = ""
+    # Subclasses set this to their controlling statute / regulation.
+    # Not ``Final`` on the base — subclass overrides are the whole point.
+    citation: str = ""
 
     def __init__(self, message: str) -> None:
         super().__init__(f"{message} ({self.citation})")
@@ -78,7 +80,7 @@ class CaPricingComplianceError(PricingComplianceError):
     Cite: Cal. Fin. Code § 22806 (added by SB 362, effective 2026-01-01).
     """
 
-    citation: Final[str] = "Cal. Fin. Code § 22806"
+    citation: str = "Cal. Fin. Code § 22806"
 
 
 class NyPricingComplianceError(PricingComplianceError):
@@ -88,7 +90,7 @@ class NyPricingComplianceError(PricingComplianceError):
     2023-08-01).
     """
 
-    citation: Final[str] = "23 NYCRR § 600.1 / § 600.3"
+    citation: str = "23 NYCRR § 600.1 / § 600.3"
 
 
 # Pricing triggers — same set across CA and NY. CA dossier enumerates

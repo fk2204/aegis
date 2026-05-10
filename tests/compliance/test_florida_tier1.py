@@ -71,6 +71,7 @@ def test_florida_threshold_is_500k() -> None:
     fl = STATES["FL"]
     assert isinstance(fl, Tier1Regulation)
     assert fl.threshold_amount_usd == Decimal("500000")
+    assert fl.threshold_test_summary is not None
     assert (
         "500,000" in fl.threshold_test_summary
         or "$500,000" in fl.threshold_test_summary

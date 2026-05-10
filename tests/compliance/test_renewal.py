@@ -51,9 +51,16 @@ def test_transaction_type_default_is_new() -> None:
 
 
 def test_transaction_type_string_round_trip() -> None:
-    """StrEnum values are stable for storage / API contract."""
+    """StrEnum values are stable for storage / API contract.
+
+    The second assertion exists to lock in StrEnum-vs-str equality at
+    runtime — mypy's strict mode flags it as ``[comparison-overlap]``
+    because ``Literal[TransactionType.RENEWAL]`` is technically a distinct
+    type from ``Literal["renewal"]``. This is exactly the runtime
+    invariant we want to test, so the ignore is intentional.
+    """
     assert TransactionType("renewal") == TransactionType.RENEWAL
-    assert TransactionType.RENEWAL == "renewal"
+    assert TransactionType.RENEWAL == "renewal"  # type: ignore[comparison-overlap]
 
 
 # --- RenewalContext model --------------------------------------------------
@@ -67,7 +74,7 @@ def _valid_renewal(**overrides: object) -> RenewalContext:
         "prior_position_payoff_from_renewal": Decimal("50000"),
     }
     base.update(overrides)
-    return RenewalContext(**base)  # type: ignore[arg-type]
+    return RenewalContext(**base)
 
 
 def test_renewal_context_accepts_full_input() -> None:

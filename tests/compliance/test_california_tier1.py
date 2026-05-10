@@ -49,6 +49,7 @@ def test_california_threshold_is_500k() -> None:
     ca = STATES["CA"]
     assert isinstance(ca, Tier1Regulation)
     assert ca.threshold_amount_usd == Decimal("500000")
+    assert ca.threshold_test_summary is not None
     assert "500,000" in ca.threshold_test_summary or "$500,000" in ca.threshold_test_summary
 
 

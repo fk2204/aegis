@@ -80,6 +80,7 @@ def test_new_york_threshold_is_2_5m() -> None:
     ny = STATES["NY"]
     assert isinstance(ny, Tier1Regulation)
     assert ny.threshold_amount_usd == Decimal("2500000")
+    assert ny.threshold_test_summary is not None
     assert (
         "2,500,000" in ny.threshold_test_summary
         or "$2,500,000" in ny.threshold_test_summary

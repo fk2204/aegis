@@ -55,7 +55,10 @@ from aegis.logger import get_logger
 _log = get_logger(__name__)
 
 
-class BrokerCompensationDisclosureMissing(RuntimeError):
+# Class name follows the convention in ``compliance/states.py``
+# (``StateNotServed``, ``StateNotAudited``) — exception classes describing a
+# regulatory condition. Suppress the ruff "must end in Error" rule.
+class BrokerCompensationDisclosureMissing(RuntimeError):  # noqa: N818
     """Base class for per-state broker-compensation disclosure failures.
 
     Subclasses set ``citation`` to the controlling regulation. The base
@@ -63,7 +66,9 @@ class BrokerCompensationDisclosureMissing(RuntimeError):
     once across all covered states.
     """
 
-    citation: Final[str] = ""
+    # Subclasses set this to their controlling statute / regulation.
+    # Not ``Final`` on the base — subclass overrides are the whole point.
+    citation: str = ""
 
     def __init__(self, message: str) -> None:
         super().__init__(f"{message} ({self.citation})")
@@ -75,7 +80,7 @@ class NyBrokerCompensationDisclosureMissing(BrokerCompensationDisclosureMissing)
     Cite: 23 NYCRR § 600.21(f).
     """
 
-    citation: Final[str] = "23 NYCRR § 600.21(f)"
+    citation: str = "23 NYCRR § 600.21(f)"
 
 
 class _FunderLike(Protocol):

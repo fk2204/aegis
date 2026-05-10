@@ -14,7 +14,6 @@ HB 3477 (2025-2026) is pending; SB 2234 (103rd GA) died sine die
 
 from __future__ import annotations
 
-import logging
 from datetime import date
 from decimal import Decimal
 from uuid import uuid4
@@ -222,10 +221,10 @@ def test_pending_legislation_rejects_unknown_status() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        PendingLegislation(  # type: ignore[arg-type]
+        PendingLegislation(
             bill_number="X 1",
             year=2025,
-            status="enacted_but_not_signed",  # not in the literal
+            status="enacted_but_not_signed",
             citation_url="https://example.invalid/x1",
         )
 

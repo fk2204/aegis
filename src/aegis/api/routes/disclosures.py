@@ -46,7 +46,7 @@ def _render_or_raise(req: DisclosureRequest) -> RenderedDisclosure:
         return render_disclosure(req.state, req.deal, req.score)
     except StateNotServed as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
     except StateNotAudited as exc:
         # 503 because the operator can resolve this by completing the audit;
