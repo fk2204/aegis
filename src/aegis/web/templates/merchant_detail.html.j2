@@ -24,6 +24,30 @@
     </p>
   {% endif %}
 
+  {% if trend %}
+    <h2>Trend across {{ trend.statement_count }} statements</h2>
+    <ul>
+      {% if trend.revenue_delta_pct is not none %}
+        <li class="src-ref">
+          Revenue: {{ trend.revenue_latest }} (latest) vs {{ trend.revenue_prior }} (prior)
+          <strong>{% if trend.revenue_delta_pct > 0 %}+{% endif %}{{ trend.revenue_delta_pct }}%</strong>
+        </li>
+      {% endif %}
+      {% if trend.nsf_delta is not none %}
+        <li class="src-ref">
+          NSF: {{ trend.nsf_latest }} (latest) vs {{ trend.nsf_prior }} (prior)
+          <strong>{% if trend.nsf_delta > 0 %}+{% endif %}{{ trend.nsf_delta }}</strong>
+        </li>
+      {% endif %}
+      {% if trend.adb_delta_pct is not none %}
+        <li class="src-ref">
+          ADB: {{ trend.adb_latest }} (latest) vs {{ trend.adb_prior }} (prior)
+          <strong>{% if trend.adb_delta_pct > 0 %}+{% endif %}{{ trend.adb_delta_pct }}%</strong>
+        </li>
+      {% endif %}
+    </ul>
+  {% endif %}
+
   <h2>Documents</h2>
   {% if not documents %}
     <p>No documents uploaded yet for this merchant. <a href="/ui/upload">Upload statements →</a></p>

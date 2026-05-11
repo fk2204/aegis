@@ -107,6 +107,10 @@ class PipelineResult:
     # Per-category averages keyed by category name. Empty when no rows
     # were classified. Used for high-impact category gating.
     classification_confidence_by_category: dict[str, int] = field(default_factory=dict)
+    # Per-calendar-month roll-up (deposits, withdrawals, avg_balance).
+    # Persisted on analyses.monthly_breakdown for renewal-merchant
+    # month-over-month deltas. Decimals stored as strings for jsonb.
+    monthly_breakdown: list[dict[str, str]] = field(default_factory=list)
 
 
 def run_pipeline(
@@ -195,6 +199,7 @@ def run_pipeline(
         all_flags=all_flags,
         avg_classification_confidence=avg_conf,
         classification_confidence_by_category=per_cat_conf,
+        monthly_breakdown=aggregate_result.monthly_breakdown,
     )
 
 

@@ -787,6 +787,10 @@ async def merchant_detail(
     state_tier = _state_tier(merchant.state)
     ofac_status, ofac_match = _ofac_ribbon_status(ofac, merchant.business_name)
 
+    from aegis.api.routes.findings import _compute_trend
+
+    trend = _compute_trend(all_docs, docs)
+
     return templates.TemplateResponse(
         request,
         "merchant_detail.html.j2",
@@ -801,6 +805,7 @@ async def merchant_detail(
             "state_tier": state_tier,
             "ofac_status": ofac_status,
             "ofac_match": ofac_match,
+            "trend": trend,
         },
     )
 

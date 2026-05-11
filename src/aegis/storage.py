@@ -110,6 +110,13 @@ class AnalysisRow(_StrictModel):
     days_negative_source_ids: list[UUID] = Field(default_factory=list)
     mca_daily_total_source_ids: list[UUID] = Field(default_factory=list)
 
+    # Per-calendar-month deposits / withdrawals / avg_balance for this
+    # statement, so the merchant detail page + findings export can compute
+    # month-over-month deltas across a renewal merchant's stack of N
+    # statements without re-querying transactions. List of dicts (Decimals
+    # stored as strings to round-trip cleanly through jsonb).
+    monthly_breakdown: list[dict[str, str]] = Field(default_factory=list)
+
 
 # Protocol ---------------------------------------------------------------------
 
@@ -247,6 +254,7 @@ class InMemoryDocumentRepository:
                 summary=result.extraction.statement.summary,
                 classified=result.classified,
                 patterns=result.patterns,
+                monthly_breakdown=result.monthly_breakdown,
             )
 
     def list_transactions(
@@ -464,6 +472,7 @@ def _build_analysis(
     summary: StatementSummary,
     classified: list[ClassifiedTransaction],
     patterns: PatternAnalysis | None,
+    monthly_breakdown: list[dict[str, str]] | None = None,
 ) -> AnalysisRow:
     """Project Aggregates + summary + patterns into a row-shaped AnalysisRow."""
     statement_days = (summary.period_end - summary.period_start).days
@@ -505,6 +514,7 @@ def _build_analysis(
         num_nsf_source_ids=list(aggregates.num_nsf.source_ids),
         days_negative_source_ids=list(aggregates.days_negative.source_ids),
         mca_daily_total_source_ids=list(aggregates.mca_daily_total.source_ids),
+        monthly_breakdown=monthly_breakdown or [],
     )
 
 
@@ -609,6 +619,7 @@ def _analysis_to_db_row(analysis: AnalysisRow) -> dict[str, Any]:
         "num_nsf_source_ids": [str(u) for u in analysis.num_nsf_source_ids],
         "days_negative_source_ids": [str(u) for u in analysis.days_negative_source_ids],
         "mca_daily_total_source_ids": [str(u) for u in analysis.mca_daily_total_source_ids],
+        "monthly_breakdown": analysis.monthly_breakdown,
     }
 
 
@@ -640,6 +651,7 @@ def _db_row_to_analysis(row: dict[str, Any]) -> AnalysisRow:
         num_nsf_source_ids=[UUID(u) for u in row.get("num_nsf_source_ids") or []],
         days_negative_source_ids=[UUID(u) for u in row.get("days_negative_source_ids") or []],
         mca_daily_total_source_ids=[UUID(u) for u in row.get("mca_daily_total_source_ids") or []],
+        monthly_breakdown=row.get("monthly_breakdown") or [],
     )
 
 

@@ -154,6 +154,21 @@ def findings_to_csv(findings: MerchantFindings) -> str:
         writer.writerow(["stacking", "monthly_burden", _render(findings.stacking.monthly_burden)])
         writer.writerow(["stacking", "position_count", findings.stacking.position_count])
         writer.writerow(["stacking", "debit_count", findings.stacking.debit_count])
+        writer.writerow([])
+
+    if findings.trend is not None:
+        t = findings.trend
+        writer.writerow(["section", "field", "value"])
+        writer.writerow(["trend", "statement_count", t.statement_count])
+        writer.writerow(["trend", "revenue_latest", _render(t.revenue_latest)])
+        writer.writerow(["trend", "revenue_prior", _render(t.revenue_prior)])
+        writer.writerow(["trend", "revenue_delta_pct", _render(t.revenue_delta_pct)])
+        writer.writerow(["trend", "nsf_latest", _render(t.nsf_latest)])
+        writer.writerow(["trend", "nsf_prior", _render(t.nsf_prior)])
+        writer.writerow(["trend", "nsf_delta", _render(t.nsf_delta)])
+        writer.writerow(["trend", "adb_latest", _render(t.adb_latest)])
+        writer.writerow(["trend", "adb_prior", _render(t.adb_prior)])
+        writer.writerow(["trend", "adb_delta_pct", _render(t.adb_delta_pct)])
 
     return buf.getvalue()
 

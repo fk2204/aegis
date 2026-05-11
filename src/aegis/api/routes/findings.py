@@ -143,6 +143,29 @@ class ComplianceRibbon(BaseModel):
     is_renewal: bool
 
 
+class TrendNarrative(BaseModel):
+    """Month-over-month deltas across a merchant's parsed statements.
+
+    Empty / None when fewer than 2 documents exist. Captures revenue,
+    NSF, and ADB changes between the latest statement and the prior
+    statement (in calendar-month-ordered comparison). Operator-facing
+    rationale renders the same data on the merchant detail page.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    statement_count: int
+    revenue_latest: Money | None
+    revenue_prior: Money | None
+    revenue_delta_pct: int | None  # +12 means latest 12% higher than prior
+    nsf_latest: int | None
+    nsf_prior: int | None
+    nsf_delta: int | None  # signed integer delta
+    adb_latest: Money | None
+    adb_prior: Money | None
+    adb_delta_pct: int | None
+
+
 class MerchantFindings(BaseModel):
     """Complete findings export for one merchant."""
 
@@ -155,6 +178,7 @@ class MerchantFindings(BaseModel):
     latest_score: ScoreResult | None
     stacking: StackingSummary | None
     compliance: ComplianceRibbon
+    trend: TrendNarrative | None
 
 
 @router.get(
@@ -233,6 +257,8 @@ def build_merchant_findings(
             debit_count=stacking_card.debit_count,
         )
 
+    trend = _compute_trend(all_docs, docs)
+
     state_tier_val: int | Literal["unserved"]
     reg = STATES.get(merchant.state.upper())
     state_tier_val = "unserved" if reg is None else int(reg.tier)
@@ -280,10 +306,56 @@ def build_merchant_findings(
             ofac_match=ofac_match,
             is_renewal=merchant.is_renewal,
         ),
+        trend=trend,
     )
 
 
 _FLAG_RE = re.compile(r"^\[(\w+)\]\s+(.+)$")
+
+
+def _compute_trend(
+    documents: list[DocumentRow],
+    docs_repo: DocumentRepository,
+) -> TrendNarrative | None:
+    """Latest-vs-prior trend across analyzed statements.
+
+    Returns None when fewer than 2 analyzed documents exist (a single
+    statement has nothing to trend against).
+
+    Compares the most recent analyzed doc against the second-most-recent
+    by ``statement_period_end`` (not upload order — uploading 3 months
+    of statements out of order should still produce a sensible trend).
+    """
+    if len(documents) < 2:
+        return None
+    analyses: list[AnalysisRow] = []
+    for d in documents:
+        a = docs_repo.get_analysis(d.id)
+        if a is not None:
+            analyses.append(a)
+    if len(analyses) < 2:
+        return None
+
+    analyses.sort(key=lambda a: a.statement_period_end, reverse=True)
+    latest, prior = analyses[0], analyses[1]
+
+    def _pct(latest_v: Decimal, prior_v: Decimal) -> int | None:
+        if prior_v == 0:
+            return None
+        return round(((latest_v - prior_v) / prior_v) * 100)
+
+    return TrendNarrative(
+        statement_count=len(analyses),
+        revenue_latest=latest.true_revenue,
+        revenue_prior=prior.true_revenue,
+        revenue_delta_pct=_pct(latest.true_revenue, prior.true_revenue),
+        nsf_latest=latest.num_nsf,
+        nsf_prior=prior.num_nsf,
+        nsf_delta=latest.num_nsf - prior.num_nsf,
+        adb_latest=latest.avg_daily_balance,
+        adb_prior=prior.avg_daily_balance,
+        adb_delta_pct=_pct(latest.avg_daily_balance, prior.avg_daily_balance),
+    )
 
 
 def _parse_flag(raw: str) -> PatternFlag:
@@ -373,6 +445,7 @@ __all__ = [
     "MerchantHeader",
     "PatternFlag",
     "StackingSummary",
+    "TrendNarrative",
     "build_merchant_findings",
     "router",
 ]
