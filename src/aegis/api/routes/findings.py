@@ -12,6 +12,7 @@ the same payload for Excel.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
@@ -67,6 +68,25 @@ class MerchantHeader(BaseModel):
     is_renewal: bool
 
 
+class PatternFlag(BaseModel):
+    """One pattern flag with parsed code + human-readable rationale.
+
+    The pipeline emits flags as raw strings on documents.all_flags
+    (e.g. ``"[PATTERN] mca_stacking: 2 MCA position(s) detected"``).
+    PatternFlag splits the code and rationale so downstream consumers
+    (CSV, JSON, dashboard) can render them separately instead of one
+    opaque blob.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    # One of META, MATH, WARN, PATTERN, COMPOUND, AGGREGATE, CONFIDENCE, or "".
+    category: str
+    detail: str | None
+    raw: str  # original flag string for backwards compat
+
+
 class DocumentFindings(BaseModel):
     """One parsed document, flattened for export."""
 
@@ -88,7 +108,17 @@ class DocumentFindings(BaseModel):
     mca_daily_total: Money | None
     debt_to_revenue: Decimal | None
     payroll_detected: bool | None
-    flags: list[str]
+    flags: list[str]  # raw flag strings; backwards-compat
+    structured_flags: list[PatternFlag]  # parsed code + detail per flag
+
+    # Audit trail — every aggregate maps back to source transaction rows.
+    # An auditor downloading the JSON can drill straight to "page 7 lines
+    # 12, 18, 31" via transactions endpoint without re-querying the dashboard.
+    avg_daily_balance_source_ids: list[UUID]
+    true_revenue_source_ids: list[UUID]
+    num_nsf_source_ids: list[UUID]
+    days_negative_source_ids: list[UUID]
+    mca_daily_total_source_ids: list[UUID]
 
 
 class StackingSummary(BaseModel):
@@ -253,9 +283,35 @@ def build_merchant_findings(
     )
 
 
+_FLAG_RE = re.compile(r"^\[(\w+)\]\s+(.+)$")
+
+
+def _parse_flag(raw: str) -> PatternFlag:
+    """Split a raw flag string into category + code + detail.
+
+    Pipeline emits flags in one of these shapes:
+      ``"[PATTERN] mca_stacking: 2 MCA position(s) detected"``
+      ``"[META] stripped_metadata"``
+      ``"[MATH] reconciliation_failed_period: expected 5000.00 got 4995.00"``
+      ``"[CONFIDENCE] classification_confidence_below_floor: avg=40 floor=60"``
+      uncategorized bare strings also pass through.
+    """
+    m = _FLAG_RE.match(raw)
+    if not m:
+        return PatternFlag(code=raw, category="", detail=None, raw=raw)
+    cat, body = m.group(1), m.group(2)
+    if ":" in body:
+        code, detail = body.split(":", 1)
+        return PatternFlag(
+            code=code.strip(), category=cat, detail=detail.strip(), raw=raw
+        )
+    return PatternFlag(code=body.strip(), category=cat, detail=None, raw=raw)
+
+
 def _document_findings(
     doc: DocumentRow, analysis: AnalysisRow | None
 ) -> DocumentFindings:
+    structured = [_parse_flag(f) for f in doc.all_flags]
     if analysis is None:
         return DocumentFindings(
             document_id=doc.id,
@@ -275,6 +331,12 @@ def _document_findings(
             debt_to_revenue=None,
             payroll_detected=None,
             flags=list(doc.all_flags),
+            structured_flags=structured,
+            avg_daily_balance_source_ids=[],
+            true_revenue_source_ids=[],
+            num_nsf_source_ids=[],
+            days_negative_source_ids=[],
+            mca_daily_total_source_ids=[],
         )
     return DocumentFindings(
         document_id=doc.id,
@@ -294,6 +356,12 @@ def _document_findings(
         debt_to_revenue=analysis.debt_to_revenue,
         payroll_detected=analysis.payroll_detected,
         flags=list(doc.all_flags),
+        structured_flags=structured,
+        avg_daily_balance_source_ids=list(analysis.avg_daily_balance_source_ids),
+        true_revenue_source_ids=list(analysis.true_revenue_source_ids),
+        num_nsf_source_ids=list(analysis.num_nsf_source_ids),
+        days_negative_source_ids=list(analysis.days_negative_source_ids),
+        mca_daily_total_source_ids=list(analysis.mca_daily_total_source_ids),
     )
 
 
@@ -303,6 +371,7 @@ __all__ = [
     "DocumentFindings",
     "MerchantFindings",
     "MerchantHeader",
+    "PatternFlag",
     "StackingSummary",
     "build_merchant_findings",
     "router",

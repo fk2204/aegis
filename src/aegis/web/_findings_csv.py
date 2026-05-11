@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Sequence
+from uuid import UUID
 
 from aegis.api.routes.findings import MerchantFindings
 
@@ -70,6 +72,11 @@ def findings_to_csv(findings: MerchantFindings) -> str:
             "debt_to_revenue",
             "payroll_detected",
             "flags",
+            "avg_daily_balance_source_ids",
+            "true_revenue_source_ids",
+            "num_nsf_source_ids",
+            "days_negative_source_ids",
+            "mca_daily_total_source_ids",
         ]
     )
     for d in findings.documents:
@@ -93,8 +100,30 @@ def findings_to_csv(findings: MerchantFindings) -> str:
                 _render(d.debt_to_revenue),
                 _render(d.payroll_detected),
                 "; ".join(d.flags),
+                _ids(d.avg_daily_balance_source_ids),
+                _ids(d.true_revenue_source_ids),
+                _ids(d.num_nsf_source_ids),
+                _ids(d.days_negative_source_ids),
+                _ids(d.mca_daily_total_source_ids),
             ]
         )
+    writer.writerow([])
+
+    # Structured flag detail rows (one per parsed flag).
+    # Lets a reviewer scan rationale strings without parsing the bracketed
+    # raw flags from the document rows above.
+    writer.writerow(["section", "document_id", "category", "code", "detail"])
+    for d in findings.documents:
+        for pf in d.structured_flags:
+            writer.writerow(
+                [
+                    "flag",
+                    str(d.document_id),
+                    pf.category,
+                    pf.code,
+                    pf.detail or "",
+                ]
+            )
     writer.writerow([])
 
     if findings.latest_score is not None:
@@ -155,6 +184,11 @@ def _render(value: object) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def _ids(ids: Sequence[UUID]) -> str:
+    """Render a UUID list as a semicolon-joined string for one CSV cell."""
+    return "; ".join(str(i) for i in ids)
 
 
 __all__ = ["findings_to_csv"]

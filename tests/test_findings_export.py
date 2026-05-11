@@ -154,3 +154,64 @@ def test_findings_json_404_for_unknown_merchant(client: TestClient) -> None:
         headers=_bearer(),
     )
     assert resp.status_code == 404
+
+
+def test_findings_json_includes_source_ids_for_audit_drilldown(
+    client: TestClient, merchant_with_intake: MerchantRow
+) -> None:
+    """An auditor reading the JSON must be able to drill back to source rows."""
+    resp = client.get(
+        f"/merchants/{merchant_with_intake.id}/findings", headers=_bearer()
+    )
+    assert resp.status_code == 200
+    doc = resp.json()["documents"][0]
+    # The fixture pipeline result populates aggregates with source_ids;
+    # the JSON must surface them so downstream tooling can audit.
+    assert "avg_daily_balance_source_ids" in doc
+    assert "true_revenue_source_ids" in doc
+    assert "num_nsf_source_ids" in doc
+    assert "days_negative_source_ids" in doc
+    assert "mca_daily_total_source_ids" in doc
+    # And at least one of them carries IDs (the fixture has classified rows).
+    assert any(
+        doc[f]
+        for f in (
+            "avg_daily_balance_source_ids",
+            "true_revenue_source_ids",
+        )
+    )
+
+
+def test_findings_json_structured_flags_split_code_and_detail(
+    client: TestClient, merchant_with_intake: MerchantRow
+) -> None:
+    """structured_flags must parse the bracketed raw flag into (category, code, detail)."""
+    resp = client.get(
+        f"/merchants/{merchant_with_intake.id}/findings", headers=_bearer()
+    )
+    assert resp.status_code == 200
+    doc = resp.json()["documents"][0]
+    sf = doc["structured_flags"]
+    assert isinstance(sf, list)
+    # Every raw flag in `flags` must have a corresponding structured entry.
+    assert len(sf) == len(doc["flags"])
+
+
+def test_findings_csv_includes_source_id_columns(
+    client: TestClient, merchant_with_intake: MerchantRow
+) -> None:
+    resp = client.get(f"/ui/merchants/{merchant_with_intake.id}/findings.csv")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "avg_daily_balance_source_ids" in body
+    assert "true_revenue_source_ids" in body
+    assert "mca_daily_total_source_ids" in body
+
+
+def test_findings_csv_has_structured_flag_section(
+    client: TestClient, merchant_with_intake: MerchantRow
+) -> None:
+    resp = client.get(f"/ui/merchants/{merchant_with_intake.id}/findings.csv")
+    assert resp.status_code == 200
+    # Header line of the flag section ("section,document_id,category,code,detail").
+    assert "section,document_id,category,code,detail" in resp.text
