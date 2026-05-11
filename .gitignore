@@ -9,6 +9,15 @@ install-cloudflare-tunnel.ps1
 upload-statements.ps1
 upload-statements-*.ps1
 
+# Cloudflare API + connector tokens — operator-only, never in version control.
+# Pattern catches scratch files an operator might create to stash a token
+# (cf-token.txt, CF_TOKEN.env, .cf_token, cloudflare-token.txt, etc.).
+cf-token*
+CF_TOKEN*
+.cf_token*
+cloudflare-token*
+*.cf-token
+
 # Python
 __pycache__/
 *.pyc

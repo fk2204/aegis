@@ -106,6 +106,9 @@ sudo systemctl restart aegis-web aegis-worker
 2. Update `ZOHO_REFRESH_TOKEN` in `/etc/aegis/aegis.env`.
 3. `sudo systemctl restart aegis-web aegis-worker`.
 
+### Credential rotation log
+- 2026-05-11: Cloudflare API token cfut_wKgXNs... rotated after plaintext exposure in Claude Code session. Operator deleted token in Cloudflare dashboard.
+
 ---
 
 ## Compliance + state regulation
