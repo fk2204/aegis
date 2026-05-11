@@ -212,6 +212,58 @@ Deploy is fresh.
 
 ---
 
+## OPERATING PRINCIPLES — set after May 11 session
+
+These are the durable lessons from the May 11, 2026 production debugging
++ deploy session. They override the auto-mode classifier's defaults —
+the classifier is a backstop, not a license. Treat each rule as
+session-start context that applies to every action in every session.
+
+1. **Production data writes require explicit operator approval per
+   action.** Reading from production Supabase, the Hetzner box, or any
+   other live system is OK without per-action approval. Writing
+   (`INSERT`, `UPDATE`, `DELETE`, file create/modify outside `/tmp`,
+   systemd actions, `git push`) requires the operator to explicitly say
+   "yes, do that specific action." The auto-mode classifier is NOT
+   sufficient — if it lets a write through, that alone does not mean
+   the operator authorized it. If unsure, ask first.
+
+2. **Never claim a prior action succeeded without verification in the
+   current session.** Do not say "you applied migration X earlier" or
+   "we confirmed Y" unless there is visible proof in the current
+   session's context. Memory across sessions is not reliable. When in
+   doubt, run a verification query (or ask the operator to) and check.
+
+3. **Never print credentials or tokens in tool output.** When
+   provisioning scripts return tokens (Cloudflare API tokens, AWS keys,
+   JWT secrets, bearer tokens, Supabase keys), capture them to a
+   variable, write them to a gitignored file, and refer to them by
+   name only in subsequent messages. Never echo their values to the
+   user-visible session.
+
+4. **Deploy to Hetzner uses `root@5.161.51.105` with
+   `$HOME/.ssh/aegis_ed25519` key.** Not the `aegis` user — `aegis`
+   has no shell. This is documented in `deploy/RUNBOOK.md` and should
+   not change.
+
+5. **When the operator pastes credentials into chat, flag and stop.**
+   Do not continue past the leak. Tell the operator the credential
+   needs rotation before any further work. Do not try to use the
+   leaked credential to "move faster."
+
+6. **Production database state must be operator-real, not seeded.**
+   Do not create test merchants, test funders, or test documents in
+   production Supabase. If testing is needed, use synthetic fixture
+   data already in the repo or ask the operator for a test-mode
+   database URL.
+
+7. **The operator's stated state distribution matters.** When asked
+   about state-specific features, ask the operator which states they
+   actually fund deals in before scoping work. Do not preemptively
+   expand to "all 50" or "all 44 served."
+
+---
+
 ## Project Structure
 
 ```
