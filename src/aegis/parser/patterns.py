@@ -157,6 +157,12 @@ def analyze_patterns(
     if recent := _recent_account_opening(period_start, today):
         patterns.append(recent)
 
+    if vel := _deposit_velocity_spike(deposits, period_start, period_end):
+        patterns.append(vel)
+
+    if accel := _withdrawal_acceleration(debits, period_start, period_end):
+        patterns.append(accel)
+
     return PatternAnalysis(
         patterns=patterns,
         mca_positions=mca_positions,
@@ -434,6 +440,110 @@ def _paydown_mca(debits: list[ClassifiedTransaction]) -> Pattern | None:
                 source_ids=[e.id for e in events],
             )
     return None
+
+
+def _deposit_velocity_spike(
+    deposits: list[ClassifiedTransaction],
+    period_start: date,
+    period_end: date,
+) -> Pattern | None:
+    """Catch deposit-count spikes (not just dollar-volume spikes).
+
+    Different signal from preloan_spike: a merchant suddenly receiving
+    many MORE deposits per day (e.g. a stuffed deposit list to look busy)
+    can spike velocity even if total dollars are flat.
+
+    Fires when the highest rolling-7-day deposit COUNT exceeds 3.0x the
+    period-average daily deposit count. Requires statement >= 21 days
+    so we have enough baseline to compute an average.
+
+    Tune based on real-deal data after ~50 funded deals.
+    """
+    statement_days = max(1, (period_end - period_start).days + 1)
+    if statement_days < 21 or len(deposits) < 10:
+        return None
+
+    baseline_per_day = len(deposits) / statement_days
+    by_day: defaultdict[date, list[ClassifiedTransaction]] = defaultdict(list)
+    for d in deposits:
+        by_day[d.posted_date].append(d)
+
+    days_sorted = sorted(by_day.keys())
+    # Rolling 7-day window, count deposits per window.
+    best_window: tuple[date, int, list[UUID]] | None = None
+    for end_idx, end_day in enumerate(days_sorted):
+        window_start = end_day - timedelta(days=6)
+        window_ids: list[UUID] = []
+        for day in days_sorted[: end_idx + 1]:
+            if day >= window_start:
+                window_ids.extend(t.id for t in by_day[day])
+        if best_window is None or len(window_ids) > best_window[1]:
+            best_window = (end_day, len(window_ids), window_ids)
+
+    if best_window is None:
+        return None
+    end_day, count, ids = best_window
+    if count < baseline_per_day * 7 * 3.0:
+        return None
+
+    return Pattern(
+        code="deposit_velocity_spike",
+        severity=20,
+        detail=(
+            f"7d window ending {end_day.isoformat()}: {count} deposits "
+            f"vs baseline {baseline_per_day * 7:.1f}/wk"
+        ),
+        source_ids=ids,
+    )
+
+
+def _withdrawal_acceleration(
+    debits: list[ClassifiedTransaction],
+    period_start: date,
+    period_end: date,
+) -> Pattern | None:
+    """MCA-debit COUNT/day spike in the last week vs prior weekly average.
+
+    Different from paydown_mca (which detects descending amounts on a
+    single payee). This catches a merchant where stacking has accelerated
+    in the trailing week — more frequent debits, not bigger ones.
+
+    Fires when last-7-day MCA-debit count > 1.5x prior weekly average.
+    Requires statement >= 21 days.
+
+    Tune based on real-deal data after ~50 funded deals.
+    """
+    statement_days = max(1, (period_end - period_start).days + 1)
+    if statement_days < 21:
+        return None
+    mca_debits = [d for d in debits if d.category == "mca_debit"]
+    if len(mca_debits) < 4:
+        return None
+
+    week_ago = period_end - timedelta(days=7)
+    last_week = [d for d in mca_debits if d.posted_date >= week_ago]
+    earlier = [d for d in mca_debits if d.posted_date < week_ago]
+    if not last_week or not earlier:
+        return None
+
+    prior_weeks = (statement_days - 7) / 7
+    if prior_weeks <= 0:
+        return None
+    earlier_weekly_avg = len(earlier) / prior_weeks
+    if earlier_weekly_avg <= 0:
+        return None
+    if len(last_week) <= earlier_weekly_avg * 1.5:
+        return None
+
+    return Pattern(
+        code="withdrawal_acceleration",
+        severity=20,
+        detail=(
+            f"last-7d MCA debits: {len(last_week)} vs prior weekly avg "
+            f"{earlier_weekly_avg:.1f}"
+        ),
+        source_ids=[d.id for d in last_week],
+    )
 
 
 def _recent_account_opening(period_start: date, today: date) -> Pattern | None:

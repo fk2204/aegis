@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -58,35 +59,49 @@ _PERIOD_END = date(2026, 1, 31)
 def _clean_extraction_payload() -> dict[str, Any]:
     """Build the canned pass-1 response.
 
-    On day d (1..10), one deposit of +5000 then one withdrawal of -4000.
-    Running balance after each row is tracked so the daily reconciliation
-    check passes.
+    Spread 10 deposit+withdrawal pairs across the full 31-day period
+    (every 3 days). Deposits vary realistically ($4673 - $5421) so the
+    synthetic-low-variance + round-number detectors don't fire, and the
+    velocity detector doesn't see a 7-day spike. Running balance is
+    tracked precisely so the daily reconciliation check passes.
+
+    Totals: 10 deposits summing to $50,000.00; 10 withdrawals of
+    -$4,000.00 each summing to -$40,000.00. Beginning $5,000 +
+    deposits $50,000 - withdrawals $40,000 = ending $15,000.
     """
+    # Varied but tied-out deposit stream — sum is exactly $50,000.00.
+    deposit_amounts = [
+        "4673.21", "5108.42", "4892.15", "5421.07", "4760.55",
+        "5290.18", "4843.62", "5176.33", "4915.88", "4918.59",
+    ]
+    assert sum(Decimal(a) for a in deposit_amounts) == Decimal("50000.00")
+
     transactions: list[dict[str, Any]] = []
-    running = 5000
+    running = Decimal("5000.00")
     line_id = 1
-    for day in range(1, 11):
+    for i, amount in enumerate(deposit_amounts):
+        day = 1 + i * 3  # days 1, 4, 7, 10, ..., 28
         d = f"2026-01-{day:02d}"
-        running += 5000
+        running += Decimal(amount)
         transactions.append(
             {
                 "posted_date": d,
-                "description": f"DEPOSIT {day}",
-                "amount": "5000.00",
+                "description": f"DEPOSIT {i + 1}",
+                "amount": amount,
                 "running_balance": str(running),
-                "source_page": 1 if day <= 6 else 2,
+                "source_page": 1 if day <= 14 else 2,
                 "source_line": line_id,
             }
         )
         line_id += 1
-        running -= 4000
+        running -= Decimal("4000.00")
         transactions.append(
             {
                 "posted_date": d,
-                "description": f"MERCHANT ADVANCE DAILY ACH {day}",
+                "description": f"MERCHANT ADVANCE DAILY ACH {i + 1}",
                 "amount": "-4000.00",
                 "running_balance": str(running),
-                "source_page": 1 if day <= 6 else 2,
+                "source_page": 1 if day <= 14 else 2,
                 "source_line": line_id,
             }
         )

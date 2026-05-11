@@ -10,6 +10,7 @@ NEVER asks the LLM. Pure Python so it's deterministic and reviewable.
 
 from __future__ import annotations
 
+import statistics
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
@@ -88,7 +89,144 @@ def aggregate(
     flags: list[str] = []
     if adb_skipped_days > 0:
         flags.append(f"adb_partial_coverage:{adb_skipped_days}/{period_days}")
+
+    # New fraud-signal insights — surface without persisting (no DB change
+    # this round). Each is None when not applicable.
+    concentration_flag = _customer_concentration_flag(transactions, revenue.value)
+    if concentration_flag is not None:
+        flags.append(concentration_flag)
+    payroll_flag = _payroll_cadence_flag(transactions, revenue.value)
+    if payroll_flag is not None:
+        flags.append(payroll_flag)
+    nsf_overlap_flag = _nsf_negative_overlap_flag(
+        transactions, beginning_balance, period_start, period_end
+    )
+    if nsf_overlap_flag is not None:
+        flags.append(nsf_overlap_flag)
+
     return AggregateResult(aggregates=aggregates, flags=flags)
+
+
+def _customer_concentration_flag(
+    transactions: list[ClassifiedTransaction], true_revenue: Decimal
+) -> str | None:
+    """Top deposit counterparty as share of revenue.
+
+    Group revenue-included deposits by normalized description; report the
+    top counterparty's share. Returns None when revenue is zero or fewer
+    than 3 distinct counterparties exist (concentration is a meaningful
+    signal only with some baseline of payers).
+    """
+    if true_revenue <= 0:
+        return None
+    deposits = [
+        t
+        for t in transactions
+        if t.amount > 0 and t.category in _REVENUE_INCLUDED
+    ]
+    if not deposits:
+        return None
+    by_payee: defaultdict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    for t in deposits:
+        key = t.description.strip().lower()[:30]
+        by_payee[key] += t.amount
+    if len(by_payee) < 3:
+        return None
+    top_payee, top_total = max(by_payee.items(), key=lambda kv: kv[1])
+    share_pct = round((top_total / true_revenue) * 100)
+    return f"top_counterparty_concentration:{share_pct}%_({top_payee[:20]})"
+
+
+def _payroll_cadence_flag(
+    transactions: list[ClassifiedTransaction], true_revenue: Decimal
+) -> str | None:
+    """Detect payroll cadence + payroll as %-of-revenue.
+
+    Returns None when no payroll rows exist. Cadence buckets:
+      - weekly:        median spacing 6-8 days
+      - biweekly:      median spacing 13-16 days
+      - semimonthly:   median spacing 14-18 days
+        (overlaps biweekly today; refine with month-aware logic in a
+        later round if signal demands it)
+      - monthly:       median spacing 27-32 days
+      - irregular:     anything else
+    """
+    payroll_rows = sorted(
+        (t for t in transactions if t.category == "payroll"),
+        key=lambda t: t.posted_date,
+    )
+    if not payroll_rows:
+        return None
+    if len(payroll_rows) < 2:
+        return "payroll_cadence:irregular_count_1"
+    spacing = [
+        (payroll_rows[i + 1].posted_date - payroll_rows[i].posted_date).days
+        for i in range(len(payroll_rows) - 1)
+    ]
+    median_spacing = statistics.median(spacing)
+    cadence: str
+    if 6 <= median_spacing <= 8:
+        cadence = "weekly"
+    elif 13 <= median_spacing <= 16:
+        cadence = "biweekly"
+    elif 27 <= median_spacing <= 32:
+        cadence = "monthly"
+    else:
+        cadence = "irregular"
+
+    if true_revenue <= 0:
+        return f"payroll_cadence:{cadence}"
+    payroll_total = sum(
+        (abs(t.amount) for t in payroll_rows), Decimal("0")
+    )
+    pct = round((payroll_total / true_revenue) * 100)
+    return f"payroll_cadence:{cadence}_{pct}%_of_revenue"
+
+
+def _nsf_negative_overlap_flag(
+    transactions: list[ClassifiedTransaction],
+    beginning_balance: Decimal,
+    period_start: date,
+    period_end: date,
+) -> str | None:
+    """NSF events on negative-balance days.
+
+    Helps the operator distinguish "NSFs spread out across the period"
+    (processing anomalies) from "NSFs cluster on the same days the
+    account is in the red" (real cashflow stress). Returns None when no
+    NSFs exist.
+    """
+    nsf_rows = [t for t in transactions if t.category == "nsf_fee"]
+    if not nsf_rows:
+        return None
+
+    # Reuse the same logic as _days_negative to compute negative-balance days.
+    if period_end < period_start:
+        return None
+    by_day: defaultdict[date, list[ClassifiedTransaction]] = defaultdict(list)
+    for t in transactions:
+        if period_start <= t.posted_date <= period_end:
+            by_day[t.posted_date].append(t)
+    negative_days: set[date] = set()
+    closing = beginning_balance
+    cursor = period_start
+    while cursor <= period_end:
+        rows = by_day.get(cursor, [])
+        if rows:
+            last_with_balance = next(
+                (r for r in reversed(rows) if r.running_balance is not None),
+                None,
+            )
+            if last_with_balance is not None and last_with_balance.running_balance is not None:
+                closing = last_with_balance.running_balance
+            else:
+                closing += sum((r.amount for r in rows), Decimal("0"))
+        if closing < 0:
+            negative_days.add(cursor)
+        cursor = _next_day(cursor)
+
+    overlap = sum(1 for t in nsf_rows if t.posted_date in negative_days)
+    return f"nsf_on_negative_days:{overlap}_of_{len(nsf_rows)}"
 
 
 # -- per-metric implementations ----------------------------------------------

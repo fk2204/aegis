@@ -159,9 +159,19 @@ def run_pipeline(
     per_cat_conf = per_category_confidence(classified)
     confidence_failures = _confidence_failures(avg_conf, per_cat_conf)
 
+    triangulation_flag = _fraud_cluster_triangulation(patterns)
+
     math_score = _math_score(validation)
+    patterns_score_with_bump = patterns.fraud_score
+    if triangulation_flag is not None:
+        # Triangulated cluster: multiple independent red flags fired
+        # together. Bump the patterns score by 10 (capped 100) so the
+        # combined fraud_score reflects the correlation. The triangulation
+        # rule is intentionally simple — refine after real-deal signal.
+        patterns_score_with_bump = min(100, patterns.fraud_score + 10)
+
     fraud_score, breakdown, compound_flags = _fraud_score(
-        metadata.fraud_score, math_score, patterns.fraud_score
+        metadata.fraud_score, math_score, patterns_score_with_bump
     )
 
     parse_status = _decide(metadata, fraud_score, validation, confidence_failures)
@@ -169,6 +179,8 @@ def run_pipeline(
     all_flags = _collect_flags(metadata, validation, patterns, compound_flags)
     all_flags.extend(f"[AGGREGATE] {f}" for f in aggregate_result.flags)
     all_flags.extend(f"[CONFIDENCE] {f}" for f in confidence_failures)
+    if triangulation_flag is not None:
+        all_flags.append(f"[COMPOUND] {triangulation_flag}")
 
     return PipelineResult(
         parse_status=parse_status,
@@ -269,6 +281,26 @@ def _decide(
     ):
         return "review"
     return "proceed"
+
+
+def _fraud_cluster_triangulation(patterns: PatternAnalysis | None) -> str | None:
+    """Three+ independent patterns with at least one severity >= 25 -> triangulated.
+
+    Single patterns are routine; clusters of three are not. The flag is
+    informational + a +10 bump on the patterns score so the combined
+    fraud_score reflects the correlation between independent red flags.
+
+    Tune based on real-deal data after ~50 funded deals.
+    """
+    if patterns is None or len(patterns.patterns) < 3:
+        return None
+    if not any(p.severity >= 25 for p in patterns.patterns):
+        return None
+    codes = [p.code for p in patterns.patterns]
+    return (
+        f"fraud_cluster_triangulated:{len(patterns.patterns)}_signals_"
+        + ",".join(codes[:5])
+    )
 
 
 def _confidence_failures(
