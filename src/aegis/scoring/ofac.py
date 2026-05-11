@@ -1,3 +1,5 @@
+# ruff: noqa: RUF001, RUF002, RUF003 — file intentionally contains
+# Cyrillic/Greek lookalike glyphs in CONFUSABLE_MAP (homograph evasion).
 """OFAC SDN sanctions screening.
 
 Hard-decline rule: if the merchant's `business_name` or `owner_name`
@@ -38,6 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -49,6 +52,31 @@ logger = logging.getLogger(__name__)
 REFRESH_WINDOW = timedelta(hours=24)
 HARD_CUTOFF = timedelta(days=7)
 _TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"[a-z0-9]+")
+
+# Limited Cyrillic/Greek lookalikes for Latin characters. Sanctions evaders
+# substitute visually-identical glyphs (e.g. Cyrillic "а" U+0430 for Latin
+# "a" U+0061) to defeat naive substring matching. NFKC normalization
+# handles many compatibility forms but does NOT map cross-script confusables
+# — those need an explicit table.
+#
+# Limited to Cyrillic/Greek lookalikes for Latin. Full Unicode confusables
+# coverage (Arabic, Hebrew, Mathematical Alphanumerics) deferred — extend
+# this dict if real homograph evasion attempts are seen in production.
+CONFUSABLE_MAP: Final[dict[str, str]] = {
+    # Cyrillic lowercase
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x",
+    "і": "i", "ј": "j", "ѕ": "s", "ԁ": "d", "ɡ": "g", "һ": "h", "ӏ": "l",
+    "ƞ": "n",
+    # Cyrillic uppercase mapped to lowercase Latin (NFKC cases first)
+    "А": "a", "В": "b", "Е": "e", "К": "k", "М": "m", "Н": "h",
+    "О": "o", "Р": "p", "С": "c", "Т": "t", "У": "y", "Х": "x",
+    # Greek lowercase
+    "α": "a", "ο": "o", "ρ": "p", "ε": "e", "ι": "i", "κ": "k", "η": "n",
+    "ν": "v", "τ": "t", "υ": "y", "χ": "x",
+    # Greek uppercase
+    "Α": "a", "Β": "b", "Ε": "e", "Ζ": "z", "Η": "h", "Ι": "i", "Κ": "k",
+    "Μ": "m", "Ν": "n", "Ο": "o", "Ρ": "p", "Τ": "t", "Υ": "y", "Χ": "x",
+}
 
 
 class OFACError(RuntimeError):
@@ -198,9 +226,21 @@ class OFACClient:
         self._loaded_mtime = mtime
 
 
+def _fold_confusables(name: str) -> str:
+    """Lowercase, NFKC-normalize, then fold known Cyrillic/Greek confusables.
+
+    NFKC handles compatibility forms (full-width digits, ligatures).
+    CONFUSABLE_MAP handles cross-script lookalikes that NFKC leaves alone.
+    Order: NFKC first (so e.g. fullwidth "Ｐ" → "P" → "p"), then lowercase,
+    then the map.
+    """
+    nfkc = unicodedata.normalize("NFKC", name).lower()
+    return "".join(CONFUSABLE_MAP.get(ch, ch) for ch in nfkc)
+
+
 def _normalize_tokens(name: str) -> set[str]:
-    """Lowercase, alnum tokens. Empty input -> empty set."""
-    return set(_TOKEN_RE.findall(name.lower()))
+    """Lowercase, alnum tokens, with homograph folding. Empty -> empty set."""
+    return set(_TOKEN_RE.findall(_fold_confusables(name)))
 
 
 SDN_XML_URL = (
@@ -317,6 +357,7 @@ def _full_name(entry: object) -> str:
 
 
 __all__ = [
+    "CONFUSABLE_MAP",
     "HARD_CUTOFF",
     "REFRESH_WINDOW",
     "OFACClient",
