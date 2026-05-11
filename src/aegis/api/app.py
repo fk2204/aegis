@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 
 from aegis.api.auth import warn_if_bearer_unconfigured
 from aegis.api.routes import ALL_ROUTERS
@@ -67,6 +68,16 @@ def create_app() -> FastAPI:
     @app.get("/healthz", tags=["health"])
     async def healthz() -> dict[str, bool]:
         return {"ok": True}
+
+    @app.get("/", include_in_schema=False)
+    async def root() -> RedirectResponse:
+        """Send a fresh visitor to the dashboard.
+
+        Workers signing in via Cloudflare Access land here first. Without
+        this redirect FastAPI's default 404 surfaces as
+        ``{"detail":"Not Found"}`` which is operator-hostile.
+        """
+        return RedirectResponse(url="/ui/", status_code=302)
 
     for r in ALL_ROUTERS:
         app.include_router(r)
