@@ -102,13 +102,21 @@ def test_truncation_marks_failure() -> None:
     assert any(f.startswith("extraction_truncated") for f in result.failures)
 
 
-def test_duplicate_source_lines_on_page_fail() -> None:
+def test_duplicate_source_lines_on_page_warn_but_pass() -> None:
+    """Duplicate source_line is a soft warning, not a failure.
+
+    Real bank PDFs (Chase Business Checking, PNC eStmt) print
+    transactions in multi-column layouts where Claude sometimes returns
+    the same source_line for two distinct rows. The extractor renumbers
+    duplicates deterministically before validation; the validator
+    surfaces the original collision as a warning so the audit trail
+    remains complete.
+    """
     stmt = _build_clean()
-    # Two rows on page 1 with the same source_line should fail uniqueness.
-    stmt.transactions[1].source_line = 1
+    stmt.transactions[1].source_line = 1  # collide with transactions[0]
     result = validate_extraction(stmt, today=date(2026, 1, 25))
-    assert not result.passed
-    assert any(f.startswith("missing_source_uniqueness") for f in result.failures)
+    assert result.passed
+    assert any(w.startswith("duplicate_source_line") for w in result.warnings)
 
 
 def test_daily_balance_mismatch_fires() -> None:

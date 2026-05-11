@@ -66,7 +66,11 @@ RULES:
 3. `posted_date` in ISO format YYYY-MM-DD.
 4. `running_balance` is the balance printed on that line if present, else null.
 5. `source_page` is the 1-indexed page of the PDF where the row was printed.
-6. `source_line` is the 1-indexed visual line within that page (top to bottom).
+6. `source_line` is the 1-indexed visual line within that page (top to bottom). \
+   `source_line` MUST be UNIQUE per `source_page`. If two transactions appear \
+   in the same printed row (multi-column layouts, side-by-side debits/credits, \
+   wrapped descriptions), assign DIFFERENT integers (e.g. 14 and 15, not \
+   14 and 14). Duplicate (page, line) tuples break the audit trail.
 7. The `summary` block contains values AS PRINTED in the statement header / \
    footer / summary box. Do NOT recompute them from the line items — quote \
    them verbatim from what the bank printed.

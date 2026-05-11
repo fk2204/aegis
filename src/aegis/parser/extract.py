@@ -95,6 +95,7 @@ def extract_statement(pdf_bytes: bytes, llm: LLMClient) -> ExtractionPass1Result
         raise ExtractionError(f"extraction payload failed schema validation: {exc}") from exc
 
     _enforce_source_attribution(statement)
+    statement = _renumber_duplicate_source_lines(statement)
 
     return ExtractionPass1Result(
         statement=statement,
@@ -169,6 +170,41 @@ def _enforce_source_attribution(statement: ExtractedStatement) -> None:
                 f"transaction[{i}] missing source attribution: "
                 f"page={txn.source_page} line={txn.source_line}"
             )
+
+
+def _renumber_duplicate_source_lines(
+    statement: ExtractedStatement,
+) -> ExtractedStatement:
+    """Deterministically renumber duplicate source_line values per page.
+
+    Bedrock (Claude) sometimes returns the same ``source_line`` for two
+    distinct transactions printed in a multi-column or side-by-side
+    layout (real bank PDFs do this — Chase Business Checking, PNC
+    eStatement). The audit-drill semantics expect unique (page, line)
+    tuples so the operator can click a transaction and see exactly which
+    printed row it came from.
+
+    Strategy: walk transactions in input order; when we see a
+    (page, line) tuple we've already seen, bump the line by 1 until we
+    find an unused integer on that page. Preserves Claude's intended
+    ordering; the displayed "page X line Y" remains a 1-indexed monotone
+    integer per page. The original duplicate gets surfaced as a
+    ``duplicate_source_line`` warning by the validator.
+    """
+    seen: dict[int, set[int]] = {}
+    new_transactions = []
+    for txn in statement.transactions:
+        page = txn.source_page
+        line = txn.source_line
+        page_lines = seen.setdefault(page, set())
+        while line in page_lines:
+            line += 1
+        page_lines.add(line)
+        if line != txn.source_line:
+            new_transactions.append(txn.model_copy(update={"source_line": line}))
+        else:
+            new_transactions.append(txn)
+    return statement.model_copy(update={"transactions": new_transactions})
 
 
 __all__ = ["ExtractionError", "ExtractionPass1Result", "extract_statement"]

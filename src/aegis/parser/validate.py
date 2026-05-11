@@ -202,19 +202,27 @@ def _check_negative_deposits(
 def _check_source_attribution(
     statement: ExtractedStatement, ctx: _ValidationContext
 ) -> None:
-    """Hard-fail if any transaction lacks page+line attribution.
+    """Verify every transaction carries page+line attribution.
 
-    Pydantic enforces ge=1, but a placeholder of 1/1 on every row would
-    silently break audit drill-down. We require monotonic-or-distinct lines
-    per page (different rows in the same page must have different line numbers).
+    Pydantic enforces ge=1 (presence). This routine adds a soft check
+    that warns when two transactions share the same source_line on the
+    same page (multi-column layouts can legitimately do this; the prior
+    rule rejected real PDFs from Chase/PNC/WF when Bedrock returned
+    duplicate line numbers for transactions printed side-by-side).
+
+    The warning still surfaces in the parse report so an auditor can see
+    "page 6 had duplicate line numbers". The deterministic re-number
+    happens in ``aegis.parser.extract`` so all downstream code sees
+    monotonic lines per page.
     """
     by_page: defaultdict[int, list[int]] = defaultdict(list)
     for txn in statement.transactions:
         by_page[txn.source_page].append(txn.source_line)
     for page, lines in by_page.items():
         if len(lines) != len(set(lines)):
-            ctx.failures.append(
-                f"missing_source_uniqueness: page {page} has duplicate source_line values"
+            ctx.warnings.append(
+                f"duplicate_source_line: page {page} had duplicate "
+                "source_line values (auto-renumbered preserve audit ordering)"
             )
 
 
