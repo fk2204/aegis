@@ -40,22 +40,44 @@ _REVENUE_INCLUDED = frozenset({"deposit", "ach_credit", "wire_in", "refund"})
 _REVENUE_EXCLUDED = frozenset({"transfer", "chargeback"})
 
 
+@dataclass
+class AggregateResult:
+    """Output of ``aggregate``.
+
+    ``aggregates`` is the canonical Pydantic model. ``flags`` carries
+    operator-visible warnings from the aggregation step (today: ADB
+    partial coverage when mode-mix skips days). Pipeline appends these
+    flags to ``parse_result.all_flags`` so the merchant detail page
+    surfaces them.
+    """
+
+    aggregates: Aggregates
+    flags: list[str]
+
+
 def aggregate(
     transactions: list[ClassifiedTransaction],
     period_start: date,
     period_end: date,
     beginning_balance: Decimal,
-) -> Aggregates:
-    """Compute the canonical aggregates with full source attribution."""
+) -> AggregateResult:
+    """Compute the canonical aggregates with full source attribution.
+
+    Also reports ADB partial-coverage when printed-mode skips days the
+    bank didn't print a closing balance for (mode-mix skip). Previously
+    that skip was log-only and invisible to operators.
+    """
     period_days = max(1, (period_end - period_start).days + 1)
-    avg_dbl = _avg_daily_balance(transactions, beginning_balance, period_start, period_end)
+    avg_dbl, adb_skipped_days = _avg_daily_balance(
+        transactions, beginning_balance, period_start, period_end
+    )
     revenue = _true_revenue(transactions)
     nsf = _num_nsf(transactions)
     days_neg = _days_negative(transactions, beginning_balance, period_start, period_end)
     mca_daily = _mca_daily_total(transactions, period_start, period_end)
     debt_to_revenue = _debt_to_revenue(mca_daily.value, revenue.value, period_days)
 
-    return Aggregates(
+    aggregates = Aggregates(
         avg_daily_balance={"value": avg_dbl.value, "source_ids": avg_dbl.source_ids},
         true_revenue={"value": revenue.value, "source_ids": revenue.source_ids},
         num_nsf={"value": nsf.value, "source_ids": nsf.source_ids},
@@ -63,6 +85,10 @@ def aggregate(
         debt_to_revenue=debt_to_revenue,
         mca_daily_total={"value": mca_daily.value, "source_ids": mca_daily.source_ids},
     )
+    flags: list[str] = []
+    if adb_skipped_days > 0:
+        flags.append(f"adb_partial_coverage:{adb_skipped_days}/{period_days}")
+    return AggregateResult(aggregates=aggregates, flags=flags)
 
 
 # -- per-metric implementations ----------------------------------------------
@@ -73,7 +99,7 @@ def _avg_daily_balance(
     beginning_balance: Decimal,
     period_start: date,
     period_end: date,
-) -> _Sourced:
+) -> tuple[_Sourced, int]:
     """Time-weighted average of the running balance series.
 
     Mode is detected once at the start of the period:
@@ -92,7 +118,7 @@ def _avg_daily_balance(
     series.
     """
     if period_end < period_start:
-        return _Sourced(value=Decimal("0.00"), source_ids=[])
+        return _Sourced(value=Decimal("0.00"), source_ids=[]), 0
 
     by_day: defaultdict[date, list[ClassifiedTransaction]] = defaultdict(list)
     for t in transactions:
@@ -110,6 +136,7 @@ def _avg_daily_balance(
     closing = beginning_balance
     total = Decimal("0")
     days = 0
+    skipped_days = 0
 
     cursor = period_start
     while cursor <= period_end:
@@ -127,6 +154,7 @@ def _avg_daily_balance(
                         "last row has no running_balance",
                         cursor.isoformat(),
                     )
+                    skipped_days += 1
                     cursor = _next_day(cursor)
                     continue
                 closing = last_row.running_balance
@@ -141,7 +169,7 @@ def _avg_daily_balance(
         cursor = _next_day(cursor)
 
     avg = safe_divide(total, Decimal(days)) if days else Decimal("0.00")
-    return _Sourced(value=avg, source_ids=sources)
+    return _Sourced(value=avg, source_ids=sources), skipped_days
 
 
 def _true_revenue(transactions: list[ClassifiedTransaction]) -> _Sourced:

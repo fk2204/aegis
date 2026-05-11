@@ -179,7 +179,7 @@ def test_corpus_item(item: CorpusItem) -> None:
         period_start=summary.period_start,
         period_end=summary.period_end,
         beginning_balance=summary.beginning_balance,
-    )
+    ).aggregates
 
     expected_aggs = expected.get("aggregates") or {}
     if "true_revenue" in expected_aggs:

@@ -103,7 +103,7 @@ def _seed_and_serve(manifest_path: Path, port: int) -> None:
         period_start=summary.period_start,
         period_end=summary.period_end,
         beginning_balance=summary.beginning_balance,
-    )
+    ).aggregates
     patterns = analyze_patterns(
         classified,
         period_start=summary.period_start,

@@ -42,7 +42,11 @@ from typing import Final, Literal
 
 from aegis.llm import LLMClient
 from aegis.parser.aggregate import aggregate
-from aegis.parser.classify import classify_transactions
+from aegis.parser.classify import (
+    avg_classification_confidence,
+    classify_transactions,
+    per_category_confidence,
+)
 from aegis.parser.extract import ExtractionPass1Result, extract_statement
 from aegis.parser.metadata import MetadataAnalysis, analyze_metadata
 from aegis.parser.models import Aggregates, ClassifiedTransaction, ValidationResult
@@ -64,6 +68,23 @@ METADATA_HARD_DECLINE: Final[int] = 60
 # save tampering.
 EOF_HARD_DECLINE: Final[int] = 2
 
+# Average classification-confidence floor. Below this, the document goes
+# to manual_review regardless of math / metadata / pattern scores —
+# classifier signaling low confidence is the LLM telling us it can't
+# read the rows accurately, and downstream patterns + aggregates are
+# only as good as the labels.
+#
+# Tune based on real-deal data after ~50 funded deals. Track per-statement
+# avg confidence distribution in operator dashboard to inform tuning.
+CLASSIFICATION_CONFIDENCE_FLOOR: Final[int] = 60
+
+# Per-category floor for high-impact categories (mca_debit drives the
+# stacking pattern + scoring penalties; low confidence there poisons
+# both). Same tuning guidance as above — adjust once we have signal
+# from real funded deals.
+HIGH_IMPACT_CATEGORY_CONFIDENCE_FLOOR: Final[int] = 70
+HIGH_IMPACT_CATEGORIES: Final[frozenset[str]] = frozenset({"mca_debit", "nsf_fee"})
+
 ParseStatus = Literal["proceed", "review", "manual_review"]
 
 
@@ -79,6 +100,13 @@ class PipelineResult:
     fraud_score: int = 0
     fraud_score_breakdown: dict[str, int] = field(default_factory=dict)
     all_flags: list[str] = field(default_factory=list)
+    # Average classification confidence across all classified rows
+    # (100 when no rows were classified — e.g. validation failed). Used
+    # by the parse_status gate and surfaced on the merchant detail page.
+    avg_classification_confidence: int = 100
+    # Per-category averages keyed by category name. Empty when no rows
+    # were classified. Used for high-impact category gating.
+    classification_confidence_by_category: dict[str, int] = field(default_factory=dict)
 
 
 def run_pipeline(
@@ -119,21 +147,28 @@ def run_pipeline(
         period_end=extraction.statement.summary.period_end,
         today=today,
     )
-    aggregates = aggregate(
+    aggregate_result = aggregate(
         classified,
         period_start=extraction.statement.summary.period_start,
         period_end=extraction.statement.summary.period_end,
         beginning_balance=extraction.statement.summary.beginning_balance,
     )
+    aggregates = aggregate_result.aggregates
+
+    avg_conf = avg_classification_confidence(classified)
+    per_cat_conf = per_category_confidence(classified)
+    confidence_failures = _confidence_failures(avg_conf, per_cat_conf)
 
     math_score = _math_score(validation)
     fraud_score, breakdown, compound_flags = _fraud_score(
         metadata.fraud_score, math_score, patterns.fraud_score
     )
 
-    parse_status = _decide(metadata, fraud_score, validation)
+    parse_status = _decide(metadata, fraud_score, validation, confidence_failures)
 
     all_flags = _collect_flags(metadata, validation, patterns, compound_flags)
+    all_flags.extend(f"[AGGREGATE] {f}" for f in aggregate_result.flags)
+    all_flags.extend(f"[CONFIDENCE] {f}" for f in confidence_failures)
 
     return PipelineResult(
         parse_status=parse_status,
@@ -146,6 +181,8 @@ def run_pipeline(
         fraud_score=fraud_score,
         fraud_score_breakdown=breakdown,
         all_flags=all_flags,
+        avg_classification_confidence=avg_conf,
+        classification_confidence_by_category=per_cat_conf,
     )
 
 
@@ -212,12 +249,18 @@ def _decide(
     metadata: MetadataAnalysis,
     fraud_score: int,
     validation: ValidationResult,
+    confidence_failures: list[str],
 ) -> ParseStatus:
     if metadata.eof_markers > EOF_HARD_DECLINE:
         return "manual_review"
     if metadata.fraud_score >= METADATA_HARD_DECLINE:
         return "manual_review"
     if fraud_score >= HARD_DECLINE_THRESHOLD:
+        return "manual_review"
+    if confidence_failures:
+        # LLM signaled it couldn't classify accurately — labels are
+        # suspect and downstream patterns/aggregates inherit the noise.
+        # Same severity as a math gate failure.
         return "manual_review"
     if (
         fraud_score >= REVIEW_THRESHOLD
@@ -226,6 +269,34 @@ def _decide(
     ):
         return "review"
     return "proceed"
+
+
+def _confidence_failures(
+    avg_conf: int, per_cat_conf: dict[str, int]
+) -> list[str]:
+    """Return failure codes for classification confidence below the floor.
+
+    Empty list = no failure. Two paths trigger:
+      1. Overall avg below CLASSIFICATION_CONFIDENCE_FLOOR.
+      2. Any high-impact category (mca_debit, nsf_fee) below
+         HIGH_IMPACT_CATEGORY_CONFIDENCE_FLOOR.
+    """
+    failures: list[str] = []
+    if avg_conf < CLASSIFICATION_CONFIDENCE_FLOOR:
+        failures.append(
+            f"classification_confidence_below_floor: avg={avg_conf} "
+            f"floor={CLASSIFICATION_CONFIDENCE_FLOOR}"
+        )
+    for cat in HIGH_IMPACT_CATEGORIES:
+        cat_conf = per_cat_conf.get(cat)
+        if cat_conf is None:
+            continue
+        if cat_conf < HIGH_IMPACT_CATEGORY_CONFIDENCE_FLOOR:
+            failures.append(
+                f"classification_confidence_below_floor_{cat}: "
+                f"avg={cat_conf} floor={HIGH_IMPACT_CATEGORY_CONFIDENCE_FLOOR}"
+            )
+    return failures
 
 
 def _collect_flags(
@@ -245,8 +316,12 @@ def _collect_flags(
 
 
 __all__ = [
+    "CLASSIFICATION_CONFIDENCE_FLOOR",
+    "EOF_HARD_DECLINE",
     "FRAUD_WEIGHTS",
     "HARD_DECLINE_THRESHOLD",
+    "HIGH_IMPACT_CATEGORIES",
+    "HIGH_IMPACT_CATEGORY_CONFIDENCE_FLOOR",
     "METADATA_HARD_DECLINE",
     "REVIEW_THRESHOLD",
     "PipelineResult",

@@ -13,6 +13,7 @@ token limits and to bound cost.
 from __future__ import annotations
 
 import json
+from statistics import mean
 from typing import Any, Final, get_args
 
 from aegis.llm import LLMClient
@@ -54,6 +55,34 @@ def classify_transactions(
             classifications[entry["id"]] = (entry["category"], entry["confidence"])
 
     return _merge(transactions, classifications, by_id)
+
+
+def avg_classification_confidence(
+    classified: list[ClassifiedTransaction],
+) -> int:
+    """Return the integer mean of classification_confidence across rows.
+
+    Empty list -> 100 (vacuously confident, nothing to be wrong about).
+    Pipeline reads this and compares against CLASSIFICATION_CONFIDENCE_FLOOR.
+    """
+    if not classified:
+        return 100
+    return round(mean(c.classification_confidence for c in classified))
+
+
+def per_category_confidence(
+    classified: list[ClassifiedTransaction],
+) -> dict[str, int]:
+    """Average classification_confidence grouped by category.
+
+    Returns int means keyed by category. Categories with zero rows are absent.
+    Pipeline uses this to escalate on low confidence in high-impact categories
+    (mca_debit, nsf_fee) regardless of the overall average.
+    """
+    buckets: dict[str, list[int]] = {}
+    for txn in classified:
+        buckets.setdefault(txn.category, []).append(txn.classification_confidence)
+    return {cat: round(mean(vals)) for cat, vals in buckets.items()}
 
 
 def _build_batch_prompt(batch: list[Transaction]) -> str:
@@ -120,4 +149,9 @@ def _merge(
     return result
 
 
-__all__ = ["ClassificationError", "classify_transactions"]
+__all__ = [
+    "ClassificationError",
+    "avg_classification_confidence",
+    "classify_transactions",
+    "per_category_confidence",
+]

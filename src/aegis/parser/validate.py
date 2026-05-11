@@ -22,6 +22,8 @@ Failure codes (start of string is parsed by `pipeline.py` for severity)
 - `invalid_period`          — period < 14 or > 50 days
 - `negative_deposit`        — a deposit row has negative amount
 - `daily_balance_mismatch`  — at least one day's running balance is wrong
+- `extraction_row_count_mismatch` — extracted row count differs from printed
+                                    count by more than max(3, printed * 2%)
 """
 
 from __future__ import annotations
@@ -98,6 +100,7 @@ def validate_extraction(
     _check_negative_deposits(statement, ctx)
     _check_source_attribution(statement, ctx)
     _check_daily_running_balance(statement, ctx)
+    _check_intraday_running_balance(statement, ctx)
     if truncated:
         ctx.failures.append("extraction_truncated_retry_required")
 
@@ -164,13 +167,21 @@ def _check_listed_vs_summary(
             f"vs printed {summary.withdrawal_total}"
         )
 
-    # Soft check: count parity if the bank printed a count.
+    # Hard check: count parity if the bank printed a count.
+    #
+    # Previously a soft warning at ±3. Real-statement testing showed that
+    # ±3 leniency on a 50-row statement (6%) is appropriate, but on an
+    # 800-row Chase Business statement, 3 missed rows is hardly anything
+    # — we want absolute parity on large statements. Scale by 2% with a
+    # floor of 3 so small statements still get the prior leniency.
     if summary.printed_transaction_count is not None:
         diff = abs(len(statement.transactions) - summary.printed_transaction_count)
-        if diff > 3:
-            ctx.warnings.append(
-                f"transaction_count_mismatch: listed {len(statement.transactions)} "
-                f"vs printed {summary.printed_transaction_count}"
+        threshold = max(3, int(summary.printed_transaction_count * 0.02))
+        if diff > threshold:
+            ctx.failures.append(
+                f"extraction_row_count_mismatch: listed {len(statement.transactions)} "
+                f"vs printed {summary.printed_transaction_count} "
+                f"(tolerance {threshold})"
             )
 
 
@@ -277,6 +288,57 @@ def _check_daily_running_balance(
         if len(ctx.daily_mismatches) > 3:
             ctx.warnings.append(
                 f"daily_balance_mismatch_count: {len(ctx.daily_mismatches)} total mismatched days"
+            )
+
+
+def _check_intraday_running_balance(
+    statement: ExtractedStatement, ctx: _ValidationContext
+) -> None:
+    """Verify running_balance is monotonic within a single day.
+
+    The day-end check (_check_daily_running_balance) only sees the last
+    row's balance for each day. That leaves a hallucination path: Claude
+    could invent intermediate running_balance values and as long as the
+    day-end ties to the next day's start, the math passes.
+
+    This check closes that path: for every consecutive pair of rows on
+    the same day where BOTH carry a printed running_balance, verify
+    `next.running_balance == prev.running_balance + next.amount` within
+    the existing $1.00 tolerance. Rows with running_balance=None are
+    skipped (best-effort, matching the day-end logic).
+    """
+    by_day: defaultdict[date, list[Transaction]] = defaultdict(list)
+    for txn in statement.transactions:
+        by_day[txn.posted_date].append(txn)
+
+    intraday_mismatches: list[str] = []
+    for day in sorted(by_day.keys()):
+        rows = by_day[day]
+        if len(rows) < 2:
+            continue
+        prev_bal: Decimal | None = None
+        for row in rows:
+            if row.running_balance is None:
+                # Reset chain: we can't verify across a None gap.
+                prev_bal = None
+                continue
+            if prev_bal is not None:
+                expected = prev_bal + row.amount
+                if not money_eq(expected, row.running_balance, tol=_TOL):
+                    intraday_mismatches.append(
+                        f"{day.isoformat()} p{row.source_page}l{row.source_line}: "
+                        f"expected {expected} got {row.running_balance}"
+                    )
+            prev_bal = row.running_balance
+
+    if intraday_mismatches:
+        sample = intraday_mismatches[:3]
+        ctx.failures.append(
+            "reconciliation_failed_intraday: " + "; ".join(sample)
+        )
+        if len(intraday_mismatches) > 3:
+            ctx.warnings.append(
+                f"reconciliation_failed_intraday_count: {len(intraday_mismatches)} rows"
             )
 
 
