@@ -190,6 +190,19 @@ Deploy is fresh.
 - **No `os.system`, no `subprocess.shell=True`, no string-interpolated SQL.**
 - **No secrets in code or git.** `.env` is gitignored.
 
+### Operational Safety
+- **Scripts under `scripts/audit/` write test data.** They require
+  `--confirm` and refuse to write to production without
+  `AEGIS_ALLOW_PRODUCTION_SEED=true` set. Never run them against
+  production Supabase. The `AEGIS_ALLOW_PRODUCTION_SEED` env var
+  should never be set in `/etc/aegis/aegis.env` or any committed
+  file — it's a deliberate barrier.
+- **Production data writes require explicit operator approval per
+  action.** Earlier work seeded 4 placeholder merchants + 14 docs
+  into production without explicit authorization; staff reasonably
+  concluded the parser was broken (the data was). Multi-barrier
+  gating now protects against repeats.
+
 ### Code Quality
 - **NEVER use `Any` from typing without an explicit comment justifying it.**
   Pydantic models for all data shapes, including Claude responses.
