@@ -41,3 +41,4 @@ logs/
 
 # Node (we don't use it but listed per spec)
 node_modules/
+.tmp/
