@@ -8,17 +8,11 @@
     <h1>Today · Underwriting desk</h1>
     <div class="meta" style="margin-top:4px">
       <span><span class="dot"></span>All systems nominal</span>
-      <span>SLA window 09:00–18:00 ET</span>
       <span>{{ now|default('') }}</span>
     </div>
   </div>
   <div style="display:flex;gap:8px">
-    <div class="btn-group">
-      <button class="btn active">Today</button>
-      <button class="btn">7d</button>
-      <button class="btn">MTD</button>
-      <button class="btn">QTD</button>
-    </div>
+    <a class="btn" href="/ui/upload">Upload statement</a>
     <a class="btn btn-primary" href="/ui/intake">+ New deal</a>
   </div>
 </div>
@@ -28,78 +22,69 @@
 <div class="body cols-2" style="grid-template-columns:220px 1fr">
   <aside class="side">
     <div class="side-section">
-      <div class="side-label">My queue</div>
-      <div class="side-item active"><span>Awaiting review</span><span class="count">—</span></div>
-      <div class="side-item"><span>Awaiting docs</span><span class="count">—</span></div>
-      <div class="side-item"><span>In funder pipe</span><span class="count">—</span></div>
-      <div class="side-item"><span>Snoozed</span><span class="count">—</span></div>
+      <div class="side-label">Queue</div>
+      <div class="side-item {{ 'active' if manual_review_count > 0 else '' }}"><a href="/ui/review" style="color:inherit;text-decoration:none;flex:1">Manual review</a><span class="count">{{ manual_review_count }}</span></div>
+      <div class="side-item"><a href="/ui/deals" style="color:inherit;text-decoration:none;flex:1">All deals</a><span class="count">{{ in_pipeline }}</span></div>
+      <div class="side-item"><a href="/ui/merchants" style="color:inherit;text-decoration:none;flex:1">All merchants</a><span class="count">{{ merchant_total }}</span></div>
     </div>
     <div class="side-section">
-      <div class="side-label">Filters</div>
-      <div class="side-item"><span>Tier A</span><span class="count">—</span></div>
-      <div class="side-item"><span>Tier B</span><span class="count">—</span></div>
-      <div class="side-item"><span>Tier C</span><span class="count">—</span></div>
-      <div class="side-item"><span>Decline</span><span class="count">—</span></div>
+      <div class="side-label">Parse status</div>
+      <div class="side-item"><span>Proceed</span><span class="count">{{ proceed_count }}</span></div>
+      <div class="side-item"><span>Review</span><span class="count">{{ review_count }}</span></div>
+      <div class="side-item"><span>Manual review</span><span class="count">{{ manual_review_count }}</span></div>
+      <div class="side-item"><span>Pending</span><span class="count">{{ pending_count }}</span></div>
+      <div class="side-item"><span>Error</span><span class="count">{{ error_count }}</span></div>
     </div>
     <div class="side-section">
       <div class="side-label">Jump to</div>
-      <div class="side-item"><a href="/ui/upload" style="color:inherit;text-decoration:none">Upload statement</a><span class="count mono">⌘U</span></div>
-      <div class="side-item"><a href="/ui/intake" style="color:inherit;text-decoration:none">New deal</a><span class="count mono">⌘N</span></div>
-      <div class="side-item"><a href="/ui/review" style="color:inherit;text-decoration:none">Review queue</a><span class="count mono">⌘R</span></div>
+      <div class="side-item"><a href="/ui/upload" style="color:inherit;text-decoration:none;flex:1">Upload</a><span class="count mono">PDF</span></div>
+      <div class="side-item"><a href="/ui/intake" style="color:inherit;text-decoration:none;flex:1">New deal</a><span class="count mono">+</span></div>
+      <div class="side-item"><a href="/ui/funders" style="color:inherit;text-decoration:none;flex:1">Funders</a><span class="count mono">$</span></div>
     </div>
   </aside>
 
   <main class="main">
     <div class="kpi-row">
       <div class="kpi">
-        <div class="label">Deals in pipeline</div>
-        <div class="value">—</div>
-        <div class="delta">preview · data hookup TBD</div>
+        <div class="label">Merchants</div>
+        <div class="value">{{ merchant_total }}</div>
+        <div class="delta">total in book</div>
       </div>
       <div class="kpi">
-        <div class="label">Approved today</div>
-        <div class="value">—</div>
-        <div class="delta">preview</div>
+        <div class="label">In pipeline</div>
+        <div class="value">{{ in_pipeline }}</div>
+        <div class="delta">documents not yet declined</div>
       </div>
       <div class="kpi">
-        <div class="label">Avg decision time</div>
-        <div class="value">—</div>
-        <div class="delta">preview</div>
+        <div class="label">Cleared (proceed)</div>
+        <div class="value">{{ proceed_count }}</div>
+        <div class="delta">parse_status = proceed</div>
       </div>
       <div class="kpi">
-        <div class="label">Approval rate (30d)</div>
-        <div class="value">—</div>
-        <div class="delta">preview</div>
+        <div class="label">Manual review</div>
+        <div class="value" style="color:{% if manual_review_count > 0 %}var(--warn){% else %}var(--ink){% endif %}">{{ manual_review_count }}</div>
+        <div class="delta"><a href="/ui/review">open queue</a></div>
       </div>
       <div class="kpi">
-        <div class="label">Default risk (book)</div>
-        <div class="value">—</div>
-        <div class="delta">preview</div>
+        <div class="label">Errors</div>
+        <div class="value" style="color:{% if error_count > 0 %}var(--neg){% else %}var(--ink){% endif %}">{{ error_count }}</div>
+        <div class="delta">parse_status = error</div>
       </div>
     </div>
 
     <div class="grid-2">
       <div class="panel">
         <div class="panel-head">
-          <span class="panel-title">Pipeline funnel · 30d</span>
-          <span class="panel-actions mono">preview</span>
+          <span class="panel-title">Pipeline funnel</span>
+          <span class="panel-actions mono">live · parse_status + audit_log</span>
         </div>
         <div class="panel-body">
           <div class="funnel">
-            {% set _funnel = [
-              ('Intake', 0, 0, ''),
-              ('Docs complete', 0, 0, ''),
-              ('Parsed &amp; scored', 0, 0, 'accent'),
-              ('Underwritten', 0, 0, ''),
-              ('Sent to funders', 0, 0, 'pos'),
-              ('Funded', 0, 0, 'pos'),
-              ('Declined', 0, 0, 'neg'),
-            ] %}
-            {% for label, count, width, cls in _funnel %}
+            {% for row in funnel_rows %}
               <div class="funnel-row">
-                <span>{{ label|safe }}</span>
-                <div class="funnel-bar"><div class="funnel-fill {{ cls }}" style="width:{{ width }}%"></div></div>
-                <span class="funnel-num">{{ count }}</span>
+                <span>{{ row.label }}</span>
+                <div class="funnel-bar"><div class="funnel-fill {{ row.cls }}" style="width:{{ row.width }}%"></div></div>
+                <span class="funnel-num">{{ row.count }}</span>
               </div>
             {% endfor %}
           </div>
@@ -133,75 +118,56 @@
     <div class="panel">
       <div class="panel-head">
         <span class="panel-title">Needs your attention</span>
-        <span class="panel-actions mono">live · sourced from deals pipeline</span>
+        <span class="panel-actions mono">{{ attention|length }} document{{ '' if attention|length == 1 else 's' }} in manual_review</span>
       </div>
       <div class="panel-body flush">
         <table class="data">
           <thead>
             <tr>
-              <th style="width:90px">Deal</th>
               <th>Merchant</th>
-              <th>Request</th>
-              <th class="num">Score</th>
-              <th>Stage</th>
-              <th class="num">SLA</th>
+              <th class="num">Fraud score</th>
+              <th>Flags</th>
+              <th>Uploaded</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td colspan="6" style="text-align:center;color:var(--muted);padding:24px;font-family:var(--mono);font-size:11.5px">
-                attention queue — preview only · open <a href="/ui/deals">/ui/deals</a> for the live pipeline table
-              </td>
-            </tr>
+            {% if not attention %}
+              <tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px;font-family:var(--mono);font-size:11.5px">
+                no documents in manual_review · pipeline is clear
+              </td></tr>
+            {% else %}
+              {% for a in attention %}
+                <tr>
+                  <td>{{ a.merchant_label }}</td>
+                  <td class="num">{{ a.fraud_score }}</td>
+                  <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ a.flags or '—' }}</span></td>
+                  <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ a.uploaded_at }}</span></td>
+                  <td><a class="btn" href="/ui/review">review</a></td>
+                </tr>
+              {% endfor %}
+            {% endif %}
           </tbody>
         </table>
       </div>
     </div>
 
-    <div class="grid-3">
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">Decisions · 30d</span>
-          <span class="panel-actions mono">preview</span>
-        </div>
-        <div class="panel-body">
-          <div class="funnel">
-            <div class="funnel-row"><span>Approved</span><div class="funnel-bar"><div class="funnel-fill pos" style="width:0%"></div></div><span class="funnel-num">—</span></div>
-            <div class="funnel-row"><span>Declined</span><div class="funnel-bar"><div class="funnel-fill neg" style="width:0%"></div></div><span class="funnel-num">—</span></div>
-            <div class="funnel-row"><span>Counter</span><div class="funnel-bar"><div class="funnel-fill warn" style="width:0%"></div></div><span class="funnel-num">—</span></div>
-            <div class="funnel-row"><span>Withdrawn</span><div class="funnel-bar"><div class="funnel-fill" style="width:0%;background:var(--muted)"></div></div><span class="funnel-num">—</span></div>
-            <div class="funnel-row"><span>In progress</span><div class="funnel-bar"><div class="funnel-fill" style="width:0%"></div></div><span class="funnel-num">—</span></div>
-          </div>
-        </div>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Recent activity</span>
+        <span class="panel-actions mono">audit_log · last {{ recent_activity|length }}</span>
       </div>
-
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">Funder activity</span>
-          <span class="panel-actions mono">7d</span>
-        </div>
-        <div class="panel-body flush">
-          <table class="data">
-            <tbody>
-              <tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;font-family:var(--mono);font-size:11.5px">
-                no funder activity yet · open <a href="/ui/funders">/ui/funders</a>
-              </td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">Recent activity</span>
-          <span class="panel-actions mono">audit_log</span>
-        </div>
-        <div class="panel-body flush">
-          <div class="activity-item">
-            <span class="time">—</span>
-            <span><span class="who">aegis</span> <span class="what">activity log</span> <span class="obj">preview · audit_log hookup TBD</span></span>
-          </div>
-        </div>
+      <div class="panel-body flush">
+        {% if not recent_activity %}
+          <div style="padding:16px;color:var(--muted);font-size:12px">No activity logged yet.</div>
+        {% else %}
+          {% for r in recent_activity %}
+            <div class="activity-item">
+              <span class="time">{{ r.time_short }}</span>
+              <span><span class="who">{{ r.actor }}</span> <span class="what">{{ r.action }}</span>{% if r.subject_type %} <span class="obj">{{ r.subject_type }}{% if r.subject_id %} · {{ r.subject_id[:8] }}{% endif %}</span>{% endif %}</span>
+            </div>
+          {% endfor %}
+        {% endif %}
       </div>
     </div>
   </main>

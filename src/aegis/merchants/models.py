@@ -75,6 +75,13 @@ class MerchantRow(_StrictModel):
     # so the future button is a no-migration patch.
     preferred_funder_id: UUID | None = None
 
+    # Phase 7B funder-submission tracking (Pydantic-only — no Supabase
+    # column yet, so these reset on a Supabase round-trip; audit_log is
+    # the durable record. Persistence moves to a real submissions table
+    # in Phase 7C.).
+    submitted_to_funder_ids: list[UUID] = Field(default_factory=list)
+    last_submitted_at: datetime | None = None
+
     # Idempotency for Zoho sync.
     # zoho_lead_id is populated after the first push_merchant_to_lead call.
     zoho_deal_id: str | None = None

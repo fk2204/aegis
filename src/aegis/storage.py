@@ -171,6 +171,9 @@ class DocumentRepository(Protocol):
 
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None: ...
 
+    def count_by_parse_status(self) -> dict[str, int]:
+        """Return a {parse_status -> count} histogram across all documents."""
+
 
 # In-memory implementation -----------------------------------------------------
 
@@ -282,6 +285,12 @@ class InMemoryDocumentRepository:
 
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None:
         return self._analyses.get(document_id)
+
+    def count_by_parse_status(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in self._docs.values():
+            counts[row.parse_status] = counts.get(row.parse_status, 0) + 1
+        return counts
 
     def mark_error(self, document_id: UUID, detail: str) -> None:
         """Test/worker helper to record an error path (out of band of parse)."""
@@ -459,6 +468,31 @@ class SupabaseDocumentRepository:
         if not result.data:
             return None
         return _db_row_to_analysis(cast(dict[str, Any], result.data[0]))
+
+    def count_by_parse_status(self) -> dict[str, int]:
+        """Histogram of documents by parse_status.
+
+        Caps the scan at 10 000 rows — at 100 deals/month + ~3 statements
+        each, this covers 28 years; the cap is defensive against an
+        unexpected blow-out without paying for a Postgres-side GROUP BY.
+        """
+        try:
+            result = (
+                get_supabase()
+                .table("documents")
+                .select("parse_status")
+                .limit(10000)
+                .execute()
+            )
+        except Exception:
+            return {}
+        counts: dict[str, int] = {}
+        for r in cast(list[dict[str, Any]], result.data or []):
+            status_val = str(r.get("parse_status", ""))
+            if not status_val:
+                continue
+            counts[status_val] = counts.get(status_val, 0) + 1
+        return counts
 
 
 # Internal helpers -------------------------------------------------------------

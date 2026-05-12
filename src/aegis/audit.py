@@ -19,7 +19,7 @@ hits the DB so PII never lands in the audit table either.
 from __future__ import annotations
 
 import json
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from aegis.db import get_supabase
@@ -45,6 +45,15 @@ class AuditLog(Protocol):
         details: dict[str, Any] | None = None,
     ) -> None: ...
 
+    def list_recent(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return the most-recent ``limit`` audit rows, newest first.
+
+        Powers the Today-dashboard recent-activity panel. Rows are
+        dicts with keys ``{actor, action, subject_type, subject_id,
+        details, created_at}``; ``created_at`` may be ``None`` for the
+        in-memory backend.
+        """
+
 
 class InMemoryAuditLog:
     """List-backed log. Used in tests and the in-memory storage layer."""
@@ -69,8 +78,12 @@ class InMemoryAuditLog:
                 "subject_type": subject_type,
                 "subject_id": str(subject_id) if subject_id is not None else None,
                 "details": masked,
+                "created_at": None,
             }
         )
+
+    def list_recent(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        return list(reversed(self.entries))[: max(0, limit)]
 
 
 class SupabaseAuditLog:
@@ -105,6 +118,32 @@ class SupabaseAuditLog:
         except Exception as exc:
             _log.error("audit.write_failed action=%s actor=%s", action, actor)
             raise AuditWriteError(f"failed to write audit row for {action!r}") from exc
+
+    def list_recent(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        try:
+            result = (
+                get_supabase()
+                .table("audit_log")
+                .select("*")
+                .order("created_at", desc=True)
+                .limit(max(1, limit))
+                .execute()
+            )
+        except Exception:
+            _log.warning("audit.list_recent_failed")
+            return []
+        rows = cast(list[dict[str, Any]], result.data or [])
+        return [
+            {
+                "actor": r.get("actor", "—"),
+                "action": r.get("action", "—"),
+                "subject_type": r.get("subject_type"),
+                "subject_id": r.get("subject_id"),
+                "details": r.get("details") or {},
+                "created_at": r.get("created_at"),
+            }
+            for r in rows
+        ]
 
 
 __all__ = [

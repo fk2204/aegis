@@ -82,52 +82,63 @@
         </div>
       {% endif %}
 
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">Matched Funders</span>
-          <span class="panel-actions mono">sorted by match score · green = clean · yellow = soft · red = hard fail</span>
-        </div>
-        <div class="panel-body">
-          {% if not matches %}
-            <div style="padding:24px;text-align:center;color:var(--muted)">
-              No active funders configured. Visit <a href="/ui/funders/import">Import</a>.
-            </div>
-          {% else %}
-            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
-              {% for c in matches %}
-                {% set _card_cls = {'green':'','yellow':'','red':''} %}
-                <div class="offer {% if c.color == 'green' %}best{% endif %}">
-                  <div class="offer-head">
-                    <span class="offer-name"><a href="/ui/funders/{{ c.funder_id }}" style="color:inherit;text-decoration:none">{{ c.funder_name }}</a></span>
-                    <span class="offer-rate" style="color: {% if c.color == 'green' %}var(--pos){% elif c.color == 'yellow' %}var(--warn){% else %}var(--neg){% endif %}">
-                      {{ c.match_score }}<span style="color:var(--muted);font-size:11px"> /100</span>
-                    </span>
-                  </div>
-                  {% if c.hard_reasons %}
-                    <div>
-                      <div style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--neg);margin-bottom:4px">Hard fails · {{ c.hard_reasons|length }}</div>
-                      <ul style="margin:0;padding-left:16px;font-size:11.5px;color:var(--ink-2)">
-                        {% for r in c.hard_reasons %}<li>{{ r }}</li>{% endfor %}
-                      </ul>
+      <form method="post" action="/ui/merchants/{{ merchant.id }}/submit">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Matched Funders</span>
+            <span class="panel-actions mono">sorted by match score · green = clean · yellow = soft · red = hard fail</span>
+          </div>
+          <div class="panel-body">
+            {% if not matches %}
+              <div style="padding:24px;text-align:center;color:var(--muted)">
+                No active funders configured. Visit <a href="/ui/funders/import">Import</a>.
+              </div>
+            {% else %}
+              <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+                <button class="btn btn-primary" type="submit">Download submission package</button>
+                <button class="btn" type="button" onclick="document.querySelectorAll('input[name=funder_ids][data-color=green]').forEach(b => b.checked = true)">Select all green</button>
+                <button class="btn" type="button" onclick="document.querySelectorAll('input[name=funder_ids]').forEach(b => b.checked = false)">Clear</button>
+                <span class="mono" style="font-size:11px;color:var(--muted)">ZIP of N CSVs (or one CSV if N = 1). Forward to each funder.</span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
+                {% for c in matches %}
+                  {% set _disabled = (c.color == 'red') %}
+                  <label class="offer {% if c.color == 'green' %}best{% endif %}" style="cursor:{% if _disabled %}not-allowed{% else %}pointer{% endif %};display:block">
+                    <div class="offer-head">
+                      <span class="offer-name" style="display:flex;align-items:center;gap:6px">
+                        <input type="checkbox" name="funder_ids" value="{{ c.funder_id }}" data-color="{{ c.color }}" {% if _disabled %}disabled{% endif %}>
+                        <a href="/ui/funders/{{ c.funder_id }}" style="color:inherit;text-decoration:none" onclick="event.stopPropagation()">{{ c.funder_name }}</a>
+                      </span>
+                      <span class="offer-rate" style="color: {% if c.color == 'green' %}var(--pos){% elif c.color == 'yellow' %}var(--warn){% else %}var(--neg){% endif %}">
+                        {{ c.match_score }}<span style="color:var(--muted);font-size:11px"> /100</span>
+                      </span>
                     </div>
-                  {% endif %}
-                  {% if c.soft_concerns %}
-                    <div>
-                      <div style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--warn);margin-bottom:4px">Soft concerns · {{ c.soft_concerns|length }}</div>
-                      <ul style="margin:0;padding-left:16px;font-size:11.5px;color:var(--ink-2)">
-                        {% for r in c.soft_concerns %}<li>{{ r }}</li>{% endfor %}
-                      </ul>
-                    </div>
-                  {% endif %}
-                  {% if c.color == "green" %}
-                    <div style="font-family:var(--mono);font-size:10.5px;color:var(--pos)">No blockers.</div>
-                  {% endif %}
-                </div>
-              {% endfor %}
-            </div>
-          {% endif %}
+                    {% if c.hard_reasons %}
+                      <div>
+                        <div style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--neg);margin-bottom:4px">Hard fails · {{ c.hard_reasons|length }}</div>
+                        <ul style="margin:0;padding-left:16px;font-size:11.5px;color:var(--ink-2)">
+                          {% for r in c.hard_reasons %}<li>{{ r }}</li>{% endfor %}
+                        </ul>
+                      </div>
+                    {% endif %}
+                    {% if c.soft_concerns %}
+                      <div>
+                        <div style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--warn);margin-bottom:4px">Soft concerns · {{ c.soft_concerns|length }}</div>
+                        <ul style="margin:0;padding-left:16px;font-size:11.5px;color:var(--ink-2)">
+                          {% for r in c.soft_concerns %}<li>{{ r }}</li>{% endfor %}
+                        </ul>
+                      </div>
+                    {% endif %}
+                    {% if c.color == "green" %}
+                      <div style="font-family:var(--mono);font-size:10.5px;color:var(--pos)">No blockers.</div>
+                    {% endif %}
+                  </label>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
         </div>
-      </div>
+      </form>
     {% endif %}
   </main>
 </div>

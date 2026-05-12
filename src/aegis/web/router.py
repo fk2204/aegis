@@ -21,6 +21,8 @@ on localhost only.
 
 from __future__ import annotations
 
+import io
+import zipfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -62,12 +64,14 @@ from aegis.scoring.match_funders import match_funder
 from aegis.scoring.models import FunderMatch, ScoreInput
 from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
+from aegis.scoring.submission_package import build_submission_files
 from aegis.storage import (
     AnalysisRow,
     DocumentNotFoundError,
     DocumentRepository,
     DocumentRow,
 )
+from aegis.web._slug import slugify
 from aegis.web._stacking_card import build_stacking_card
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -94,10 +98,146 @@ _AGGREGATE_SOURCE_FIELDS: dict[str, str] = {
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(
-        request, "index.html.j2", {"now": datetime.now(UTC).isoformat()}
+async def index(
+    request: Request,
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+) -> HTMLResponse:
+    """Today dashboard — live KPIs sourced from Supabase / in-memory repos.
+
+    Funnel: parse-status histogram with proportional bar widths so the
+    operator sees how many docs are at each stage. "Sent to funders"
+    and "Funded" are sourced from the audit_log action histogram (no
+    table for these yet — Phase 7C work).
+
+    Attention queue: most-recent ``manual_review`` documents joined to
+    their merchant for context.
+
+    Recent activity: last 10 ``audit_log`` rows. The audit table is
+    masked at write time so PII never lands here either.
+    """
+    parse_counts = docs.count_by_parse_status()
+    merchant_total = merchants_repo.count_total()
+
+    proceed = parse_counts.get("proceed", 0)
+    review = parse_counts.get("review", 0)
+    manual_review = parse_counts.get("manual_review", 0)
+    pending = parse_counts.get("pending", 0)
+    error = parse_counts.get("error", 0)
+    parsed_total = proceed + review + manual_review + error
+    in_pipeline = parsed_total + pending
+
+    recent_activity_rows = audit.list_recent(limit=10)
+    recent_activity = [
+        {
+            "actor": r.get("actor") or "—",
+            "action": r.get("action") or "—",
+            "subject_type": r.get("subject_type") or "",
+            "subject_id": r.get("subject_id") or "",
+            "time_short": _format_activity_time(r.get("created_at")),
+        }
+        for r in recent_activity_rows
+    ]
+
+    attention = []
+    for d in docs.list_documents(parse_status="manual_review", limit=8):
+        merchant_label = "—"
+        if d.merchant_id is not None:
+            try:
+                merchant_label = merchants_repo.get(d.merchant_id).business_name
+            except MerchantNotFoundError:
+                merchant_label = f"merchant {str(d.merchant_id)[:8]}"
+        attention.append(
+            {
+                "document_id": str(d.id),
+                "merchant_label": merchant_label,
+                "fraud_score": d.fraud_score if d.fraud_score is not None else "—",
+                "uploaded_at": d.uploaded_at.strftime("%Y-%m-%d %H:%M"),
+                "flags": "; ".join(d.all_flags) if d.all_flags else "",
+            }
+        )
+
+    submitted_count = sum(
+        1 for r in recent_activity_rows if r.get("action") == "deal.submit_to_funders"
     )
+    funded_count = sum(
+        1 for r in recent_activity_rows if r.get("action") == "deal.funded"
+    )
+
+    funnel_rows = _build_funnel_rows(
+        intake_count=merchant_total,
+        docs_uploaded=in_pipeline,
+        parsed=parsed_total,
+        underwritten=proceed + review,
+        submitted=submitted_count,
+        funded=funded_count,
+        declined=manual_review + error,
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "index.html.j2",
+        {
+            "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+            "merchant_total": merchant_total,
+            "in_pipeline": in_pipeline,
+            "manual_review_count": manual_review,
+            "proceed_count": proceed,
+            "review_count": review,
+            "pending_count": pending,
+            "error_count": error,
+            "funnel_rows": funnel_rows,
+            "attention": attention,
+            "recent_activity": recent_activity,
+        },
+    )
+
+
+def _build_funnel_rows(
+    *,
+    intake_count: int,
+    docs_uploaded: int,
+    parsed: int,
+    underwritten: int,
+    submitted: int,
+    funded: int,
+    declined: int,
+) -> list[dict[str, Any]]:
+    """Compute proportional bar widths for the pipeline funnel.
+
+    Width is relative to ``intake_count`` (the widest bar). All other
+    stages are smaller-or-equal. Empty pipeline collapses to zero-width
+    bars rather than rendering garbage.
+    """
+    base = max(intake_count, 1)
+
+    def _w(n: int) -> int:
+        return min(100, int((n / base) * 100)) if base > 0 else 0
+
+    return [
+        {"label": "Intake", "count": intake_count, "width": _w(intake_count), "cls": ""},
+        {"label": "Docs uploaded", "count": docs_uploaded, "width": _w(docs_uploaded), "cls": ""},
+        {"label": "Parsed", "count": parsed, "width": _w(parsed), "cls": "accent"},
+        {"label": "Underwritten", "count": underwritten, "width": _w(underwritten), "cls": ""},
+        {"label": "Sent to funders", "count": submitted, "width": _w(submitted), "cls": "pos"},
+        {"label": "Funded", "count": funded, "width": _w(funded), "cls": "pos"},
+        {"label": "Declined", "count": declined, "width": _w(declined), "cls": "neg"},
+    ]
+
+
+def _format_activity_time(value: object) -> str:
+    """Render an audit_log ``created_at`` value for the dashboard timeline."""
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, datetime):
+        return value.strftime("%H:%M")
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%H:%M")
+        except ValueError:
+            return value[:16]
+    return "—"
 
 
 @router.get("/upload", response_class=HTMLResponse)
@@ -749,6 +889,149 @@ async def merchant_match(
     )
 
 
+@router.post("/merchants/{merchant_id}/submit", response_model=None)
+async def merchant_submit_to_funders(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    funder_ids: Annotated[list[str], Form()],
+) -> Response:
+    """Build per-funder submission CSVs and stream them as a ZIP.
+
+    Operator-triggered from the match panel. ``funder_ids`` is the
+    multi-select of funder UUIDs the operator chose to forward to.
+    A single funder returns the CSV inline; multiple funders return a
+    ZIP. Always audits ``deal.submit_to_funders`` regardless of count.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    requested_ids = _parse_funder_ids(funder_ids)
+    if not requested_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="no funders selected",
+        )
+
+    latest_doc, analysis = _find_latest_for_merchant(docs, merchant_id)
+    if latest_doc is None or analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="merchant has no analyzed document — upload + parse first",
+        )
+
+    score_input = _score_input_from_dashboard(merchant, latest_doc, analysis)
+    try:
+        score_result = score_deal(score_input, ofac=ofac)
+    except OFACStaleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"ofac_unavailable: {exc}",
+        ) from exc
+
+    requested_set = set(requested_ids)
+    matched: list[FunderMatch] = []
+    for f in funder_repo.list_active():
+        if f.id not in requested_set:
+            continue
+        m = match_funder(f, score_input, score_result)
+        if m is None:
+            continue
+        matched.append(m)
+
+    if not matched:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="none of the selected funders have configured criteria for this merchant",
+        )
+
+    files = build_submission_files(score_input, score_result, matched)
+
+    audit.record(
+        actor="dashboard",
+        action="deal.submit_to_funders",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={
+            "funder_ids": [sub.funder_id for sub in files],
+            "funder_names": [sub.funder_name for sub in files],
+            "score_tier": score_result.tier,
+            "score": score_result.score,
+        },
+    )
+
+    # Update tracking fields (in-memory implementations only — Supabase
+    # path round-trips lose these; durable record is the audit row above).
+    try:
+        merchants.upsert(
+            merchant.model_copy(
+                update={
+                    "submitted_to_funder_ids": [
+                        UUID(sub.funder_id) for sub in files
+                    ],
+                    "last_submitted_at": datetime.now(UTC),
+                }
+            )
+        )
+    except Exception as exc:
+        # Tracking is best-effort; the audit row above is authoritative.
+        from aegis.logger import get_logger
+
+        get_logger(__name__).warning(
+            "submission.tracking_update_failed merchant_id=%s err=%s",
+            merchant.id,
+            exc,
+        )
+
+    merchant_slug = slugify(merchant.business_name)
+    if len(files) == 1:
+        only = files[0]
+        return Response(
+            content=only.csv_bytes,
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "content-disposition": f'attachment; filename="{only.filename}"'
+            },
+        )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for sub in files:
+            zf.writestr(sub.filename, sub.csv_bytes)
+    zip_name = f"submission_{merchant_slug}.zip"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"content-disposition": f'attachment; filename="{zip_name}"'},
+    )
+
+
+def _parse_funder_ids(values: list[str]) -> list[UUID]:
+    """Coerce form-encoded funder_id values into a deduped list of UUIDs."""
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for v in values:
+        s = v.strip()
+        if not s:
+            continue
+        try:
+            u = UUID(s)
+        except ValueError:
+            continue
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
+
+
 @router.get("/merchants/{merchant_id}", response_class=HTMLResponse)
 async def merchant_detail(
     request: Request,
@@ -828,7 +1111,7 @@ async def merchant_findings_csv(
 
     findings = build_merchant_findings(merchant=merchant, docs=docs, ofac=ofac)
     body = findings_to_csv(findings)
-    filename = f"findings_{_slugify(merchant.business_name)}.csv"
+    filename = f"findings_{slugify(merchant.business_name)}.csv"
     return Response(
         content=body,
         media_type="text/csv; charset=utf-8",
@@ -1159,17 +1442,6 @@ def _merchant_form_error(
         {"merchant": merchant, "error": error, "form": form},
         status_code=status.HTTP_400_BAD_REQUEST,
     )
-
-
-def _slugify(text: str) -> str:
-    """ASCII-safe slug for the CSV ``content-disposition`` filename."""
-    out: list[str] = []
-    for ch in text.lower():
-        if ch.isalnum():
-            out.append(ch)
-        elif out and out[-1] != "_":
-            out.append("_")
-    return "".join(out).strip("_") or "merchant"
 
 
 def _entity_type_or_none(value: str) -> EntityType | None:

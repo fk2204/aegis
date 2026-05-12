@@ -41,21 +41,12 @@ from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
 from aegis.storage import DocumentRepository
 from aegis.web._findings_csv import findings_to_csv
+from aegis.web._slug import slugify
 from aegis.zoho.client import ZohoAuthError, ZohoClient, ZohoError
 from aegis.zoho.sync import ZohoSync, ZohoSyncError
 
 _log = get_logger(__name__)
 
-
-def _csv_filename_slug(text: str) -> str:
-    """ASCII-safe slug for the attachment filename Zoho displays to reps."""
-    out: list[str] = []
-    for ch in text.lower():
-        if ch.isalnum():
-            out.append(ch)
-        elif out and out[-1] != "_":
-            out.append("_")
-    return "".join(out).strip("_") or "merchant"
 
 router = APIRouter(prefix="/deals", tags=["deals"], dependencies=[Depends(require_bearer)])
 
@@ -219,7 +210,7 @@ def sync_to_zoho(
                         merchant=merchant, docs=docs, ofac=ofac
                     )
                     csv_bytes = findings_to_csv(findings).encode("utf-8")
-                    filename = f"findings_{_csv_filename_slug(merchant.business_name)}.csv"
+                    filename = f"findings_{slugify(merchant.business_name)}.csv"
                     sync.attach_findings_csv(
                         module=module,
                         record_id=zoho_record_id,

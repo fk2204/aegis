@@ -6,6 +6,14 @@ undercounts payback by the factor margin (the same bug as score.py's
 `estimated_payback_days`). AEGIS uses
 `total_repayment / daily_payment` everywhere. Numbers in the email body
 must reconcile against `score_result.estimated_payback_days`.
+
+Two builders:
+  * ``build_submission_package`` — one ``SubmissionPackage`` for ONE
+    funder. Used by the bearer-token API path.
+  * ``build_submission_files`` — list of ``FunderSubmissionFile`` (one
+    per matched funder), each with email subject + body + funder-facing
+    CSV bytes + filename. Used by ``POST /ui/merchants/{id}/submit`` to
+    produce a ZIP the operator forwards.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from aegis.scoring.models import (
     ScoreResult,
     SubmissionPackage,
 )
+from aegis.scoring.submission_csv import build_submission_csv
 
 _BUSINESS_DAYS_PER_MONTH = Decimal("22")
 
@@ -123,4 +132,50 @@ def _body(
     return "\n".join(lines)
 
 
-__all__ = ["build_submission_package"]
+@dataclass(frozen=True)
+class FunderSubmissionFile:
+    """One per matched funder. ZIP entry on the dashboard submit path."""
+
+    funder_id: str
+    funder_name: str
+    email_subject: str
+    email_body: str
+    csv_bytes: bytes
+    filename: str
+
+
+def build_submission_files(
+    deal: ScoreInput,
+    score: ScoreResult,
+    matches: list[FunderMatch],
+) -> list[FunderSubmissionFile]:
+    """Build one ``FunderSubmissionFile`` per match (email + CSV).
+
+    Filenames are merchant-slug + funder-slug + .csv so the operator can
+    drop the ZIP straight onto a funder portal without renaming.
+    """
+    from aegis.web._slug import slugify
+
+    merchant_slug = slugify(deal.business_name)
+    out: list[FunderSubmissionFile] = []
+    for m in matches:
+        terms = _compute_terms(deal, score)
+        csv_text = build_submission_csv(deal=deal, score=score, match=m)
+        out.append(
+            FunderSubmissionFile(
+                funder_id=str(m.funder_id),
+                funder_name=m.funder_name,
+                email_subject=_subject(deal, score, m),
+                email_body=_body(deal, score, m, terms),
+                csv_bytes=csv_text.encode("utf-8"),
+                filename=f"{merchant_slug}__{slugify(m.funder_name)}.csv",
+            )
+        )
+    return out
+
+
+__all__ = [
+    "FunderSubmissionFile",
+    "build_submission_files",
+    "build_submission_package",
+]

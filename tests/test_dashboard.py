@@ -118,6 +118,56 @@ def test_dashboard_index_renders(client: TestClient) -> None:
     assert "AEGIS" in resp.text
 
 
+def test_index_renders_live_kpis(
+    client: TestClient,
+    merchant: MerchantRow,
+    doc_repo: InMemoryDocumentRepository,
+) -> None:
+    """Today dashboard must surface live counts (not "—" placeholders).
+
+    The fixture creates one merchant + one parsed document with
+    parse_status="proceed", so we expect: merchant_total=1, proceed=1,
+    in_pipeline=1, manual_review=0.
+    """
+    resp = client.get("/ui/")
+    assert resp.status_code == 200
+    assert merchant is not None  # fixture-loaded
+    assert doc_repo is not None  # fixture-loaded
+    # No placeholder text from the v2-redesign era.
+    assert "data hookup TBD" not in resp.text
+    assert "preview · audit_log hookup TBD" not in resp.text
+    # KPI labels for the live counts are present.
+    assert "Merchants" in resp.text
+    assert "In pipeline" in resp.text
+    assert "Cleared (proceed)" in resp.text
+    # Funnel rows now live (have non-zero counts somewhere).
+    assert "Pipeline funnel" in resp.text
+
+
+def test_index_manual_review_doc_surfaces_in_attention_panel(
+    client: TestClient,
+    doc_repo: InMemoryDocumentRepository,
+    merchant: MerchantRow,
+) -> None:
+    """Force a doc into manual_review and verify it appears on Today."""
+    docs = list(doc_repo._docs.values())
+    target = docs[0]
+    flagged = target.model_copy(
+        update={
+            "parse_status": "manual_review",
+            "fraud_score": 82,
+            "all_flags": ["[META] suspicious_metadata"],
+        }
+    )
+    doc_repo._docs[target.id] = flagged
+
+    resp = client.get("/ui/")
+    assert resp.status_code == 200
+    assert merchant.business_name in resp.text
+    assert "82" in resp.text
+    assert "suspicious_metadata" in resp.text
+
+
 def test_dashboard_upload_page_has_form(client: TestClient) -> None:
     resp = client.get("/ui/upload")
     assert resp.status_code == 200

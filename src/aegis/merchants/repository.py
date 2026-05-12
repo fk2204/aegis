@@ -31,6 +31,7 @@ class MerchantRepository(Protocol):
     def find_by_zoho_deal_id(self, zoho_deal_id: str) -> MerchantRow | None: ...
     def find_by_zoho_lead_id(self, zoho_lead_id: str) -> MerchantRow | None: ...
     def list_all(self, *, state: str | None = None) -> list[MerchantRow]: ...
+    def count_total(self) -> int: ...
     def upsert(self, merchant: MerchantRow) -> MerchantRow: ...
     def delete(self, merchant_id: UUID) -> None: ...
 
@@ -65,6 +66,9 @@ class InMemoryMerchantRepository:
             s = state.upper()
             rows = [m for m in rows if m.state == s]
         return sorted(rows, key=lambda m: m.business_name.lower())
+
+    def count_total(self) -> int:
+        return len(self._by_id)
 
     def upsert(self, merchant: MerchantRow) -> MerchantRow:
         # Enforce uniqueness on zoho_deal_id across other ids.
@@ -138,6 +142,19 @@ class SupabaseMerchantRepository:
             query = query.eq("state", state.upper())
         result = query.execute()
         return [_row_to_merchant(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    def count_total(self) -> int:
+        try:
+            result = (
+                get_supabase()
+                .table("merchants")
+                .select("id")
+                .limit(10000)
+                .execute()
+            )
+        except Exception:
+            return 0
+        return len(result.data or [])
 
     def upsert(self, merchant: MerchantRow) -> MerchantRow:
         payload = _merchant_to_payload(merchant)

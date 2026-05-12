@@ -17,12 +17,13 @@
       {% if merchant.entity_type %}<span><span class="lbl">Entity</span>{{ merchant.entity_type }}</span>{% endif %}
       {% if merchant.zoho_lead_id %}<span><span class="lbl">Zoho lead</span>{{ merchant.zoho_lead_id }}</span>{% endif %}
       {% if merchant.zoho_deal_id %}<span><span class="lbl">Zoho deal</span>{{ merchant.zoho_deal_id }}</span>{% endif %}
+      {% if merchant.submitted_to_funder_ids %}<span><span class="lbl">Submitted</span>{{ merchant.submitted_to_funder_ids|length }} funder{{ '' if merchant.submitted_to_funder_ids|length == 1 else 's' }}{% if merchant.last_submitted_at %} · {{ merchant.last_submitted_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</span>{% endif %}
     </div>
   </div>
-  <div style="display:flex;gap:8px;align-items:flex-start">
+  <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
     <a class="btn" href="/ui/merchants/{{ merchant.id }}/edit">Edit</a>
-    <a class="btn" href="/ui/merchants/{{ merchant.id }}/match">Match funders</a>
-    <a class="btn" href="/ui/merchants/{{ merchant.id }}/findings.csv">Download CSV</a>
+    <a class="btn btn-primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders</a>
+    <a class="btn" href="/ui/merchants/{{ merchant.id }}/findings.csv" title="Auditor-internal CSV with full source-id traceability">Download audit CSV</a>
   </div>
 </div>
 {% endblock %}
