@@ -993,24 +993,108 @@ async def merchant_submit_to_funders(
     merchant_slug = slugify(merchant.business_name)
     if len(files) == 1:
         only = files[0]
-        return Response(
-            content=only.csv_bytes,
-            media_type="text/csv; charset=utf-8",
-            headers={
-                "content-disposition": f'attachment; filename="{only.filename}"'
+        download_bytes = only.csv_bytes
+        download_filename = only.filename
+        download_media = "text/csv; charset=utf-8"
+    else:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for sub in files:
+                zf.writestr(sub.filename, sub.csv_bytes)
+        download_bytes = buf.getvalue()
+        download_filename = f"submission_{merchant_slug}.zip"
+        download_media = "application/zip"
+
+    _record_submission_to_zoho(
+        merchant=merchant,
+        files=files,
+        zip_bytes=download_bytes,
+        zip_filename=download_filename,
+        merchants=merchants,
+        audit=audit,
+    )
+
+    return Response(
+        content=download_bytes,
+        media_type=download_media,
+        headers={
+            "content-disposition": f'attachment; filename="{download_filename}"'
+        },
+    )
+
+
+def _record_submission_to_zoho(
+    *,
+    merchant: MerchantRow,
+    # list[FunderSubmissionFile] — looser annotation keeps helper import-light
+    files: list[Any],
+    zip_bytes: bytes,
+    zip_filename: str,
+    merchants: MerchantRepository,
+    audit: AuditLog,
+) -> None:
+    """Mirror the funder submission into Zoho (Deal + each Lender record).
+
+    Best-effort: failures are audited but never raised — the CSV/ZIP
+    download must complete even if Zoho is down. Skips silently when
+    Zoho env isn't configured (e.g. tests, in-memory mode).
+    """
+    from aegis.logger import get_logger
+
+    log = get_logger(__name__)
+
+    if not merchant.zoho_deal_id:
+        audit.record(
+            actor="dashboard",
+            action="zoho.submission.skipped_no_deal",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "funder_names": [sub.funder_name for sub in files],
+                "reason": "merchant has no zoho_deal_id; push to Zoho first",
             },
         )
+        return
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for sub in files:
-            zf.writestr(sub.filename, sub.csv_bytes)
-    zip_name = f"submission_{merchant_slug}.zip"
-    return Response(
-        content=buf.getvalue(),
-        media_type="application/zip",
-        headers={"content-disposition": f'attachment; filename="{zip_name}"'},
-    )
+    try:
+        from aegis.zoho.client import ZohoClient
+        from aegis.zoho.sync import ZohoSync
+
+        zoho_client = ZohoClient()
+        zoho_sync = ZohoSync(client=zoho_client, merchants=merchants, audit=audit)
+    except Exception as exc:
+        log.warning(
+            "zoho client init failed during submission; skipping CRM update",
+            extra={"merchant_id": str(merchant.id), "error": str(exc)},
+        )
+        audit.record(
+            actor="dashboard",
+            action="zoho.submission.skipped_unconfigured",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={"error": str(exc)},
+        )
+        return
+
+    try:
+        zoho_sync.record_funder_submission(
+            merchant_id=merchant.id,
+            funder_names=[sub.funder_name for sub in files],
+            zip_bytes=zip_bytes,
+            zip_filename=zip_filename,
+        )
+    except Exception as exc:
+        log.warning(
+            "zoho submission record failed",
+            extra={"merchant_id": str(merchant.id), "error": str(exc)},
+        )
+        audit.record(
+            actor="dashboard",
+            action="zoho.submission.record_failed",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={"error": str(exc)},
+        )
 
 
 def _parse_funder_ids(values: list[str]) -> list[UUID]:

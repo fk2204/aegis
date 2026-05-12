@@ -224,6 +224,179 @@ class ZohoSync:
             },
         )
 
+    def record_funder_submission(
+        self,
+        *,
+        merchant_id: UUID,
+        funder_names: list[str],
+        zip_bytes: bytes,
+        zip_filename: str,
+    ) -> None:
+        """Reflect an AEGIS funder submission on the Zoho Deal record.
+
+        Best-effort. The audit row written by the caller in AEGIS is the
+        authoritative record; any Zoho failure is logged + audited here
+        but never raised, so a Zoho outage cannot block the operator's
+        submission package download.
+
+        Operations:
+          1. Update the Deal: ``Date_Submitted_to_Lenders`` + ``Lenders_Submitted_To``.
+          2. For each lender by name: bump ``Total_Submissions`` and set
+             ``Last_Submission_Date`` on the Lender record.
+          3. Attach the submission ZIP to the Deal as a file attachment.
+
+        Skips entirely (with a single audit row) if the merchant has no
+        ``zoho_deal_id`` — operator must push to Zoho first to wire the
+        CRM record. No Deal is created from the submission path.
+        """
+        merchant = self._merchants.get(merchant_id)
+        if not merchant.zoho_deal_id:
+            self._audit.record(
+                actor="zoho_sync",
+                action="zoho.submission.skipped_no_deal",
+                subject_type="merchant",
+                subject_id=merchant_id,
+                details={
+                    "funder_names": funder_names,
+                    "reason": "merchant has no zoho_deal_id; push to Zoho first",
+                },
+            )
+            return
+
+        deal_id = merchant.zoho_deal_id
+        today = date.today().isoformat()
+
+        # 1. Deal-level update.
+        try:
+            self._client.request(
+                "PUT",
+                f"/crm/v8/Deals/{deal_id}",
+                json={
+                    "data": [
+                        {
+                            "Date_Submitted_to_Lenders": today,
+                            "Lenders_Submitted_To": len(funder_names),
+                        }
+                    ]
+                },
+            )
+            self._audit.record(
+                actor="zoho_sync",
+                action="zoho.deal.submission_marked",
+                subject_type="merchant",
+                subject_id=merchant_id,
+                details={
+                    "zoho_deal_id": deal_id,
+                    "lender_count": len(funder_names),
+                    "date": today,
+                },
+            )
+        except Exception as exc:  # broad on purpose — best-effort CRM update
+            _log.warning(
+                "zoho deal submission update failed",
+                extra={"deal_id": deal_id, "error": str(exc)},
+            )
+            self._audit.record(
+                actor="zoho_sync",
+                action="zoho.deal.submission_failed",
+                subject_type="merchant",
+                subject_id=merchant_id,
+                details={"zoho_deal_id": deal_id, "error": str(exc)},
+            )
+
+        # 2. Per-lender counters.
+        for name in funder_names:
+            lender_id, prior_total = self._lookup_lender_counters(name)
+            if lender_id is None:
+                self._audit.record(
+                    actor="zoho_sync",
+                    action="zoho.lender.lookup_failed",
+                    subject_type="merchant",
+                    subject_id=merchant_id,
+                    details={"lender_name": name},
+                )
+                continue
+            try:
+                self._client.request(
+                    "PUT",
+                    f"/crm/v8/Lenders/{lender_id}",
+                    json={
+                        "data": [
+                            {
+                                "Total_Submissions": prior_total + 1,
+                                "Last_Submission_Date": today,
+                            }
+                        ]
+                    },
+                )
+                self._audit.record(
+                    actor="zoho_sync",
+                    action="zoho.lender.submission_counted",
+                    subject_type="merchant",
+                    subject_id=merchant_id,
+                    details={
+                        "lender_id": lender_id,
+                        "lender_name": name,
+                        "total_submissions_after": prior_total + 1,
+                    },
+                )
+            except Exception as exc:
+                _log.warning(
+                    "zoho lender update failed",
+                    extra={"lender_id": lender_id, "error": str(exc)},
+                )
+                self._audit.record(
+                    actor="zoho_sync",
+                    action="zoho.lender.update_failed",
+                    subject_type="merchant",
+                    subject_id=merchant_id,
+                    details={
+                        "lender_id": lender_id,
+                        "lender_name": name,
+                        "error": str(exc),
+                    },
+                )
+
+        # 3. ZIP attachment on the Deal.
+        self.attach_findings_csv(
+            module="Deals",
+            record_id=deal_id,
+            merchant_id=merchant_id,
+            csv_bytes=zip_bytes,
+            filename=zip_filename,
+        )
+
+    def _lookup_lender_counters(self, name: str) -> tuple[str | None, int]:
+        """Find a Zoho Lender by Name and return (id, current Total_Submissions).
+
+        Returns ``(None, 0)`` if the Lender is not found or the search
+        fails. ``Total_Submissions`` defaults to 0 when the field is null
+        on the Zoho side — typical for a freshly-imported Lender.
+        """
+        try:
+            resp = self._client.request(
+                "GET",
+                f"/crm/v8/Lenders/search?"
+                f"criteria=(Name:equals:{quote(name)})"
+                f"&fields=Name,id,Total_Submissions",
+            )
+        except Exception:
+            return (None, 0)
+        if not isinstance(resp, dict):
+            return (None, 0)
+        data = resp.get("data") or []
+        if not data or not isinstance(data[0], dict):
+            return (None, 0)
+        row = data[0]
+        lender_id = row.get("id")
+        prior = row.get("Total_Submissions")
+        prior_int = 0
+        if isinstance(prior, int):
+            prior_int = prior
+        elif isinstance(prior, str) and prior.isdigit():
+            prior_int = int(prior)
+        return (str(lender_id) if lender_id else None, prior_int)
+
     def _find_lead_id_by_email(self, email: str | None) -> str | None:
         """Search Zoho Leads for a matching email; return its id or None.
 

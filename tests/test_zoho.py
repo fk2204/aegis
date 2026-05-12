@@ -174,6 +174,135 @@ def test_client_upload_attachment_posts_multipart(
     assert b"section,key,value" in captured["body"]
 
 
+def test_record_funder_submission_skips_when_no_deal_id() -> None:
+    """No zoho_deal_id ⇒ audit-only skip, no Zoho calls, no raise."""
+    repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+    merchant = repo.upsert(
+        MerchantRow(business_name="Acme Inc", owner_name="Jane Doe", state="CA")
+    )
+    client = _FakeZohoClient()
+    sync = ZohoSync(client=client, merchants=repo, audit=audit)  # type: ignore[arg-type]
+
+    sync.record_funder_submission(
+        merchant_id=merchant.id,
+        funder_names=["Logic Advance Group", "VCG"],
+        zip_bytes=b"zip-bytes-here",
+        zip_filename="submission.zip",
+    )
+
+    actions = [e["action"] for e in audit.entries]
+    assert "zoho.submission.skipped_no_deal" in actions
+    assert not client.calls  # nothing hit the Zoho API
+
+
+def test_record_funder_submission_updates_deal_and_lenders() -> None:
+    """Happy path: Deal field update + per-lender counter bump + attachment."""
+    repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+    merchant = repo.upsert(
+        MerchantRow(
+            business_name="Acme Inc",
+            owner_name="Jane Doe",
+            state="CA",
+            zoho_deal_id="DEAL_42",
+        )
+    )
+
+    class _ZohoFake:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
+            # Pre-seed lookup responses keyed by lender name.
+            self._lenders = {
+                "Logic Advance Group": ("LENDER_LAG", 7),
+                "VCG": ("LENDER_VCG", 3),
+            }
+
+        def request(
+            self,
+            method: str,
+            path: str,
+            *,
+            json: dict[str, Any] | None = None,
+            params: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            self.calls.append((method, path, json))
+            if method == "GET" and "/Lenders/search" in path:
+                # Pull the criterion name out of the query string.
+                for n, (zid, total) in self._lenders.items():
+                    if n.replace(" ", "%20") in path or n in path:
+                        return {
+                            "data": [
+                                {"id": zid, "Name": n, "Total_Submissions": total}
+                            ]
+                        }
+                return {}
+            return {}
+
+        def upload_attachment(
+            self,
+            module: str,
+            record_id: str,
+            *,
+            filename: str,
+            content: bytes,
+            content_type: str,
+        ) -> dict[str, Any]:
+            self.calls.append(
+                (
+                    f"ATTACH:{module}",
+                    record_id,
+                    {"filename": filename, "size": len(content)},
+                )
+            )
+            return {"ok": True}
+
+    fake = _ZohoFake()
+    sync = ZohoSync(client=fake, merchants=repo, audit=audit)  # type: ignore[arg-type]
+
+    sync.record_funder_submission(
+        merchant_id=merchant.id,
+        funder_names=["Logic Advance Group", "VCG"],
+        zip_bytes=b"zip-bytes",
+        zip_filename="submission_acme.zip",
+    )
+
+    # Deal-level update: PUT to /crm/v8/Deals/DEAL_42
+    deal_puts = [c for c in fake.calls if c[0] == "PUT" and c[1].endswith("/Deals/DEAL_42")]
+    assert len(deal_puts) == 1
+    body = deal_puts[0][2]
+    assert body is not None
+    fields = body["data"][0]
+    assert fields["Lenders_Submitted_To"] == 2
+    assert "Date_Submitted_to_Lenders" in fields
+
+    # Per-lender updates: each lender PUT'd with bumped Total_Submissions.
+    lender_puts: dict[str, dict[str, Any]] = {}
+    for c in fake.calls:
+        if c[0] == "PUT" and "/Lenders/" in c[1] and c[2] is not None:
+            lender_puts[c[1].rsplit("/", 1)[-1]] = c[2]
+    assert lender_puts.keys() == {"LENDER_LAG", "LENDER_VCG"}
+    assert lender_puts["LENDER_LAG"]["data"][0]["Total_Submissions"] == 8  # 7 + 1
+    assert lender_puts["LENDER_VCG"]["data"][0]["Total_Submissions"] == 4  # 3 + 1
+
+    # Attachment uploaded to the Deal.
+    attachments = [
+        c for c in fake.calls if isinstance(c[0], str) and c[0].startswith("ATTACH:")
+    ]
+    assert len(attachments) == 1
+    assert attachments[0][0] == "ATTACH:Deals"
+    assert attachments[0][1] == "DEAL_42"
+    payload = attachments[0][2]
+    assert payload is not None
+    assert payload["filename"] == "submission_acme.zip"
+
+    # Audit trail.
+    actions = [e["action"] for e in audit.entries]
+    assert "zoho.deal.submission_marked" in actions
+    assert actions.count("zoho.lender.submission_counted") == 2
+    assert "zoho.attachment.uploaded" in actions
+
+
 def test_sync_attach_findings_csv_swallows_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
