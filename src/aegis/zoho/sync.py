@@ -291,9 +291,16 @@ def _deal_payload(m: MerchantRow, s: ScoreResult) -> dict[str, Any]:
         "AEGIS_Score": s.score,
         "AEGIS_Tier": s.tier,
         "AEGIS_Recommendation": s.recommendation,
-        "Suggested_Max_Advance": float(s.suggested_max_advance),
-        "Recommended_Factor_Rate": float(s.recommended_factor_rate),
-        "Recommended_Holdback_Pct": float(s.recommended_holdback_pct),
+        # Decimal money fields must round-trip as strings — CLAUDE.md rule
+        # "NEVER use float for money". Zoho field types are Currency
+        # (Suggested_Max_Advance) and Decimal (Recommended_Factor_Rate,
+        # Recommended_Holdback_Pct); the v8 REST API accepts string-encoded
+        # numerics into those types without precision loss. float() round-
+        # trips like 1.30 → 1.2999999999999998, which the Zoho-side report
+        # then renders as 130.00% holdback instead of 30.00%.
+        "Suggested_Max_Advance": str(s.suggested_max_advance),
+        "Recommended_Factor_Rate": str(s.recommended_factor_rate),
+        "Recommended_Holdback_Pct": str(s.recommended_holdback_pct),
         "Estimated_Payback_Days": s.estimated_payback_days,
         "AEGIS_Hard_Decline_Reasons": ", ".join(s.hard_decline_reasons),
         "AEGIS_Soft_Concerns": ", ".join(s.soft_concerns),

@@ -279,6 +279,56 @@ def test_outbound_create_records_zoho_id(monkeypatch: pytest.MonkeyPatch) -> Non
     assert any(e["action"] == "zoho.deal.upsert" for e in audit.entries)
 
 
+def test_deal_payload_serializes_decimal_fields_as_strings() -> None:
+    """Regression: Decimal money/rate fields must round-trip as strings, not floats.
+
+    CLAUDE.md rule "NEVER use float for money" — Zoho payload previously
+    cast Suggested_Max_Advance / Recommended_Factor_Rate /
+    Recommended_Holdback_Pct via ``float()``, which corrupts 1.30 to
+    1.2999999999999998 over the wire. The fix is ``str()``; this test
+    locks the contract so a future hand-edit can't re-introduce float
+    coercion.
+    """
+    from decimal import Decimal
+
+    repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+    merchant = repo.upsert(
+        MerchantRow(business_name="Acme Inc", owner_name="Jane Doe", state="CA")
+    )
+    client = _FakeZohoClient()
+    sync = ZohoSync(client=client, merchants=repo, audit=audit)  # type: ignore[arg-type]
+
+    score = ScoreResult(
+        score=70,
+        tier="B",
+        recommendation="approve",
+        suggested_max_advance=Decimal("20000.00"),
+        recommended_factor_rate=Decimal("1.30"),
+        recommended_holdback_pct=Decimal("0.12"),
+        estimated_payback_days=120,
+    )
+    sync.push_merchant_with_score(merchant.id, score)
+
+    deal_post = next(
+        c for c in client.calls if c[0] == "POST" and c[1] == "/crm/v8/Deals"
+    )
+    body = deal_post[2]
+    assert body is not None
+    fields = body["data"][0] if "data" in body else body
+    for key in (
+        "Suggested_Max_Advance",
+        "Recommended_Factor_Rate",
+        "Recommended_Holdback_Pct",
+    ):
+        assert isinstance(fields[key], str), (
+            f"{key}={fields[key]!r} must be str, got {type(fields[key]).__name__}"
+        )
+    assert fields["Suggested_Max_Advance"] == "20000.00"
+    assert fields["Recommended_Factor_Rate"] == "1.30"
+    assert fields["Recommended_Holdback_Pct"] == "0.12"
+
+
 def test_outbound_update_uses_existing_id() -> None:
     repo = InMemoryMerchantRepository()
     audit = InMemoryAuditLog()
