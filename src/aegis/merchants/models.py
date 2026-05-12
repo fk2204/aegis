@@ -75,8 +75,10 @@ class MerchantRow(_StrictModel):
     # so the future button is a no-migration patch.
     preferred_funder_id: UUID | None = None
 
-    # Idempotency for Zoho sync
+    # Idempotency for Zoho sync.
+    # zoho_lead_id is populated after the first push_merchant_to_lead call.
     zoho_deal_id: str | None = None
+    zoho_lead_id: str | None = None
 
     created_at: datetime | None = None
     updated_at: datetime | None = None

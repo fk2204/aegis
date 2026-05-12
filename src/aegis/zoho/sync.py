@@ -23,7 +23,9 @@ the payload is masked through the project logger.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 from aegis.audit import AuditLog
@@ -69,12 +71,12 @@ class ZohoSync:
         if merchant.zoho_deal_id:
             response = self._client.request(
                 "PUT",
-                f"/crm/v6/Deals/{merchant.zoho_deal_id}",
+                f"/crm/v8/Deals/{merchant.zoho_deal_id}",
                 json=payload,
             )
             zoho_deal_id = merchant.zoho_deal_id
         else:
-            response = self._client.request("POST", "/crm/v6/Deals", json=payload)
+            response = self._client.request("POST", "/crm/v8/Deals", json=payload)
             zoho_deal_id = _extract_created_id(response)
             updated = merchant.model_copy(update={"zoho_deal_id": zoho_deal_id})
             self._merchants.upsert(updated)
@@ -87,6 +89,106 @@ class ZohoSync:
             details={"zoho_deal_id": zoho_deal_id, "tier": score.tier},
         )
         return zoho_deal_id
+
+    def push_merchant_to_lead(
+        self, merchant_id: UUID, score: ScoreResult
+    ) -> str:
+        """Push merchant + score to a Zoho Lead. Returns the zoho_lead_id.
+
+        Idempotency strategy:
+          1. If merchant.zoho_lead_id is set → PUT to /crm/v8/Leads/{id}.
+          2. Else if a Lead exists in Zoho with matching Email → PUT to that Lead.
+          3. Else → POST a new Lead and record the returned id back on merchant.
+
+        Email matchback uses Zoho's search API:
+          GET /crm/v8/Leads/search?email=<merchant.email>
+
+        Why Leads not Deals: the natural pipeline is intake-form → Lead → rep
+        converts → Deal. Aegis enriches the Lead with parsed financials + score
+        BEFORE conversion. Once converted, those fields carry forward to Deal.
+        """
+        merchant = self._merchants.get(merchant_id)
+        payload = {
+            "data": [_lead_payload(merchant, score)],
+            "trigger": ["workflow"],
+        }
+
+        matched_by: str
+        lead_id: str
+
+        if merchant.zoho_lead_id:
+            # Path 1: cached id wins.
+            self._client.request(
+                "PUT",
+                f"/crm/v8/Leads/{merchant.zoho_lead_id}",
+                json=payload,
+            )
+            lead_id = merchant.zoho_lead_id
+            matched_by = "id"
+        else:
+            # Path 2: try email matchback before creating a duplicate.
+            existing_id = self._find_lead_id_by_email(merchant.email)
+            if existing_id:
+                self._client.request(
+                    "PUT",
+                    f"/crm/v8/Leads/{existing_id}",
+                    json=payload,
+                )
+                lead_id = existing_id
+                matched_by = "email"
+                self._merchants.upsert(
+                    merchant.model_copy(update={"zoho_lead_id": lead_id})
+                )
+            else:
+                # Path 3: net-new Lead.
+                response = self._client.request(
+                    "POST", "/crm/v8/Leads", json=payload
+                )
+                lead_id = _extract_created_id(response)
+                matched_by = "new"
+                self._merchants.upsert(
+                    merchant.model_copy(update={"zoho_lead_id": lead_id})
+                )
+
+        self._audit.record(
+            actor="zoho_sync",
+            action="zoho.lead.upsert",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={
+                "zoho_lead_id": lead_id,
+                "tier": score.tier,
+                "matched_by": matched_by,
+            },
+        )
+        return lead_id
+
+    def _find_lead_id_by_email(self, email: str | None) -> str | None:
+        """Search Zoho Leads for a matching email; return its id or None.
+
+        Empty / missing email short-circuits to None (skip matchback).
+        Zoho returns 204 No Content (or empty data) when no Lead matches.
+        """
+        if not email:
+            return None
+        try:
+            response = self._client.request(
+                "GET",
+                f"/crm/v8/Leads/search?email={quote(email)}",
+            )
+        except Exception:
+            _log.warning("zoho lead email search failed", extra={"email_masked": True})
+            return None
+        if not isinstance(response, dict):
+            return None
+        data = response.get("data")
+        if not isinstance(data, list) or not data:
+            return None
+        first = data[0]
+        if not isinstance(first, dict):
+            return None
+        found = first.get("id")
+        return str(found) if found else None
 
     # Inbound -----------------------------------------------------------------
 
@@ -120,18 +222,59 @@ def _deal_payload(m: MerchantRow, s: ScoreResult) -> dict[str, Any]:
     """
     return {
         "Deal_Name": f"{m.business_name} — AEGIS {s.tier}",
-        "Account_Name": m.business_name,
+        "Account_Name": {"name": m.business_name},
+        "Stage": "Qualification",
+        "Closing_Date": (date.today() + timedelta(days=30)).isoformat(),
         "Owner_Name_AEGIS": m.owner_name,
         "State_AEGIS": m.state,
         "AEGIS_Score": s.score,
         "AEGIS_Tier": s.tier,
         "AEGIS_Recommendation": s.recommendation,
-        "Suggested_Max_Advance": str(s.suggested_max_advance),
-        "Recommended_Factor_Rate": str(s.recommended_factor_rate),
-        "Recommended_Holdback_Pct": str(s.recommended_holdback_pct),
+        "Suggested_Max_Advance": float(s.suggested_max_advance),
+        "Recommended_Factor_Rate": float(s.recommended_factor_rate),
+        "Recommended_Holdback_Pct": float(s.recommended_holdback_pct),
         "Estimated_Payback_Days": s.estimated_payback_days,
         "AEGIS_Hard_Decline_Reasons": ", ".join(s.hard_decline_reasons),
         "AEGIS_Soft_Concerns": ", ".join(s.soft_concerns),
+    }
+
+
+def _lead_payload(m: MerchantRow, s: ScoreResult) -> dict[str, Any]:
+    """Translate AEGIS merchant + score into Zoho Lead field shape.
+
+    Field names on the right are Zoho Lead field API names (case-sensitive).
+    Six AEGIS_* + OFAC + Stacking fields were provisioned today; standard
+    Lead fields (Company / Last_Name / etc.) are written when MerchantRow
+    has them so the Lead is rep-usable post-sync without manual cleanup.
+
+    Last_Name is mandatory on Zoho Leads. owner_name is split on the first
+    space; if there's no space the entire string lands in Last_Name.
+    """
+    owner = m.owner_name.strip()
+    if " " in owner:
+        first_name, last_name = owner.split(" ", 1)
+    else:
+        first_name, last_name = "", owner
+
+    ofac_flagged = any("ofac" in r.lower() for r in s.hard_decline_reasons)
+    # Stacking signal: ScoreResult tier F is our defined proxy until a
+    # dedicated mca_positions column lands on MerchantRow.
+    stacking_risk = s.tier == "F"
+
+    return {
+        # Standard Lead fields
+        "Company": m.business_name,
+        "First_Name": first_name,
+        "Last_Name": last_name,
+        "State": m.state,
+        "Email": m.email,
+        # AEGIS-owned custom fields (created 2026-05-12)
+        "Aegis_Applicant_ID": str(m.id),
+        "Aegis_Score": int(s.score),
+        "Aegis_Recommendation": s.recommendation,
+        "OFAC_Status": "Flagged" if ofac_flagged else "Clear",
+        "Aegis_Last_Synced": datetime.now(UTC).isoformat(),
+        "Stacking_Risk": stacking_risk,
     }
 
 
