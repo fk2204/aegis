@@ -3,13 +3,13 @@
 {% set form_data = form if form is defined else {} %}
 {% set active = 'Merchants' %}
 {% block title %}
-  {% if is_edit %}Edit {{ merchant.business_name }}{% else %}New merchant{% endif %} — AEGIS
+  {% if is_edit %}Edit {{ merchant.business_name }}{% else %}New Merchant{% endif %} — AEGIS
 {% endblock %}
 
 {% block subhead %}
 <div class="subhead">
   <div>
-    <h1>{% if is_edit %}Edit merchant{% else %}New merchant{% endif %}</h1>
+    <h1>{% if is_edit %}Edit Merchant{% else %}New Merchant{% endif %}</h1>
     <div class="meta" style="margin-top:4px">
       <span><span class="dot"></span>{% if is_edit %}{{ merchant.business_name }}{% else %}create a merchant record{% endif %}</span>
     </div>
@@ -26,7 +26,7 @@
 
     <div class="panel">
       <div class="panel-head">
-        <span class="panel-title">{% if is_edit %}Edit{% else %}Create{% endif %} merchant</span>
+        <span class="panel-title">{% if is_edit %}Edit{% else %}Create{% endif %} Merchant</span>
       </div>
       <div class="panel-body">
         {% set action = "/ui/merchants/" ~ merchant.id ~ "/edit" if is_edit else "/ui/merchants/new" %}

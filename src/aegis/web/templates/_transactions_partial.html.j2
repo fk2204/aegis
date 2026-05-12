@@ -26,7 +26,7 @@
             <td class="num">{{ t.amount }}</td>
             <td class="num">{{ t.running_balance or "" }}</td>
             <td><span class="tag"><span class="dot"></span>{{ t.category }}</span></td>
-            <td><span class="mono" style="font-size:10.5px;color:var(--muted)">p{{ t.source_page }} L{{ t.source_line }}</span></td>
+            <td><span class="mono" style="font-size:10.5px;color:var(--muted)" title="page {{ t.source_page }}, line {{ t.source_line }}">page {{ t.source_page }}, line {{ t.source_line }}</span></td>
           </tr>
           {% endfor %}
         </tbody>

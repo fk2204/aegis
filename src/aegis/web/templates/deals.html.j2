@@ -67,7 +67,7 @@
                     'pending': '',
                     'no_upload': '',
                   } %}
-                  <span class="tag {{ _cls.get(r.parse_status, '') }}">
+                  <span class="tag {{ _cls.get(r.parse_status, '') }} tag-{{ r.parse_status }}">
                     <span class="dot"></span>{{ r.parse_status }}
                   </span>
                 </td>

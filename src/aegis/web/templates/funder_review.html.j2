@@ -1,11 +1,11 @@
 {% extends "base.html.j2" %}
 {% set active = 'Funders' %}
-{% block title %}Review extracted funder — AEGIS{% endblock %}
+{% block title %}Review Extracted Funder — AEGIS{% endblock %}
 
 {% block subhead %}
 <div class="subhead">
   <div>
-    <h1>Review extraction</h1>
+    <h1>Review Extraction</h1>
     <div class="meta" style="margin-top:4px">
       <span><span class="dot"></span>overall confidence
         <strong style="color:{% if extraction.overall_confidence >= 80 %}var(--pos){% elif extraction.overall_confidence >= 60 %}var(--warn){% else %}var(--neg){% endif %}">
@@ -27,7 +27,7 @@
     {% macro field(label, name, value, kind="text") %}
       {% set c = conf.get(name, 100) %}
       {% set lo = c < low_confidence_threshold %}
-      <div style="padding:10px 12px;margin:8px 0;border-radius:2px;{% if lo %}background:var(--warn-soft);border-left:3px solid var(--warn){% else %}background:var(--paper);border-left:3px solid var(--line-2){% endif %}">
+      <div class="{% if lo %}conf-low{% else %}conf-high{% endif %}" style="padding:10px 12px;margin:8px 0;border-radius:2px;{% if lo %}background:var(--warn-soft);border-left:3px solid var(--warn){% else %}background:var(--paper);border-left:3px solid var(--line-2){% endif %}">
         <label style="display:flex;align-items:baseline;justify-content:space-between;margin:0 0 4px;font-family:var(--mono);font-size:10.5px;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted);font-weight:500">
           <span>{{ label }}</span>
           <span style="font-family:var(--mono);font-size:10px;color:{% if lo %}var(--warn){% else %}var(--muted){% endif %}">conf {{ c }}/100</span>
