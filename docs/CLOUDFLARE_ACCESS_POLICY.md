@@ -11,7 +11,12 @@ push, no DNS change.
 
 Operator already has the tunnel at `aegis.commerafunding.com` →
 `5.161.51.105:5555` and at least one Access policy gating the root path
-`/*`. If that's not the case, follow `deploy/RUNBOOK.md` first.
+`/*`. The same tunnel also fronts `aegis-ssh.commerafunding.com` → SSH
+to `localhost:22` for operator deploys + ops admin (see
+`deploy/RUNBOOK.md`). Both hostnames belong to the **same** Access
+application ("AEGIS Dashboard"), so adding a worker email below covers
+both surfaces in one step. If neither hostname is configured yet,
+follow `deploy/RUNBOOK.md` first.
 
 ---
 
@@ -52,7 +57,8 @@ For Commera Capital's current size (operator + 1-3 workers):
 | Application | Path | Policy | Action |
 |---|---|---|---|
 | AEGIS Dashboard | `aegis.commerafunding.com/*` | Allow | Emails in `[operator, worker1, worker2, ...]` |
-| AEGIS Dashboard | `aegis.commerafunding.com/*` | (no other allow rules) | — |
+| AEGIS Dashboard | `aegis-ssh.commerafunding.com/*` | Allow | Same email list (single self_hosted_domains entry, single policy) |
+| AEGIS Dashboard | (no other allow rules) | — | — |
 
 Anything not matching the allow rule gets denied. No need for an explicit
 deny.

@@ -63,12 +63,23 @@ Standard path (from operator's laptop, repo root):
 AEGIS_DATA_RESIDENCY_CONFIRMED=true scripts/deploy.sh
 ```
 
-The script runs `make check` locally, ssh's in, `git pull`+`uv sync`,
-restarts both units, then smoke-checks `/healthz` over the tunnel.
+The script runs `make check` locally, ssh's in via Cloudflare Access
+(`aegis@aegis-ssh.commerafunding.com`), `git pull`+`uv sync`, restarts
+both units, then smoke-checks `/healthz` over the tunnel.
+
+**Windows note:** `scripts/deploy.sh` needs `make`, `uv`, `mypy`,
+`ruff`, and `pytest` on PATH for the local pre-flight half. From a
+Windows workstation, run from WSL2, or skip the script and execute the
+remote half directly:
+```bash
+ssh aegis@aegis-ssh.commerafunding.com \
+  'cd /opt/aegis && git pull --ff-only && uv sync && \
+   sudo /usr/bin/systemctl restart aegis-web aegis-worker'
+```
 
 ### Roll back to the previous SHA
 ```bash
-ssh aegis@aegis.commerafunding.com
+ssh aegis@aegis-ssh.commerafunding.com
 cd /opt/aegis
 git log --oneline -n 5
 git checkout <PREVIOUS_SHA>

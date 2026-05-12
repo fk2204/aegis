@@ -17,6 +17,12 @@ regulator-defensibility.
   money math, hand-rolled numerics, single-pass extraction with no audit
   trail to source rows, and stale state regulation data.
 
+**Current phase:** Phase 7A complete (dashboard UI live). Phase 7B ships funder
+matching + per-funder submission package (CSV ZIP forwarded to funders) + live
+Today-page KPIs sourced from Supabase + audit_log. Phase 7C (durable
+submissions table, post-funded servicing) still pending. See `REWRITE_PLAN.md`
+for the full phase tracker.
+
 ---
 
 ## Architecture (read this carefully — different from the TS version)
@@ -80,7 +86,7 @@ come from?" the answer is "page 7 lines 14, 22, 31, ..." — clickable.
 | LLM | Claude Sonnet 4.6 via AWS Bedrock (`AnthropicBedrock` client) |
 | AWS SDK | `anthropic[bedrock]` + `boto3` |
 | PDF metadata | `pikepdf` |
-| PDF rendering (disclosures) | `weasyprint` (HTML → PDF, Phase 4) |
+| Disclosure rendering | Jinja2 HTML (Tier 1 prescribed templates per state) |
 | PDF generation (corpus) | `reportlab` (pure Python, programmatic, Phase 5.5) |
 | Templates | Jinja2 (server-rendered HTML dashboard) |
 | Interactivity | HTMX (no React, no build step) |
@@ -98,10 +104,20 @@ Deploy is fresh.
 - **Host:** Single Hetzner CPX21 VM (Ubuntu 24 LTS), running both the FastAPI
   web process and the arq worker process via systemd. No Docker, no
   Kubernetes, no orchestrator. Single box because volume is ~100 deals/month.
-- **Reverse proxy:** Cloudflare Tunnel (`cloudflared`) terminates HTTPS and
-  forwards to the local FastAPI on port 5555. Cloudflare Access enforces SSO
-  before any request reaches the app. The bearer token is a second layer
-  behind Cloudflare Access.
+- **Reverse proxy:** Cloudflare Tunnel (`cloudflared`, tunnel name
+  `aegis-prod`) exposes **two** hostnames on the same box:
+  * `aegis.commerafunding.com` → HTTPS → FastAPI on `localhost:5555`
+    (the operator dashboard + bearer-token API).
+  * `aegis-ssh.commerafunding.com` → SSH → `localhost:22` (operator
+    deploys + ops admin via `cloudflared`-tunneled SSH).
+
+  Both hostnames are gated by the same **Cloudflare Access** application
+  ("AEGIS Dashboard") so a single SSO sign-in covers dashboard + SSH.
+  The bearer token is a second layer behind Access on the API path.
+  The SSH hostname is single-level (`aegis-ssh.…`, not
+  `ssh.aegis.…`) because Cloudflare Universal SSL only covers
+  one-level subdomains — a two-level name fails TLS handshake
+  (verified 2026-05-12).
 - **Process supervision:** systemd. Two units: `aegis-web.service` (uvicorn)
   and `aegis-worker.service` (arq). Both restart on failure. Both run as a
   non-root `aegis` user. Both load `/etc/aegis/aegis.env` (NOT the repo
@@ -241,10 +257,26 @@ session-start context that applies to every action in every session.
    name only in subsequent messages. Never echo their values to the
    user-visible session.
 
-4. **Deploy to Hetzner uses `root@5.161.51.105` with
-   `$HOME/.ssh/aegis_ed25519` key.** Not the `aegis` user — `aegis`
-   has no shell. This is documented in `deploy/RUNBOOK.md` and should
-   not change.
+4. **Deploy uses `aegis@aegis-ssh.commerafunding.com`** via
+   SSH-over-Cloudflare-Access. The `aegis` user on the box now has
+   `/bin/bash`, the `aegis_ed25519` public key in
+   `~aegis/.ssh/authorized_keys`, and a narrow sudoers rule allowing
+   only `systemctl restart aegis-web aegis-worker`. `/opt/aegis` is
+   owned by `aegis`, so `git pull` and `uv sync` preserve correct file
+   ownership and don't need `sudo` for the source tree.
+
+   Root SSH via the same key is available for ops admin (journalctl
+   reads as root, sudoers edits, ssh-key rotation, ufw / cloudflared
+   service changes). Direct-IP `root@5.161.51.105` with the
+   `$HOME/.ssh/aegis_ed25519` key remains as the
+   Access-down escape hatch but is NOT the normal path.
+
+   `scripts/deploy.sh` defaults to `aegis@aegis-ssh.commerafunding.com`.
+   Don't change the default. The pre-flight local checks
+   (`make check`) need `make`, `uv`, `mypy`, `ruff`, and `pytest` on
+   PATH — won't work from a Windows shell without WSL2. From a Windows
+   workstation, run the remote half directly (ssh in and execute
+   `git pull && uv sync && sudo systemctl restart aegis-{web,worker}`).
 
 5. **When the operator pastes credentials into chat, flag and stop.**
    Do not continue past the leak. Tell the operator the credential
@@ -261,6 +293,25 @@ session-start context that applies to every action in every session.
    about state-specific features, ask the operator which states they
    actually fund deals in before scoping work. Do not preemptively
    expand to "all 50" or "all 44 served."
+
+8. **Ship workflows, not aesthetics.** Default to feature work that
+   closes a workflow loop (upload → parse → score → submit). Cosmetic
+   refactors that ship before functional plumbing leave the operator
+   no better off and they're hard to roll back later when the data
+   layer has to grow to match the chrome. The v2 redesign shipped
+   without the submission-CSV path and the operator's verdict was
+   "this is very bad app and tool for now" — don't repeat the
+   pattern.
+
+9. **Test env vars must force-set, not setdefault.** Tests that depend
+   on env vars (`API_BEARER_TOKEN`, `AEGIS_STORAGE_BACKEND`) MUST
+   unconditionally write the test value in `tests/conftest.py`.
+   `setdefault` is a silent no-op in any shell with
+   `/etc/aegis/aegis.env` sourced — which the prod box does for
+   ops-side smoke tests — and silently swaps prod creds into the
+   `TestClient`, producing a fake "20 pre-existing failures" baseline
+   (verified May 2026). Force-set the test values regardless of
+   pre-existing env.
 
 ---
 
@@ -288,8 +339,22 @@ aegis/
     RUNBOOK.md                 # ops procedures (ssh, logs, rollback, key rotation)
 
   scripts/
-    deploy.sh               # pre-flight checks + ssh + git pull + restart + smoke
-    generate_corpus.py      # synthetic statement generator (Phase 5.5, fixed seed)
+    deploy.sh                       # pre-flight checks + ssh + git pull + restart + smoke
+    generate_corpus.py              # synthetic statement generator (Phase 5.5, fixed seed)
+    dev_seed_dashboard.py           # dev-only seed helper
+    canary_upload.ps1               # operator canary upload (Windows)
+    reparse_all.ps1                 # operator bulk re-parse (Windows)
+    test_zoho_push.py               # one-off Zoho dry-run for ops
+    cf_provision_tunnel.sh          # Cloudflare tunnel provisioning
+    cf_setup_hostname.sh            # CF hostname + Access app wiring
+    cf_swap_box_tunnel.sh           # cutover helper between boxes
+    _debug_doc.py                   # private ops debug helpers (gitignored from
+    _reparse_wipe.py                # automation contracts, called from .ps1)
+    _status_probe.py
+    audit/                          # gated subsystem — production-write capable
+      reparse_real_pdfs.py          #   (require --confirm AND
+      seed_test_funders.py          #    AEGIS_ALLOW_PRODUCTION_SEED=true)
+      seed_test_merchants.py
 
   src/aegis/
     __init__.py
@@ -299,6 +364,8 @@ aegis/
     logger.py             # structured logging with PII masking
     money.py              # Decimal helpers
     core.py               # the conductor
+    audit.py              # AuditLog Protocol + InMemory/Supabase impls
+    storage.py            # DocumentRepository Protocol + impls
 
     parser/
       models.py           # Pydantic: Transaction, ExtractedStatement, etc.
@@ -311,12 +378,22 @@ aegis/
       aggregate.py        # Deterministic metric computation
       pipeline.py         # Orchestrator
 
+    merchants/
+      models.py           # MerchantRow Pydantic + funder-submission tracking
+      repository.py       # MerchantRepository Protocol + impls
+
+    funders/
+      models.py           # FunderRow
+      repository.py       # FunderRepository Protocol + impls
+      extract.py          # LLM-driven guideline PDF extraction
+
     scoring/
       models.py
       score.py
       build_score_input.py
       match_funders.py
-      submission_package.py
+      submission_package.py         # build_submission_package + build_submission_files
+      submission_csv.py             # funder-facing per-funder CSV (Phase 7B)
       ofac.py             # OFAC SDN sanctions check (hard decline)
 
     compliance/
@@ -324,8 +401,10 @@ aegis/
       apr.py              # IRR-based APR via scipy
       disclosure.py       # State-specific template router
       templates/
-        ca_sb1235.html.j2
-        ny_cfdl.html.j2
+        ca_sb1235.html.j2 # Tier 1 — has UndefinedError gaps until
+        ny_cfdl.html.j2   #   _build_context completion (deferred)
+        fl_fcfdl.html.j2
+        ga_sb90.html.j2
 
     zoho/
       client.py
@@ -340,17 +419,37 @@ aegis/
         merchants.py
         transactions.py   # per-merchant transaction listing for audit
         deals.py
+        findings.py       # MerchantFindings builder (sourced by audit CSV)
         funders.py
         disclosures.py
         webhooks_zoho.py
 
     web/
-      app.py
+      router.py           # all /ui/* operator dashboard routes
+      _findings_csv.py    # auditor-internal multi-section findings CSV
+      _slug.py            # ASCII-safe slug helper
+      _stacking_card.py   # MCA stacking summary builder
+      static/
+        aegis.css         # v2 design tokens + components
       templates/
         base.html.j2
+        index.html.j2                 # Today dashboard (live KPIs)
         upload.html.j2
+        intake.html.j2
         merchants.html.j2
-        merchant_detail.html.j2  # MUST show per-aggregate drill-down
+        merchant_detail.html.j2       # MUST show per-aggregate drill-down
+        merchant_form.html.j2
+        merchant_match.html.j2        # match panel + submission form
+        deals.html.j2
+        funders.html.j2
+        funder_detail.html.j2
+        funder_import.html.j2
+        funder_review.html.j2
+        review.html.j2                # manual_review queue
+        _compliance_ribbon.html.j2
+        _score_breakdown.html.j2
+        _stacking_card.html.j2
+        _transactions_partial.html.j2 # HTMX drill-down partial
 
   tests/
     conftest.py
