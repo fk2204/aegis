@@ -115,6 +115,15 @@ def _coerce_summary(value: object) -> dict[str, Any]:
         raise ExtractionError(f"summary must be an object, got {type(value).__name__}")
     # Numeric fields: convert to str so Pydantic Decimal coercion stays float-free.
     out: dict[str, Any] = dict(value)
+    # ``beginning_balance`` is structurally required by the schema, but some
+    # statements legitimately render it as null / dash (account opened
+    # mid-period, first statement on a Brex-style template). Coerce to
+    # "0.00" so the row doesn't fail extraction; the daily reconciliation
+    # gate in ``validate.py`` will still catch downstream inconsistency
+    # between this 0 and the actual transaction stream if the merchant
+    # really did have prior balance.
+    if out.get("beginning_balance") is None:
+        out["beginning_balance"] = "0.00"
     for k in ("beginning_balance", "ending_balance", "deposit_total", "withdrawal_total"):
         if k in out and out[k] is not None:
             out[k] = _num_to_str(out[k])

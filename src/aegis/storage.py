@@ -494,6 +494,22 @@ class SupabaseDocumentRepository:
             counts[status_val] = counts.get(status_val, 0) + 1
         return counts
 
+    def mark_error(self, document_id: UUID, detail: str) -> None:
+        """Transition a document to ``parse_status=error`` with an error_detail.
+
+        Mirrors ``InMemoryDocumentRepository.mark_error``. The worker
+        calls this when ``run_pipeline`` raises so a failed parse doesn't
+        leave the document in ``pending`` indefinitely — operator sees
+        the failure on the review queue / Today attention panel.
+        """
+        get_supabase().table("documents").update(
+            {
+                "parse_status": "error",
+                "error_detail": detail[:1000],
+                "parsed_at": datetime.now(UTC).isoformat(),
+            }
+        ).eq("id", str(document_id)).execute()
+
 
 # Internal helpers -------------------------------------------------------------
 
