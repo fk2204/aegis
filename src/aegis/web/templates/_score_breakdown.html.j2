@@ -4,37 +4,56 @@
     - score_result: ScoreResult | None
 #}
 {% if score_result is none %}
-  <p class="src-ref">Score unavailable — analysis missing or scoring failed.</p>
+  <div style="padding:16px;color:var(--muted);font-size:12px">
+    Score unavailable — analysis missing or scoring failed.
+  </div>
 {% else %}
-  <div class="score-summary">
-    <span class="score-tier score-tier-{{ score_result.tier }}">Tier {{ score_result.tier }}</span>
-    <span class="score-value">{{ score_result.score }}/100</span>
-    <span class="score-rec score-rec-{{ score_result.recommendation }}">
-      {{ score_result.recommendation }}
+  {% set _tier_cls = {
+      'A': 'pos',
+      'B': 'accent',
+      'C': 'warn',
+      'D': 'warn',
+      'F': 'neg',
+  } %}
+  {% set _rec_cls = {
+      'approve': 'pos',
+      'refer':   'warn',
+      'decline': 'neg',
+  } %}
+
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
+    <span class="tag {{ _tier_cls.get(score_result.tier, '') }}" style="font-size:11.5px;padding:4px 10px">
+      <span class="dot"></span>Tier {{ score_result.tier }}
+    </span>
+    <span style="font-family:var(--mono);font-size:18px;font-weight:500;font-variant-numeric:tabular-nums">
+      {{ score_result.score }}<span style="color:var(--muted);font-size:13px"> / 100</span>
+    </span>
+    <span class="tag {{ _rec_cls.get(score_result.recommendation, '') }}">
+      <span class="dot"></span>{{ score_result.recommendation }}
     </span>
   </div>
 
   {% if score_result.hard_decline_reasons %}
-    <h4>Hard declines</h4>
-    <ul class="hard-decline">
-      {% for reason in score_result.hard_decline_reasons %}
-        <li>{{ reason }}</li>
-      {% endfor %}
-    </ul>
+    <div class="panel-title" style="margin-bottom:6px;color:var(--neg)">Hard declines</div>
+    {% for reason in score_result.hard_decline_reasons %}
+      <div class="flag-row">
+        <span class="flag-icon neg">!</span>
+        <div><div class="flag-title">{{ reason }}</div></div>
+      </div>
+    {% endfor %}
   {% endif %}
 
   {% if score_result.breakdown %}
-    <h4>Per-factor delta</h4>
-    <table class="score-breakdown">
+    <div class="panel-title" style="margin:14px 0 6px">Per-factor delta</div>
+    <table class="data" style="max-width:520px">
       <thead>
-        <tr><th>Factor</th><th style="text-align: right;">Delta</th></tr>
+        <tr><th>Factor</th><th class="num">Delta</th></tr>
       </thead>
       <tbody>
         {% for entry in score_result.breakdown %}
           <tr>
             <td>{{ entry.factor }}</td>
-            <td style="text-align: right;
-                       color: {% if entry.delta > 0 %}#1c5e1c{% elif entry.delta < 0 %}#8a1c1c{% else %}#555{% endif %};">
+            <td class="num" style="color:{% if entry.delta > 0 %}var(--pos){% elif entry.delta < 0 %}var(--neg){% else %}var(--muted){% endif %};font-weight:500">
               {{ '+' if entry.delta > 0 }}{{ entry.delta }}
             </td>
           </tr>
@@ -44,39 +63,25 @@
   {% endif %}
 
   {% if score_result.soft_concerns %}
-    <h4>Soft concerns</h4>
-    <ul class="soft-concerns">
-      {% for concern in score_result.soft_concerns %}
-        <li>{{ concern }}</li>
-      {% endfor %}
-    </ul>
+    <div class="panel-title" style="margin:14px 0 6px;color:var(--warn)">Soft concerns</div>
+    {% for concern in score_result.soft_concerns %}
+      <div class="flag-row">
+        <span class="flag-icon warn">?</span>
+        <div><div class="flag-title">{{ concern }}</div></div>
+      </div>
+    {% endfor %}
   {% endif %}
 
-  <p class="src-ref">
-    Suggested max advance: {{ score_result.suggested_max_advance }}
-    · Factor {{ score_result.recommended_factor_rate }}
-    · Holdback {{ score_result.recommended_holdback_pct }}
+  <div class="kv" style="margin-top:14px">
+    <span class="k">Suggested max</span>
+    <span class="v">${{ score_result.suggested_max_advance }}</span>
+    <span class="k">Factor</span>
+    <span class="v">{{ score_result.recommended_factor_rate }}</span>
+    <span class="k">Holdback</span>
+    <span class="v">{{ score_result.recommended_holdback_pct }}</span>
     {% if score_result.estimated_payback_days %}
-      · Payback ~{{ score_result.estimated_payback_days }} days
+      <span class="k">Payback</span>
+      <span class="v">~{{ score_result.estimated_payback_days }} days</span>
     {% endif %}
-  </p>
+  </div>
 {% endif %}
-
-<style>
-  .score-summary { margin: 8px 0; display: flex; align-items: center; gap: 12px; }
-  .score-tier { padding: 4px 12px; border-radius: 4px; font-weight: 700; font-size: 16px; }
-  .score-tier-A { background: #d6f4d6; color: #1c5e1c; }
-  .score-tier-B { background: #d8e8f6; color: #1c4a7a; }
-  .score-tier-C { background: #fff4cc; color: #8a6800; }
-  .score-tier-D { background: #ffe0c2; color: #8a4a00; }
-  .score-tier-F { background: #fad7d7; color: #8a1c1c; }
-  .score-value { font-size: 18px; font-weight: 600; }
-  .score-rec { padding: 2px 10px; border-radius: 4px; font-size: 12px; text-transform: uppercase; font-weight: 600; }
-  .score-rec-approve { background: #d6f4d6; color: #1c5e1c; }
-  .score-rec-refer { background: #fff4cc; color: #8a6800; }
-  .score-rec-decline { background: #fad7d7; color: #8a1c1c; }
-  .hard-decline li { color: #8a1c1c; }
-  .soft-concerns li { color: #8a6800; }
-  table.score-breakdown { max-width: 480px; }
-  table.score-breakdown td, table.score-breakdown th { font-size: 13px; }
-</style>

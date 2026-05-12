@@ -1,147 +1,257 @@
 {% extends "base.html.j2" %}
+{% set active = 'Merchants' %}
 {% block title %}{{ merchant.business_name }} — AEGIS{% endblock %}
-{% block content %}
-  <h1>{{ merchant.business_name }}</h1>
-  <p class="src-ref">
-    {{ merchant.owner_name }} · {{ merchant.state }}
-    {% if merchant.industry_naics %} · NAICS {{ merchant.industry_naics }}{% endif %}
-    {% if merchant.entity_type %} · {{ merchant.entity_type }}{% endif %}
-    {% if merchant.zoho_deal_id %} · Zoho {{ merchant.zoho_deal_id }}{% endif %}
-    · <a href="/ui/merchants/{{ merchant.id }}/edit">Edit</a>
-    · <a href="/ui/merchants/{{ merchant.id }}/match">Match Funders</a>
-    · <a href="/ui/merchants/{{ merchant.id }}/findings.csv">Download CSV</a>
-  </p>
 
-  {% include "_compliance_ribbon.html.j2" %}
+{% block subhead %}
+<div class="deal-head">
+  <div class="merch">
+    <span class="merch-mark" style="width:48px;height:48px;font-size:16px">{{ merchant.business_name[:2]|upper }}</span>
+  </div>
+  <div>
+    <div class="id">{{ merchant.id|string|truncate(8, True, '') }}</div>
+    <h2>{{ merchant.business_name }}</h2>
+    <div class="meta-row">
+      <span><span class="lbl">Owner</span>{{ merchant.owner_name }}</span>
+      <span><span class="lbl">State</span>{{ merchant.state }}</span>
+      {% if merchant.industry_naics %}<span><span class="lbl">NAICS</span>{{ merchant.industry_naics }}</span>{% endif %}
+      {% if merchant.entity_type %}<span><span class="lbl">Entity</span>{{ merchant.entity_type }}</span>{% endif %}
+      {% if merchant.zoho_lead_id %}<span><span class="lbl">Zoho lead</span>{{ merchant.zoho_lead_id }}</span>{% endif %}
+      {% if merchant.zoho_deal_id %}<span><span class="lbl">Zoho deal</span>{{ merchant.zoho_deal_id }}</span>{% endif %}
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:flex-start">
+    <a class="btn" href="/ui/merchants/{{ merchant.id }}/edit">Edit</a>
+    <a class="btn" href="/ui/merchants/{{ merchant.id }}/match">Match funders</a>
+    <a class="btn" href="/ui/merchants/{{ merchant.id }}/findings.csv">Download CSV</a>
+  </div>
+</div>
+{% endblock %}
 
-  {% if merchant.requested_amount or merchant.requested_factor or merchant.requested_term_days %}
-    <p class="src-ref">
-      Requested: ${{ merchant.requested_amount or "?" }}
-      @ {{ merchant.requested_factor or "?" }}
-      / {{ merchant.requested_term_days or "?" }} days
-      {% if merchant.credit_score %} · Credit {{ merchant.credit_score }}{% endif %}
-      {% if merchant.time_in_business_months %} · TIB {{ merchant.time_in_business_months }} mo{% endif %}
-    </p>
-  {% endif %}
+{% block body %}
+<div class="body cols-1">
+  <main class="main">
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Compliance ribbon</span>
+      </div>
+      <div class="panel-body">
+        {% include "_compliance_ribbon.html.j2" %}
+      </div>
+    </div>
 
-  {% if trend %}
-    <h2>Trend across {{ trend.statement_count }} statements</h2>
-    <ul>
-      {% if trend.revenue_delta_pct is not none %}
-        <li class="src-ref">
-          Revenue: {{ trend.revenue_latest }} (latest) vs {{ trend.revenue_prior }} (prior)
-          <strong>{% if trend.revenue_delta_pct > 0 %}+{% endif %}{{ trend.revenue_delta_pct }}%</strong>
-        </li>
-      {% endif %}
-      {% if trend.nsf_delta is not none %}
-        <li class="src-ref">
-          NSF: {{ trend.nsf_latest }} (latest) vs {{ trend.nsf_prior }} (prior)
-          <strong>{% if trend.nsf_delta > 0 %}+{% endif %}{{ trend.nsf_delta }}</strong>
-        </li>
-      {% endif %}
-      {% if trend.adb_delta_pct is not none %}
-        <li class="src-ref">
-          ADB: {{ trend.adb_latest }} (latest) vs {{ trend.adb_prior }} (prior)
-          <strong>{% if trend.adb_delta_pct > 0 %}+{% endif %}{{ trend.adb_delta_pct }}%</strong>
-        </li>
-      {% endif %}
-    </ul>
-  {% endif %}
-
-  <h2>Documents</h2>
-  {% if not documents %}
-    <p>No documents uploaded yet for this merchant. <a href="/ui/upload">Upload statements →</a></p>
-  {% else %}
-    <table>
-      <thead>
-        <tr>
-          <th>Period</th>
-          <th>Status</th>
-          <th>Fraud</th>
-          <th style="text-align: right;">NSF</th>
-          <th style="text-align: right;">True Revenue</th>
-          <th style="text-align: right;">ADB</th>
-          <th style="text-align: right;">Days Neg</th>
-          <th>Uploaded</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for entry in documents %}
-          {% set d = entry.document %}
-          {% set a = entry.analysis %}
-          <tr>
-            <td>
-              {% if a %}
-                {{ a.statement_period_start }} → {{ a.statement_period_end }}
-              {% else %}
-                <span class="src-ref">(not parsed)</span>
-              {% endif %}
-            </td>
-            <td><span class="tag tag-{{ d.parse_status }}">{{ d.parse_status }}</span></td>
-            <td>{{ d.fraud_score if d.fraud_score is not none else "—" }}</td>
-            <td style="text-align: right;">{{ a.num_nsf if a else "—" }}</td>
-            <td style="text-align: right;">{{ a.true_revenue if a else "—" }}</td>
-            <td style="text-align: right;">{{ a.avg_daily_balance if a else "—" }}</td>
-            <td style="text-align: right;">{{ a.days_negative if a else "—" }}</td>
-            <td class="src-ref">{{ d.uploaded_at.strftime("%Y-%m-%d") }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% endif %}
-
-  {% if document is not none %}
-    <h2>
-      Latest aggregate detail
-      <span class="tag tag-{{ document.parse_status }}">{{ document.parse_status }}</span>
-    </h2>
-    {% if analysis %}
-      <p class="src-ref">
-        Statement {{ analysis.statement_period_start }} →
-        {{ analysis.statement_period_end }} ({{ analysis.statement_days }} days) ·
-        sha256 {{ document.file_hash[:12] }}…
-      </p>
-
-      {% set agg_metrics = [
-          ("true_revenue", analysis.true_revenue),
-          ("avg_daily_balance", analysis.avg_daily_balance),
-          ("num_nsf", analysis.num_nsf),
-          ("days_negative", analysis.days_negative),
-          ("mca_daily_total", analysis.mca_daily_total),
-        ] %}
-
-      {% for key, value in agg_metrics %}
-        <div class="tile">
-          <div class="tile-label">{{ aggregate_labels[key] }}</div>
-          <div class="tile-value">{{ value }}</div>
-          <button hx-get="/ui/documents/{{ document.id }}/aggregate/{{ key }}"
-                  hx-target="#drilldown"
-                  hx-swap="innerHTML">drill down</button>
+    {% if merchant.requested_amount or merchant.requested_factor or merchant.requested_term_days or merchant.credit_score or merchant.time_in_business_months %}
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Underwriting target</span>
         </div>
-      {% endfor %}
-
-      <div id="drilldown" style="margin-top: 24px;"></div>
-
-      <h2>Score breakdown</h2>
-      {% include "_score_breakdown.html.j2" %}
-
-      <h2>Stacking</h2>
-      {% if stacking is none %}
-        <p class="src-ref">No MCA debits detected. Card hidden.</p>
-      {% else %}
-        {% include "_stacking_card.html.j2" %}
-      {% endif %}
-
-      <h2>Pattern flags</h2>
-      {% if document.all_flags %}
-        <ul>
-          {% for f in document.all_flags %}<li class="src-ref">{{ f }}</li>{% endfor %}
-        </ul>
-      {% else %}
-        <p class="src-ref">No pattern flags raised.</p>
-      {% endif %}
-    {% else %}
-      <p>Document is parsing or no analysis is available yet.</p>
+        <div class="panel-body">
+          <div class="kv">
+            {% if merchant.requested_amount %}<span class="k">Requested</span><span class="v">${{ merchant.requested_amount }}</span>{% endif %}
+            {% if merchant.requested_factor %}<span class="k">Factor</span><span class="v">{{ merchant.requested_factor }}</span>{% endif %}
+            {% if merchant.requested_term_days %}<span class="k">Term</span><span class="v">{{ merchant.requested_term_days }} days</span>{% endif %}
+            {% if merchant.credit_score %}<span class="k">Owner credit</span><span class="v">{{ merchant.credit_score }}</span>{% endif %}
+            {% if merchant.time_in_business_months %}<span class="k">TIB</span><span class="v">{{ merchant.time_in_business_months }} mo</span>{% endif %}
+          </div>
+        </div>
+      </div>
     {% endif %}
-  {% endif %}
+
+    {% if trend %}
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Trend</span>
+          <span class="panel-actions mono">across {{ trend.statement_count }} statements</span>
+        </div>
+        <div class="panel-body">
+          <div class="kv">
+            {% if trend.revenue_delta_pct is not none %}
+              <span class="k">Revenue</span>
+              <span class="v">{{ trend.revenue_latest }} vs {{ trend.revenue_prior }}
+                <span style="color:{% if trend.revenue_delta_pct > 0 %}var(--pos){% else %}var(--neg){% endif %};margin-left:6px">
+                  {{ '+' if trend.revenue_delta_pct > 0 }}{{ trend.revenue_delta_pct }}%
+                </span>
+              </span>
+            {% endif %}
+            {% if trend.nsf_delta is not none %}
+              <span class="k">NSF</span>
+              <span class="v">{{ trend.nsf_latest }} vs {{ trend.nsf_prior }}
+                <span style="color:{% if trend.nsf_delta > 0 %}var(--neg){% else %}var(--pos){% endif %};margin-left:6px">
+                  {{ '+' if trend.nsf_delta > 0 }}{{ trend.nsf_delta }}
+                </span>
+              </span>
+            {% endif %}
+            {% if trend.adb_delta_pct is not none %}
+              <span class="k">ADB</span>
+              <span class="v">{{ trend.adb_latest }} vs {{ trend.adb_prior }}
+                <span style="color:{% if trend.adb_delta_pct > 0 %}var(--pos){% else %}var(--neg){% endif %};margin-left:6px">
+                  {{ '+' if trend.adb_delta_pct > 0 }}{{ trend.adb_delta_pct }}%
+                </span>
+              </span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    {% endif %}
+
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Documents</span>
+        <span class="panel-actions mono">{{ documents|length }} statement{{ '' if documents|length == 1 else 's' }}</span>
+      </div>
+      <div class="panel-body flush">
+        {% if not documents %}
+          <div style="padding:24px;text-align:center;color:var(--muted)">
+            <div style="font-size:13px;margin-bottom:4px">No documents uploaded yet.</div>
+            <div style="font-size:12px"><a href="/ui/upload">Upload statements →</a></div>
+          </div>
+        {% else %}
+          <table class="data">
+            <thead>
+              <tr>
+                <th>Period</th>
+                <th>Status</th>
+                <th class="num">Fraud</th>
+                <th class="num">NSF</th>
+                <th class="num">True revenue</th>
+                <th class="num">ADB</th>
+                <th class="num">Days neg</th>
+                <th>Uploaded</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for entry in documents %}
+                {% set d = entry.document %}
+                {% set a = entry.analysis %}
+                {% set _cls = {
+                  'proceed': 'pos',
+                  'review': 'warn',
+                  'manual_review': 'neg',
+                  'error': 'neg',
+                  'pending': '',
+                  'no_upload': '',
+                } %}
+                <tr>
+                  <td>
+                    {% if a %}
+                      <span class="mono" style="font-size:11.5px">{{ a.statement_period_start }} → {{ a.statement_period_end }}</span>
+                    {% else %}
+                      <span style="color:var(--muted);font-style:italic;font-size:11.5px">(not parsed)</span>
+                    {% endif %}
+                  </td>
+                  <td><span class="tag {{ _cls.get(d.parse_status, '') }}"><span class="dot"></span>{{ d.parse_status }}</span></td>
+                  <td class="num">{{ d.fraud_score if d.fraud_score is not none else '—' }}</td>
+                  <td class="num">{{ a.num_nsf if a else '—' }}</td>
+                  <td class="num">{{ a.true_revenue if a else '—' }}</td>
+                  <td class="num">{{ a.avg_daily_balance if a else '—' }}</td>
+                  <td class="num">{{ a.days_negative if a else '—' }}</td>
+                  <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ d.uploaded_at.strftime("%Y-%m-%d") }}</span></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if document is not none %}
+      {% set _cls = {
+        'proceed': 'pos',
+        'review': 'warn',
+        'manual_review': 'neg',
+        'error': 'neg',
+        'pending': '',
+        'no_upload': '',
+      } %}
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Latest aggregate detail</span>
+          <span class="panel-actions">
+            <span class="tag {{ _cls.get(document.parse_status, '') }}"><span class="dot"></span>{{ document.parse_status }}</span>
+            {% if analysis %}<span class="mono" style="font-size:11px;color:var(--muted)">sha256 {{ document.file_hash[:12] }}…</span>{% endif %}
+          </span>
+        </div>
+        <div class="panel-body">
+          {% if analysis %}
+            <div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:14px">
+              {{ analysis.statement_period_start }} → {{ analysis.statement_period_end }}
+              · {{ analysis.statement_days }} days
+            </div>
+
+            {% set agg_metrics = [
+                ('true_revenue', analysis.true_revenue),
+                ('avg_daily_balance', analysis.avg_daily_balance),
+                ('num_nsf', analysis.num_nsf),
+                ('days_negative', analysis.days_negative),
+                ('mca_daily_total', analysis.mca_daily_total),
+              ] %}
+
+            <div class="kpi-row" style="grid-template-columns:repeat(5, 1fr)">
+              {% for key, value in agg_metrics %}
+                <div class="kpi">
+                  <div class="label">{{ aggregate_labels[key] }}</div>
+                  <div class="value">{{ value }}</div>
+                  <div class="delta">
+                    <button class="btn" style="padding:3px 8px;font-size:11px;margin-top:4px"
+                            hx-get="/ui/documents/{{ document.id }}/aggregate/{{ key }}"
+                            hx-target="#drilldown"
+                            hx-swap="innerHTML">drill down</button>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+
+            <div id="drilldown" style="margin-top:14px"></div>
+          {% else %}
+            <div style="padding:16px;text-align:center;color:var(--muted);font-size:12px">
+              Document is parsing or no analysis is available yet.
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      {% if analysis %}
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Score breakdown</span>
+          </div>
+          <div class="panel-body">
+            {% include "_score_breakdown.html.j2" %}
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">MCA stacking</span>
+          </div>
+          <div class="panel-body{% if stacking is none %}{% else %} flush{% endif %}">
+            {% if stacking is none %}
+              <div style="color:var(--muted);font-size:12px">No MCA debits detected.</div>
+            {% else %}
+              {% include "_stacking_card.html.j2" %}
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Pattern flags</span>
+            <span class="panel-actions mono">{{ document.all_flags|length if document.all_flags else 0 }}</span>
+          </div>
+          <div class="panel-body flush">
+            {% if document.all_flags %}
+              {% for f in document.all_flags %}
+                <div class="flag-row">
+                  <span class="flag-icon warn">!</span>
+                  <div><div class="flag-title">{{ f }}</div></div>
+                </div>
+              {% endfor %}
+            {% else %}
+              <div style="padding:16px;color:var(--muted);font-size:12px">No pattern flags raised.</div>
+            {% endif %}
+          </div>
+        </div>
+      {% endif %}
+    {% endif %}
+  </main>
+</div>
 {% endblock %}

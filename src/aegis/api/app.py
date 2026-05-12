@@ -15,9 +15,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from aegis.api.auth import warn_if_bearer_unconfigured
 from aegis.api.routes import ALL_ROUTERS
@@ -81,6 +83,17 @@ def create_app() -> FastAPI:
 
     for r in ALL_ROUTERS:
         app.include_router(r)
+
+    # v2 design assets — CSS, fonts, future static images. Mounted under
+    # /ui/static so paths in base.html.j2 are stable. No auth needed; the
+    # files are bundled with the app and contain no secrets.
+    _static_dir = Path(__file__).resolve().parent.parent / "web" / "static"
+    if _static_dir.is_dir():
+        app.mount(
+            "/ui/static",
+            StaticFiles(directory=str(_static_dir)),
+            name="static",
+        )
 
     return app
 

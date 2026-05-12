@@ -1,36 +1,58 @@
 {% extends "base.html.j2" %}
-{% block title %}Import Funder Criteria — AEGIS{% endblock %}
-{% block content %}
-  <h1>Import Funder Criteria</h1>
-  <p class="src-ref">
-    Upload a funder's underwriting-criteria PDF. AEGIS runs Claude
-    extraction, surfaces a draft <code>FunderRow</code> with per-field
-    confidence, you review/edit, and we save.
-  </p>
+{% set active = 'Funders' %}
+{% block title %}Import funder criteria — AEGIS{% endblock %}
 
-  {% if error %}
-    <p class="tag tag-manual_review" style="display: block; padding: 8px 12px;">
-      {{ error }}
-    </p>
-  {% endif %}
+{% block subhead %}
+<div class="subhead">
+  <div>
+    <h1>Import funder criteria</h1>
+    <div class="meta" style="margin-top:4px">
+      <span><span class="dot"></span>PDF upload</span>
+      <span>Claude extracts a draft FunderRow with per-field confidence · operator reviews + saves</span>
+    </div>
+  </div>
+</div>
+{% endblock %}
 
-  <form method="post" enctype="multipart/form-data" action="/ui/funders/import">
-    <p>
-      <label>Criteria PDF<br>
-        <input type="file" name="pdf" accept="application/pdf" required>
-      </label>
-    </p>
-    <p>
-      <button type="submit" style="padding: 8px 16px; background: #1a1a2e; color: #fff; border: none; border-radius: 4px; font-weight: 600; cursor: pointer;">
-        Run extraction
-      </button>
-      <a href="/ui/funders" style="margin-left: 12px;">Cancel</a>
-    </p>
-  </form>
+{% block body %}
+<div class="body cols-1">
+  <main class="main" style="max-width:780px">
+    {% if error %}
+      <div class="form-error">{{ error }}</div>
+    {% endif %}
 
-  <p class="src-ref" style="margin-top: 32px;">
-    Max 25 MB. The extraction runs synchronously and may take 10–30
-    seconds against a real LLM. Low-confidence fields will be highlighted
-    on the review page.
-  </p>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Upload criteria PDF</span>
+        <span class="panel-actions mono">max 25 MB · 10–30s extraction</span>
+      </div>
+      <div class="panel-body">
+        <form method="post" enctype="multipart/form-data" action="/ui/funders/import">
+          <label>Criteria PDF</label>
+          <div class="dropzone">
+            <div class="big">Drop a funder's criteria PDF</div>
+            <div class="small">…or use the file picker below</div>
+            <input type="file" name="pdf" accept="application/pdf" required style="max-width:none;background:transparent">
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" type="submit">Run extraction</button>
+            <a class="btn" href="/ui/funders">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">How this works</span>
+      </div>
+      <div class="panel-body" style="color:var(--ink-2);font-size:12.5px;line-height:1.6">
+        <div>1. Upload runs synchronously against Bedrock (~10–30s).</div>
+        <div>2. Review page highlights low-confidence fields.</div>
+        <div>3. Edit any field before saving — AEGIS never auto-creates funders.</div>
+        <div>4. Save persists the FunderRow + source PDF hash for audit.</div>
+      </div>
+    </div>
+  </main>
+</div>
 {% endblock %}

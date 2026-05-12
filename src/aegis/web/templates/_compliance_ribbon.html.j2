@@ -6,58 +6,38 @@
     - ofac_status: "checked" | "stale" | "unavailable" | "not_consulted"
     - ofac_match: bool | None
 #}
-<div class="ribbon">
-  <span class="ribbon-pill ribbon-state-tier-{{ state_tier }}">
-    {% if state_tier == 1 %}State: {{ merchant.state }} (Tier 1)
-    {% elif state_tier == 2 %}State: {{ merchant.state }} (Tier 2)
-    {% elif state_tier == 3 %}State: {{ merchant.state }} (Tier 3 — unaudited)
-    {% else %}State: {{ merchant.state }} (NOT SERVED){% endif %}
-  </span>
+<div style="display:flex;flex-wrap:wrap;gap:6px">
+  {% if state_tier == 1 %}
+    <span class="tag pos"><span class="dot"></span>State: {{ merchant.state }} · Tier 1</span>
+  {% elif state_tier == 2 %}
+    <span class="tag accent"><span class="dot"></span>State: {{ merchant.state }} · Tier 2</span>
+  {% elif state_tier == 3 %}
+    <span class="tag warn"><span class="dot"></span>State: {{ merchant.state }} · Tier 3 unaudited</span>
+  {% else %}
+    <span class="tag neg"><span class="dot"></span>State: {{ merchant.state }} · NOT SERVED</span>
+  {% endif %}
 
-  <span class="ribbon-pill
-    {% if ofac_status == 'checked' and not ofac_match %}ribbon-ofac-ok
-    {% elif ofac_status == 'checked' and ofac_match %}ribbon-ofac-hit
-    {% elif ofac_status == 'stale' %}ribbon-ofac-stale
-    {% else %}ribbon-ofac-skipped{% endif %}">
-    OFAC:
-    {% if ofac_status == 'checked' and ofac_match %}MATCH (decline)
-    {% elif ofac_status == 'checked' %}clear
-    {% elif ofac_status == 'stale' %}stale cache
-    {% elif ofac_status == 'unavailable' %}unavailable
-    {% else %}not consulted{% endif %}
-  </span>
+  {% if ofac_status == 'checked' and ofac_match %}
+    <span class="tag neg"><span class="dot"></span>OFAC: MATCH (decline)</span>
+  {% elif ofac_status == 'checked' %}
+    <span class="tag pos"><span class="dot"></span>OFAC: clear</span>
+  {% elif ofac_status == 'stale' %}
+    <span class="tag warn"><span class="dot"></span>OFAC: stale cache</span>
+  {% elif ofac_status == 'unavailable' %}
+    <span class="tag warn"><span class="dot"></span>OFAC: unavailable</span>
+  {% else %}
+    <span class="tag"><span class="dot"></span>OFAC: not consulted</span>
+  {% endif %}
 
   {% if merchant.is_renewal %}
-    <span class="ribbon-pill ribbon-renewal">Renewal</span>
+    <span class="tag accent"><span class="dot"></span>Renewal</span>
   {% endif %}
 
   {% if merchant.broker_source %}
-    <span class="ribbon-pill ribbon-broker">Source: {{ merchant.broker_source }}</span>
+    <span class="tag"><span class="dot"></span>Source: {{ merchant.broker_source }}</span>
   {% endif %}
 
   {% if merchant.intake_date %}
-    <span class="ribbon-pill ribbon-intake">Intake {{ merchant.intake_date }}</span>
+    <span class="tag"><span class="dot"></span>Intake {{ merchant.intake_date }}</span>
   {% endif %}
 </div>
-
-<style>
-  .ribbon { margin: 8px 0 16px; display: flex; flex-wrap: wrap; gap: 8px; }
-  .ribbon-pill {
-    display: inline-block;
-    padding: 4px 10px;
-    border-radius: 999px;
-    font-size: 12px;
-    font-weight: 600;
-    border: 1px solid transparent;
-  }
-  .ribbon-state-tier-1 { background: #d6f4d6; color: #1c5e1c; border-color: #b8e8b8; }
-  .ribbon-state-tier-2 { background: #e8f0fc; color: #214a8a; border-color: #c8d8f0; }
-  .ribbon-state-tier-3 { background: #fff4cc; color: #8a6800; border-color: #ffe699; }
-  .ribbon-state-tier-unserved { background: #fad7d7; color: #8a1c1c; border-color: #f5b8b8; }
-  .ribbon-ofac-ok { background: #d6f4d6; color: #1c5e1c; }
-  .ribbon-ofac-hit { background: #fad7d7; color: #8a1c1c; }
-  .ribbon-ofac-stale { background: #fff4cc; color: #8a6800; }
-  .ribbon-ofac-skipped { background: #e6e6e6; color: #555; }
-  .ribbon-renewal { background: #fde6f6; color: #7a1f5a; }
-  .ribbon-broker, .ribbon-intake { background: #f0f0f4; color: #333; }
-</style>

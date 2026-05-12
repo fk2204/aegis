@@ -1,8 +1,209 @@
 {% extends "base.html.j2" %}
-{% block title %}AEGIS — Dashboard{% endblock %}
-{% block content %}
-  <h1>AEGIS</h1>
-  <p>MCA underwriting brain for Commera Capital. Operator dashboard.</p>
-  <p>Pages: <a href="/ui/upload">Upload</a> · <a href="/ui/merchants">Merchants</a></p>
-  <p class="src-ref">Server time {{ now }}</p>
+{% set active = 'Today' %}
+{% block title %}AEGIS — Today{% endblock %}
+
+{% block subhead %}
+<div class="subhead">
+  <div>
+    <h1>Today · Underwriting desk</h1>
+    <div class="meta" style="margin-top:4px">
+      <span><span class="dot"></span>All systems nominal</span>
+      <span>SLA window 09:00–18:00 ET</span>
+      <span>{{ now|default('') }}</span>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <div class="btn-group">
+      <button class="btn active">Today</button>
+      <button class="btn">7d</button>
+      <button class="btn">MTD</button>
+      <button class="btn">QTD</button>
+    </div>
+    <a class="btn btn-primary" href="/ui/intake">+ New deal</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block body %}
+<div class="body cols-2" style="grid-template-columns:220px 1fr">
+  <aside class="side">
+    <div class="side-section">
+      <div class="side-label">My queue</div>
+      <div class="side-item active"><span>Awaiting review</span><span class="count">—</span></div>
+      <div class="side-item"><span>Awaiting docs</span><span class="count">—</span></div>
+      <div class="side-item"><span>In funder pipe</span><span class="count">—</span></div>
+      <div class="side-item"><span>Snoozed</span><span class="count">—</span></div>
+    </div>
+    <div class="side-section">
+      <div class="side-label">Filters</div>
+      <div class="side-item"><span>Tier A</span><span class="count">—</span></div>
+      <div class="side-item"><span>Tier B</span><span class="count">—</span></div>
+      <div class="side-item"><span>Tier C</span><span class="count">—</span></div>
+      <div class="side-item"><span>Decline</span><span class="count">—</span></div>
+    </div>
+    <div class="side-section">
+      <div class="side-label">Jump to</div>
+      <div class="side-item"><a href="/ui/upload" style="color:inherit;text-decoration:none">Upload statement</a><span class="count mono">⌘U</span></div>
+      <div class="side-item"><a href="/ui/intake" style="color:inherit;text-decoration:none">New deal</a><span class="count mono">⌘N</span></div>
+      <div class="side-item"><a href="/ui/review" style="color:inherit;text-decoration:none">Review queue</a><span class="count mono">⌘R</span></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="label">Deals in pipeline</div>
+        <div class="value">—</div>
+        <div class="delta">preview · data hookup TBD</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Approved today</div>
+        <div class="value">—</div>
+        <div class="delta">preview</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Avg decision time</div>
+        <div class="value">—</div>
+        <div class="delta">preview</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Approval rate (30d)</div>
+        <div class="value">—</div>
+        <div class="delta">preview</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Default risk (book)</div>
+        <div class="value">—</div>
+        <div class="delta">preview</div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Pipeline funnel · 30d</span>
+          <span class="panel-actions mono">preview</span>
+        </div>
+        <div class="panel-body">
+          <div class="funnel">
+            {% set _funnel = [
+              ('Intake', 0, 0, ''),
+              ('Docs complete', 0, 0, ''),
+              ('Parsed &amp; scored', 0, 0, 'accent'),
+              ('Underwritten', 0, 0, ''),
+              ('Sent to funders', 0, 0, 'pos'),
+              ('Funded', 0, 0, 'pos'),
+              ('Declined', 0, 0, 'neg'),
+            ] %}
+            {% for label, count, width, cls in _funnel %}
+              <div class="funnel-row">
+                <span>{{ label|safe }}</span>
+                <div class="funnel-bar"><div class="funnel-fill {{ cls }}" style="width:{{ width }}%"></div></div>
+                <span class="funnel-num">{{ count }}</span>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Quick links</span>
+          <span class="panel-actions mono">workflows</span>
+        </div>
+        <div class="panel-body">
+          <div class="kv">
+            <span class="k">Upload</span>
+            <span class="v ui"><a href="/ui/upload">Drop bank statements (PDF)</a></span>
+            <span class="k">Intake</span>
+            <span class="v ui"><a href="/ui/intake">Start a new deal</a></span>
+            <span class="k">Deals</span>
+            <span class="v ui"><a href="/ui/deals">Live pipeline</a></span>
+            <span class="k">Merchants</span>
+            <span class="v ui"><a href="/ui/merchants">Merchant directory</a></span>
+            <span class="k">Funders</span>
+            <span class="v ui"><a href="/ui/funders">Funder criteria + matching</a></span>
+            <span class="k">Review</span>
+            <span class="v ui"><a href="/ui/review">Parser manual-review queue</a></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Needs your attention</span>
+        <span class="panel-actions mono">live · sourced from deals pipeline</span>
+      </div>
+      <div class="panel-body flush">
+        <table class="data">
+          <thead>
+            <tr>
+              <th style="width:90px">Deal</th>
+              <th>Merchant</th>
+              <th>Request</th>
+              <th class="num">Score</th>
+              <th>Stage</th>
+              <th class="num">SLA</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td colspan="6" style="text-align:center;color:var(--muted);padding:24px;font-family:var(--mono);font-size:11.5px">
+                attention queue — preview only · open <a href="/ui/deals">/ui/deals</a> for the live pipeline table
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid-3">
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Decisions · 30d</span>
+          <span class="panel-actions mono">preview</span>
+        </div>
+        <div class="panel-body">
+          <div class="funnel">
+            <div class="funnel-row"><span>Approved</span><div class="funnel-bar"><div class="funnel-fill pos" style="width:0%"></div></div><span class="funnel-num">—</span></div>
+            <div class="funnel-row"><span>Declined</span><div class="funnel-bar"><div class="funnel-fill neg" style="width:0%"></div></div><span class="funnel-num">—</span></div>
+            <div class="funnel-row"><span>Counter</span><div class="funnel-bar"><div class="funnel-fill warn" style="width:0%"></div></div><span class="funnel-num">—</span></div>
+            <div class="funnel-row"><span>Withdrawn</span><div class="funnel-bar"><div class="funnel-fill" style="width:0%;background:var(--muted)"></div></div><span class="funnel-num">—</span></div>
+            <div class="funnel-row"><span>In progress</span><div class="funnel-bar"><div class="funnel-fill" style="width:0%"></div></div><span class="funnel-num">—</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Funder activity</span>
+          <span class="panel-actions mono">7d</span>
+        </div>
+        <div class="panel-body flush">
+          <table class="data">
+            <tbody>
+              <tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;font-family:var(--mono);font-size:11.5px">
+                no funder activity yet · open <a href="/ui/funders">/ui/funders</a>
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Recent activity</span>
+          <span class="panel-actions mono">audit_log</span>
+        </div>
+        <div class="panel-body flush">
+          <div class="activity-item">
+            <span class="time">—</span>
+            <span><span class="who">aegis</span> <span class="what">activity log</span> <span class="obj">preview · audit_log hookup TBD</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
 {% endblock %}

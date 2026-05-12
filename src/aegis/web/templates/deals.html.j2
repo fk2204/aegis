@@ -1,40 +1,91 @@
 {% extends "base.html.j2" %}
+{% set active = 'Deals' %}
 {% block title %}Deals — AEGIS{% endblock %}
-{% block content %}
-  <h1>Deals</h1>
-  <p class="src-ref">
-    A "deal" is a merchant joined with their most recent uploaded document.
-    Tier shown here is a quick proxy from parsed analysis numbers; click a
-    row to score the deal authoritatively via <code>POST /deals/score</code>.
-  </p>
-  {% if not rows %}
-    <p>No deals yet. Add a merchant and upload their bank statement.</p>
-  {% else %}
-    <table>
-      <thead>
-        <tr>
-          <th>Merchant</th>
-          <th>State</th>
-          <th>Latest Upload</th>
-          <th>Parse Status</th>
-          <th>Fraud</th>
-          <th>Tier (proxy)</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in rows %}
-        <tr>
-          <td><a href="/ui/merchants/{{ r.merchant_id }}">{{ r.business_name }}</a></td>
-          <td>{{ r.state }}</td>
-          <td>{{ r.uploaded_at }}</td>
-          <td>
-            <span class="tag tag-{{ r.parse_status }}">{{ r.parse_status }}</span>
-          </td>
-          <td>{{ r.fraud_score }}</td>
-          <td>{{ r.tier_proxy }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% endif %}
+
+{% block subhead %}
+<div class="subhead">
+  <div>
+    <h1>Deals pipeline</h1>
+    <div class="meta" style="margin-top:4px">
+      <span><span class="dot"></span>{{ rows|length }} deal{{ '' if rows|length == 1 else 's' }}</span>
+      <span>merchant × latest document · tier is parse-derived proxy</span>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <a class="btn" href="/ui/upload">Upload statement</a>
+    <a class="btn btn-primary" href="/ui/intake">+ New deal</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block body %}
+<div class="body cols-1">
+  <main class="main">
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">All deals</span>
+        <span class="panel-actions mono">n = {{ rows|length }}</span>
+      </div>
+      <div class="panel-body flush">
+        {% if not rows %}
+          <div style="padding:32px;text-align:center;color:var(--muted)">
+            <div style="font-size:14px;margin-bottom:6px">No deals yet.</div>
+            <div style="font-size:12px">Add a merchant via <a href="/ui/intake">Intake</a> and upload their bank statement via <a href="/ui/upload">Upload</a>.</div>
+          </div>
+        {% else %}
+          <table class="data">
+            <thead>
+              <tr>
+                <th>Merchant</th>
+                <th>State</th>
+                <th>Latest upload</th>
+                <th>Parse status</th>
+                <th class="num">Fraud score</th>
+                <th>Tier (proxy)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in rows %}
+              <tr onclick="location.href='/ui/merchants/{{ r.merchant_id }}'" style="cursor:pointer">
+                <td>
+                  <div class="merch">
+                    <span class="merch-mark">{{ r.business_name[:2]|upper }}</span>
+                    <div>
+                      <div class="merch-name"><a href="/ui/merchants/{{ r.merchant_id }}" style="color:inherit;text-decoration:none">{{ r.business_name }}</a></div>
+                      <div class="merch-id">{{ r.merchant_id|string|truncate(8, True, '') }}</div>
+                    </div>
+                  </div>
+                </td>
+                <td><span class="mono" style="font-size:11.5px">{{ r.state }}</span></td>
+                <td><span class="mono" style="font-size:11.5px">{{ r.uploaded_at }}</span></td>
+                <td>
+                  {% set _cls = {
+                    'proceed': 'pos',
+                    'review': 'warn',
+                    'manual_review': 'neg',
+                    'error': 'neg',
+                    'pending': '',
+                    'no_upload': '',
+                  } %}
+                  <span class="tag {{ _cls.get(r.parse_status, '') }}">
+                    <span class="dot"></span>{{ r.parse_status }}
+                  </span>
+                </td>
+                <td class="num">{{ r.fraud_score if r.fraud_score is not none else '—' }}</td>
+                <td>
+                  {% if r.tier_proxy %}
+                    <span class="tag accent"><span class="dot"></span>{{ r.tier_proxy }}</span>
+                  {% else %}
+                    <span style="color:var(--muted);font-family:var(--mono);font-size:11.5px">—</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+      </div>
+    </div>
+  </main>
+</div>
 {% endblock %}

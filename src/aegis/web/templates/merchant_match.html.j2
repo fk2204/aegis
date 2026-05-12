@@ -1,99 +1,134 @@
 {% extends "base.html.j2" %}
-{% block title %}{{ merchant.business_name }} — Funder Match · AEGIS{% endblock %}
-{% block content %}
-  <style>
-    .match-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin-top: 16px; }
-    .match-card { border: 1px solid #ddd; border-radius: 8px; padding: 14px; background: #fff; }
-    .match-card.green { border-left: 6px solid #1c5e1c; }
-    .match-card.yellow { border-left: 6px solid #c89400; }
-    .match-card.red { border-left: 6px solid #8a1c1c; opacity: 0.85; }
-    .match-card h3 { margin: 0 0 4px 0; font-size: 16px; }
-    .match-card .score { font-size: 22px; font-weight: 700; }
-    .match-card.red .score { color: #8a1c1c; }
-    .match-card.yellow .score { color: #8a6800; }
-    .match-card.green .score { color: #1c5e1c; }
-    .reason-list { font-size: 12px; color: #555; margin: 6px 0 0 0; padding-left: 18px; }
-    .summary-pills { display: flex; gap: 12px; margin: 16px 0; }
-    .summary-pills .tile { margin: 0; min-width: 0; flex: 1; }
-  </style>
+{% set active = 'Merchants' %}
+{% block title %}{{ merchant.business_name }} — Funder match · AEGIS{% endblock %}
 
-  <h1>{{ merchant.business_name }}</h1>
-  <p class="src-ref">
-    <a href="/ui/merchants/{{ merchant.id }}">← back to detail</a> ·
-    {{ merchant.state }} · {{ merchant.owner_name }}
-  </p>
+{% block subhead %}
+<div class="deal-head">
+  <div class="merch">
+    <span class="merch-mark" style="width:48px;height:48px;font-size:16px">{{ merchant.business_name[:2]|upper }}</span>
+  </div>
+  <div>
+    <div class="id">match · {{ merchant.id|string|truncate(8, True, '') }}</div>
+    <h2>{{ merchant.business_name }}</h2>
+    <div class="meta-row">
+      <span><span class="lbl">Owner</span>{{ merchant.owner_name }}</span>
+      <span><span class="lbl">State</span>{{ merchant.state }}</span>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:flex-start">
+    <a class="btn" href="/ui/merchants/{{ merchant.id }}">← Detail</a>
+  </div>
+</div>
+{% endblock %}
 
-  {% if missing == "no_document" %}
-    <p>No analyzed document yet for this merchant. Upload a statement first.</p>
-  {% else %}
-    <h2>Score</h2>
-    <div class="summary-pills">
-      <div class="tile">
-        <div class="tile-label">Tier</div>
-        <div class="tile-value">{{ score_result.tier }}</div>
-      </div>
-      <div class="tile">
-        <div class="tile-label">Score</div>
-        <div class="tile-value">{{ score_result.score }}/100</div>
-      </div>
-      <div class="tile">
-        <div class="tile-label">Recommendation</div>
-        <div class="tile-value">
-          <span class="tag tag-{% if score_result.recommendation == 'approve' %}proceed{% elif score_result.recommendation == 'refer' %}review{% else %}manual_review{% endif %}">
-            {{ score_result.recommendation }}
-          </span>
+{% block body %}
+<div class="body cols-1">
+  <main class="main">
+    {% if missing == "no_document" %}
+      <div class="panel">
+        <div class="panel-body" style="padding:24px;text-align:center;color:var(--muted)">
+          <div style="font-size:14px;margin-bottom:6px">No analyzed document yet for this merchant.</div>
+          <div style="font-size:12px"><a href="/ui/upload">Upload a statement first →</a></div>
         </div>
       </div>
-    </div>
-
-    {% if score_result.hard_decline_reasons %}
-      <p class="tag tag-manual_review" style="display: block; padding: 10px 14px;">
-        Hard declines:
-        {% for r in score_result.hard_decline_reasons %}
-          {{ r }}{% if not loop.last %}; {% endif %}
-        {% endfor %}
-      </p>
-    {% endif %}
-
-    <h2>Matched Funders</h2>
-    {% if not matches %}
-      <p>No active funders configured. Visit <a href="/ui/funders/import">Import</a>.</p>
     {% else %}
-      <p class="src-ref">
-        Sorted by match score. Green = clean fit, yellow = soft concerns,
-        red = hard fail (do not submit).
-      </p>
-      <div class="match-grid">
-        {% for c in matches %}
-          <div class="match-card {{ c.color }}">
-            <h3><a href="/ui/funders/{{ c.funder_id }}">{{ c.funder_name }}</a></h3>
-            <div class="score">{{ c.match_score }}/100</div>
-            {% if c.hard_reasons %}
-              <p style="margin: 8px 0 4px 0; font-weight: 600; font-size: 12px; color: #8a1c1c;">
-                Hard fails ({{ c.hard_reasons|length }})
-              </p>
-              <ul class="reason-list">
-                {% for r in c.hard_reasons %}
-                  <li>{{ r }}</li>
-                {% endfor %}
-              </ul>
-            {% endif %}
-            {% if c.soft_concerns %}
-              <p style="margin: 8px 0 4px 0; font-weight: 600; font-size: 12px; color: #8a6800;">
-                Soft concerns ({{ c.soft_concerns|length }})
-              </p>
-              <ul class="reason-list">
-                {% for r in c.soft_concerns %}
-                  <li>{{ r }}</li>
-                {% endfor %}
-              </ul>
-            {% endif %}
-            {% if c.color == "green" %}
-              <p class="src-ref" style="margin-top: 8px;">No blockers.</p>
-            {% endif %}
+      {% set _tier_cls = {
+          'A': 'pos','B': 'accent','C': 'warn','D': 'warn','F': 'neg',
+      } %}
+      {% set _rec_cls = {
+          'approve': 'pos','refer': 'warn','decline': 'neg',
+      } %}
+      <div class="kpi-row">
+        <div class="kpi">
+          <div class="label">Tier</div>
+          <div class="value">{{ score_result.tier }}</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Score</div>
+          <div class="value">{{ score_result.score }}<span style="color:var(--muted);font-size:13px"> /100</span></div>
+        </div>
+        <div class="kpi">
+          <div class="label">Recommendation</div>
+          <div class="value" style="font-size:14px">
+            <span class="tag {{ _rec_cls.get(score_result.recommendation, '') }}" style="font-size:12px;padding:3px 8px">
+              <span class="dot"></span>{{ score_result.recommendation }}
+            </span>
           </div>
-        {% endfor %}
+        </div>
+        <div class="kpi">
+          <div class="label">Suggested max</div>
+          <div class="value">${{ score_result.suggested_max_advance }}</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Matched funders</div>
+          <div class="value">{{ matches|length }}</div>
+        </div>
+      </div>
+
+      {% if score_result.hard_decline_reasons %}
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title" style="color:var(--neg)">Hard declines</span>
+            <span class="panel-actions mono">{{ score_result.hard_decline_reasons|length }}</span>
+          </div>
+          <div class="panel-body flush">
+            {% for r in score_result.hard_decline_reasons %}
+              <div class="flag-row">
+                <span class="flag-icon neg">!</span>
+                <div><div class="flag-title">{{ r }}</div></div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
+
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Matched funders</span>
+          <span class="panel-actions mono">sorted by match score · green = clean · yellow = soft · red = hard fail</span>
+        </div>
+        <div class="panel-body">
+          {% if not matches %}
+            <div style="padding:24px;text-align:center;color:var(--muted)">
+              No active funders configured. Visit <a href="/ui/funders/import">Import</a>.
+            </div>
+          {% else %}
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
+              {% for c in matches %}
+                {% set _card_cls = {'green':'','yellow':'','red':''} %}
+                <div class="offer {% if c.color == 'green' %}best{% endif %}">
+                  <div class="offer-head">
+                    <span class="offer-name"><a href="/ui/funders/{{ c.funder_id }}" style="color:inherit;text-decoration:none">{{ c.funder_name }}</a></span>
+                    <span class="offer-rate" style="color: {% if c.color == 'green' %}var(--pos){% elif c.color == 'yellow' %}var(--warn){% else %}var(--neg){% endif %}">
+                      {{ c.match_score }}<span style="color:var(--muted);font-size:11px"> /100</span>
+                    </span>
+                  </div>
+                  {% if c.hard_reasons %}
+                    <div>
+                      <div style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--neg);margin-bottom:4px">Hard fails · {{ c.hard_reasons|length }}</div>
+                      <ul style="margin:0;padding-left:16px;font-size:11.5px;color:var(--ink-2)">
+                        {% for r in c.hard_reasons %}<li>{{ r }}</li>{% endfor %}
+                      </ul>
+                    </div>
+                  {% endif %}
+                  {% if c.soft_concerns %}
+                    <div>
+                      <div style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--warn);margin-bottom:4px">Soft concerns · {{ c.soft_concerns|length }}</div>
+                      <ul style="margin:0;padding-left:16px;font-size:11.5px;color:var(--ink-2)">
+                        {% for r in c.soft_concerns %}<li>{{ r }}</li>{% endfor %}
+                      </ul>
+                    </div>
+                  {% endif %}
+                  {% if c.color == "green" %}
+                    <div style="font-family:var(--mono);font-size:10.5px;color:var(--pos)">No blockers.</div>
+                  {% endif %}
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </div>
       </div>
     {% endif %}
-  {% endif %}
+  </main>
+</div>
 {% endblock %}

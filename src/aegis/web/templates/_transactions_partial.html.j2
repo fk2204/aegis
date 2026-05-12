@@ -1,29 +1,36 @@
-<h3>{{ aggregate_label }} — contributing transactions</h3>
-{% if not transactions %}
-  <p class="src-ref">No transactions contributed to this aggregate.</p>
-{% else %}
-  <table>
-    <thead>
-      <tr>
-        <th>Date</th>
-        <th>Description</th>
-        <th>Amount</th>
-        <th>Balance</th>
-        <th>Category</th>
-        <th>Source</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for t in transactions|sort(attribute='posted_date') %}
-      <tr>
-        <td>{{ t.posted_date }}</td>
-        <td>{{ t.description }}</td>
-        <td>{{ t.amount }}</td>
-        <td>{{ t.running_balance or "" }}</td>
-        <td>{{ t.category }}</td>
-        <td class="src-ref">page {{ t.source_page }}, line {{ t.source_line }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-{% endif %}
+<div class="panel" style="margin-top:0">
+  <div class="panel-head">
+    <span class="panel-title">{{ aggregate_label }} — contributing transactions</span>
+    <span class="panel-actions mono">{{ transactions|length }} row{{ '' if transactions|length == 1 else 's' }}</span>
+  </div>
+  <div class="panel-body flush">
+    {% if not transactions %}
+      <div style="padding:16px;color:var(--muted);font-size:12px">No transactions contributed to this aggregate.</div>
+    {% else %}
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Description</th>
+            <th class="num">Amount</th>
+            <th class="num">Balance</th>
+            <th>Category</th>
+            <th>Source</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in transactions|sort(attribute='posted_date') %}
+          <tr>
+            <td><span class="mono" style="font-size:11.5px">{{ t.posted_date }}</span></td>
+            <td>{{ t.description }}</td>
+            <td class="num">{{ t.amount }}</td>
+            <td class="num">{{ t.running_balance or "" }}</td>
+            <td><span class="tag"><span class="dot"></span>{{ t.category }}</span></td>
+            <td><span class="mono" style="font-size:10.5px;color:var(--muted)">p{{ t.source_page }} L{{ t.source_line }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</div>
