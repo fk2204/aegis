@@ -28,16 +28,34 @@ from aegis.api.deps import (
     get_funder_repository,
     get_merchant_repository,
     get_ofac_client,
+    get_repository,
 )
+from aegis.api.routes.findings import build_merchant_findings
 from aegis.audit import AuditLog
 from aegis.funders.repository import FunderRepository
+from aegis.logger import get_logger
 from aegis.merchants.repository import MerchantNotFoundError, MerchantRepository
 from aegis.scoring.match_funders import match_funder
 from aegis.scoring.models import DealMatchResult, ScoreInput, ScoreResult
 from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
+from aegis.storage import DocumentRepository
+from aegis.web._findings_csv import findings_to_csv
 from aegis.zoho.client import ZohoAuthError, ZohoClient, ZohoError
 from aegis.zoho.sync import ZohoSync, ZohoSyncError
+
+_log = get_logger(__name__)
+
+
+def _csv_filename_slug(text: str) -> str:
+    """ASCII-safe slug for the attachment filename Zoho displays to reps."""
+    out: list[str] = []
+    for ch in text.lower():
+        if ch.isalnum():
+            out.append(ch)
+        elif out and out[-1] != "_":
+            out.append("_")
+    return "".join(out).strip("_") or "merchant"
 
 router = APIRouter(prefix="/deals", tags=["deals"], dependencies=[Depends(require_bearer)])
 
@@ -146,7 +164,10 @@ def sync_to_zoho(
     score_result: ScoreResult,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     target: Literal["lead", "deal"] = "lead",
+    attach_findings: bool = True,
 ) -> ZohoSyncResponse:
     """Operator-triggered Zoho upsert into Leads or Deals.
 
@@ -184,8 +205,36 @@ def sync_to_zoho(
             sync = ZohoSync(client=client, merchants=merchants, audit=audit)
             if target == "lead":
                 zoho_record_id = sync.push_merchant_to_lead(merchant_id, score_result)
+                module = "Leads"
             else:
                 zoho_record_id = sync.push_merchant_with_score(merchant_id, score_result)
+                module = "Deals"
+
+            # U1: attach findings CSV so the rep sees it inside Zoho.
+            # Attachment failure does NOT fail the request — upsert already
+            # succeeded and is the load-bearing operation.
+            if attach_findings:
+                try:
+                    findings = build_merchant_findings(
+                        merchant=merchant, docs=docs, ofac=ofac
+                    )
+                    csv_bytes = findings_to_csv(findings).encode("utf-8")
+                    filename = f"findings_{_csv_filename_slug(merchant.business_name)}.csv"
+                    sync.attach_findings_csv(
+                        module=module,
+                        record_id=zoho_record_id,
+                        merchant_id=merchant_id,
+                        csv_bytes=csv_bytes,
+                        filename=filename,
+                    )
+                except Exception as exc:  # broad on purpose — see comment above
+                    _log.warning(
+                        "findings csv attach skipped",
+                        extra={
+                            "merchant_id": str(merchant_id),
+                            "error": str(exc),
+                        },
+                    )
     except ZohoAuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -163,6 +163,67 @@ class ZohoSync:
         )
         return lead_id
 
+    def attach_findings_csv(
+        self,
+        *,
+        module: str,
+        record_id: str,
+        merchant_id: UUID,
+        csv_bytes: bytes,
+        filename: str,
+    ) -> None:
+        """Attach a findings CSV to the Zoho Lead/Deal record.
+
+        ``module`` is ``"Leads"`` or ``"Deals"``. Failures here are logged
+        and audited but never re-raised — the upsert that just succeeded
+        is the load-bearing operation; a failed attachment shouldn't
+        knock the whole sync over. Operator can re-trigger sync to retry.
+        """
+        try:
+            self._client.upload_attachment(
+                module,
+                record_id,
+                filename=filename,
+                content=csv_bytes,
+                content_type="text/csv",
+            )
+        except Exception as exc:  # broad on purpose — see docstring
+            _log.warning(
+                "zoho attachment upload failed",
+                extra={
+                    "zoho_module": module,
+                    "record_id": record_id,
+                    "merchant_id": str(merchant_id),
+                    "error": str(exc),
+                },
+            )
+            self._audit.record(
+                actor="zoho_sync",
+                action="zoho.attachment.failed",
+                subject_type="merchant",
+                subject_id=merchant_id,
+                details={
+                    "zoho_module": module,
+                    "record_id": record_id,
+                    "filename": filename,
+                    "error": str(exc),
+                },
+            )
+            return
+
+        self._audit.record(
+            actor="zoho_sync",
+            action="zoho.attachment.uploaded",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={
+                "module": module,
+                "record_id": record_id,
+                "filename": filename,
+                "size_bytes": len(csv_bytes),
+            },
+        )
+
     def _find_lead_id_by_email(self, email: str | None) -> str | None:
         """Search Zoho Leads for a matching email; return its id or None.
 

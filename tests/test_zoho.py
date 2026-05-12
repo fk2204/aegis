@@ -14,6 +14,7 @@ import json
 import time
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 import httpx
 import pytest
@@ -73,6 +74,44 @@ def test_token_cache_refreshes_on_first_use(
     assert cache.get() == "abc123"
 
 
+def test_token_refresh_does_not_put_secrets_on_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: OAuth refresh sent client_id/client_secret/refresh_token as
+    URL query params; httpx logged the full URL at INFO. Secrets must travel
+    in the form body so they don't appear in logged URLs or tracebacks."""
+    _set_zoho_env(monkeypatch)
+    captured: dict[str, Any] = {}
+
+    def fake_post(url: str, **kwargs: Any) -> httpx.Response:
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return httpx.Response(
+            200,
+            json={"access_token": "x", "expires_in": 3600},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    ZohoTokenCache().get()
+
+    # URL must be clean — no secrets in the request line.
+    assert "refresh_token=" not in captured["url"]
+    assert "client_secret=" not in captured["url"]
+    assert "client_id=" not in captured["url"]
+    assert "secret" not in captured["url"]
+    assert "rt" not in captured["url"]
+    assert captured["url"].endswith("/oauth/v2/token")
+
+    # Secrets travel in the form body.
+    assert "data" in captured["kwargs"], "secrets must be in body, not query"
+    body = captured["kwargs"]["data"]
+    assert body["refresh_token"] == "rt"  # noqa: S105 — test stub
+    assert body["client_id"] == "id"
+    assert body["client_secret"] == "secret"  # noqa: S105 — test stub
+    assert body["grant_type"] == "refresh_token"
+
+
 # --- client ------------------------------------------------------------------
 
 
@@ -95,6 +134,77 @@ def test_client_sends_oauth_header_and_returns_body(
     assert body == {"data": [{"id": "999"}]}
     assert captured["headers"]["authorization"].startswith("Zoho-oauthtoken ")
     assert captured["url"].endswith("/crm/v6/Deals/999")
+
+
+def test_client_upload_attachment_posts_multipart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U1: ZohoClient.upload_attachment hits the Attachments endpoint with
+    multipart/form-data and returns the parsed body."""
+    _set_zoho_env(monkeypatch)
+    _stub_token_post(monkeypatch)
+
+    captured: dict[str, Any] = {}
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["method"] = request.method
+        captured["content_type"] = request.headers.get("content-type", "")
+        captured["body"] = request.content
+        return httpx.Response(
+            200, json={"data": [{"code": "SUCCESS", "details": {"id": "ATT_1"}}]}
+        )
+
+    http_client = httpx.Client(transport=httpx.MockTransport(transport))
+    client = ZohoClient(http_client=http_client)
+    body = client.upload_attachment(
+        "Leads",
+        "LEAD_99",
+        filename="findings_acme.csv",
+        content=b"section,key,value\nmeta,gen,now\n",
+        content_type="text/csv",
+    )
+    assert body == {"data": [{"code": "SUCCESS", "details": {"id": "ATT_1"}}]}
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/crm/v8/Leads/LEAD_99/Attachments")
+    assert captured["content_type"].startswith("multipart/form-data"), (
+        f"expected multipart, got: {captured['content_type']!r}"
+    )
+    assert b"findings_acme.csv" in captured["body"]
+    assert b"section,key,value" in captured["body"]
+
+
+def test_sync_attach_findings_csv_swallows_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """U1: attach_findings_csv MUST NOT raise on Zoho failure — the upsert
+    that just preceded it is load-bearing; the attachment is best-effort.
+    """
+    _set_zoho_env(monkeypatch)
+    _stub_token_post(monkeypatch)
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    http_client = httpx.Client(transport=httpx.MockTransport(transport))
+    client = ZohoClient(http_client=http_client)
+    audit = InMemoryAuditLog()
+    sync = ZohoSync(
+        client=client,
+        merchants=InMemoryMerchantRepository(),
+        audit=audit,
+    )
+    test_merchant_id = UUID("00000000-0000-0000-0000-000000000001")
+    sync.attach_findings_csv(
+        module="Leads",
+        record_id="LEAD_1",
+        merchant_id=test_merchant_id,
+        csv_bytes=b"x,y,z\n",
+        filename="x.csv",
+    )
+    actions = [e["action"] for e in audit.entries]
+    assert "zoho.attachment.failed" in actions
+    assert "zoho.attachment.uploaded" not in actions
 
 
 def test_client_retries_on_500_then_succeeds(
