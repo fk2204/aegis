@@ -29,6 +29,7 @@ class MerchantConflictError(ValueError):
 class MerchantRepository(Protocol):
     def get(self, merchant_id: UUID) -> MerchantRow: ...
     def find_by_zoho_deal_id(self, zoho_deal_id: str) -> MerchantRow | None: ...
+    def find_by_zoho_lead_id(self, zoho_lead_id: str) -> MerchantRow | None: ...
     def list_all(self, *, state: str | None = None) -> list[MerchantRow]: ...
     def upsert(self, merchant: MerchantRow) -> MerchantRow: ...
     def delete(self, merchant_id: UUID) -> None: ...
@@ -49,6 +50,12 @@ class InMemoryMerchantRepository:
     def find_by_zoho_deal_id(self, zoho_deal_id: str) -> MerchantRow | None:
         for m in self._by_id.values():
             if m.zoho_deal_id == zoho_deal_id:
+                return m
+        return None
+
+    def find_by_zoho_lead_id(self, zoho_lead_id: str) -> MerchantRow | None:
+        for m in self._by_id.values():
+            if m.zoho_lead_id == zoho_lead_id:
                 return m
         return None
 
@@ -105,6 +112,19 @@ class SupabaseMerchantRepository:
             .table("merchants")
             .select("*")
             .eq("zoho_deal_id", zoho_deal_id)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return None
+        return _row_to_merchant(cast(dict[str, Any], result.data[0]))
+
+    def find_by_zoho_lead_id(self, zoho_lead_id: str) -> MerchantRow | None:
+        result = (
+            get_supabase()
+            .table("merchants")
+            .select("*")
+            .eq("zoho_lead_id", zoho_lead_id)
             .limit(1)
             .execute()
         )
@@ -175,6 +195,7 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
             else None
         ),
         zoho_deal_id=row.get("zoho_deal_id"),
+        zoho_lead_id=row.get("zoho_lead_id"),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
     )
@@ -229,6 +250,7 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
             str(m.preferred_funder_id) if m.preferred_funder_id else None
         ),
         "zoho_deal_id": m.zoho_deal_id,
+        "zoho_lead_id": m.zoho_lead_id,
     }
     return payload
 

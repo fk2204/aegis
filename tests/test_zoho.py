@@ -134,7 +134,7 @@ class _FakeZohoClient:
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self.calls.append((method, path, json))
-        if method == "POST" and path == "/crm/v6/Deals":
+        if method == "POST" and path == "/crm/v8/Deals":
             return {"data": [{"code": "SUCCESS", "details": {"id": self._next_id}}]}
         return {}
 
@@ -165,7 +165,7 @@ def test_outbound_create_records_zoho_id(monkeypatch: pytest.MonkeyPatch) -> Non
     new_id = sync.push_merchant_with_score(merchant.id, _make_score())
     assert new_id == "ZOHO-NEW-1"
     assert repo.get(merchant.id).zoho_deal_id == "ZOHO-NEW-1"
-    assert client.calls[0][:2] == ("POST", "/crm/v6/Deals")
+    assert client.calls[0][:2] == ("POST", "/crm/v8/Deals")
     assert any(e["action"] == "zoho.deal.upsert" for e in audit.entries)
 
 
@@ -184,7 +184,7 @@ def test_outbound_update_uses_existing_id() -> None:
     sync = ZohoSync(client=client, merchants=repo, audit=audit)  # type: ignore[arg-type]
     out = sync.push_merchant_with_score(merchant.id, _make_score())
     assert out == "EXISTING"
-    assert client.calls[0][:2] == ("PUT", "/crm/v6/Deals/EXISTING")
+    assert client.calls[0][:2] == ("PUT", "/crm/v8/Deals/EXISTING")
 
 
 def test_inbound_upserts_idempotently() -> None:
