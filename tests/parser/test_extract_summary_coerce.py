@@ -39,3 +39,31 @@ def test_coerce_summary_preserves_real_beginning_balance() -> None:
     }
     out = _coerce_summary(payload)
     assert out["beginning_balance"] == "288.29"
+
+
+def test_coerce_summary_null_ending_balance_becomes_zero() -> None:
+    """Same Brex-style edge case applies to ending_balance — coerce null → 0."""
+    payload = {
+        "beginning_balance": 288.29,
+        "ending_balance": None,
+        "deposit_total": 12345.67,
+        "withdrawal_total": 9876.54,
+    }
+    out = _coerce_summary(payload)
+    assert out["ending_balance"] == "0.00"
+    assert out["beginning_balance"] == "288.29"
+
+
+def test_coerce_summary_both_balances_null() -> None:
+    """Both ends null → both zero; downstream validation gate flags the
+    mismatch with the transaction stream as manual_review (not a hard
+    parse failure)."""
+    payload = {
+        "beginning_balance": None,
+        "ending_balance": None,
+        "deposit_total": 100.00,
+        "withdrawal_total": 50.00,
+    }
+    out = _coerce_summary(payload)
+    assert out["beginning_balance"] == "0.00"
+    assert out["ending_balance"] == "0.00"
