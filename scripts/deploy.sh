@@ -18,10 +18,15 @@
 #   AEGIS_HOST=op@aegis.box scripts/deploy.sh   # override target
 #
 # The script aborts on the first failure. Logs land on stderr.
+#
+# NOTE: SSH lives on `aegis-ssh.commerafunding.com`, not `aegis.commerafunding.com`.
+# The latter is the HTTPS dashboard hostname (tunnels to localhost:5555). SSH
+# uses a separate one-level subdomain because Cloudflare Universal SSL only
+# covers single-level names — see CLAUDE.md OP #4 and aegis_deploy_plumbing.
 
 set -euo pipefail
 
-AEGIS_HOST="${AEGIS_HOST:-aegis@aegis.commerafunding.com}"
+AEGIS_HOST="${AEGIS_HOST:-aegis@aegis-ssh.commerafunding.com}"
 AEGIS_REMOTE_PATH="${AEGIS_REMOTE_PATH:-/opt/aegis}"
 AEGIS_HEALTH_URL="${AEGIS_HEALTH_URL:-http://127.0.0.1:5555/healthz}"
 
