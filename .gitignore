@@ -43,6 +43,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Claude Code session artifacts (agent transcripts, worktrees, plans)
+.claude/
+
 # App-local
 .tmp/
 logs/
