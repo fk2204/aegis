@@ -171,6 +171,19 @@ class DocumentRepository(Protocol):
 
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None: ...
 
+    def get_analyses_by_document_ids(
+        self, document_ids: list[UUID]
+    ) -> dict[UUID, AnalysisRow]:
+        """Batch variant of ``get_analysis`` — returns a {document_id -> AnalysisRow}
+        mapping for every id that has an analysis row. Missing ids are
+        simply absent from the result (callers handle with ``.get(...)``).
+
+        Eliminates the N+1 query pattern of looping per-document
+        ``get_analysis`` calls on the dashboard list / detail / trend
+        paths. Empty ``document_ids`` returns an empty dict without
+        hitting the database.
+        """
+
     def count_by_parse_status(self) -> dict[str, int]:
         """Return a {parse_status -> count} histogram across all documents."""
 
@@ -285,6 +298,15 @@ class InMemoryDocumentRepository:
 
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None:
         return self._analyses.get(document_id)
+
+    def get_analyses_by_document_ids(
+        self, document_ids: list[UUID]
+    ) -> dict[UUID, AnalysisRow]:
+        return {
+            doc_id: self._analyses[doc_id]
+            for doc_id in document_ids
+            if doc_id in self._analyses
+        }
 
     def count_by_parse_status(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -468,6 +490,28 @@ class SupabaseDocumentRepository:
         if not result.data:
             return None
         return _db_row_to_analysis(cast(dict[str, Any], result.data[0]))
+
+    def get_analyses_by_document_ids(
+        self, document_ids: list[UUID]
+    ) -> dict[UUID, AnalysisRow]:
+        if not document_ids:
+            return {}
+        # PostgREST ``in.(…)`` operator — single query returns analyses
+        # for every supplied document_id that has one. Missing ids are
+        # simply absent from the response (no error).
+        id_strings = [str(d) for d in document_ids]
+        result = (
+            get_supabase()
+            .table("analyses")
+            .select("*")
+            .in_("document_id", id_strings)
+            .execute()
+        )
+        out: dict[UUID, AnalysisRow] = {}
+        for row in cast(list[dict[str, Any]], result.data or []):
+            analysis = _db_row_to_analysis(row)
+            out[analysis.document_id] = analysis
+        return out
 
     def count_by_parse_status(self) -> dict[str, int]:
         """Histogram of documents by parse_status.

@@ -45,7 +45,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final
+from typing import ClassVar, Final
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +143,13 @@ class OFACClient:
         self._now = now or (lambda: datetime.now(UTC))
         self._index: list[SDNEntry] | None = None
         self._loaded_mtime: float | None = None
+        # Last wall-clock at which we ran the on-disk mtime check.
+        # `_load_index_if_changed` would otherwise stat() the cache
+        # file on every find_match() call; with ~1ms NTFS metadata
+        # latency per stat that costs real time once we score deals
+        # in batch. The refresh path resets this to None to force a
+        # re-check after a Treasury fetch.
+        self._last_mtime_check_at: datetime | None = None
 
     def is_match(self, name: str) -> bool:
         """Return True if `name` matches any SDN entry. Raises on stale cache.
@@ -242,9 +249,26 @@ class OFACClient:
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
         self._cache_path.write_bytes(payload)
         self._loaded_mtime = None  # force reload
+        self._last_mtime_check_at = None  # force next match to restat
+
+    # mtime is rechecked at most this often. The cache file is only
+    # rewritten by the refresh path (which resets _last_mtime_check_at
+    # to None directly), so going minutes without a stat is safe.
+    _MTIME_CHECK_INTERVAL_SECONDS: ClassVar[int] = 60
 
     def _load_index_if_changed(self) -> None:
+        # Fast path — once the index is loaded, only re-check the
+        # on-disk mtime every _MTIME_CHECK_INTERVAL_SECONDS. Saves the
+        # stat() syscall on rapid back-to-back find_match() calls
+        # (e.g. dashboard renders that hit OFAC for every funder
+        # candidate).
+        if self._index is not None and self._last_mtime_check_at is not None:
+            elapsed = (self._now() - self._last_mtime_check_at).total_seconds()
+            if elapsed < self._MTIME_CHECK_INTERVAL_SECONDS:
+                return
+
         mtime = self._cache_path.stat().st_mtime
+        self._last_mtime_check_at = self._now()
         if self._index is not None and self._loaded_mtime == mtime:
             return
         try:

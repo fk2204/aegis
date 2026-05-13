@@ -328,11 +328,13 @@ def _compute_trend(
     """
     if len(documents) < 2:
         return None
-    analyses: list[AnalysisRow] = []
-    for d in documents:
-        a = docs_repo.get_analysis(d.id)
-        if a is not None:
-            analyses.append(a)
+    # One batch query instead of N per-document calls.
+    analyses_by_doc = docs_repo.get_analyses_by_document_ids(
+        [d.id for d in documents]
+    )
+    analyses: list[AnalysisRow] = [
+        analyses_by_doc[d.id] for d in documents if d.id in analyses_by_doc
+    ]
     if len(analyses) < 2:
         return None
 

@@ -618,9 +618,30 @@ async def list_deals(
     and analysis tier proxy. Merchants without any document show as
     ``Awaiting upload``.
     """
+    merchants = list(merchants_repo.list_all())
+
+    # Batch fetch the latest document per merchant. Repository returns
+    # documents most-recent-first; deduping by merchant_id and keeping
+    # the first occurrence yields each merchant's latest. Then one
+    # batch analyses fetch covers all of those documents. Total: 2
+    # queries regardless of merchant count (was 2N).
+    all_docs = docs.list_documents(limit=500)
+    latest_by_merchant: dict[UUID, DocumentRow] = {}
+    for d in all_docs:
+        if d.merchant_id is None or d.merchant_id in latest_by_merchant:
+            continue
+        latest_by_merchant[d.merchant_id] = d
+
+    analyses_by_doc = docs.get_analyses_by_document_ids(
+        [d.id for d in latest_by_merchant.values()]
+    )
+
     rows: list[dict[str, Any]] = []
-    for m in merchants_repo.list_all():
-        latest_doc, latest_analysis = _find_latest_for_merchant(docs, m.id)
+    for m in merchants:
+        latest_doc = latest_by_merchant.get(m.id)
+        latest_analysis = (
+            analyses_by_doc.get(latest_doc.id) if latest_doc is not None else None
+        )
         rows.append(
             {
                 "merchant_id": str(m.id),
@@ -1384,14 +1405,17 @@ async def merchant_detail(
         intake_docs_failed = 0
 
     all_docs = docs.list_documents(merchant_id=merchant_id, limit=50)
-    documents_table: list[dict[str, Any]] = []
-    for d in all_docs:
-        documents_table.append(
-            {"document": d, "analysis": docs.get_analysis(d.id)}
-        )
+    # Batch fetch analyses for every document in one query rather than
+    # N+1 per-document calls. analyses_by_doc.get(doc.id) yields the
+    # AnalysisRow when present, None when the document hasn't been
+    # parsed yet.
+    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in all_docs])
+    documents_table: list[dict[str, Any]] = [
+        {"document": d, "analysis": analyses_by_doc.get(d.id)} for d in all_docs
+    ]
 
     latest_doc = all_docs[0] if all_docs else None
-    latest_analysis = docs.get_analysis(latest_doc.id) if latest_doc else None
+    latest_analysis = analyses_by_doc.get(latest_doc.id) if latest_doc else None
 
     score_result = None
     stacking = None
