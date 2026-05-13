@@ -292,19 +292,29 @@
 
         <div class="panel">
           <div class="panel-head">
-            <span class="panel-title">Pattern flags</span>
-            <span class="panel-actions mono">{{ document.all_flags|length if document.all_flags else 0 }}</span>
+            <span class="panel-title">Pattern analysis</span>
+            <span class="panel-actions">
+              <span class="mono" style="font-size:10.5px;color:var(--muted)">{{ pattern_cards|length }} pattern{{ '' if pattern_cards|length == 1 else 's' }} surfaced</span>
+              {% if document.all_flags %}
+                <span class="mono" style="margin-left:10px;font-size:10.5px;color:var(--muted)">all codes: {{ document.all_flags|join(', ') }}</span>
+              {% endif %}
+            </span>
           </div>
-          <div class="panel-body flush">
-            {% if document.all_flags %}
-              {% for f in document.all_flags %}
-                <div class="flag-row">
-                  <span class="flag-icon warn">!</span>
-                  <div><div class="flag-title">{{ f }}</div></div>
-                </div>
+          <div class="panel-body" style="background:var(--paper)">
+            {% if pattern_cards %}
+              {% for card in pattern_cards %}
+                {% include "_pattern_card.html.j2" %}
               {% endfor %}
+            {% elif document.all_flags %}
+              {# Codes raised but no detail card for them (mca_stacking is
+                 rendered above; recent_account_opening is on score
+                 breakdown; anything else is a parser-side new detector
+                 missing operator copy in aegis.web._pattern_cards). #}
+              <div style="padding:8px 0;color:var(--muted);font-size:12px">
+                Flags raised on this statement are rendered in other panels (MCA stacking, score breakdown) or pending operator-facing descriptions.
+              </div>
             {% else %}
-              <div style="padding:16px;color:var(--muted);font-size:12px">No pattern flags raised.</div>
+              <div style="padding:16px;color:var(--muted);font-size:12px">No pattern flags raised. Underwriting may proceed against the score breakdown above.</div>
             {% endif %}
           </div>
         </div>

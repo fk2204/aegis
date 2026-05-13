@@ -60,6 +60,7 @@ from aegis.merchants.repository import (
     MerchantRepository,
 )
 from aegis.parser.models import ClassifiedTransaction
+from aegis.parser.patterns import analyze_patterns
 from aegis.scoring.match_funders import match_funder
 from aegis.scoring.models import FunderMatch, ScoreInput
 from aegis.scoring.multi_month import (
@@ -74,6 +75,7 @@ from aegis.storage import (
     DocumentRepository,
     DocumentRow,
 )
+from aegis.web._pattern_cards import build_pattern_cards
 from aegis.web._slug import slugify
 from aegis.web._stacking_card import build_stacking_card
 
@@ -1352,6 +1354,7 @@ async def merchant_detail(
     score_result = None
     stacking = None
     score_window = None
+    pattern_cards: list[Any] = []
     if latest_doc is not None and latest_analysis is not None:
         items = _collect_analyzed_for_merchant(docs, merchant_id)
         if items:
@@ -1368,8 +1371,23 @@ async def merchant_detail(
                     d.parse_status == "manual_review" for d, _ in items
                 ),
             }
-        stacking = build_stacking_card(
-            latest_analysis, docs.list_transactions(latest_doc.id)
+        # Pattern cards are re-derived on view rather than persisted: the
+        # parser emits Pattern dataclasses whose fields (severity, detail,
+        # source_ids) aren't on AnalysisRow yet, so the dashboard recomputes
+        # from the stored transactions. ~100ms overhead for typical
+        # statements — cheap relative to the value of source-row drill-down.
+        latest_transactions = docs.list_transactions(latest_doc.id)
+        stacking = build_stacking_card(latest_analysis, latest_transactions)
+        try:
+            pattern_analysis = analyze_patterns(
+                latest_transactions,
+                latest_analysis.statement_period_start,
+                latest_analysis.statement_period_end,
+            )
+        except Exception:
+            pattern_analysis = None
+        pattern_cards = list(
+            build_pattern_cards(pattern_analysis, latest_transactions)
         )
 
     state_tier = _state_tier(merchant.state)
@@ -1392,6 +1410,7 @@ async def merchant_detail(
             "analysis": latest_analysis,
             "aggregate_labels": _AGGREGATE_LABELS,
             "aggregate_unit_kind": _AGGREGATE_UNIT_KIND,
+            "pattern_cards": pattern_cards,
             "score_result": score_result,
             "score_window": score_window,
             "stacking": stacking,

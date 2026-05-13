@@ -1,0 +1,58 @@
+{#
+  Pattern card — renders one Pattern with title, description, severity
+  color, parser detail string, and an expandable transaction table.
+
+  Inputs:
+    - card: PatternCard (from aegis.web._pattern_cards)
+
+  Mirrors the structure of _stacking_card.html.j2 so the two card types
+  are visually consistent on the merchant detail page.
+#}
+<div class="panel pattern-card" style="margin-bottom:12px;border-color:color-mix(in oklch, var(--{{ card.severity_band }}) 25%, var(--line))">
+  <div class="panel-head">
+    <span class="panel-title">{{ card.title }}</span>
+    <span class="panel-actions">
+      <span class="tag {{ card.severity_band }}" title="Contributes {{ card.severity }} points to the document's fraud_score (capped at 100)."><span class="dot"></span>severity {{ card.severity }}</span>
+      <span class="mono" style="margin-left:8px;font-size:10.5px;color:var(--muted)">{{ card.code }}</span>
+    </span>
+  </div>
+  <div class="panel-body">
+    <div style="font-size:12.5px;color:var(--ink-2);margin-bottom:8px;line-height:1.45">
+      {{ card.description }}
+    </div>
+    <div style="font-family:var(--mono);font-size:11.5px;padding:6px 10px;background:var(--{{ card.severity_band }}-soft);border-left:2px solid var(--{{ card.severity_band }});display:inline-block">
+      What we found: {{ card.detail }}
+    </div>
+  </div>
+  {% if card.source_transactions %}
+    <details>
+      <summary style="cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--muted);padding:8px 14px;border-top:1px solid var(--line-2)">
+        {{ card.source_transactions|length }} contributing transaction row(s) — click to expand
+      </summary>
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Description</th>
+            <th class="num">Amount</th>
+            <th class="num">Balance</th>
+            <th>Category</th>
+            <th>Source</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in card.source_transactions|sort(attribute='posted_date') %}
+            <tr>
+              <td><span class="mono" style="font-size:11.5px">{{ t.posted_date }}</span></td>
+              <td>{{ t.description }}</td>
+              <td class="num">{{ t.amount | money }}</td>
+              <td class="num">{{ t.running_balance | money if t.running_balance is not none else '' }}</td>
+              <td><span class="tag"><span class="dot"></span>{{ t.category }}</span></td>
+              <td><span class="mono" style="font-size:10.5px;color:var(--muted)" title="page {{ t.source_page }}, line {{ t.source_line }}">p{{ t.source_page }} L{{ t.source_line }}</span></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  {% endif %}
+</div>
