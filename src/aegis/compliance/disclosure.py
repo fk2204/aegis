@@ -32,6 +32,7 @@ from jinja2 import (
 from pydantic import BaseModel, ConfigDict
 
 from aegis.compliance._generic_templates import TIER2_GENERIC_ACKNOWLEDGMENT
+from aegis.compliance.disclosure_context import build_tier1_disclosure_context
 from aegis.compliance.renewal import (
     RenewalContext,
     RenewalContextRequiredError,
@@ -110,6 +111,8 @@ def render_disclosure(
     rendered_at: datetime | None = None,
     transaction_type: TransactionType = TransactionType.NEW,
     renewal: RenewalContext | None = None,
+    funder_name: str | None = None,
+    disbursement_date: date | None = None,
 ) -> RenderedDisclosure:
     """Render the state's disclosure for a scored deal.
 
@@ -144,7 +147,14 @@ def render_disclosure(
         raise StateNotAudited(abbr)
 
     rendered_at = rendered_at or datetime.now(UTC)
-    context = _build_context(reg, deal, score, rendered_at.date())
+    context = _build_context(
+        reg,
+        deal,
+        score,
+        rendered_at.date(),
+        funder_name=funder_name,
+        disbursement_date=disbursement_date,
+    )
 
     # Renewal context merge — only injects state-specific keys when
     # the state actually has renewal-only template content (NY today).
@@ -190,12 +200,40 @@ def _build_context(
     deal: ScoreInput,
     score: ScoreResult,
     rendered_at: date,
+    *,
+    funder_name: str | None = None,
+    disbursement_date: date | None = None,
 ) -> dict[str, object]:
+    """Build the template render context.
+
+    Tier 1 states delegate to
+    ``compliance/disclosure_context.build_tier1_disclosure_context`` —
+    that's where all ~20 regulator-required computed variables live
+    (funding_provided, finance_charge, apr via scipy actuarial,
+    payment_terms_text, etc.).
+
+    Tier 2 states use the generic acknowledgment template, which only
+    needs statute-metadata fields. We keep the lightweight legacy
+    shape for them.
+    """
+    if isinstance(reg, Tier1Regulation):
+        return build_tier1_disclosure_context(
+            reg,
+            deal,
+            score,
+            rendered_at,
+            funder_name=funder_name,
+            disbursement_date=disbursement_date,
+        )
+
+    # Tier 2 — generic acknowledgment. Lightweight context: cite the
+    # general state law, name the merchant, no APR / payment-schedule
+    # computation because there is no regulator-prescribed disclosure.
     principal = score.suggested_max_advance or deal.requested_amount
     factor = score.recommended_factor_rate or deal.requested_factor
     total_repayment = (principal * factor).quantize(Decimal("0.01"))
 
-    common: dict[str, object] = {
+    return {
         "state": reg.state,
         "state_name": reg.state_name,
         "verified_date": reg.verified_date.isoformat(),
@@ -205,50 +243,10 @@ def _build_context(
         "principal": str(principal),
         "factor": str(factor),
         "total_repayment": str(total_repayment),
+        "general_law_citation": reg.general_law_citation,
+        "citation_url": reg.citation_url,
+        "notes": reg.notes,
     }
-    if isinstance(reg, Tier1Regulation):
-        # effective_date_statute and effective_date_regulations are both
-        # Optional on the model — NY's dossier glues SB 5470 + S898 into a
-        # single bill_number and does not quote the original statute date.
-        # Format defensively.
-        common.update(
-            {
-                "bill_number": reg.bill_number,
-                "effective_date_statute": (
-                    reg.effective_date_statute.isoformat()
-                    if reg.effective_date_statute is not None
-                    else ""
-                ),
-                "effective_date_regulations": (
-                    reg.effective_date_regulations.isoformat()
-                    if reg.effective_date_regulations is not None
-                    else ""
-                ),
-                "mandatory_compliance_date": (
-                    reg.mandatory_compliance_date.isoformat()
-                    if reg.mandatory_compliance_date is not None
-                    else ""
-                ),
-                "statute_citation": reg.statute_citation,
-                "regulation_citation": reg.regulation_citation,
-                "citation_url_statute": reg.citation_url_statute,
-                "citation_url_regulation": reg.citation_url_regulation,
-                "prescribed_form_section": reg.prescribed_form_section,
-                "apr_calculation_method": reg.apr_calculation_method,
-                "coj_allowed": reg.coj_allowed,
-                "coj_citation": reg.coj_citation,
-                "notes": reg.notes,
-            }
-        )
-    else:
-        common.update(
-            {
-                "general_law_citation": reg.general_law_citation,
-                "citation_url": reg.citation_url,
-                "notes": reg.notes,
-            }
-        )
-    return common
 
 
 __all__ = ["RenderedDisclosure", "render_disclosure"]
