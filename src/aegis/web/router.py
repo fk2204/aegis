@@ -1447,9 +1447,48 @@ async def merchant_detail(
         subject_type="merchant", subject_id=merchant_id, limit=20
     )
 
+    # Template selection — dossier (editorial v3) is default; ?view=v2
+    # falls back to the panel layout. Same data context, two surfaces.
+    view = request.query_params.get("view", "").strip().lower()
+    template_name = (
+        "merchant_detail.html.j2"
+        if view == "v2"
+        else "merchant_detail_dossier.html.j2"
+    )
+
+    # Reshape state_tier into the richer dict the dossier template
+    # expects. v2 template ignores extra keys. Citation / verified are
+    # sourced from the STATES registry when present.
+    state_reg = STATES.get(merchant.state.upper()) if merchant.state else None
+    state_tier_dossier: dict[str, Any] | None = None
+    if isinstance(state_tier, int):
+        tier_summaries = {
+            1: "Commercial-finance disclosure law applies. Pre-signature disclosure required.",
+            2: "General state law applies. No MCA-specific statute; standard contract law governs.",
+            3: "Served but not yet audited. Disclosure renderer raises StateNotAudited.",
+        }
+        state_tier_dossier = {
+            "label": f"Tier {['', 'I', 'II', 'III'][state_tier]}",
+            "summary": tier_summaries.get(state_tier, ""),
+            "citation": getattr(state_reg, "citation_url", None)
+            or getattr(state_reg, "statute_citation", None),
+            "verified": getattr(state_reg, "verified_date", None),
+        }
+
+    # Map _ofac_ribbon_status output into the dossier's status keys.
+    if ofac_status == "checked":
+        ofac_dossier_status = "match" if ofac_match else "clean"
+    elif ofac_status == "stale":
+        ofac_dossier_status = "unavailable"
+    elif ofac_status == "unavailable":
+        ofac_dossier_status = "unavailable"
+    else:
+        ofac_dossier_status = "pending"
+
+    is_dossier = template_name.endswith("_dossier.html.j2")
     return templates.TemplateResponse(
         request,
-        "merchant_detail.html.j2",
+        template_name,
         {
             "merchant": merchant,
             "documents": documents_table,
@@ -1465,8 +1504,8 @@ async def merchant_detail(
             "score_result": score_result,
             "score_window": score_window,
             "stacking": stacking,
-            "state_tier": state_tier,
-            "ofac_status": ofac_status,
+            "state_tier": state_tier_dossier if is_dossier else state_tier,
+            "ofac_status": ofac_dossier_status if is_dossier else ofac_status,
             "ofac_match": ofac_match,
             "trend": trend,
             "history": history,

@@ -1,0 +1,1365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AEGIS · Dossier — Know Your Collectibles Inc</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;0,9..144,900;1,9..144,400;1,9..144,500;1,9..144,700&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    /* Paper palette — warm cream like a 19th-century financial broadsheet */
+    --paper:        #f1ebdd;
+    --paper-2:      #ebe4d2;
+    --paper-deep:   #d8d0bb;
+    --ink:          #181613;
+    --ink-2:        #3a342c;
+    --ink-3:        #6a6356;
+    --rule:         #c3b89c;
+    --rule-soft:    #ddd3b8;
+    --gild:         #b5852b;
+
+    /* Verdict palette — sparing use, only where it changes the read */
+    --decline:      #a72f24;   /* vermillion */
+    --decline-soft: #f0ddd8;
+    --review:       #9c721a;   /* ocher */
+    --review-soft:  #f0e3c8;
+    --approve:      #2f5a32;   /* forest */
+    --approve-soft: #d8e3d4;
+    --accent:       #1a3a5c;   /* deep navy for interactivity */
+
+    --serif:  "Fraunces", "Hoefler Text", "Adobe Caslon Pro", "Iowan Old Style", Georgia, serif;
+    --mono:   "JetBrains Mono", "Berkeley Mono", "IBM Plex Mono", ui-monospace, monospace;
+  }
+
+  /* ============ paper ============ */
+  html, body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-feature-settings: "ss01", "kern", "liga";
+    text-rendering: geometricPrecision;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body {
+    background-image:
+      /* subtle noise — laid paper grain */
+      radial-gradient(circle at 30% 20%, rgba(120,100,60,.045) 0 1px, transparent 1px),
+      radial-gradient(circle at 70% 60%, rgba(120,100,60,.04)  0 1px, transparent 1px),
+      radial-gradient(circle at 90% 90%, rgba(120,100,60,.035) 0 1px, transparent 1px),
+      linear-gradient(0deg, var(--paper), var(--paper));
+    background-size: 7px 7px, 11px 11px, 13px 13px, 100%;
+    background-attachment: fixed;
+    min-height: 100vh;
+    padding-bottom: 200px;
+  }
+
+  ::selection { background: var(--ink); color: var(--paper); }
+
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor; padding-bottom: 1px; transition: color .2s ease; }
+  a:hover { color: var(--ink); }
+
+  hr { border: 0; height: 1px; background: var(--rule); margin: 0; }
+  hr.thick { height: 3px; background: var(--ink); }
+  hr.double {
+    height: 5px;
+    background: var(--paper);
+    border-top: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+  }
+
+  .small-caps {
+    font-family: var(--serif);
+    font-feature-settings: "smcp", "c2sc", "ss01";
+    letter-spacing: 0.12em;
+    font-weight: 500;
+    text-transform: lowercase;
+  }
+  .smcp {
+    font-variant-caps: all-small-caps;
+    letter-spacing: 0.12em;
+  }
+  .mono { font-family: var(--mono); }
+  .num  { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  /* ============ masthead ============ */
+  .masthead {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 28px 56px 0;
+    border-bottom: 1px solid var(--ink);
+  }
+  .masthead .running {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .masthead .running .left { display: flex; gap: 24px; }
+  .masthead .running .center {
+    font-family: var(--serif);
+    font-weight: 700;
+    font-style: italic;
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    text-transform: none;
+    color: var(--ink);
+  }
+  .masthead .title {
+    font-family: var(--serif);
+    font-weight: 700;
+    font-size: 108px;
+    line-height: 0.92;
+    letter-spacing: -0.025em;
+    margin: 22px 0 8px;
+    font-variation-settings: "opsz" 144;
+  }
+  .masthead .title em {
+    font-style: italic;
+    font-weight: 400;
+    color: var(--ink-2);
+  }
+  .masthead .subtitle {
+    font-style: italic;
+    font-size: 17px;
+    color: var(--ink-2);
+    margin-bottom: 24px;
+    max-width: 760px;
+    line-height: 1.5;
+  }
+  .masthead .meta-row {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 0;
+    padding: 14px 0 18px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: var(--ink-3);
+    border-top: 1px solid var(--rule);
+  }
+  .masthead .meta-row > div {
+    padding: 0 18px;
+    border-right: 1px solid var(--rule-soft);
+  }
+  .masthead .meta-row > div:first-child { padding-left: 0; }
+  .masthead .meta-row > div:last-child { border-right: 0; padding-right: 0; }
+  .masthead .meta-row .label {
+    display: block;
+    font-size: 9.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 3px;
+    opacity: 0.7;
+  }
+  .masthead .meta-row .value {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 14px;
+    color: var(--ink);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  /* ============ body grid ============ */
+  .sheet {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 0 56px;
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    gap: 0;
+  }
+
+  aside.rail {
+    border-right: 1px solid var(--rule);
+    padding: 36px 28px 36px 0;
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+    overflow: auto;
+  }
+  aside.rail .toc {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-bottom: 32px;
+  }
+  aside.rail .toc a {
+    color: var(--ink-3);
+    border-bottom: 0;
+    font-size: 12.5px;
+    line-height: 1.3;
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    transition: color .2s ease;
+  }
+  aside.rail .toc a:hover { color: var(--ink); }
+  aside.rail .toc a .n {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--ink-3);
+    opacity: 0.5;
+    min-width: 18px;
+  }
+  aside.rail .compliance {
+    border-top: 1px solid var(--rule);
+    padding-top: 18px;
+    font-size: 11.5px;
+    color: var(--ink-2);
+    line-height: 1.5;
+  }
+  aside.rail .compliance h4 {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 0 0 8px;
+    font-weight: 500;
+  }
+  aside.rail .compliance .tier {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 22px;
+    line-height: 1;
+    color: var(--ink);
+    margin-bottom: 6px;
+  }
+  aside.rail .compliance .citation {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    margin-top: 6px;
+  }
+  aside.rail .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    background: var(--paper);
+    margin-right: 4px;
+    margin-bottom: 4px;
+  }
+  aside.rail .pill.ok { color: var(--approve); border-color: color-mix(in oklch, var(--approve) 50%, var(--rule)); }
+  aside.rail .pill.warn { color: var(--review); border-color: color-mix(in oklch, var(--review) 50%, var(--rule)); }
+  aside.rail .pill.bad { color: var(--decline); border-color: color-mix(in oklch, var(--decline) 50%, var(--rule)); }
+
+  main.main {
+    padding: 36px 0 36px 36px;
+  }
+
+  /* ============ section header ============ */
+  .section { margin-bottom: 56px; opacity: 0; transform: translateY(8px); animation: fadeUp .6s cubic-bezier(.2,.7,.2,1) forwards; }
+  .section:nth-child(1) { animation-delay: .05s; }
+  .section:nth-child(2) { animation-delay: .15s; }
+  .section:nth-child(3) { animation-delay: .25s; }
+  .section:nth-child(4) { animation-delay: .35s; }
+  .section:nth-child(5) { animation-delay: .45s; }
+  .section:nth-child(6) { animation-delay: .55s; }
+  @keyframes fadeUp { to { opacity: 1; transform: translateY(0); } }
+
+  .section > header {
+    display: grid;
+    grid-template-columns: 56px 1fr auto;
+    gap: 14px;
+    align-items: baseline;
+    border-top: 3px solid var(--ink);
+    padding-top: 8px;
+    margin-bottom: 24px;
+  }
+  .section > header .n {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    color: var(--ink-3);
+    padding-top: 12px;
+  }
+  .section > header h2 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 36px;
+    line-height: 1.05;
+    margin: 0;
+    letter-spacing: -0.018em;
+    font-variation-settings: "opsz" 96;
+  }
+  .section > header h2 em { font-style: italic; font-weight: 400; color: var(--ink-2); }
+  .section > header .footnote {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    color: var(--ink-3);
+    text-align: right;
+    align-self: end;
+    padding-bottom: 4px;
+  }
+
+  /* ============ verdict ============ */
+  .verdict {
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) 1fr 280px;
+    gap: 48px;
+    align-items: stretch;
+  }
+  .verdict .anchor {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 1 / 1.05;
+    border: 1px solid var(--ink);
+    background:
+      linear-gradient(135deg, transparent 49.6%, var(--ink) 49.7%, var(--ink) 50.3%, transparent 50.4%),
+      var(--paper-2);
+    box-shadow: 0 1px 0 var(--ink) inset, 6px 6px 0 var(--paper-deep);
+  }
+  .verdict .anchor .letter {
+    font-family: var(--serif);
+    font-weight: 900;
+    font-style: italic;
+    font-size: 280px;
+    line-height: 0.78;
+    letter-spacing: -0.06em;
+    color: var(--ink);
+    text-shadow: 6px 5px 0 color-mix(in oklch, var(--review) 30%, transparent);
+    font-variation-settings: "opsz" 144;
+  }
+  .verdict .anchor .stamp {
+    position: absolute;
+    bottom: 14px;
+    right: 14px;
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .verdict .narrative {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 4px 0;
+  }
+  .verdict .narrative .lede {
+    font-family: var(--serif);
+    font-size: 21px;
+    line-height: 1.42;
+    color: var(--ink);
+    letter-spacing: -0.005em;
+    font-weight: 400;
+  }
+  .verdict .narrative .lede em { font-style: italic; }
+  .verdict .narrative .lede strong { font-weight: 600; }
+  .verdict .narrative .lede .underline {
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 4px;
+    text-decoration-color: var(--review);
+  }
+  .verdict .narrative .lede .strike { text-decoration: line-through; text-decoration-color: var(--decline); color: var(--ink-3); }
+  .verdict .narrative .byline {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-top: 24px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .verdict .scoreboard {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border-left: 1px solid var(--rule);
+    padding-left: 28px;
+  }
+  .verdict .scoreboard .row {
+    padding: 10px 0;
+    border-bottom: 1px dotted var(--rule);
+  }
+  .verdict .scoreboard .row:last-child { border-bottom: 0; }
+  .verdict .scoreboard .row .k {
+    display: block;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 4px;
+  }
+  .verdict .scoreboard .row .v {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 28px;
+    line-height: 1;
+    color: var(--ink);
+    font-variation-settings: "opsz" 96;
+  }
+  .verdict .scoreboard .row .v .small {
+    font-size: 14px;
+    color: var(--ink-3);
+    margin-left: 2px;
+  }
+  .verdict .scoreboard .row .qual {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 12px;
+    color: var(--ink-3);
+    margin-top: 2px;
+  }
+
+  /* ============ findings grid ============ */
+  .findings {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 36px 56px;
+  }
+  .finding {
+    border-top: 1px solid var(--rule);
+    padding-top: 14px;
+  }
+  .finding .head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+  }
+  .finding h3 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 19px;
+    margin: 0;
+    line-height: 1.25;
+    letter-spacing: -0.008em;
+  }
+  .finding .sev {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+  }
+  .finding .sev.high { color: var(--decline); }
+  .finding .sev.med  { color: var(--review); }
+  .finding .sev.low  { color: var(--ink-3); }
+  .finding .desc {
+    font-family: var(--serif);
+    font-size: 14.5px;
+    line-height: 1.55;
+    color: var(--ink-2);
+    margin: 0 0 12px;
+  }
+  .finding .desc em { font-style: italic; }
+  .finding .quote {
+    background: var(--paper-2);
+    border-left: 3px solid var(--ink);
+    padding: 10px 14px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-2);
+    line-height: 1.5;
+    margin-bottom: 12px;
+  }
+  .finding .quote strong { color: var(--ink); font-weight: 700; }
+
+  .finding details { font-size: 12px; }
+  .finding details summary {
+    cursor: pointer;
+    list-style: none;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 6px 0;
+    border-top: 1px solid var(--rule-soft);
+    user-select: none;
+  }
+  .finding details summary::after { content: " ↓"; opacity: 0.6; }
+  .finding details[open] summary::after { content: " ↑"; }
+  .finding details[open] summary { color: var(--ink); }
+  .finding .ledger {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 11px;
+    margin-top: 4px;
+  }
+  .finding .ledger th, .finding .ledger td {
+    text-align: left;
+    padding: 4px 8px 4px 0;
+    border-bottom: 1px dotted var(--rule-soft);
+    vertical-align: top;
+  }
+  .finding .ledger th {
+    font-weight: 500;
+    font-size: 9.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border-bottom: 1px solid var(--rule);
+  }
+  .finding .ledger td.amt { text-align: right; font-variant-numeric: tabular-nums; }
+  .finding .ledger td.cite { color: var(--ink-3); font-size: 10px; }
+  .finding .ledger tr.flag td { color: var(--decline); }
+
+  /* ============ funder routing ============ */
+  .funders {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .funder-row {
+    display: grid;
+    grid-template-columns: 28px 1fr 200px 140px 90px;
+    gap: 16px;
+    align-items: center;
+    padding: 18px 0;
+    border-top: 1px solid var(--rule);
+    transition: background .2s ease;
+  }
+  .funder-row:hover { background: color-mix(in oklch, var(--paper) 60%, var(--paper-2)); }
+  .funder-row:last-child { border-bottom: 1px solid var(--rule); }
+  .funder-row .rank {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-style: italic;
+    font-size: 24px;
+    color: var(--ink-3);
+    font-variation-settings: "opsz" 96;
+  }
+  .funder-row .who {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .funder-row .who .name {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 18px;
+    letter-spacing: -0.008em;
+  }
+  .funder-row .who .reasons {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--ink-3);
+    letter-spacing: 0.02em;
+  }
+  .funder-row .who .reasons .good { color: var(--approve); }
+  .funder-row .who .reasons .warn { color: var(--review); }
+  .funder-row .who .reasons .bad  { color: var(--decline); }
+  .funder-row .meter {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.04em;
+  }
+  .funder-row .meter .bar {
+    height: 4px;
+    background: var(--paper-deep);
+    position: relative;
+    overflow: hidden;
+  }
+  .funder-row .meter .fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: var(--ink);
+    transform-origin: left;
+  }
+  .funder-row.good .meter .fill { background: var(--approve); }
+  .funder-row.mid  .meter .fill { background: var(--review); }
+  .funder-row.bad  .meter .fill { background: var(--decline); }
+  .funder-row .score {
+    font-family: var(--serif);
+    font-weight: 700;
+    font-size: 36px;
+    line-height: 1;
+    color: var(--ink);
+    text-align: right;
+    font-variation-settings: "opsz" 96;
+  }
+  .funder-row .score .denom {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--ink-3);
+  }
+  .funder-row .pick {
+    text-align: right;
+  }
+  .funder-row .pick label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+  }
+  .funder-row.bad .pick label { cursor: not-allowed; color: var(--ink-3); }
+  .funder-row .pick input { accent-color: var(--ink); width: 14px; height: 14px; }
+
+  /* ============ aggregate spread (KPI strip) ============ */
+  .spread {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0;
+    border-top: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+  }
+  .spread > div {
+    padding: 20px 22px;
+    border-right: 1px solid var(--rule);
+    position: relative;
+  }
+  .spread > div:last-child { border-right: 0; }
+  .spread .k {
+    display: block;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 6px;
+  }
+  .spread .v {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 32px;
+    line-height: 1;
+    letter-spacing: -0.018em;
+    font-variation-settings: "opsz" 96;
+  }
+  .spread .qual {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 12.5px;
+    color: var(--ink-3);
+    margin-top: 6px;
+    line-height: 1.4;
+  }
+  .spread .neg .v { color: var(--decline); }
+  .spread .warn .v { color: var(--review); }
+
+  /* ============ source citation ============ */
+  .citation-strip {
+    background: var(--paper-2);
+    border-top: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    padding: 14px 18px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-2);
+    letter-spacing: 0.02em;
+    line-height: 1.5;
+  }
+  .citation-strip strong { color: var(--ink); font-weight: 700; }
+
+  /* ============ audit log (running footer) ============ */
+  .audit {
+    margin-top: 24px;
+  }
+  .audit-ledger {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .audit-ledger th {
+    text-align: left;
+    font-weight: 500;
+    font-size: 9.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border-bottom: 1px solid var(--ink);
+    padding: 6px 14px 6px 0;
+  }
+  .audit-ledger td {
+    padding: 6px 14px 6px 0;
+    border-bottom: 1px dotted var(--rule-soft);
+    vertical-align: top;
+    color: var(--ink-2);
+  }
+  .audit-ledger tr:hover td { color: var(--ink); background: color-mix(in oklch, var(--paper) 60%, var(--paper-2)); }
+  .audit-ledger td.when { white-space: nowrap; color: var(--ink-3); }
+  .audit-ledger td.action { font-weight: 500; color: var(--ink); }
+  .audit-ledger td.details { font-size: 10.5px; color: var(--ink-3); }
+
+  /* ============ marginalia ============ */
+  .marginalia {
+    position: relative;
+    padding-left: 14px;
+    border-left: 1px solid var(--ink);
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-2);
+    margin: 14px 0 22px;
+    line-height: 1.5;
+    max-width: 540px;
+  }
+  .marginalia::before {
+    content: "Note —";
+    font-family: var(--mono);
+    font-style: normal;
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-right: 6px;
+  }
+
+  /* ============ disposition ============ */
+  .disposition {
+    margin-top: 64px;
+    border-top: 3px double var(--ink);
+    border-bottom: 1px solid var(--ink);
+    padding: 28px 0;
+    display: grid;
+    grid-template-columns: 1fr 240px;
+    gap: 48px;
+    align-items: end;
+  }
+  .disposition .copy {
+    font-family: var(--serif);
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--ink);
+    max-width: 600px;
+  }
+  .disposition .copy em { font-style: italic; }
+  .disposition .copy h3 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 26px;
+    line-height: 1.1;
+    margin: 0 0 12px;
+    letter-spacing: -0.012em;
+  }
+  .disposition .sign {
+    text-align: right;
+  }
+  .disposition .sign .sig {
+    font-family: "Fraunces", cursive;
+    font-style: italic;
+    font-weight: 400;
+    font-size: 30px;
+    color: var(--ink);
+    border-bottom: 1px solid var(--ink);
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+  }
+  .disposition .sign .who {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  /* ============ ribbon (compliance) ============ */
+  .ribbon {
+    display: flex;
+    align-items: stretch;
+    border: 1px solid var(--ink);
+    background: var(--paper);
+    overflow: hidden;
+    margin-bottom: 36px;
+  }
+  .ribbon > div {
+    flex: 1;
+    padding: 14px 18px;
+    border-right: 1px solid var(--rule);
+    position: relative;
+  }
+  .ribbon > div:last-child { border-right: 0; }
+  .ribbon .k {
+    display: block;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 4px;
+  }
+  .ribbon .v {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 16px;
+    color: var(--ink);
+    letter-spacing: -0.005em;
+  }
+  .ribbon .v em { font-style: italic; }
+  .ribbon .v.bad  { color: var(--decline); }
+  .ribbon .v.warn { color: var(--review); }
+  .ribbon .v.ok   { color: var(--approve); }
+  .ribbon .cite {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--ink-3);
+    margin-top: 4px;
+  }
+
+  /* ============ utility ============ */
+  .pull-quote {
+    font-family: var(--serif);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 28px;
+    line-height: 1.25;
+    color: var(--ink);
+    letter-spacing: -0.012em;
+    border-top: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    padding: 24px 0;
+    margin: 24px 0;
+    max-width: 760px;
+  }
+  .pull-quote::before {
+    content: "“";
+    font-size: 80px;
+    line-height: 0;
+    vertical-align: -0.4em;
+    color: var(--ink-3);
+    margin-right: 8px;
+  }
+  .pull-quote .attr {
+    display: block;
+    font-style: normal;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-top: 14px;
+  }
+
+  .crosslink {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    color: var(--ink-3);
+    text-transform: uppercase;
+  }
+  .crosslink a { color: var(--accent); }
+
+  /* responsive: stack rail on smaller widths (we said desktop-only but the design
+     should still degrade gracefully if someone resizes the window). */
+  @media (max-width: 1100px) {
+    .sheet { grid-template-columns: 1fr; }
+    aside.rail { position: relative; max-height: none; border-right: 0; padding-right: 0; padding-bottom: 0; }
+    main.main { padding-left: 0; padding-top: 16px; }
+    .verdict { grid-template-columns: 1fr; }
+    .findings { grid-template-columns: 1fr; }
+    .spread { grid-template-columns: repeat(2, 1fr); }
+    .masthead { padding: 24px 28px 0; }
+    .sheet { padding: 0 28px; }
+    .masthead .title { font-size: 64px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="running">
+    <div class="left">
+      <span>The AEGIS Dossier</span>
+      <span>Vol. 7 · No. 412</span>
+    </div>
+    <div class="center">Commera Capital · Underwriting Desk</div>
+    <div class="left" style="justify-content:flex-end">
+      <span>Tuesday, 13 May 2026 · 14:08 EDT</span>
+    </div>
+  </div>
+  <h1 class="title">Know Your <em>Collectibles</em><br>Incorporated</h1>
+  <div class="subtitle">An MCA underwriting brief — four statements, three reviewable findings, one funder of record. Prepared from a 92-day deposit history with full source-row traceability to the underlying PDFs.</div>
+  <div class="meta-row">
+    <div><span class="label">Deal id</span><span class="value mono" style="font-family:var(--mono);font-size:12px">c21b7f76:dfe0e498</span></div>
+    <div><span class="label">Owner</span><span class="value">Marcus Bell</span></div>
+    <div><span class="label">State</span><span class="value">New York</span></div>
+    <div><span class="label">NAICS</span><span class="value">453920 <em>(Art Dealers)</em></span></div>
+    <div><span class="label">Entity</span><span class="value">LLC · TIB 41 mo</span></div>
+    <div><span class="label">Intake</span><span class="value">12 May 2026</span></div>
+  </div>
+</header>
+
+<div class="sheet">
+
+  <aside class="rail">
+    <nav class="toc">
+      <a href="#verdict"><span class="n">§ 1</span> The verdict</a>
+      <a href="#evidence"><span class="n">§ 2</span> Cashflow evidence</a>
+      <a href="#findings"><span class="n">§ 3</span> Pattern findings</a>
+      <a href="#funders"><span class="n">§ 4</span> Funder routing</a>
+      <a href="#disposition"><span class="n">§ 5</span> Disposition</a>
+      <a href="#audit"><span class="n">§ 6</span> Audit log</a>
+    </nav>
+
+    <div class="compliance">
+      <h4>Compliance posture</h4>
+      <div class="tier">Tier I · <em>NY</em></div>
+      <div style="margin-top:4px">
+        Commercial Finance Disclosure Law applies. Disclosure must be transmitted before signature.
+      </div>
+      <div class="citation">23 NYCRR § 600.1 et seq.<br>verified 2026-05-08</div>
+
+      <div style="margin-top:18px">
+        <span class="pill ok">OFAC ✓ clean</span>
+        <span class="pill ok">CoJ allowed</span>
+        <span class="pill warn">renewal</span>
+      </div>
+    </div>
+
+    <div class="compliance" style="margin-top:18px">
+      <h4>Statements</h4>
+      <div style="font-family:var(--mono);font-size:10.5px;color:var(--ink-2);line-height:1.7">
+        Feb 2026 · <span style="color:var(--review)">review</span><br>
+        Mar 2026 · <span style="color:var(--approve)">proceed</span><br>
+        Apr 2026 · <span style="color:var(--approve)">proceed</span><br>
+        May 2026 · <span style="color:var(--approve)">proceed</span>
+      </div>
+    </div>
+
+    <div class="compliance" style="margin-top:18px">
+      <h4>Cross-references</h4>
+      <div class="crosslink">
+        <a href="#">↗ Submission CSV</a><br>
+        <a href="#">↗ Findings (audit)</a><br>
+        <a href="#">↗ Zoho deal record</a>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- ============== § 1 VERDICT ============== -->
+    <section id="verdict" class="section">
+      <header>
+        <span class="n">§ 1</span>
+        <h2>The verdict <em>· a refer-with-conditions read</em></h2>
+        <span class="footnote">scored across 4 months</span>
+      </header>
+
+      <div class="verdict">
+        <div class="anchor">
+          <span class="letter">C</span>
+          <span class="stamp">tier · refer</span>
+        </div>
+
+        <div class="narrative">
+          <p class="lede">
+            Cashflow is <strong>steady but tight</strong>. The merchant funded reliably across all four statements, with <span class="underline">$31,400 average daily balance</span> and zero days negative. Pattern detectors flagged a <strong>February velocity spike</strong> we attribute to a private gallery sale (verifiable) and a <strong>two-position stacking footprint</strong> at $1,500/day combined. <em>Renewal performance prior was on-time.</em>
+            <br><br>
+            Recommend <strong>refer to manager</strong> for sizing — full revenue base supports the requested $50,000 advance, but stacking burden caps the safe exposure at roughly half that.
+          </p>
+          <div class="byline">
+            <span>filed by aegis · 14:07 EDT</span>
+            <span>4-month window</span>
+          </div>
+        </div>
+
+        <div class="scoreboard">
+          <div class="row">
+            <span class="k">Composite</span>
+            <span class="v">58<span class="small">/100</span></span>
+            <span class="qual">scoring window: trailing 4 months</span>
+          </div>
+          <div class="row">
+            <span class="k">Fraud score</span>
+            <span class="v" style="color:var(--review)">41<span class="small">/100</span></span>
+            <span class="qual">review band — patterns warrant disclosure</span>
+          </div>
+          <div class="row">
+            <span class="k">Suggested max</span>
+            <span class="v">$25,000</span>
+            <span class="qual">tier C × monthly revenue, $1k rounded</span>
+          </div>
+          <div class="row">
+            <span class="k">Requested</span>
+            <span class="v">$50,000</span>
+            <span class="qual">factor 1.30 · term 120 days</span>
+          </div>
+        </div>
+      </div>
+
+      <p class="marginalia">
+        Tier C means the deal is fundable but not unconditionally — most B-paper funders will pass; specialist C-paper funders or a sized-down offer from a B-paper funder is the realistic path. Manager sign-off required before submission.
+      </p>
+    </section>
+
+
+    <!-- ============== § 2 CASHFLOW EVIDENCE ============== -->
+    <section id="evidence" class="section">
+      <header>
+        <span class="n">§ 2</span>
+        <h2>Cashflow <em>evidence</em></h2>
+        <span class="footnote">period 13 Feb → 12 May 2026</span>
+      </header>
+
+      <div class="spread">
+        <div>
+          <span class="k">Monthly revenue</span>
+          <span class="v">$67,200</span>
+          <span class="qual">deposits net of transfers + chargebacks; rolled per-month</span>
+        </div>
+        <div>
+          <span class="k">Avg daily balance</span>
+          <span class="v">$31,400</span>
+          <span class="qual">time-weighted across 92-day period</span>
+        </div>
+        <div class="warn">
+          <span class="k">NSF count</span>
+          <span class="v">3</span>
+          <span class="qual">two in Feb, one in Mar; none on negative-balance days</span>
+        </div>
+        <div>
+          <span class="k">Days negative</span>
+          <span class="v">0</span>
+          <span class="qual">across the full 92-day window</span>
+        </div>
+        <div class="warn">
+          <span class="k">MCA daily total</span>
+          <span class="v">$1,500</span>
+          <span class="qual">across 2 active positions</span>
+        </div>
+      </div>
+
+      <p class="marginalia">
+        The MCA debit total of $1,500/day equates to <em>roughly $33,000/month</em>, or 49% of monthly revenue. Anything above 40% typically caps further stacking — that is the operative constraint on the requested $50,000.
+      </p>
+
+      <div class="citation-strip">
+        <strong>Source —</strong> all metrics on this page are derived deterministically from <strong>247 classified transactions</strong> across four PDF statements. Every aggregate stores a list of contributing <code>transaction_id</code>s, traceable to <code>source_page</code> + <code>source_line</code> on the original document. Click any number to drill into its evidence.
+      </div>
+    </section>
+
+
+    <!-- ============== § 3 PATTERN FINDINGS ============== -->
+    <section id="findings" class="section">
+      <header>
+        <span class="n">§ 3</span>
+        <h2>Pattern <em>findings</em></h2>
+        <span class="footnote">3 of 11 detectors fired · severity descending</span>
+      </header>
+
+      <div class="findings">
+
+        <article class="finding">
+          <div class="head">
+            <h3>MCA stacking — two active positions</h3>
+            <span class="sev high">severity 30 / 100</span>
+          </div>
+          <p class="desc">
+            Two distinct funder cadences detected in the debit stream. <em>OnDeck</em> (32 occurrences, ~$650/day) and <em>Kapitus</em> (14 occurrences, ~$850/day) both showing daily-business-day signatures consistent with active MCA positions.
+          </p>
+          <div class="quote">
+            What we found: <strong>2 positions</strong> · daily total <strong>$1,500</strong> · monthly burden <strong>$33,000</strong> (× 22 biz days)
+          </div>
+          <details>
+            <summary>46 contributing debit rows</summary>
+            <table class="ledger">
+              <thead>
+                <tr><th>Date</th><th>Description</th><th>Amount</th><th>Source</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>13 Feb</td><td>ondeck daily pmt</td><td class="amt">−$650.00</td><td class="cite">p3 L14</td></tr>
+                <tr><td>14 Feb</td><td>ondeck daily pmt</td><td class="amt">−$650.00</td><td class="cite">p3 L22</td></tr>
+                <tr><td>14 Feb</td><td>kapitus daily remit</td><td class="amt">−$850.00</td><td class="cite">p3 L24</td></tr>
+                <tr><td>17 Feb</td><td>ondeck daily pmt</td><td class="amt">−$650.00</td><td class="cite">p3 L31</td></tr>
+                <tr><td colspan="4" class="cite" style="text-align:center;padding-top:8px">42 more rows · expand to view all</td></tr>
+              </tbody>
+            </table>
+          </details>
+        </article>
+
+        <article class="finding">
+          <div class="head">
+            <h3>Deposit velocity spike — late February</h3>
+            <span class="sev med">severity 20 / 100</span>
+          </div>
+          <p class="desc">
+            A 7-day window ending <em>22 Feb 2026</em> contains <strong>14 deposits</strong> — 3.2× the period-average daily count. Could indicate fabricated activity to inflate apparent revenue, or a legitimate one-off event (gallery sale, auction, large customer batch). <strong>Verify with broker.</strong>
+          </p>
+          <div class="quote">
+            What we found: 7d window 16-22 Feb: <strong>14 deposits</strong> vs baseline <strong>4.4/wk</strong>
+          </div>
+          <details>
+            <summary>14 contributing deposit rows</summary>
+            <table class="ledger">
+              <thead>
+                <tr><th>Date</th><th>Payer</th><th>Amount</th><th>Source</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>16 Feb</td><td>square fee 16-feb</td><td class="amt">+$1,840.00</td><td class="cite">p3 L41</td></tr>
+                <tr><td>16 Feb</td><td>art basel partial</td><td class="amt">+$8,500.00</td><td class="cite">p3 L42</td></tr>
+                <tr><td>17 Feb</td><td>p. winterson check</td><td class="amt">+$4,250.00</td><td class="cite">p3 L45</td></tr>
+                <tr><td>18 Feb</td><td>art basel partial 2</td><td class="amt">+$12,750.00</td><td class="cite">p3 L47</td></tr>
+                <tr><td colspan="4" class="cite" style="text-align:center;padding-top:8px">10 more rows</td></tr>
+              </tbody>
+            </table>
+          </details>
+        </article>
+
+        <article class="finding">
+          <div class="head">
+            <h3>NSF concentration — early period only</h3>
+            <span class="sev low">severity 15 / 100</span>
+          </div>
+          <p class="desc">
+            Three non-sufficient-funds fees, all clustered in the first 22 days. None occurred on negative-balance days — these were processing-order anomalies, not structural stress. <em>Late-period statements are clean.</em>
+          </p>
+          <div class="quote">
+            What we found: <strong>3 NSFs</strong> in first 22 days · <strong>0</strong> in subsequent 70 days · <strong>0 of 3</strong> on negative-balance days
+          </div>
+        </article>
+
+        <article class="finding">
+          <div class="head">
+            <h3>Customer concentration — moderate</h3>
+            <span class="sev low">severity (soft signal)</span>
+          </div>
+          <p class="desc">
+            Top deposit payer <em>(art basel partial)</em> accounted for 38% of revenue this period. Moderate but not alarming for a gallery business where major sales cluster around fair circuits. <strong>Diversification is structural for the industry.</strong>
+          </p>
+          <div class="quote">
+            What we found: <strong>art basel partial</strong> · <strong>38%</strong> of revenue · top of 23 distinct payers
+          </div>
+        </article>
+
+      </div>
+
+      <div class="pull-quote">
+        Three findings, no fraud signal of consequence. The merchant is doing exactly what an art dealer does in spring — clustering revenue around fair sales while servicing two existing MCA positions on schedule.
+        <span class="attr">— underwriting narrative, paragraph 4</span>
+      </div>
+    </section>
+
+
+    <!-- ============== § 4 FUNDER ROUTING ============== -->
+    <section id="funders" class="section">
+      <header>
+        <span class="n">§ 4</span>
+        <h2>Funder <em>routing</em></h2>
+        <span class="footnote">7 active · ranked by match likelihood</span>
+      </header>
+
+      <div class="ribbon">
+        <div>
+          <span class="k">Routing mode</span>
+          <span class="v"><em>Waterfall</em></span>
+          <span class="cite">A-paper protected · sequential submission</span>
+        </div>
+        <div>
+          <span class="k">Stacking acceptance</span>
+          <span class="v warn">2 positions disclosed</span>
+          <span class="cite">5 of 7 funders cap at 2</span>
+        </div>
+        <div>
+          <span class="k">CoJ enforcement</span>
+          <span class="v ok">NY · allowed</span>
+          <span class="cite">all 7 funders compatible</span>
+        </div>
+        <div>
+          <span class="k">Broker advance fees</span>
+          <span class="v ok">none charged</span>
+          <span class="cite">23 NYCRR § 600.21(f)</span>
+        </div>
+      </div>
+
+      <div class="funders">
+
+        <div class="funder-row good">
+          <span class="rank">i</span>
+          <div class="who">
+            <span class="name">Quick Capital Group</span>
+            <span class="reasons"><span class="good">all 9 gates pass</span> · A-paper · accepts 2 positions · NY</span>
+          </div>
+          <div class="meter">
+            <div>match likelihood</div>
+            <div class="bar"><div class="fill" style="width:91%"></div></div>
+            <div>91% · clean</div>
+          </div>
+          <span class="score">91<span class="denom">/100</span></span>
+          <div class="pick"><label><input type="checkbox" checked> select</label></div>
+        </div>
+
+        <div class="funder-row mid">
+          <span class="rank">ii</span>
+          <div class="who">
+            <span class="name">Reliant Funding</span>
+            <span class="reasons"><span class="warn">stacking concern</span> · A-paper · NY · max 2 positions (at limit)</span>
+          </div>
+          <div class="meter">
+            <div>match likelihood</div>
+            <div class="bar"><div class="fill" style="width:72%"></div></div>
+            <div>72% · 1 soft concern</div>
+          </div>
+          <span class="score">72<span class="denom">/100</span></span>
+          <div class="pick"><label><input type="checkbox"> select</label></div>
+        </div>
+
+        <div class="funder-row mid">
+          <span class="rank">iii</span>
+          <div class="who">
+            <span class="name">Kalamata Capital Group</span>
+            <span class="reasons"><span class="warn">credit unconfirmed</span> · B-paper · NY · TIB 41mo passes</span>
+          </div>
+          <div class="meter">
+            <div>match likelihood</div>
+            <div class="bar"><div class="fill" style="width:64%"></div></div>
+            <div>64% · 1 soft concern</div>
+          </div>
+          <span class="score">64<span class="denom">/100</span></span>
+          <div class="pick"><label><input type="checkbox"> select</label></div>
+        </div>
+
+        <div class="funder-row bad">
+          <span class="rank">iv</span>
+          <div class="who">
+            <span class="name">Bluevine</span>
+            <span class="reasons"><span class="bad">does not stack</span> · accepts 0 positions · 2 detected → hard fail</span>
+          </div>
+          <div class="meter">
+            <div>match likelihood</div>
+            <div class="bar"><div class="fill" style="width:0%"></div></div>
+            <div>0% · hard fail</div>
+          </div>
+          <span class="score">0<span class="denom">/100</span></span>
+          <div class="pick"><label><input type="checkbox" disabled> excluded</label></div>
+        </div>
+
+        <div class="funder-row bad">
+          <span class="rank">v</span>
+          <div class="who">
+            <span class="name">Fora Financial</span>
+            <span class="reasons"><span class="bad">NY excluded state</span> · funder does not operate in NY</span>
+          </div>
+          <div class="meter">
+            <div>match likelihood</div>
+            <div class="bar"><div class="fill" style="width:0%"></div></div>
+            <div>0% · hard fail</div>
+          </div>
+          <span class="score">0<span class="denom">/100</span></span>
+          <div class="pick"><label><input type="checkbox" disabled> excluded</label></div>
+        </div>
+
+      </div>
+
+      <p class="marginalia">
+        Waterfall mode submits to <em>Quick Capital Group</em> first; on a decline or no-response after 48h, the system advances to Reliant. Broadcast mode would submit to all three "select-able" funders simultaneously. Reset routing mode in the funder admin page.
+      </p>
+    </section>
+
+
+    <!-- ============== § 5 DISPOSITION ============== -->
+    <section id="disposition" class="section">
+      <header>
+        <span class="n">§ 5</span>
+        <h2>Disposition</h2>
+        <span class="footnote">awaiting manager sign-off</span>
+      </header>
+
+      <div class="disposition">
+        <div class="copy">
+          <h3>Refer to manager. Submit at $25,000.</h3>
+          <p>
+            The merchant is fundable but the requested $50,000 exceeds safe sizing for a 49% debt-to-revenue position. Recommend countering at <em>$25,000 / 1.30 factor / 120 days</em> — gives the merchant working capital, doesn't push the stacking burden past the 60% wall. Submit to <strong>Quick Capital Group</strong> first; fall through to Reliant only on decline.
+          </p>
+          <p>
+            Disclosure required under <em>23 NYCRR § 600.21(f)</em> — must transmit AEGIS broker-compensation language to the merchant with the funder's offer. Standard text on file.
+          </p>
+        </div>
+        <div class="sign">
+          <div class="sig">awaiting</div>
+          <div class="who">manager sign-off</div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ============== § 6 AUDIT LOG ============== -->
+    <section id="audit" class="section audit">
+      <header>
+        <span class="n">§ 6</span>
+        <h2>Audit <em>log</em></h2>
+        <span class="footnote">last 6 events · newest first</span>
+      </header>
+
+      <table class="audit-ledger">
+        <thead>
+          <tr><th style="width:120px">When</th><th style="width:100px">Actor</th><th style="width:220px">Action</th><th>Details</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="when">14:07:42</td><td>aegis</td><td class="action">deal.scored</td><td class="details">tier=C · score=58 · recommendation=refer · suggested_max=$25,000</td></tr>
+          <tr><td class="when">14:07:31</td><td>aegis</td><td class="action">patterns.analyzed</td><td class="details">11 detectors run · 3 fired (mca_stacking, deposit_velocity_spike, nsf_clustering_short)</td></tr>
+          <tr><td class="when">14:07:18</td><td>aegis-worker</td><td class="action">document.parsed</td><td class="details">doc=may-2026 · 62 transactions extracted · validation_passed=true · confidence=94</td></tr>
+          <tr><td class="when">13:58:11</td><td>filip</td><td class="action">document.uploaded</td><td class="details">filename=kyc_may_2026.pdf · 287 KB · sha256=4f02a9…</td></tr>
+          <tr><td class="when">13:55:02</td><td>filip</td><td class="action">merchant.created</td><td class="details">business=Know Your Collectibles Inc · state=NY · zoho_lead_id=7365508000001520003</td></tr>
+          <tr><td class="when">13:54:48</td><td>zoho_sync</td><td class="action">zoho.lead.imported</td><td class="details">module=Leads · record_id=7365508000001520003</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+  </main>
+</div>
+
+<script>
+  // Light progressive enhancement: number ticker on the verdict scoreboard.
+  // Avoids motion-heavy effects — the typography is doing the work.
+  document.addEventListener("DOMContentLoaded", () => {
+    const counters = document.querySelectorAll(".verdict .scoreboard .row .v");
+    counters.forEach((el) => {
+      const txt = el.textContent.trim();
+      const m = txt.match(/^([0-9]+)(.*)$/);
+      if (!m) return;
+      const target = parseInt(m[1], 10);
+      const rest = m[2] || "";
+      const inner = el.innerHTML;
+      // only animate if the value is a small integer (score / count) — skip dollars
+      if (target > 200) return;
+      let cur = 0;
+      const step = Math.max(1, Math.floor(target / 24));
+      el.textContent = "0" + rest;
+      const tick = () => {
+        cur = Math.min(target, cur + step);
+        el.innerHTML = cur + rest.replace(/<\/?[a-z][^>]*>/g, "");
+        if (cur < target) requestAnimationFrame(tick);
+        else el.innerHTML = inner;
+      };
+      requestAnimationFrame(tick);
+    });
+  });
+</script>
+
+</body>
+</html>

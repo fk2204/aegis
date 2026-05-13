@@ -1,0 +1,631 @@
+{# Merchant detail v3 — "Dossier" view.
+
+   Self-contained: does NOT extend base.html.j2. Uses its own
+   typography (Fraunces + JetBrains Mono) and chrome (compact topstrip
+   instead of v2's heavy topbar). Same data context as
+   merchant_detail.html.j2 — the route hands both templates the same
+   variables; templates choose what to surface and how.
+
+   Reachable at /ui/merchants/{id} by default. ?view=v2 returns the
+   classic panel layout.
+#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ merchant.business_name }} — AEGIS Dossier</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;0,9..144,900;1,9..144,400;1,9..144,500;1,9..144,700&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/ui/static/aegis-dossier.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+</head>
+<body class="dossier-page body-root">
+
+{# === compact topstrip === #}
+<div class="topstrip">
+  <div class="links">
+    <a href="/ui/">Today</a>
+    <a href="/ui/deals">Deals</a>
+    <a href="/ui/merchants">Merchants</a>
+    <a href="/ui/funders">Funders</a>
+    <a href="/ui/upload">Upload</a>
+    <a href="/ui/review">Review queue</a>
+  </div>
+  <div class="view-toggle">
+    <span style="color:var(--ink-3)">view:</span>
+    <a href="/ui/merchants/{{ merchant.id }}" class="active">Dossier</a>
+    <a href="/ui/merchants/{{ merchant.id }}?view=v2">Panels (v2)</a>
+  </div>
+</div>
+
+{# === intake flash banner (carried over from v2 Block 6) === #}
+{% if from_intake %}
+  <div class="flash">
+    <div>
+      <div class="copy">
+        <strong>Merchant filed.</strong>
+        {% if intake_docs_uploaded == 0 %}
+          No statements at intake — upload one to score the deal and route to funders.
+        {% elif intake_docs_uploaded == 1 %}
+          One statement queued for parsing (30-90s). Refresh to see the score fill in.
+        {% else %}
+          {{ intake_docs_uploaded }} statements queued for parsing (30-90s each). Refresh to see the score fill in.
+        {% endif %}
+        {% if intake_docs_failed > 0 %}
+          <span style="color:var(--decline);font-style:italic">{{ intake_docs_failed }} upload{{ '' if intake_docs_failed == 1 else 's' }} failed — retry from the upload page.</span>
+        {% endif %}
+      </div>
+      <div class="actions">
+        {% if intake_docs_uploaded > 0 %}
+          <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders →</a>
+        {% endif %}
+        <a class="btn{% if intake_docs_uploaded == 0 %} primary{% endif %}" href="/ui/upload">Upload statements</a>
+        <a class="btn" href="/ui/merchants/{{ merchant.id }}/edit">Edit</a>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+{# === masthead === #}
+<header class="masthead">
+  <div class="running">
+    <div class="left">
+      <span>The AEGIS Dossier</span>
+      <span>Deal {{ merchant.id|string|truncate(8, True, '') }}</span>
+    </div>
+    <div class="center">Commera Capital · Underwriting Desk</div>
+    <div class="left" style="justify-content:flex-end">
+      <span>{{ now|default('') }}</span>
+    </div>
+  </div>
+
+  {# split business name across two lines if it contains an obvious break word #}
+  <h1 class="title">{{ merchant.business_name }}</h1>
+
+  <div class="subtitle">
+    {% if documents and analysis %}
+      An MCA underwriting brief — {{ documents|length }} statement{{ '' if documents|length == 1 else 's' }} ({{ analysis.statement_period_start }} → {{ analysis.statement_period_end }}), {{ pattern_cards|length }} pattern finding{{ '' if pattern_cards|length == 1 else 's' }}, prepared with full source-row traceability to the underlying PDFs.
+    {% elif documents %}
+      An MCA underwriting brief — {{ documents|length }} statement{{ '' if documents|length == 1 else 's' }} on file; the most recent has not been fully analyzed yet.
+    {% else %}
+      An MCA underwriting brief — no statements uploaded yet. Drop one or more PDFs to score the deal.
+    {% endif %}
+  </div>
+
+  <div class="meta-row">
+    <div><span class="label">Owner</span><span class="value">{{ merchant.owner_name }}</span></div>
+    <div><span class="label">State</span><span class="value">{{ merchant.state }}</span></div>
+    <div><span class="label">NAICS</span><span class="value">{{ merchant.industry_naics or '—' }}</span></div>
+    <div><span class="label">Entity</span><span class="value">{{ merchant.entity_type or '—' }}{% if merchant.time_in_business_months %} · <em>TIB {{ merchant.time_in_business_months }} mo</em>{% endif %}</span></div>
+    <div><span class="label">Credit</span><span class="value">{{ merchant.credit_score or '—' }}{% if merchant.credit_score %} <em>FICO</em>{% endif %}</span></div>
+    <div><span class="label">Intake</span><span class="value">{{ merchant.intake_date or '—' }}</span></div>
+  </div>
+</header>
+
+{# === sheet === #}
+<div class="sheet">
+
+  {# ============ left rail: nav, compliance, statements ============ #}
+  <aside class="rail">
+    <nav class="toc">
+      <a href="#verdict"><span class="n">§ 1</span> Verdict</a>
+      {% if analysis %}<a href="#evidence"><span class="n">§ 2</span> Cashflow evidence</a>{% endif %}
+      {% if pattern_cards or stacking or (soft_signals and not soft_signals.is_empty) %}<a href="#findings"><span class="n">§ 3</span> Pattern findings</a>{% endif %}
+      <a href="#routing"><span class="n">§ 4</span> Funder routing</a>
+      <a href="#disposition"><span class="n">§ 5</span> Disposition</a>
+      <a href="#audit"><span class="n">§ 6</span> Audit log</a>
+    </nav>
+
+    <div class="compliance">
+      <h4>Compliance posture</h4>
+      {% if state_tier %}
+        <div class="tier">{{ state_tier.label|default('Tier ?') }} · <em>{{ merchant.state }}</em></div>
+        <div style="margin-top:4px">{{ state_tier.summary|default('State regulation context not yet audited.') }}</div>
+        {% if state_tier.citation %}<div class="citation">{{ state_tier.citation }}<br>verified {{ state_tier.verified|default('') }}</div>{% endif %}
+      {% else %}
+        <div class="tier">Tier ? · <em>{{ merchant.state }}</em></div>
+        <div style="margin-top:4px;color:var(--ink-3)">State regulation context unavailable on this deal.</div>
+      {% endif %}
+
+      <div style="margin-top:14px">
+        {% if ofac_status == 'clean' %}<span class="pill ok">OFAC ✓ clean</span>
+        {% elif ofac_status == 'match' %}<span class="pill bad">OFAC ✗ match</span>
+        {% elif ofac_status == 'unavailable' %}<span class="pill warn">OFAC stale</span>
+        {% else %}<span class="pill warn">OFAC pending</span>{% endif %}
+        {% if merchant.is_renewal %}<span class="pill warn">renewal</span>{% endif %}
+      </div>
+    </div>
+
+    {% if documents %}
+      <div class="compliance">
+        <h4>Statements · {{ documents|length }}</h4>
+        <div class="doc-list">
+          {% for entry in documents[:6] %}
+            {% set d = entry.document %}
+            {% set a = entry.analysis %}
+            {% if a %}
+              {{ a.statement_period_start.strftime('%b %Y') }} · <span class="stat-{{ d.parse_status }}">{{ d.parse_status }}</span>
+            {% else %}
+              (uploaded {{ d.uploaded_at.strftime('%Y-%m-%d') }}) · <span class="stat-{{ d.parse_status }}">{{ d.parse_status }}</span>
+            {% endif %}
+            <br>
+          {% endfor %}
+          {% if documents|length > 6 %}<span style="color:var(--ink-3)">+ {{ documents|length - 6 }} older</span>{% endif %}
+        </div>
+      </div>
+    {% endif %}
+
+    <div class="compliance">
+      <h4>Cross-references</h4>
+      <div class="crosslink">
+        <a href="/ui/merchants/{{ merchant.id }}/findings.csv">↗ Findings (audit CSV)</a>
+        <a href="/ui/merchants/{{ merchant.id }}/match">↗ Funder match panel</a>
+        <a href="/ui/merchants/{{ merchant.id }}/edit">↗ Edit merchant</a>
+        {% if merchant.zoho_deal_id %}<a href="#">↗ Zoho deal {{ merchant.zoho_deal_id }}</a>{% endif %}
+      </div>
+    </div>
+  </aside>
+
+  {# ============ main ============ #}
+  <main class="main">
+
+    {# ============== § 1 VERDICT ============== #}
+    <section id="verdict" class="section">
+      <header>
+        <span class="n">§ 1</span>
+        <h2>The verdict
+          {% if score_result %}<em>· {{ score_result.recommendation }} </em>{% endif %}
+        </h2>
+        <span class="footnote">
+          {% if score_window %}scored across {{ score_window.months_used }} month{{ '' if score_window.months_used == 1 else 's' }}{% else %}awaiting analysis{% endif %}
+        </span>
+      </header>
+
+      {% if score_result %}
+        <div class="verdict">
+          <div class="anchor tier-{{ score_result.tier }}">
+            <span class="letter">{{ score_result.tier }}</span>
+            <span class="stamp">tier · {{ score_result.recommendation }}</span>
+          </div>
+
+          <div class="narrative">
+            <p class="lede">
+              {# Auto-generated narrative based on the score. Concise and human. #}
+              {% if score_result.recommendation == 'approve' %}
+                Cashflow is <strong>fundable</strong>.
+              {% elif score_result.recommendation == 'refer' %}
+                Cashflow is <strong>steady but conditional</strong>.
+              {% else %}
+                Cashflow <strong class="accent">does not clear</strong> AEGIS gates.
+              {% endif %}
+
+              {% if analysis %}
+                Average daily balance is <strong>{{ analysis.avg_daily_balance | whole_money }}</strong>, monthly revenue runs near <strong>{{ analysis.monthly_revenue | whole_money }}</strong>, and the statement shows <strong>{{ analysis.num_nsf }}</strong> NSF event{{ '' if analysis.num_nsf == 1 else 's' }} over <strong>{{ analysis.days_negative }}</strong> day{{ '' if analysis.days_negative == 1 else 's' }} of negative balance.
+              {% endif %}
+
+              {% if score_result.recommendation == 'approve' %}
+                Routing proceeds to <em>funder matching</em>.
+              {% elif score_result.recommendation == 'refer' %}
+                Recommend <em>manager sign-off</em> before submission &mdash; full revenue base supports the requested advance, but the soft concerns below warrant a sized-down counter.
+              {% else %}
+                {% if score_result.hard_decline_reasons %}
+                  Hard decline driven by: <span class="accent">{{ score_result.hard_decline_reasons[:2]|join(', ') }}{% if score_result.hard_decline_reasons|length > 2 %} and {{ score_result.hard_decline_reasons|length - 2 }} more{% endif %}</span>.
+                {% endif %}
+              {% endif %}
+            </p>
+
+            <div class="actions">
+              <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders</a>
+              <a class="btn" href="/ui/merchants/{{ merchant.id }}/edit">Edit deal terms</a>
+              <a class="btn" href="/ui/merchants/{{ merchant.id }}/findings.csv">Audit CSV</a>
+            </div>
+
+            <div class="byline">
+              <span>filed by aegis · auto-scored</span>
+              <span>
+                {% if score_window %}window {{ score_window.period_start }} → {{ score_window.period_end }}{% endif %}
+              </span>
+            </div>
+          </div>
+
+          <div class="scoreboard">
+            <div class="row">
+              <span class="k">Composite</span>
+              <span class="v">{{ score_result.score }}<span class="small">/100</span></span>
+              <span class="qual">trailing window {% if score_window %}· {{ score_window.months_used }} month{{ '' if score_window.months_used == 1 else 's' }}{% endif %}</span>
+            </div>
+            <div class="row">
+              <span class="k">Fraud score</span>
+              {% set _fraud = (document.fraud_score if document else 0) or 0 %}
+              <span class="v {% if _fraud >= 65 %}bad{% elif _fraud >= 35 %}warn{% endif %}">{{ _fraud }}<span class="small">/100</span></span>
+              <span class="qual">
+                {% if _fraud >= 65 %}manual-review band &mdash; patterns demand attention
+                {% elif _fraud >= 35 %}review band &mdash; verify findings below
+                {% else %}clear band &mdash; no fraud signal of consequence{% endif %}
+              </span>
+            </div>
+            <div class="row">
+              <span class="k">Suggested max</span>
+              <span class="v">{{ score_result.suggested_max_advance | whole_money }}</span>
+              <span class="qual">tier × monthly revenue, $1k rounded</span>
+            </div>
+            <div class="row">
+              <span class="k">Requested</span>
+              <span class="v">{{ merchant.requested_amount | whole_money if merchant.requested_amount else '—' }}</span>
+              <span class="qual">
+                {% if merchant.requested_factor %}factor {{ merchant.requested_factor }}{% endif %}
+                {% if merchant.requested_term_days %} · term {{ merchant.requested_term_days }} days{% endif %}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {# Hard declines / soft concerns laid out below the verdict block. #}
+        {% if score_result.hard_decline_reasons or score_result.soft_concerns %}
+          <div class="blockers">
+            {% if score_result.hard_decline_reasons %}
+              <h4 class="bad">Hard declines &mdash; {{ score_result.hard_decline_reasons|length }}</h4>
+              <ul>
+                {% for reason in score_result.hard_decline_reasons %}
+                  <li>
+                    <span class="code">{{ reason }}</span>
+                    {% if reason == 'ofac_sanctions_match' and score_result.decline_details.get('ofac_matches') %}
+                      {% for m in score_result.decline_details.get('ofac_matches', []) %}
+                        <span class="desc">— matched <strong>{{ m.matched_name }}</strong> on field <em>{{ m.input_field }}</em>{% if m.sdn_uid %} · <a href="https://sanctionssearch.ofac.treas.gov/Details.aspx?id={{ m.sdn_uid }}" target="_blank" rel="noopener">Treasury UID {{ m.sdn_uid }} ↗</a>{% endif %}</span>
+                      {% endfor %}
+                    {% endif %}
+                  </li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+            {% if score_result.soft_concerns %}
+              <h4 class="warn">Soft concerns &mdash; {{ score_result.soft_concerns|length }}</h4>
+              <ul>
+                {% for concern in score_result.soft_concerns %}
+                  <li><span class="code">{{ concern }}</span><span class="desc">— verify before submission</span></li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+          </div>
+        {% endif %}
+      {% else %}
+        <div class="marginalia">
+          Score unavailable &mdash; no analyzed statement on file yet, or scoring failed during ingest. Upload at least one statement and refresh.
+        </div>
+      {% endif %}
+    </section>
+
+    {# ============== § 2 CASHFLOW EVIDENCE ============== #}
+    {% if analysis %}
+      <section id="evidence" class="section">
+        <header>
+          <span class="n">§ 2</span>
+          <h2>Cashflow <em>evidence</em></h2>
+          <span class="footnote">period {{ analysis.statement_period_start }} → {{ analysis.statement_period_end }} · {{ analysis.statement_days }} days</span>
+        </header>
+
+        <div class="spread">
+          <div>
+            <span class="k">True Revenue</span>
+            <span class="v">{{ analysis.true_revenue | whole_money }}</span>
+            <span class="qual">deposits net of transfers + chargebacks</span>
+            <div class="drill">
+              <button hx-get="/ui/documents/{{ document.id }}/aggregate/true_revenue" hx-target="#drilldown" hx-swap="innerHTML">drill down ↓</button>
+            </div>
+          </div>
+          <div>
+            <span class="k">Avg Daily Balance</span>
+            <span class="v">{{ analysis.avg_daily_balance | whole_money }}</span>
+            <span class="qual">time-weighted across the statement period</span>
+            <div class="drill">
+              <button hx-get="/ui/documents/{{ document.id }}/aggregate/avg_daily_balance" hx-target="#drilldown" hx-swap="innerHTML">drill down ↓</button>
+            </div>
+          </div>
+          <div class="{% if analysis.num_nsf > 0 %}warn{% endif %}">
+            <span class="k">NSF Count</span>
+            <span class="v">{{ analysis.num_nsf }}</span>
+            <span class="qual">non-sufficient-funds fees in the period</span>
+            <div class="drill">
+              <button hx-get="/ui/documents/{{ document.id }}/aggregate/num_nsf" hx-target="#drilldown" hx-swap="innerHTML">drill down ↓</button>
+            </div>
+          </div>
+          <div class="{% if analysis.days_negative > 0 %}neg{% endif %}">
+            <span class="k">Days Negative</span>
+            <span class="v">{{ analysis.days_negative }}</span>
+            <span class="qual">calendar days balance was below $0</span>
+            <div class="drill">
+              <button hx-get="/ui/documents/{{ document.id }}/aggregate/days_negative" hx-target="#drilldown" hx-swap="innerHTML">drill down ↓</button>
+            </div>
+          </div>
+          <div class="{% if analysis.mca_daily_total > 0 %}warn{% endif %}">
+            <span class="k">MCA Daily Total</span>
+            <span class="v">{{ analysis.mca_daily_total | whole_money }}</span>
+            <span class="qual">across {{ analysis.mca_positions }} active position{{ '' if analysis.mca_positions == 1 else 's' }}</span>
+            <div class="drill">
+              <button hx-get="/ui/documents/{{ document.id }}/aggregate/mca_daily_total" hx-target="#drilldown" hx-swap="innerHTML">drill down ↓</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="drilldown" class="drilldown-out"></div>
+
+        {% if trend and trend.revenue_delta_pct is not none %}
+          <p class="marginalia">
+            Across {{ trend.statement_count }} statements, revenue is
+            {% if trend.revenue_delta_pct > 0 %}up <strong>{{ trend.revenue_delta_pct }}%</strong>{% else %}down <strong>{{ trend.revenue_delta_pct }}%</strong>{% endif %}
+            vs. the prior period
+            {% if trend.adb_delta_pct is not none %}and average daily balance is {% if trend.adb_delta_pct > 0 %}up <strong>{{ trend.adb_delta_pct }}%</strong>{% else %}down <strong>{{ trend.adb_delta_pct }}%</strong>{% endif %}{% endif %}.
+            {% if trend.nsf_delta is not none and trend.nsf_delta != 0 %}NSF count moved by {{ '+' if trend.nsf_delta > 0 }}{{ trend.nsf_delta }} events.{% endif %}
+          </p>
+        {% endif %}
+
+        <div class="citation-strip">
+          <strong>Source —</strong> all metrics on this page are derived deterministically from classified transactions on the underlying PDF statement. Every aggregate stores a list of contributing <code>transaction_id</code>s, each traceable to <code>source_page</code> + <code>source_line</code> on the original document. Click "drill down" on any metric to view the contributing rows with page/line citations.
+        </div>
+      </section>
+    {% endif %}
+
+    {# ============== § 3 PATTERN FINDINGS ============== #}
+    {% if stacking or pattern_cards or (soft_signals and not soft_signals.is_empty) %}
+      <section id="findings" class="section">
+        <header>
+          <span class="n">§ 3</span>
+          <h2>Pattern <em>findings</em></h2>
+          <span class="footnote">
+            {{ (pattern_cards|length) + (1 if stacking else 0) }} pattern{{ '' if (pattern_cards|length) + (1 if stacking else 0) == 1 else 's' }} surfaced · severity descending
+          </span>
+        </header>
+
+        {# stacking gets its own dossier-styled card (denser KPIs than a pattern). #}
+        {% if stacking %}
+          <article class="finding" style="grid-column:1 / -1">
+            <div class="head">
+              <h3>MCA stacking &mdash; {{ stacking.position_count }} active position{{ '' if stacking.position_count == 1 else 's' }}</h3>
+              <span class="sev high">high · stacking detected</span>
+            </div>
+            <p class="desc">
+              The debit stream shows {{ stacking.position_count }} distinct funder cadence{{ '' if stacking.position_count == 1 else 's' }} consistent with active MCA position{{ '' if stacking.position_count == 1 else 's' }}. Daily burden of <strong>${{ stacking.daily_total }}</strong> projects to roughly <strong>${{ stacking.monthly_burden }}/month</strong> across 22 business days.
+            </p>
+            <div class="stack-card">
+              <div>
+                <span class="k">Daily burden</span>
+                <span class="v neg">${{ stacking.daily_total }}</span>
+                <span class="qual">sum across positions</span>
+              </div>
+              <div>
+                <span class="k">Monthly projection</span>
+                <span class="v neg">${{ stacking.monthly_burden }}</span>
+                <span class="qual">× 22 business days</span>
+              </div>
+              <div>
+                <span class="k">Active positions</span>
+                <span class="v">{{ stacking.position_count }}</span>
+                <span class="qual">distinct funder cadences</span>
+              </div>
+              <div>
+                <span class="k">MCA debits found</span>
+                <span class="v">{{ stacking.debit_count }}</span>
+                <span class="qual">across the period</span>
+              </div>
+            </div>
+            {% if stacking.debits %}
+              <details>
+                <summary>{{ stacking.debits|length }} contributing debit row(s) — click to expand</summary>
+                <table class="ledger">
+                  <thead>
+                    <tr><th>Date</th><th>Lender (best-effort)</th><th>Amount</th><th>Source</th></tr>
+                  </thead>
+                  <tbody>
+                    {% for d in stacking.debits %}
+                      <tr>
+                        <td>{{ d.posted_date }}</td>
+                        <td>{{ d.lender_label }}</td>
+                        <td class="amt">${{ d.amount }}</td>
+                        <td class="cite">p{{ d.source_page }} L{{ d.source_line }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </details>
+            {% endif %}
+          </article>
+        {% endif %}
+
+        {# pattern cards in two-column grid #}
+        {% if pattern_cards %}
+          <div class="findings">
+            {% for card in pattern_cards %}
+              <article class="finding">
+                <div class="head">
+                  <h3>{{ card.title }}</h3>
+                  <span class="sev {% if card.severity >= 30 %}high{% elif card.severity >= 15 %}med{% else %}low{% endif %}">severity {{ card.severity }} / 100</span>
+                </div>
+                <p class="desc">{{ card.description }}</p>
+                <div class="quote">
+                  What we found: <strong>{{ card.detail }}</strong>
+                </div>
+                {% if card.source_transactions %}
+                  <details>
+                    <summary>{{ card.source_transactions|length }} contributing transaction row(s) — click to expand</summary>
+                    <table class="ledger">
+                      <thead>
+                        <tr><th>Date</th><th>Description</th><th>Amount</th><th>Source</th></tr>
+                      </thead>
+                      <tbody>
+                        {% for t in card.source_transactions|sort(attribute='posted_date') %}
+                          <tr>
+                            <td>{{ t.posted_date }}</td>
+                            <td>{{ t.description }}</td>
+                            <td class="amt">{{ t.amount | money }}</td>
+                            <td class="cite">p{{ t.source_page }} L{{ t.source_line }}</td>
+                          </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </details>
+                {% endif %}
+              </article>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        {# soft signals — concentration / payroll / NSF overlap #}
+        {% if soft_signals and not soft_signals.is_empty %}
+          <div class="findings" style="margin-top:36px">
+            {% if soft_signals.customer_concentration %}
+              {% set cc = soft_signals.customer_concentration %}
+              <article class="finding">
+                <div class="head">
+                  <h3>Customer concentration</h3>
+                  <span class="sev {% if cc.share_pct >= 70 %}high{% elif cc.share_pct >= 50 %}med{% else %}low{% endif %}">{{ cc.share_pct }}% top payee</span>
+                </div>
+                <p class="desc">
+                  The single largest deposit payer — <em>{{ cc.top_payee }}</em> — accounted for <strong>{{ cc.share_pct }}%</strong> of revenue this period.
+                  {% if cc.share_pct >= 70 %}High concentration — if that customer leaves, revenue collapses.
+                  {% elif cc.share_pct >= 50 %}Moderate concentration. Verify the relationship is contractual rather than one-off.
+                  {% else %}Healthy diversification — top payer is under half of revenue.{% endif %}
+                </p>
+              </article>
+            {% endif %}
+
+            {% if soft_signals.payroll_cadence %}
+              {% set pr = soft_signals.payroll_cadence %}
+              <article class="finding">
+                <div class="head">
+                  <h3>Payroll cadence</h3>
+                  <span class="sev low">{{ pr.cadence }}{% if pr.pct_of_revenue is not none %} · {{ pr.pct_of_revenue }}%{% endif %}</span>
+                </div>
+                <p class="desc">
+                  Payroll runs <strong>{{ pr.cadence }}</strong>{% if pr.pct_of_revenue is not none %}, absorbing <strong>{{ pr.pct_of_revenue }}%</strong> of revenue{% endif %}.
+                  {% if pr.cadence in ['weekly','biweekly'] %}Standard W-2 cadence; confirms an active workforce.
+                  {% elif pr.cadence == 'monthly' %}Monthly payroll — less common for hourly-worker businesses.
+                  {% else %}Irregular cadence. Could mean 1099 contractors, off-statement processor, or shrinking headcount.{% endif %}
+                </p>
+              </article>
+            {% endif %}
+
+            {% if soft_signals.nsf_negative_overlap %}
+              {% set nso = soft_signals.nsf_negative_overlap %}
+              <article class="finding">
+                <div class="head">
+                  <h3>NSF on negative-balance days</h3>
+                  <span class="sev {% if nso.ratio_pct >= 50 %}high{% elif nso.ratio_pct >= 25 %}med{% else %}low{% endif %}">{{ nso.overlap }} of {{ nso.total }} ({{ nso.ratio_pct }}%)</span>
+                </div>
+                <p class="desc">
+                  {{ nso.overlap }} of {{ nso.total }} NSF fees this period landed on days the account was already in the red.
+                  {% if nso.ratio_pct >= 50 %}Majority are structural cashflow stress, not isolated processing accidents.
+                  {% elif nso.ratio_pct >= 25 %}A meaningful share coincides with negative days — verify the merchant has a buffer plan.
+                  {% else %}Most NSFs occurred on otherwise-positive days — more likely processing anomalies than stress.{% endif %}
+                </p>
+              </article>
+            {% endif %}
+          </div>
+        {% endif %}
+
+        {% if pattern_cards|length >= 2 %}
+          <div class="pull-quote">
+            {% if score_result and score_result.recommendation == 'approve' %}
+              {{ pattern_cards|length }} pattern finding{{ '' if pattern_cards|length == 1 else 's' }}, none of consequence. The deal clears AEGIS gates with the soft concerns documented above.
+            {% elif score_result and score_result.recommendation == 'refer' %}
+              {{ pattern_cards|length }} pattern finding{{ '' if pattern_cards|length == 1 else 's' }} warrant a sized-down counter — fundable, but on tighter terms than requested.
+            {% else %}
+              {{ pattern_cards|length }} pattern finding{{ '' if pattern_cards|length == 1 else 's' }} block this deal from auto-approval. Hard declines must be addressed before resubmission.
+            {% endif %}
+            <span class="attr">— underwriting narrative · auto-generated</span>
+          </div>
+        {% endif %}
+      </section>
+    {% endif %}
+
+    {# ============== § 4 FUNDER ROUTING (summary) ============== #}
+    <section id="routing" class="section">
+      <header>
+        <span class="n">§ 4</span>
+        <h2>Funder <em>routing</em></h2>
+        <span class="footnote">side-by-side comparison on /match</span>
+      </header>
+      <div class="funder-summary">
+        <div class="copy">
+          {% if score_result and score_result.recommendation == 'decline' %}
+            Deal is currently a hard decline &mdash; <em>no funders will be matched</em>. Resolve the hard-decline reasons above before routing.
+          {% elif merchant.submitted_to_funder_ids %}
+            Submitted to <strong>{{ merchant.submitted_to_funder_ids|length }} funder{{ '' if merchant.submitted_to_funder_ids|length == 1 else 's' }}</strong>{% if merchant.last_submitted_at %} on {{ merchant.last_submitted_at.strftime('%Y-%m-%d') }}{% endif %}. Awaiting responses; check the funder match page for replies.
+          {% else %}
+            Not yet submitted. The funder match page renders per-funder pass/fail across all active funders, with the routing CSV downloadable as a ZIP.
+          {% endif %}
+        </div>
+        <div>
+          <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Open match panel →</a>
+        </div>
+      </div>
+    </section>
+
+    {# ============== § 5 DISPOSITION ============== #}
+    <section id="disposition" class="section">
+      <header>
+        <span class="n">§ 5</span>
+        <h2>Disposition</h2>
+        <span class="footnote">awaiting manager sign-off</span>
+      </header>
+      <div class="disposition">
+        <div class="copy">
+          {% if score_result and score_result.recommendation == 'approve' %}
+            <h3>Approve. Submit at requested terms.</h3>
+            <p>Deal clears AEGIS gates. Recommend submission to the top-ranked funders on the match panel. Standard disclosure required at signature.</p>
+          {% elif score_result and score_result.recommendation == 'refer' %}
+            <h3>Refer to manager. Counter on size.</h3>
+            <p>Cashflow supports the deal but soft concerns warrant a counter at <em>{{ score_result.suggested_max_advance | whole_money }}</em>. Manager sign-off required before routing.</p>
+          {% elif score_result %}
+            <h3>Decline. Resolve blockers before resubmission.</h3>
+            <p>Hard declines flagged above block routing. Either address the underlying issues (re-upload corrected statements, supply missing data) or close the deal.</p>
+          {% else %}
+            <h3>Awaiting analysis.</h3>
+            <p>Score and disposition will populate once at least one statement is parsed.</p>
+          {% endif %}
+        </div>
+        <div class="sign">
+          <div class="sig">awaiting</div>
+          <div class="who">manager sign-off</div>
+        </div>
+      </div>
+    </section>
+
+    {# ============== § 6 AUDIT LOG ============== #}
+    {% if history %}
+      <section id="audit" class="section">
+        <header>
+          <span class="n">§ 6</span>
+          <h2>Audit <em>log</em></h2>
+          <span class="footnote">last {{ history|length }} event{{ '' if history|length == 1 else 's' }} · newest first</span>
+        </header>
+        <table class="audit-ledger">
+          <thead>
+            <tr><th style="width:170px">When</th><th style="width:120px">Actor</th><th style="width:220px">Action</th><th>Details</th></tr>
+          </thead>
+          <tbody>
+            {% for h in history %}
+              <tr>
+                <td class="when">{{ (h.created_at or '—')|string|truncate(19, True, '') }}</td>
+                <td>{{ h.actor }}</td>
+                <td class="action">{{ h.action }}</td>
+                <td class="details">
+                  {% if h.details %}
+                    {% for k, v in h.details.items() %}
+                      {% if v is not none %}{{ k }}={{ v|string|truncate(60, True, '…') }}{% if not loop.last %} · {% endif %}{% endif %}
+                    {% endfor %}
+                  {% else %}—{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    {% endif %}
+
+  </main>
+</div>
+
+</body>
+</html>
