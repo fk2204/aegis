@@ -53,6 +53,40 @@
     </div>
 
     {% if results %}
+      {% set _ok_count = results | selectattr('status','equalto','ok') | list | length %}
+      {% set _dup_count = results | selectattr('status','equalto','duplicate') | list | length %}
+      {% set _err_count = results | selectattr('status','equalto','error') | list | length %}
+
+      {% if _ok_count > 0 or _dup_count > 0 %}
+        <div class="panel" style="border-color:color-mix(in oklch, var(--pos) 30%, var(--line));background:var(--pos-soft);margin-bottom:14px">
+          <div class="panel-head" style="background:transparent">
+            <span class="panel-title" style="color:var(--pos)">Upload complete · what's next</span>
+            <span class="panel-actions mono" style="color:var(--pos)">{{ _ok_count }} new · {{ _dup_count }} duplicate{% if _err_count %} · {{ _err_count }} error{% endif %}</span>
+          </div>
+          <div class="panel-body" style="background:transparent">
+            <div style="font-size:12.5px;margin-bottom:10px;color:var(--ink-2)">
+              {% if _ok_count > 0 %}
+                Statements are queued for parsing. Parsing typically completes in 30-90 seconds per document. Parse status will appear in the merchant detail page.
+              {% elif _dup_count > 0 %}
+                These statements were already uploaded previously (matched by SHA-256). No new parse was queued.
+              {% endif %}
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              {% if merchant_just_uploaded %}
+                <a class="btn btn-primary" href="/ui/merchants/{{ merchant_just_uploaded.id }}">View {{ merchant_just_uploaded.business_name }}</a>
+                <a class="btn" href="/ui/merchants/{{ merchant_just_uploaded.id }}/match">Match funders →</a>
+              {% else %}
+                <a class="btn btn-primary" href="/ui/deals">View deals pipeline</a>
+              {% endif %}
+              <a class="btn" href="/ui/upload">Upload more</a>
+              {% if _err_count > 0 %}
+                <span class="tag neg" style="margin-left:auto"><span class="dot"></span>{{ _err_count }} file{{ '' if _err_count == 1 else 's' }} failed — see details below</span>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
       <div class="panel">
         <div class="panel-head">
           <span class="panel-title">Upload results</span>

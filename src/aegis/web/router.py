@@ -329,7 +329,12 @@ async def upload_form(
     return templates.TemplateResponse(
         request,
         "upload.html.j2",
-        {"merchants": merchants_repo.list_all(), "results": None, "error": None},
+        {
+            "merchants": merchants_repo.list_all(),
+            "results": None,
+            "error": None,
+            "merchant_just_uploaded": None,
+        },
     )
 
 
@@ -362,6 +367,7 @@ async def upload_submit(
                 "merchants": merchants_repo.list_all(),
                 "results": None,
                 "error": "No files provided.",
+                "merchant_just_uploaded": None,
             },
             status_code=status.HTTP_400_BAD_REQUEST,
         )
@@ -379,6 +385,7 @@ async def upload_submit(
                     "merchants": merchants_repo.list_all(),
                     "results": None,
                     "error": f"Unknown merchant_id {merchant_id!r}.",
+                    "merchant_just_uploaded": None,
                 },
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
@@ -395,6 +402,18 @@ async def upload_submit(
         total_cap=settings.aegis_max_intake_total_bytes,
     )
 
+    # When at least one file landed on a specific merchant, surface that
+    # merchant on the completion card so the broker can jump straight to
+    # detail / match-funders without re-typing.
+    merchant_just_uploaded: MerchantRow | None = None
+    if parsed_merchant_id is not None and any(
+        r.status in {"ok", "duplicate"} for r in results
+    ):
+        try:
+            merchant_just_uploaded = merchants_repo.get(parsed_merchant_id)
+        except MerchantNotFoundError:
+            merchant_just_uploaded = None
+
     return templates.TemplateResponse(
         request,
         "upload.html.j2",
@@ -402,6 +421,7 @@ async def upload_submit(
             "merchants": merchants_repo.list_all(),
             "results": results,
             "error": total_error,
+            "merchant_just_uploaded": merchant_just_uploaded,
         },
         status_code=(
             status.HTTP_200_OK if not total_error else status.HTTP_400_BAD_REQUEST
@@ -504,6 +524,8 @@ async def intake_submit(
 
     # Files are optional at intake — operator can create merchant first
     # and upload later.
+    docs_uploaded = 0
+    docs_failed = 0
     valid_files = [f for f in (files or []) if f.filename]
     if valid_files:
         settings = get_settings()
@@ -517,6 +539,8 @@ async def intake_submit(
             per_file_cap=settings.aegis_max_upload_bytes,
             total_cap=settings.aegis_max_intake_total_bytes,
         )
+        docs_uploaded = sum(1 for r in results if r.status in {"ok", "duplicate"})
+        docs_failed = sum(1 for r in results if r.status == "error")
         if total_error:
             # Merchant created but uploads failed; surface the error and
             # redirect to merchant detail so operator can retry uploads
@@ -529,9 +553,14 @@ async def intake_submit(
                 details={"error": total_error, "results_count": len(results)},
             )
 
-    return RedirectResponse(
-        f"/ui/merchants/{merchant.id}", status_code=status.HTTP_303_SEE_OTHER
+    # Carry a "just created" flash to the merchant detail page so it can
+    # render a confirmation banner with upload count + next-step CTAs.
+    target = (
+        f"/ui/merchants/{merchant.id}"
+        f"?from_intake=1&docs={docs_uploaded}"
+        f"{'&failed=' + str(docs_failed) if docs_failed else ''}"
     )
+    return RedirectResponse(target, status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/merchants", response_class=HTMLResponse)
@@ -1341,6 +1370,18 @@ async def merchant_detail(
     except MerchantNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
+    # Flash from /ui/intake — broker just created the merchant. Banner
+    # rendered by the template when from_intake=1 is present in the URL.
+    from_intake = request.query_params.get("from_intake") == "1"
+    try:
+        intake_docs_uploaded = int(request.query_params.get("docs") or "0")
+    except ValueError:
+        intake_docs_uploaded = 0
+    try:
+        intake_docs_failed = int(request.query_params.get("failed") or "0")
+    except ValueError:
+        intake_docs_failed = 0
+
     all_docs = docs.list_documents(merchant_id=merchant_id, limit=50)
     documents_table: list[dict[str, Any]] = []
     for d in all_docs:
@@ -1411,6 +1452,9 @@ async def merchant_detail(
             "aggregate_labels": _AGGREGATE_LABELS,
             "aggregate_unit_kind": _AGGREGATE_UNIT_KIND,
             "pattern_cards": pattern_cards,
+            "from_intake": from_intake,
+            "intake_docs_uploaded": intake_docs_uploaded,
+            "intake_docs_failed": intake_docs_failed,
             "score_result": score_result,
             "score_window": score_window,
             "stacking": stacking,

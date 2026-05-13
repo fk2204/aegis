@@ -31,6 +31,40 @@
 {% block body %}
 <div class="body cols-1">
   <main class="main">
+    {% if from_intake %}
+      <div class="panel" style="border-color:color-mix(in oklch, var(--pos) 30%, var(--line));background:var(--pos-soft);margin-bottom:14px">
+        <div class="panel-head" style="background:transparent">
+          <span class="panel-title" style="color:var(--pos)">Merchant created · what's next</span>
+          <span class="panel-actions mono" style="color:var(--pos)">
+            {% if intake_docs_uploaded == 0 %}no statements uploaded yet
+            {% elif intake_docs_uploaded == 1 %}1 statement queued for parsing
+            {% else %}{{ intake_docs_uploaded }} statements queued for parsing{% endif %}
+            {% if intake_docs_failed > 0 %} · {{ intake_docs_failed }} failed{% endif %}
+          </span>
+        </div>
+        <div class="panel-body" style="background:transparent">
+          <div style="font-size:12.5px;margin-bottom:10px;color:var(--ink-2)">
+            {% if intake_docs_uploaded > 0 %}
+              <strong>{{ merchant.business_name }}</strong> was created and {{ intake_docs_uploaded }} statement{{ '' if intake_docs_uploaded == 1 else 's' }} {{ 'is' if intake_docs_uploaded == 1 else 'are' }} now in the parsing queue. Parsing typically completes in 30-90 seconds per document. Refresh this page to see parse status, fraud score, and pattern analysis fill in.
+            {% else %}
+              <strong>{{ merchant.business_name }}</strong> was created. No statements were uploaded at intake — upload one now to score the deal and match funders.
+            {% endif %}
+            {% if intake_docs_failed > 0 %}
+              <br><span style="color:var(--neg)">{{ intake_docs_failed }} file{{ '' if intake_docs_failed == 1 else 's' }} failed to upload — retry from the upload page.</span>
+            {% endif %}
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            {% if intake_docs_uploaded > 0 %}
+              <a class="btn btn-primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders →</a>
+            {% endif %}
+            <a class="btn{% if intake_docs_uploaded == 0 %} btn-primary{% endif %}" href="/ui/upload">Upload statements{% if intake_docs_failed > 0 %} (retry){% endif %}</a>
+            <a class="btn" href="/ui/merchants/{{ merchant.id }}/edit">Edit merchant</a>
+            <a class="btn" href="/ui/intake">+ Another intake</a>
+          </div>
+        </div>
+      </div>
+    {% endif %}
+
     <div class="panel">
       <div class="panel-head">
         <span class="panel-title">Compliance ribbon</span>
