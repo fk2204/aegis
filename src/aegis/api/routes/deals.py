@@ -90,6 +90,10 @@ def score(
             "tier": result.tier,
             "recommendation": result.recommendation,
             "hard_decline_reasons": result.hard_decline_reasons,
+            # decline_details carries the matched_name + sdn_uid that fired
+            # an OFAC hard decline — required for the 10-business-day
+            # Initial Report of Blocked Property (docs/compliance/07_*).
+            "decline_details": result.decline_details,
             "ofac_consulted": ofac is not None,
         },
     )
@@ -139,6 +143,7 @@ def score_with_matches(
             "tier": score_result.tier,
             "recommendation": score_result.recommendation,
             "matched_funder_count": len(matches),
+            "decline_details": score_result.decline_details,
             "ofac_consulted": ofac is not None,
         },
     )

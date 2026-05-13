@@ -143,6 +143,13 @@ class ScoreResult(_StrictModel):
     recommended_holdback_pct: Decimal = Decimal("0.00")
     estimated_payback_days: int | None = Field(default=None, ge=0)
     apr: Decimal | None = None
+    decline_details: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
+    """Structured detail attached to specific hard declines that need
+    downstream audit + reporting. Currently populated for
+    ``ofac_sanctions_match`` with key ``"ofac_matches"`` and entries shaped
+    ``{"input_field": "business_name"|"owner_name", "matched_name": str,
+    "sdn_uid": str}``. ``sdn_uid`` may be empty when the cached SDN feed
+    pre-dates the uid plumbing or for hand-built test fixtures."""
 
 
 class FunderMatch(_StrictModel):

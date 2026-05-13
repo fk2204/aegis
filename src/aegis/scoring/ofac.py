@@ -95,9 +95,29 @@ class OFACFetchError(OFACError):
 class SDNEntry:
     primary_name: str
     aliases: tuple[str, ...]
+    uid: str | None = None
+    """Treasury-assigned SDN uid. Present when sourced from SDN.XML; may be
+    ``None`` for hand-built test fixtures or older cache files. The uid is
+    the stable identifier OFAC's Initial Report of Blocked Property keys
+    off (see ``docs/compliance/07_ofac_sanctions.md`` §"reporting workflow")."""
 
     def all_names(self) -> tuple[str, ...]:
         return (self.primary_name, *self.aliases)
+
+
+@dataclass(frozen=True)
+class SDNMatch:
+    """Result of a positive SDN screen.
+
+    ``matched_name`` is the SDN-side candidate that fired (the primary name
+    or one of its aliases). ``sdn_uid`` is the Treasury uid, captured into
+    ``ScoreResult.decline_details`` and ``audit_log`` so the operator can
+    disposition + file the 10-business-day Initial Report of Blocked
+    Property without re-running the screen.
+    """
+
+    matched_name: str
+    sdn_uid: str | None
 
 
 Fetcher = Callable[[], bytes]
@@ -125,13 +145,32 @@ class OFACClient:
         self._loaded_mtime: float | None = None
 
     def is_match(self, name: str) -> bool:
-        """Return True if `name` matches any SDN entry. Raises on stale cache."""
+        """Return True if `name` matches any SDN entry. Raises on stale cache.
+
+        Thin wrapper around :meth:`find_match` retained for callers that
+        only need the boolean decision; new code should call
+        :meth:`find_match` so the matched SDN name + uid can flow into
+        the decline payload + audit trail.
+        """
+        return self.find_match(name) is not None
+
+    def find_match(self, name: str) -> SDNMatch | None:
+        """Return the first matching SDN entry, or ``None`` if cleared.
+
+        Returns the SDN-side ``matched_name`` (primary or alias that
+        fired) and ``sdn_uid`` (Treasury uid; may be ``None`` for legacy
+        cache files without uids). The caller is responsible for routing
+        this into the decline payload — the logger here only emits a
+        token-count line (no PII, no SDN-side names, since logs are
+        shared infrastructure and a flagged-merchant name is sensitive
+        until disposition).
+        """
         if not name or not name.strip():
-            return False
+            return None
         self._ensure_fresh()
         norm_input = _normalize_tokens(name)
         if not norm_input:
-            return False
+            return None
         for entry in self._index or []:
             for candidate in entry.all_names():
                 cand_tokens = _normalize_tokens(candidate)
@@ -142,8 +181,8 @@ class OFACClient:
                         "ofac_match: input matched SDN candidate (count=%d tokens)",
                         len(cand_tokens),
                     )
-                    return True
-        return False
+                    return SDNMatch(matched_name=candidate, sdn_uid=entry.uid)
+        return None
 
     # -- cache lifecycle -----------------------------------------------------
 
@@ -219,6 +258,7 @@ class OFACClient:
             SDNEntry(
                 primary_name=str(e["primary_name"]),
                 aliases=tuple(str(a) for a in e.get("aliases", [])),
+                uid=(str(e["uid"]) if e.get("uid") is not None else None),
             )
             for e in entries
             if isinstance(e, dict) and "primary_name" in e
@@ -264,7 +304,12 @@ def _treasury_fetch_json() -> bytes:
         raise OFACFetchError("Treasury SDN.XML returned no entries")
     payload = {
         "entries": [
-            {"primary_name": e.primary_name, "aliases": list(e.aliases)} for e in entries
+            {
+                "primary_name": e.primary_name,
+                "aliases": list(e.aliases),
+                "uid": e.uid,
+            }
+            for e in entries
         ],
         "refreshed_at": datetime.now(UTC).isoformat(),
         "source": SDN_XML_URL,
@@ -315,7 +360,10 @@ def parse_sdn_xml(xml_bytes: bytes) -> list[SDNEntry]:
             alias = _full_name(aka)
             if alias and alias != primary:
                 aliases.append(alias)
-        entries.append(SDNEntry(primary_name=primary, aliases=tuple(aliases)))
+        uid = _child_text(entry, "uid") or None
+        entries.append(
+            SDNEntry(primary_name=primary, aliases=tuple(aliases), uid=uid)
+        )
     return entries
 
 
@@ -365,4 +413,5 @@ __all__ = [
     "OFACFetchError",
     "OFACStaleError",
     "SDNEntry",
+    "SDNMatch",
 ]

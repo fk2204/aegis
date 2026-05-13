@@ -85,7 +85,7 @@ def score_deal(
     ofac: OFACClient | None = None,
 ) -> ScoreResult:
     """Score a deal. Hard declines first; soft scoring + tier/payback after."""
-    hard_declines = _check_hard_declines(deal, ofac)
+    hard_declines, decline_details = _check_hard_declines(deal, ofac)
     if hard_declines:
         return ScoreResult(
             score=0,
@@ -98,6 +98,7 @@ def score_deal(
             recommended_factor_rate=Decimal("0.00"),
             recommended_holdback_pct=Decimal("0.00"),
             estimated_payback_days=0,
+            decline_details=decline_details,
         )
 
     return _soft_score(deal)
@@ -109,14 +110,41 @@ def score_deal(
 def _check_hard_declines(
     deal: ScoreInput,
     ofac: OFACClient | None,
-) -> list[str]:
+) -> tuple[list[str], dict[str, list[dict[str, str]]]]:
+    """Return ``(reasons, details)``.
+
+    ``details`` carries structured payloads for reasons that need
+    downstream audit / reporting — currently only ``ofac_matches`` (the
+    SDN candidate name + uid that fired, per
+    ``docs/compliance/07_ofac_sanctions.md`` §"reporting workflow").
+    The endpoint forwards this into ``audit_log`` so the operator can
+    disposition + file the 10-business-day Initial Report of Blocked
+    Property without re-running the screen.
+    """
     reasons: list[str] = []
+    details: dict[str, list[dict[str, str]]] = {}
 
     if ofac is not None:
         # OFAC screening — checked FIRST so a sanctioned merchant cannot
         # accidentally get other reasons reported and ignored.
-        if ofac.is_match(deal.business_name) or ofac.is_match(deal.owner_name):
+        ofac_matches: list[dict[str, str]] = []
+        for input_field, value in (
+            ("business_name", deal.business_name),
+            ("owner_name", deal.owner_name),
+        ):
+            match = ofac.find_match(value)
+            if match is None:
+                continue
+            ofac_matches.append(
+                {
+                    "input_field": input_field,
+                    "matched_name": match.matched_name,
+                    "sdn_uid": match.sdn_uid or "",
+                }
+            )
+        if ofac_matches:
             reasons.append("ofac_sanctions_match")
+            details["ofac_matches"] = ofac_matches
 
     if deal.mca_positions > MCA_POSITIONS_HARD_DECLINE:
         reasons.append(f"stacking_exceeds_limit: {deal.mca_positions} active positions")
@@ -160,7 +188,7 @@ def _check_hard_declines(
     if dscr is not None and dscr < DSCR_HARD_DECLINE:
         reasons.append(f"dscr_below_1: {dscr:.2f}")
 
-    return reasons
+    return reasons, details
 
 
 # -- soft scoring ------------------------------------------------------------
