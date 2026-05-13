@@ -35,10 +35,46 @@
 
   {% if score_result.hard_decline_reasons %}
     <div class="panel-title" style="margin-bottom:6px;color:var(--neg)">Hard declines</div>
+    {% set _hard_decline_copy = {
+        'ofac_sanctions_match': 'Owner or business matched the Treasury OFAC Specially Designated Nationals list. Funding is blocked by federal sanctions law.',
+        'debt_to_revenue_exceeds_40pct': 'Existing daily MCA burden plus the requested advance exceeds 40% of monthly revenue. Most funders cap at 30-40%.',
+        'monthly_revenue_below_min': 'Monthly true revenue (deposits net of transfers + chargebacks) below the minimum needed for any tier.',
+        'time_in_business_below_min': 'Time in business is shorter than the operator-set funding floor.',
+        'credit_score_below_min': 'Owner FICO is below the funding floor.',
+        'state_not_served': 'AEGIS does not fund deals in this state.',
+        'industry_excluded': 'Industry NAICS code is on the operator-excluded list.',
+        'industry_high_risk_avoid': 'Industry is rated avoid-tier by risk policy.',
+        'manual_review_only': 'Document is in manual_review parse status — score cannot be trusted until re-uploaded clean.',
+    } %}
     {% for reason in score_result.hard_decline_reasons %}
       <div class="flag-row">
         <span class="flag-icon neg">!</span>
-        <div><div class="flag-title">{{ reason }}</div></div>
+        <div>
+          <div class="flag-title">{{ reason }}</div>
+          {% if _hard_decline_copy.get(reason) %}
+            <div class="flag-desc">{{ _hard_decline_copy[reason] }}</div>
+          {% endif %}
+          {% if reason == 'ofac_sanctions_match' and score_result.decline_details.get('ofac_matches') %}
+            <div style="margin-top:8px;padding:8px 10px;background:var(--neg-soft);border-left:2px solid var(--neg);font-family:var(--mono);font-size:11.5px">
+              <div style="text-transform:uppercase;letter-spacing:0.05em;color:var(--neg);font-size:10px;margin-bottom:4px;font-weight:600">OFAC SDN match — audit detail</div>
+              {% for m in score_result.decline_details.get('ofac_matches', []) %}
+                <div style="margin-top:4px">
+                  <span style="color:var(--muted)">input field:</span> {{ m.input_field }}
+                  <span style="margin-left:10px;color:var(--muted)">matched name:</span> <strong>{{ m.matched_name }}</strong>
+                  {% if m.sdn_uid %}
+                    <span style="margin-left:10px;color:var(--muted)">Treasury UID:</span>
+                    <a href="https://sanctionssearch.ofac.treas.gov/Details.aspx?id={{ m.sdn_uid }}" target="_blank" rel="noopener" style="color:var(--neg)">{{ m.sdn_uid }} ↗</a>
+                  {% else %}
+                    <span style="margin-left:10px;color:var(--muted)">Treasury UID:</span> <span style="color:var(--muted)">unavailable (legacy SDN entry)</span>
+                  {% endif %}
+                </div>
+              {% endfor %}
+              <div style="margin-top:6px;color:var(--muted);font-size:10.5px;font-family:var(--ui)">
+                Verify the match by clicking the Treasury UID link above. Federal law requires blocking the transaction even on partial-name matches; consult counsel before overriding.
+              </div>
+            </div>
+          {% endif %}
+        </div>
       </div>
     {% endfor %}
   {% endif %}
@@ -64,24 +100,41 @@
 
   {% if score_result.soft_concerns %}
     <div class="panel-title" style="margin:14px 0 6px;color:var(--warn)">Soft concerns</div>
+    {% set _soft_concern_copy = {
+        'missing_credit_score': 'Owner FICO not on file. Most funders require a credit pull before commitment — collect or it will be a hard fail at submission.',
+        'missing_time_in_business': 'TIB not on file. Many funders set TIB minimums of 12-24 months.',
+        'high_debt_to_revenue': 'Existing daily MCA burden is significant relative to revenue. Not a hard fail but limits which funders will offer.',
+        'multiple_mca_positions': 'Two or more MCA positions detected. Most funders cap stacking at 1-2; some refuse stacking entirely.',
+        'recent_nsfs': 'Non-sufficient-funds fees in the statement period — verify with merchant whether resolved.',
+        'low_avg_daily_balance': "Average daily balance is below most funders' comfort threshold for the requested advance size.",
+        'parse_status_review': 'Document parse_status is review (mid-band fraud score). Verify the underlying flags before submitting.',
+    } %}
     {% for concern in score_result.soft_concerns %}
       <div class="flag-row">
         <span class="flag-icon warn">?</span>
-        <div><div class="flag-title">{{ concern }}</div></div>
+        <div>
+          <div class="flag-title">{{ concern }}</div>
+          {% if _soft_concern_copy.get(concern) %}
+            <div class="flag-desc">{{ _soft_concern_copy[concern] }}</div>
+          {% endif %}
+        </div>
       </div>
     {% endfor %}
   {% endif %}
 
   <div class="kv" style="margin-top:14px">
     <span class="k">Suggested max</span>
-    <span class="v">${{ score_result.suggested_max_advance }}</span>
+    <span class="v">{{ score_result.suggested_max_advance | whole_money }}</span>
     <span class="k">Factor</span>
-    <span class="v">{{ score_result.recommended_factor_rate }}</span>
+    <span class="v">{{ score_result.recommended_factor_rate }}<span class="unit-hint">× payback</span></span>
     <span class="k">Holdback</span>
-    <span class="v">{{ score_result.recommended_holdback_pct }}</span>
+    <span class="v">{{ score_result.recommended_holdback_pct }}<span class="unit-hint">% of daily deposits</span></span>
     {% if score_result.estimated_payback_days %}
       <span class="k">Payback</span>
-      <span class="v">~{{ score_result.estimated_payback_days }} days</span>
+      <span class="v">~{{ score_result.estimated_payback_days | days_label }}</span>
     {% endif %}
+  </div>
+  <div style="margin-top:8px;font-size:10.5px;color:var(--muted);font-family:var(--mono)">
+    Suggested max = monthly revenue x tier multiple (A: 1.5x · B: 1.2x · C: 1.0x · D: 0.6x · F: 0). Rounded to nearest $1,000. Factor + holdback are pre-funder targets; per-funder match will refine.
   </div>
 {% endif %}
