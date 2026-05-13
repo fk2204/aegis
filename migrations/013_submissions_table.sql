@@ -1,4 +1,10 @@
--- Migration 013 — submissions table (DESIGN ONLY — NOT YET APPLIED).
+-- Migration 013 — submissions table.
+-- Applied 2026-05-13 against Supabase project tprpbomqcucuxnszeafo,
+-- after dropping 11 orphan parallel-schema tables (deals, brokers,
+-- disclosures, communications_log, outcomes, renewals, stips,
+-- funder_submissions, funder_guidelines, funder_guideline_documents,
+-- scores) left over from a pre-rewrite exploration — all empty, never
+-- written to. Migration 012 (deals view) applied in the same session.
 --
 -- One row per (merchant, document, funder) tuple capturing the
 -- funder-facing CSV submission AEGIS produced (see
