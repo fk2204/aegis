@@ -355,3 +355,92 @@ def test_match_page_shows_submit_button(
     assert f'action="/ui/merchants/{merchant.id}/submit"' in resp.text
     assert 'name="funder_ids"' in resp.text
     assert "Download submission package" in resp.text
+
+
+def test_match_page_renders_funder_response_form(
+    client: TestClient, merchant: MerchantRow, funder_repo: InMemoryFunderRepository
+) -> None:
+    """The match page exposes a form to record what each funder replied."""
+    _ = funder_repo
+    resp = client.get(f"/ui/merchants/{merchant.id}/match")
+    assert resp.status_code == 200
+    assert f'action="/ui/merchants/{merchant.id}/funder-response"' in resp.text
+    assert 'name="response_status"' in resp.text
+    assert 'name="offered_amount"' in resp.text
+    assert "Record reply" in resp.text
+
+
+def test_funder_response_records_audit_row(
+    client: TestClient,
+    merchant: MerchantRow,
+    funder_repo: InMemoryFunderRepository,
+    audit_log: InMemoryAuditLog,
+) -> None:
+    """Happy path: form POST writes one structured audit row."""
+    f = funder_repo.list_active()[0]
+    resp = client.post(
+        f"/ui/merchants/{merchant.id}/funder-response",
+        data={
+            "funder_id": str(f.id),
+            "response_status": "approved",
+            "offered_amount": "55000",
+            "offered_factor": "1.32",
+            "offered_term_days": "120",
+            "notes": "wants ACH not lockbox",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"].endswith(f"/ui/merchants/{merchant.id}/match")
+
+    rows = [e for e in audit_log.entries if e["action"] == "deal.funder_response"]
+    assert len(rows) == 1
+    d = rows[0]["details"]
+    assert d["funder_id"] == str(f.id)
+    assert d["funder_name"] == f.name
+    assert d["status"] == "approved"
+    assert d["offered_amount"] == "55000"
+    assert d["offered_factor"] == "1.32"
+    assert d["offered_term_days"] == 120
+    assert d["notes"] == "wants ACH not lockbox"
+
+
+def test_funder_response_rejects_unknown_status(
+    client: TestClient,
+    merchant: MerchantRow,
+    funder_repo: InMemoryFunderRepository,
+) -> None:
+    f = funder_repo.list_active()[0]
+    resp = client.post(
+        f"/ui/merchants/{merchant.id}/funder-response",
+        data={"funder_id": str(f.id), "response_status": "ghosted"},
+    )
+    assert resp.status_code == 400
+    assert "response_status" in resp.text
+
+
+def test_funder_response_latest_reply_renders_on_match_panel(
+    client: TestClient,
+    merchant: MerchantRow,
+    funder_repo: InMemoryFunderRepository,
+) -> None:
+    """After recording approved → declined for the same funder, the panel
+    shows the latest (declined) — operators read the most-recent answer."""
+    f = funder_repo.list_active()[0]
+    client.post(
+        f"/ui/merchants/{merchant.id}/funder-response",
+        data={"funder_id": str(f.id), "response_status": "approved"},
+    )
+    client.post(
+        f"/ui/merchants/{merchant.id}/funder-response",
+        data={
+            "funder_id": str(f.id),
+            "response_status": "declined",
+            "notes": "changed their mind",
+        },
+    )
+    resp = client.get(f"/ui/merchants/{merchant.id}/match")
+    assert resp.status_code == 200
+    assert "Funder reply" in resp.text
+    assert "declined" in resp.text
+    assert "changed their mind" in resp.text

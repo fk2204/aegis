@@ -267,6 +267,15 @@ class ZohoSync:
         today = date.today().isoformat()
 
         # 1. Deal-level update.
+        #
+        # ``Lenders_Submitted_To`` stays as the integer count (its Zoho
+        # field type is numeric in our layout). The lender names go into
+        # ``Description`` between idempotent ``[AEGIS-SUBMISSIONS]``
+        # markers so the operator sees actual lender names on the Deal
+        # page without us clobbering operator-typed notes around them.
+        description = self._compose_submission_description(
+            deal_id=deal_id, names=funder_names, today=today
+        )
         try:
             self._client.request(
                 "PUT",
@@ -276,6 +285,7 @@ class ZohoSync:
                         {
                             "Date_Submitted_to_Lenders": today,
                             "Lenders_Submitted_To": len(funder_names),
+                            "Description": description,
                         }
                     ]
                 },
@@ -365,6 +375,43 @@ class ZohoSync:
             csv_bytes=zip_bytes,
             filename=zip_filename,
         )
+
+    _AEGIS_DESC_BEGIN = "[AEGIS-SUBMISSIONS]"
+    _AEGIS_DESC_END = "[/AEGIS-SUBMISSIONS]"
+
+    def _compose_submission_description(
+        self, *, deal_id: str, names: list[str], today: str
+    ) -> str:
+        """Read the Deal's current Description, swap our marker block in
+        place, return the new value.
+
+        Idempotent — re-running the submission strips the prior
+        ``[AEGIS-SUBMISSIONS]`` block and writes a fresh one. Operator
+        free-text outside the markers is preserved.
+        """
+        try:
+            resp = self._client.request("GET", f"/crm/v8/Deals/{deal_id}")
+        except Exception:
+            existing = ""
+        else:
+            rows = resp.get("data") or []
+            existing = (rows[0].get("Description") or "") if rows else ""
+
+        prefix = existing
+        begin = self._AEGIS_DESC_BEGIN
+        end = self._AEGIS_DESC_END
+        if begin in existing and end in existing:
+            head, _, tail = existing.partition(begin)
+            _, _, after = tail.partition(end)
+            prefix = (head.rstrip() + "\n" + after.lstrip("\n")).strip()
+
+        names_line = ", ".join(names) if names else "(no lenders)"
+        block = (
+            f"{begin}\n"
+            f"Submitted {today} via AEGIS to: {names_line}\n"
+            f"{end}"
+        )
+        return f"{prefix}\n\n{block}".lstrip() if prefix else block
 
     def _lookup_lender_counters(self, name: str) -> tuple[str | None, int]:
         """Find a Zoho Lender by Name and return (id, current Total_Submissions).

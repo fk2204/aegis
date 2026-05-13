@@ -196,6 +196,69 @@ def test_record_funder_submission_skips_when_no_deal_id() -> None:
     assert not client.calls  # nothing hit the Zoho API
 
 
+def test_compose_submission_description_idempotent_replaces_prior_block() -> None:
+    """Re-submitting strips the old AEGIS marker block and writes a fresh
+    one — operator notes outside the markers are preserved."""
+    repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+    merchant = repo.upsert(
+        MerchantRow(
+            business_name="Acme Inc",
+            owner_name="Jane Doe",
+            state="CA",
+            zoho_deal_id="DEAL_77",
+        )
+    )
+
+    class _Fake:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
+            self.current_description = (
+                "Operator note: hot deal, follow up Friday.\n\n"
+                "[AEGIS-SUBMISSIONS]\n"
+                "Submitted 2026-04-01 via AEGIS to: Stale Funder Inc\n"
+                "[/AEGIS-SUBMISSIONS]"
+            )
+
+        def request(
+            self,
+            method: str,
+            path: str,
+            *,
+            json: dict[str, Any] | None = None,
+            params: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            self.calls.append((method, path, json))
+            if method == "GET" and path.endswith("/Deals/DEAL_77"):
+                return {"data": [{"id": "DEAL_77", "Description": self.current_description}]}
+            return {}
+
+        def upload_attachment(self, *a: Any, **k: Any) -> dict[str, Any]:
+            return {"ok": True}
+
+    fake = _Fake()
+    sync = ZohoSync(client=fake, merchants=repo, audit=audit)  # type: ignore[arg-type]
+
+    sync.record_funder_submission(
+        merchant_id=merchant.id,
+        funder_names=["Logic Advance Group", "Swiftsource Funding"],
+        zip_bytes=b"x",
+        zip_filename="x.zip",
+    )
+
+    deal_put = next(c for c in fake.calls if c[0] == "PUT" and c[1].endswith("/Deals/DEAL_77"))
+    assert deal_put[2] is not None
+    desc = deal_put[2]["data"][0]["Description"]
+
+    assert "Operator note: hot deal, follow up Friday." in desc
+    assert "Stale Funder Inc" not in desc  # prior block stripped
+    assert "Logic Advance Group" in desc
+    assert "Swiftsource Funding" in desc
+    # Exactly one marker pair — no nesting.
+    assert desc.count("[AEGIS-SUBMISSIONS]") == 1
+    assert desc.count("[/AEGIS-SUBMISSIONS]") == 1
+
+
 def test_record_funder_submission_updates_deal_and_lenders() -> None:
     """Happy path: Deal field update + per-lender counter bump + attachment."""
     repo = InMemoryMerchantRepository()
@@ -275,6 +338,13 @@ def test_record_funder_submission_updates_deal_and_lenders() -> None:
     fields = body["data"][0]
     assert fields["Lenders_Submitted_To"] == 2
     assert "Date_Submitted_to_Lenders" in fields
+
+    # Description includes the lender names between AEGIS markers — the
+    # operator sees actual names on the Zoho Deal page, not just "2".
+    assert "[AEGIS-SUBMISSIONS]" in fields["Description"]
+    assert "Logic Advance Group" in fields["Description"]
+    assert "VCG" in fields["Description"]
+    assert "[/AEGIS-SUBMISSIONS]" in fields["Description"]
 
     # Per-lender updates: each lender PUT'd with bumped Total_Submissions.
     lender_puts: dict[str, dict[str, Any]] = {}

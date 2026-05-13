@@ -54,6 +54,23 @@ class AuditLog(Protocol):
         in-memory backend.
         """
 
+    def list_for_subject(
+        self,
+        *,
+        subject_type: str,
+        subject_id: UUID,
+        action: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return audit rows for one subject (merchant/document/funder),
+        newest first, optionally filtered to a single ``action``.
+
+        Used to read derived state out of the durable audit log (e.g.
+        latest funder response per funder for a given merchant). The
+        bounded ``limit`` keeps the read predictable even when a merchant
+        accumulates many rows over time.
+        """
+
 
 class InMemoryAuditLog:
     """List-backed log. Used in tests and the in-memory storage layer."""
@@ -84,6 +101,24 @@ class InMemoryAuditLog:
 
     def list_recent(self, *, limit: int = 20) -> list[dict[str, Any]]:
         return list(reversed(self.entries))[: max(0, limit)]
+
+    def list_for_subject(
+        self,
+        *,
+        subject_type: str,
+        subject_id: UUID,
+        action: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        sid = str(subject_id)
+        matches = [
+            e
+            for e in self.entries
+            if e["subject_type"] == subject_type
+            and e["subject_id"] == sid
+            and (action is None or e["action"] == action)
+        ]
+        return list(reversed(matches))[: max(0, limit)]
 
 
 class SupabaseAuditLog:
@@ -133,17 +168,45 @@ class SupabaseAuditLog:
             _log.warning("audit.list_recent_failed")
             return []
         rows = cast(list[dict[str, Any]], result.data or [])
-        return [
-            {
-                "actor": r.get("actor", "—"),
-                "action": r.get("action", "—"),
-                "subject_type": r.get("subject_type"),
-                "subject_id": r.get("subject_id"),
-                "details": r.get("details") or {},
-                "created_at": r.get("created_at"),
-            }
-            for r in rows
-        ]
+        return [_row_to_dict(r) for r in rows]
+
+    def list_for_subject(
+        self,
+        *,
+        subject_type: str,
+        subject_id: UUID,
+        action: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        try:
+            query = (
+                get_supabase()
+                .table("audit_log")
+                .select("*")
+                .eq("subject_type", subject_type)
+                .eq("subject_id", str(subject_id))
+                .order("created_at", desc=True)
+                .limit(max(1, limit))
+            )
+            if action is not None:
+                query = query.eq("action", action)
+            result = query.execute()
+        except Exception:
+            _log.warning("audit.list_for_subject_failed")
+            return []
+        rows = cast(list[dict[str, Any]], result.data or [])
+        return [_row_to_dict(r) for r in rows]
+
+
+def _row_to_dict(r: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "actor": r.get("actor", "—"),
+        "action": r.get("action", "—"),
+        "subject_type": r.get("subject_type"),
+        "subject_id": r.get("subject_id"),
+        "details": r.get("details") or {},
+        "created_at": r.get("created_at"),
+    }
 
 
 __all__ = [

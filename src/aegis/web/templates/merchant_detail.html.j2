@@ -40,6 +40,25 @@
       </div>
     </div>
 
+    {% if score_window %}
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Scoring window</span>
+          <span class="panel-actions mono">{{ score_window.months_used }} statement{{ '' if score_window.months_used == 1 else 's' }} · {{ score_window.period_start }} → {{ score_window.period_end }}</span>
+        </div>
+        <div class="panel-body" style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted)">
+          {% if score_window.months_used == 1 %}
+            <span class="tag warn" style="font-size:11px"><span class="dot"></span>single-month score — trend not visible until more statements upload</span>
+          {% else %}
+            <span>Tier &amp; recommendation reflect the trailing {{ score_window.months_used }}-month window, not just the latest statement.</span>
+          {% endif %}
+          {% if score_window.any_manual_review %}
+            <span class="tag neg" style="font-size:11px"><span class="dot"></span>{{ score_window.months_used }}-month window includes manual_review statements</span>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
+
     {% if merchant.requested_amount or merchant.requested_factor or merchant.requested_term_days or merchant.credit_score or merchant.time_in_business_months %}
       <div class="panel">
         <div class="panel-head">
@@ -147,6 +166,18 @@
                   <td class="num">{{ a.days_negative if a else '—' }}</td>
                   <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ d.uploaded_at.strftime("%Y-%m-%d") }}</span></td>
                 </tr>
+                {% if d.parse_status in ('manual_review', 'review', 'error') and d.all_flags %}
+                  <tr class="flag-detail-row">
+                    <td colspan="8" style="padding:6px 14px 12px 14px;border-top:none">
+                      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+                        <span class="mono" style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">why →</span>
+                        {% for f in d.all_flags %}
+                          <span class="tag {{ 'neg' if d.parse_status in ('manual_review','error') else 'warn' }}" style="font-size:10.5px;font-family:var(--mono)">{{ f }}</span>
+                        {% endfor %}
+                      </div>
+                    </td>
+                  </tr>
+                {% endif %}
               {% endfor %}
             </tbody>
           </table>

@@ -65,6 +65,26 @@
         </div>
       </div>
 
+      {% if score_window %}
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Scoring window</span>
+            <span class="panel-actions mono">
+              {{ score_window.months_used }} statement{{ '' if score_window.months_used == 1 else 's' }} aggregated
+            </span>
+          </div>
+          <div class="panel-body" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;font-size:12px">
+            <span><span class="lbl mono" style="color:var(--muted);font-size:10.5px;letter-spacing:0.5px;text-transform:uppercase">Period&nbsp;</span><span class="mono">{{ score_window.period_start }} → {{ score_window.period_end }}</span></span>
+            {% if score_window.months_used == 1 %}
+              <span class="tag warn" style="font-size:11px"><span class="dot"></span>only 1 month available — score may not reflect trend</span>
+            {% endif %}
+            {% if score_window.any_manual_review %}
+              <span class="tag neg" style="font-size:11px"><span class="dot"></span>some statements in manual_review — see merchant detail</span>
+            {% endif %}
+          </div>
+        </div>
+      {% endif %}
+
       {% if score_result.hard_decline_reasons %}
         <div class="panel">
           <div class="panel-head">
@@ -132,6 +152,26 @@
                     {% if c.color == "green" %}
                       <div style="font-family:var(--mono);font-size:10.5px;color:var(--pos)">No blockers.</div>
                     {% endif %}
+
+                    {% set _resp = (funder_responses or {}).get(c.funder_id) %}
+                    {% if _resp %}
+                      {% set _rs_cls = {
+                          'approved': 'pos','declined': 'neg',
+                          'countered': 'warn','pending': '',
+                      } %}
+                      <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--rule)">
+                        <div style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:4px">Funder reply</div>
+                        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11.5px">
+                          <span class="tag {{ _rs_cls.get(_resp.status, '') }}"><span class="dot"></span>{{ _resp.status }}</span>
+                          {% if _resp.offered_amount %}<span class="mono">${{ _resp.offered_amount }}</span>{% endif %}
+                          {% if _resp.offered_factor %}<span class="mono">×{{ _resp.offered_factor }}</span>{% endif %}
+                          {% if _resp.offered_term_days %}<span class="mono">{{ _resp.offered_term_days }}d</span>{% endif %}
+                        </div>
+                        {% if _resp.notes %}
+                          <div style="font-size:11px;color:var(--ink-2);margin-top:4px">{{ _resp.notes }}</div>
+                        {% endif %}
+                      </div>
+                    {% endif %}
                   </label>
                 {% endfor %}
               </div>
@@ -139,6 +179,55 @@
           </div>
         </div>
       </form>
+
+      {% if matches %}
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Record funder reply</span>
+            <span class="panel-actions mono">audited · latest reply per funder shown on the cards above</span>
+          </div>
+          <div class="panel-body">
+            <form method="post" action="/ui/merchants/{{ merchant.id }}/funder-response" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:8px;align-items:end">
+              <div>
+                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Funder</label>
+                <select name="funder_id" required style="width:100%;padding:6px;font-family:var(--mono);font-size:12px">
+                  {% for c in matches %}
+                    <option value="{{ c.funder_id }}">{{ c.funder_name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Status</label>
+                <select name="response_status" required style="width:100%;padding:6px;font-family:var(--mono);font-size:12px">
+                  <option value="approved">approved</option>
+                  <option value="countered">countered</option>
+                  <option value="declined">declined</option>
+                  <option value="pending">pending</option>
+                </select>
+              </div>
+              <div>
+                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Amount $</label>
+                <input name="offered_amount" type="text" inputmode="decimal" placeholder="50000" style="width:100%;padding:6px;font-family:var(--mono);font-size:12px">
+              </div>
+              <div>
+                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Factor / Term-days</label>
+                <div style="display:flex;gap:4px">
+                  <input name="offered_factor" type="text" inputmode="decimal" placeholder="1.30" style="flex:1;padding:6px;font-family:var(--mono);font-size:12px">
+                  <input name="offered_term_days" type="text" inputmode="numeric" placeholder="120" style="width:60px;padding:6px;font-family:var(--mono);font-size:12px">
+                </div>
+              </div>
+              <div>
+                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">&nbsp;</label>
+                <button class="btn btn-primary" type="submit" style="width:100%">Record reply</button>
+              </div>
+              <div style="grid-column:1/-1">
+                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Notes (optional)</label>
+                <input name="notes" type="text" placeholder="e.g. funder wants 6-month statements before final approval" style="width:100%;padding:6px;font-size:12px">
+              </div>
+            </form>
+          </div>
+        </div>
+      {% endif %}
     {% endif %}
   </main>
 </div>

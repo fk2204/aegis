@@ -62,6 +62,9 @@ from aegis.merchants.repository import (
 from aegis.parser.models import ClassifiedTransaction
 from aegis.scoring.match_funders import match_funder
 from aegis.scoring.models import FunderMatch, ScoreInput
+from aegis.scoring.multi_month import (
+    score_input_multi_month as _score_input_multi_month,
+)
 from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
 from aegis.scoring.submission_package import build_submission_files
@@ -835,6 +838,7 @@ async def merchant_match(
     docs: Annotated[DocumentRepository, Depends(get_repository)],
     funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
 ) -> HTMLResponse:
     """Phase 7B matched-funders panel.
 
@@ -847,8 +851,8 @@ async def merchant_match(
     except MerchantNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-    latest_doc, analysis = _find_latest_for_merchant(docs, merchant_id)
-    if latest_doc is None or analysis is None:
+    items = _collect_analyzed_for_merchant(docs, merchant_id)
+    if not items:
         return templates.TemplateResponse(
             request,
             "merchant_match.html.j2",
@@ -857,10 +861,11 @@ async def merchant_match(
                 "missing": "no_document",
                 "score_result": None,
                 "matches": [],
+                "score_window": None,
             },
         )
 
-    score_input = _score_input_from_dashboard(merchant, latest_doc, analysis)
+    score_input = _score_input_multi_month(merchant, items)
     try:
         score_result = score_deal(score_input, ofac=ofac)
     except OFACStaleError as exc:
@@ -877,6 +882,17 @@ async def merchant_match(
         cards.append(_match_card(funder, m))
     cards.sort(key=lambda c: c["match_score"], reverse=True)
 
+    score_window = {
+        "months_used": len(items),
+        "period_start": score_input.statement_period_start,
+        "period_end": score_input.statement_period_end,
+        "any_manual_review": any(
+            d.parse_status == "manual_review" for d, _ in items
+        ),
+    }
+
+    funder_responses = _latest_funder_responses(audit, merchant_id)
+
     return templates.TemplateResponse(
         request,
         "merchant_match.html.j2",
@@ -885,6 +901,8 @@ async def merchant_match(
             "missing": None,
             "score_result": score_result,
             "matches": cards,
+            "score_window": score_window,
+            "funder_responses": funder_responses,
         },
     )
 
@@ -920,14 +938,14 @@ async def merchant_submit_to_funders(
             detail="no funders selected",
         )
 
-    latest_doc, analysis = _find_latest_for_merchant(docs, merchant_id)
-    if latest_doc is None or analysis is None:
+    items = _collect_analyzed_for_merchant(docs, merchant_id)
+    if not items:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="merchant has no analyzed document — upload + parse first",
         )
 
-    score_input = _score_input_from_dashboard(merchant, latest_doc, analysis)
+    score_input = _score_input_multi_month(merchant, items)
     try:
         score_result = score_deal(score_input, ofac=ofac)
     except OFACStaleError as exc:
@@ -1021,6 +1039,121 @@ async def merchant_submit_to_funders(
             "content-disposition": f'attachment; filename="{download_filename}"'
         },
     )
+
+
+_FUNDER_RESPONSE_STATUSES = frozenset({"approved", "declined", "countered", "pending"})
+
+
+@router.post("/merchants/{merchant_id}/funder-response", response_model=None)
+async def merchant_funder_response(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    funder_id: Annotated[str, Form()],
+    response_status: Annotated[str, Form()],
+    offered_amount: Annotated[str, Form()] = "",
+    offered_factor: Annotated[str, Form()] = "",
+    offered_term_days: Annotated[str, Form()] = "",
+    notes: Annotated[str, Form()] = "",
+) -> Response:
+    """Record one funder's reply to an AEGIS submission.
+
+    v1 persistence is via ``audit_log`` only — the durable submissions
+    table is Phase 7C. Reads pull the latest row per funder back through
+    ``audit.list_for_subject(action='deal.funder_response')``, so the
+    merchant-match panel always shows what the operator last typed.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    rs = response_status.strip().lower()
+    if rs not in _FUNDER_RESPONSE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"response_status must be one of {sorted(_FUNDER_RESPONSE_STATUSES)}",
+        )
+
+    try:
+        funder_uuid = UUID(funder_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid funder_id: {funder_id!r}",
+        ) from exc
+
+    try:
+        funder = funder_repo.get(funder_uuid)
+    except FunderNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    try:
+        amount = _decimal_or_none(offered_amount)
+        factor = _decimal_or_none(offered_factor)
+        term = _int_or_none(offered_term_days)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    audit.record(
+        actor="dashboard",
+        action="deal.funder_response",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={
+            "funder_id": str(funder_uuid),
+            "funder_name": funder.name,
+            "status": rs,
+            "offered_amount": str(amount) if amount is not None else None,
+            "offered_factor": str(factor) if factor is not None else None,
+            "offered_term_days": term,
+            "notes": notes.strip() or None,
+        },
+    )
+
+    # Redirect back to the match panel so the operator sees the row land.
+    return RedirectResponse(
+        url=f"/ui/merchants/{merchant.id}/match", status_code=303
+    )
+
+
+def _latest_funder_responses(
+    audit: AuditLog, merchant_id: UUID
+) -> dict[str, dict[str, Any]]:
+    """Pull latest ``deal.funder_response`` audit row per funder_id.
+
+    Keyed by funder_id (string UUID). Empty dict if none recorded yet.
+    Used by the match panel to render a status chip per submitted lender.
+    """
+    rows = audit.list_for_subject(
+        subject_type="merchant",
+        subject_id=merchant_id,
+        action="deal.funder_response",
+        limit=200,
+    )
+    out: dict[str, dict[str, Any]] = {}
+    # rows are newest-first, so the first row we see per funder_id wins.
+    for r in rows:
+        details = r.get("details") or {}
+        fid = details.get("funder_id")
+        if not isinstance(fid, str) or fid in out:
+            continue
+        out[fid] = {
+            "status": details.get("status"),
+            "offered_amount": details.get("offered_amount"),
+            "offered_factor": details.get("offered_factor"),
+            "offered_term_days": details.get("offered_term_days"),
+            "notes": details.get("notes"),
+            "recorded_at": r.get("created_at"),
+        }
+    return out
 
 
 def _record_submission_to_zoho(
@@ -1141,12 +1274,23 @@ async def merchant_detail(
 
     score_result = None
     stacking = None
+    score_window = None
     if latest_doc is not None and latest_analysis is not None:
-        score_input = _score_input_from_dashboard(merchant, latest_doc, latest_analysis)
-        try:
-            score_result = score_deal(score_input, ofac=ofac)
-        except OFACStaleError:
-            score_result = None
+        items = _collect_analyzed_for_merchant(docs, merchant_id)
+        if items:
+            score_input = _score_input_multi_month(merchant, items)
+            try:
+                score_result = score_deal(score_input, ofac=ofac)
+            except OFACStaleError:
+                score_result = None
+            score_window = {
+                "months_used": len(items),
+                "period_start": score_input.statement_period_start,
+                "period_end": score_input.statement_period_end,
+                "any_manual_review": any(
+                    d.parse_status == "manual_review" for d, _ in items
+                ),
+            }
         stacking = build_stacking_card(
             latest_analysis, docs.list_transactions(latest_doc.id)
         )
@@ -1168,6 +1312,7 @@ async def merchant_detail(
             "analysis": latest_analysis,
             "aggregate_labels": _AGGREGATE_LABELS,
             "score_result": score_result,
+            "score_window": score_window,
             "stacking": stacking,
             "state_tier": state_tier,
             "ofac_status": ofac_status,
@@ -1264,6 +1409,42 @@ def _find_latest_for_merchant(
     return latest, docs.get_analysis(latest.id)
 
 
+# Hardcoded window: include the trailing 3 statement months in the
+# multi-month score. Funder underwriting industry-norm is "last 3 bank
+# statements" — more isn't more informative because business conditions
+# change. Configurable later if a specific funder asks for 4 or 6.
+_SCORE_WINDOW_MONTHS: int = 3
+
+
+def _collect_analyzed_for_merchant(
+    docs: DocumentRepository,
+    merchant_id: UUID,
+    *,
+    window: int = _SCORE_WINDOW_MONTHS,
+) -> list[tuple[DocumentRow, AnalysisRow]]:
+    """Return up to ``window`` most-recent analyzed docs for a merchant.
+
+    "Analyzed" means the document has an analysis row — i.e. extraction +
+    validation + classification + aggregation all completed. ``manual_review``
+    status is OK if the analysis exists (classification-confidence floor
+    breaches still produce a usable analysis; the operator's decision is
+    informed by including them).
+
+    Returned newest first so the caller can pick the latest doc as the
+    "current state" anchor and use the remainder as historical context.
+    """
+    rows = docs.list_documents(merchant_id=merchant_id, limit=window * 4)
+    out: list[tuple[DocumentRow, AnalysisRow]] = []
+    for d in rows:
+        a = docs.get_analysis(d.id)
+        if a is None:
+            continue
+        out.append((d, a))
+        if len(out) >= window:
+            break
+    return out
+
+
 def _decimal_or_none(value: str) -> Decimal | None:
     """Parse a form-string to Decimal; return None for empty/whitespace."""
     s = value.strip()
@@ -1339,6 +1520,8 @@ def _project_monthly(period_revenue: Decimal, statement_days: int) -> Decimal:
     return (period_revenue / Decimal(statement_days) * Decimal(30)).quantize(
         Decimal("0.01")
     )
+
+
 
 
 def _match_card(funder: FunderRow, match: FunderMatch) -> dict[str, Any]:

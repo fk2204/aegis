@@ -34,3 +34,60 @@ def test_pii_in_details_is_masked() -> None:
     e = log.entries[0]
     assert e["details"]["owner_name"] == "***"
     assert e["details"]["industry"] == "retail"
+
+
+def test_list_for_subject_filters_by_id_and_action() -> None:
+    """list_for_subject returns newest-first rows for one subject, with
+    optional action narrowing — backbone for the funder-response readback."""
+    log = InMemoryAuditLog()
+    merchant = uuid4()
+    other = uuid4()
+
+    log.record(
+        actor="dashboard",
+        action="deal.funder_response",
+        subject_type="merchant",
+        subject_id=merchant,
+        details={"funder_id": "f1", "status": "pending"},
+    )
+    log.record(
+        actor="dashboard",
+        action="deal.submit_to_funders",
+        subject_type="merchant",
+        subject_id=merchant,
+        details={"funder_names": ["LAG"]},
+    )
+    log.record(
+        actor="dashboard",
+        action="deal.funder_response",
+        subject_type="merchant",
+        subject_id=merchant,
+        details={"funder_id": "f1", "status": "approved"},
+    )
+    # Noise: same action, different merchant — must not leak.
+    log.record(
+        actor="dashboard",
+        action="deal.funder_response",
+        subject_type="merchant",
+        subject_id=other,
+        details={"funder_id": "f1", "status": "declined"},
+    )
+
+    # No action filter — all rows for the subject, newest first.
+    all_rows = log.list_for_subject(subject_type="merchant", subject_id=merchant)
+    assert len(all_rows) == 3
+    assert all_rows[0]["details"]["status"] == "approved"  # latest first
+
+    # action filter — only deal.funder_response rows.
+    responses = log.list_for_subject(
+        subject_type="merchant",
+        subject_id=merchant,
+        action="deal.funder_response",
+    )
+    assert len(responses) == 2
+    assert [r["details"]["status"] for r in responses] == ["approved", "pending"]
+
+    # Wrong subject id — empty.
+    assert log.list_for_subject(
+        subject_type="merchant", subject_id=uuid4()
+    ) == []
