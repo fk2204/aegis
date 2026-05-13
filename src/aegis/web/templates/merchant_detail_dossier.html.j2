@@ -115,7 +115,7 @@
       {% if pattern_cards or stacking or (soft_signals and not soft_signals.is_empty) %}<a href="#findings"><span class="n">§ 3</span> Pattern findings</a>{% endif %}
       <a href="#routing"><span class="n">§ 4</span> Funder routing</a>
       <a href="#disposition"><span class="n">§ 5</span> Disposition</a>
-      <a href="#audit"><span class="n">§ 6</span> Audit log</a>
+      {% if history %}<a href="#audit"><span class="n">§ 6</span> Audit log</a>{% endif %}
     </nav>
 
     <div class="compliance">
