@@ -234,5 +234,27 @@ ALTER TABLE transactions
   ADD COLUMN IF NOT EXISTS category TEXT,
   ADD COLUMN IF NOT EXISTS running_balance NUMERIC(14, 2);
 
+-- ============================================================================
+-- Migration 011 — Row Level Security on every public table.
+-- AEGIS uses service_role (bypasses RLS); enabling without policies denies
+-- anon/authenticated PostgREST and clears the Supabase Security Advisor
+-- lints rls_disabled_in_public + sensitive_columns_exposed. Do NOT FORCE RLS.
+-- Loop catches every public table — covers drift from dashboard-created or
+-- legacy tables that aren't in migrations 000–010.
+-- ============================================================================
+
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT tablename
+    FROM pg_tables
+    WHERE schemaname = 'public' AND rowsecurity = false
+  LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', r.tablename);
+  END LOOP;
+END $$;
+
 -- Done. The Supabase schema cache will refresh automatically within ~10s.
 SELECT 'AEGIS bootstrap complete' AS status;
