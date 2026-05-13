@@ -284,6 +284,47 @@
         </div>
       {% endif %}
     {% endif %}
+
+    {% if history %}
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Audit history</span>
+          <span class="panel-actions mono">last {{ history|length }} event{{ '' if history|length == 1 else 's' }} · newest first</span>
+        </div>
+        <div class="panel-body flush">
+          <table class="data">
+            <thead>
+              <tr>
+                <th style="width:170px">When</th>
+                <th style="width:120px">Actor</th>
+                <th style="width:220px">Action</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for h in history %}
+                <tr>
+                  <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ (h.created_at or '—')|string|truncate(19, True, '') }}</span></td>
+                  <td><span class="mono" style="font-size:11.5px">{{ h.actor }}</span></td>
+                  <td><span class="mono" style="font-size:11.5px">{{ h.action }}</span></td>
+                  <td>
+                    {% if h.details %}
+                      <span class="mono" style="font-size:11px;color:var(--ink-2);white-space:normal;word-break:break-word">
+                        {% for k, v in h.details.items() %}
+                          {% if v is not none %}<span style="color:var(--muted)">{{ k }}=</span><span>{{ v|string|truncate(80, True, '…') }}</span>{% if not loop.last %} · {% endif %}{% endif %}
+                        {% endfor %}
+                      </span>
+                    {% else %}
+                      <span style="color:var(--muted)">—</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% endif %}
   </main>
 </div>
 {% endblock %}

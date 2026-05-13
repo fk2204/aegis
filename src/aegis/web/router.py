@@ -1256,6 +1256,7 @@ async def merchant_detail(
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     docs: Annotated[DocumentRepository, Depends(get_repository)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
 ) -> HTMLResponse:
     try:
         merchant = merchants.get(merchant_id)
@@ -1301,6 +1302,9 @@ async def merchant_detail(
     from aegis.api.routes.findings import _compute_trend
 
     trend = _compute_trend(all_docs, docs)
+    history = audit.list_for_subject(
+        subject_type="merchant", subject_id=merchant_id, limit=20
+    )
 
     return templates.TemplateResponse(
         request,
@@ -1318,6 +1322,7 @@ async def merchant_detail(
             "ofac_status": ofac_status,
             "ofac_match": ofac_match,
             "trend": trend,
+            "history": history,
         },
     )
 
