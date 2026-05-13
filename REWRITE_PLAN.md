@@ -477,6 +477,63 @@ the way to a generated disclosure and a Zoho sync, with logs visible via
 
 ---
 
+## Phase 7 — Production-readiness pass (active)
+
+Phase 6B shipped the box. Phase 7 is the in-flight set of changes that
+take AEGIS from "behavior parity" to "operator-usable for daily MCA
+underwriting." Tracked by sub-phase below.
+
+### Phase 7A — Information clarity + dashboard refresh (complete)
+
+Goal: the dashboard surfaces enough context that an underwriter reading
+cold understands every number and flag without leaving the page.
+
+- [x] Fraud-score chip + money/days units across the dashboard.
+- [x] Surface 9 parser-side fraud patterns with source-row drill-downs.
+- [x] OFAC match details + hard/soft decline explanations.
+- [x] Per-funder criteria comparison + state compliance context.
+- [x] Upload + intake completion summaries with next-step CTAs.
+- [x] Soft-signals card (customer concentration, payroll cadence,
+  NSF-on-negative overlap, ADB partial coverage).
+- [x] Editorial dossier view as the default merchant-detail surface;
+  `?view=v2` falls back to the panel layout.
+- [x] N+1 fixes: batch analyses fetch on `/deals` and `merchant_detail`;
+  OFAC cache mtime guard skips disk round-trip per match.
+- [x] Test coverage for the new modules (`_pattern_cards`,
+  `_soft_signals`, `_slug`) + dossier smoke tests.
+
+Shipped 2026-05-13 in commits `fec8d4f` -> `5598315`.
+
+### Phase 7B — Funder workflow completion (partial)
+
+Goal: close the upload -> parse -> score -> submit loop without the
+operator leaving the dashboard.
+
+- [x] Funder guideline extraction endpoint (`/funders/import`).
+- [x] Funder import UI + per-funder match reasons on
+  `/ui/merchants/{id}/match`.
+- [x] Soft-signals + dossier surfaces (see 7A).
+- [x] Submission ZIP attached to the synced Zoho Deal on `/submit`.
+- [ ] Matched-funders panel inline on the deal-detail dossier (today the
+  match panel is a separate route).
+- [ ] Submission CSV download button wired into the dossier's `§ 4`
+  routing section (today it's only reachable through the match-panel
+  form).
+
+### Phase 7C — Submissions + portfolio (pending)
+
+Goal: durable submission records + a portfolio dashboard so the operator
+can see what's been submitted, what's been funded, and what's pending.
+
+- [ ] Submissions UI against migration 013 (`submissions` table). One
+  row per (deal, funder) with status, last_event_at, attached_csv_url.
+- [ ] Portfolio dashboard: funded deals + payment status + days-since-
+  last-payment, sourced from Zoho Deal stages.
+- [ ] Renewal queue: deals approaching the 70%-paydown threshold
+  (already detected by `paydown_mca_suspected`).
+
+---
+
 ## What I'm NOT doing
 
 - Adding features. Behavior parity (with bug fixes) only.
