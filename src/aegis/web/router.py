@@ -957,7 +957,7 @@ async def merchant_match(
         m = match_funder(funder, score_input, score_result)
         if m is None:
             continue
-        cards.append(_match_card(funder, m))
+        cards.append(_match_card(funder, m, score_input))
     cards.sort(key=lambda c: c["match_score"], reverse=True)
 
     score_window = {
@@ -1625,7 +1625,190 @@ def _project_monthly(period_revenue: Decimal, statement_days: int) -> Decimal:
 
 
 
-def _match_card(funder: FunderRow, match: FunderMatch) -> dict[str, Any]:
+def _criteria_comparison(
+    funder: FunderRow, score_input: ScoreInput
+) -> list[dict[str, Any]]:
+    """Side-by-side ``funder gate -> deal value`` rows for the merchant_match card.
+
+    Only emits a row when the funder has set the gate (None means "no
+    policy"). Status is "fail" / "warn" / "pass" so the template can
+    color the row without re-deriving the matcher rule.
+    """
+    rows: list[dict[str, Any]] = []
+
+    # The comparison values are stringified or filtered at render time;
+    # widening to ``object`` keeps mypy strict happy without forcing the
+    # caller to pre-coerce numeric / string / None values.
+    def add(
+        label: str,
+        funder_value: object,
+        deal_value: object,
+        passed: bool,
+        *,
+        unit: str = "",
+        soft: bool = False,
+    ) -> None:
+        if soft and not passed:
+            status_str = "warn"
+        elif passed:
+            status_str = "pass"
+        else:
+            status_str = "fail"
+        rows.append(
+            {
+                "label": label,
+                "funder_value": funder_value,
+                "deal_value": deal_value,
+                "status": status_str,
+                "unit": unit,
+            }
+        )
+
+    if funder.min_monthly_revenue is not None:
+        add(
+            "Minimum monthly revenue",
+            funder.min_monthly_revenue,
+            score_input.monthly_revenue,
+            score_input.monthly_revenue >= funder.min_monthly_revenue,
+            unit="money",
+        )
+    if funder.min_avg_daily_balance is not None:
+        add(
+            "Minimum average daily balance",
+            funder.min_avg_daily_balance,
+            score_input.avg_daily_balance,
+            score_input.avg_daily_balance >= funder.min_avg_daily_balance,
+            unit="money",
+        )
+    if funder.min_credit_score is not None:
+        if score_input.credit_score is None:
+            add(
+                "Minimum credit score",
+                funder.min_credit_score,
+                "missing",
+                False,
+                unit="fico",
+                soft=True,
+            )
+        else:
+            add(
+                "Minimum credit score",
+                funder.min_credit_score,
+                score_input.credit_score,
+                score_input.credit_score >= funder.min_credit_score,
+                unit="fico",
+            )
+    if funder.min_months_in_business is not None:
+        if score_input.time_in_business_months is None:
+            add(
+                "Minimum time in business",
+                funder.min_months_in_business,
+                "missing",
+                False,
+                unit="months",
+                soft=True,
+            )
+        else:
+            add(
+                "Minimum time in business",
+                funder.min_months_in_business,
+                score_input.time_in_business_months,
+                score_input.time_in_business_months >= funder.min_months_in_business,
+                unit="months",
+            )
+    if funder.max_positions is not None:
+        add(
+            "Maximum stacked positions",
+            funder.max_positions,
+            score_input.mca_positions,
+            score_input.mca_positions <= funder.max_positions,
+            unit="count",
+        )
+    if not funder.accepts_stacking and score_input.mca_positions > 0:
+        add(
+            "Stacking acceptance",
+            "does not stack",
+            f"{score_input.mca_positions} existing position(s)",
+            False,
+            unit="",
+        )
+    if funder.max_nsf_tolerance is not None:
+        add(
+            "Maximum NSF count",
+            funder.max_nsf_tolerance,
+            score_input.num_nsf,
+            score_input.num_nsf <= funder.max_nsf_tolerance,
+            unit="count",
+        )
+    if funder.max_advance is not None:
+        add(
+            "Maximum advance",
+            funder.max_advance,
+            score_input.requested_amount,
+            score_input.requested_amount <= funder.max_advance,
+            unit="money",
+        )
+    if funder.min_advance is not None:
+        add(
+            "Minimum advance",
+            funder.min_advance,
+            score_input.requested_amount,
+            score_input.requested_amount >= funder.min_advance,
+            unit="money",
+        )
+    if score_input.industry_naics and funder.excluded_industries:
+        excluded = any(
+            score_input.industry_naics.startswith(x) for x in funder.excluded_industries
+        )
+        add(
+            "Industry exclusion",
+            ", ".join(funder.excluded_industries[:5])
+            + ("..." if len(funder.excluded_industries) > 5 else ""),
+            score_input.industry_naics,
+            not excluded,
+            unit="",
+        )
+    if funder.excluded_states:
+        excluded_st = score_input.state in funder.excluded_states
+        add(
+            "State exclusion",
+            ", ".join(funder.excluded_states[:8])
+            + ("..." if len(funder.excluded_states) > 8 else ""),
+            score_input.state,
+            not excluded_st,
+            unit="",
+        )
+    return rows
+
+
+def _state_compliance_card(state: str) -> dict[str, Any] | None:
+    """Pull CoJ + broker-fee citations from compliance.states for the card."""
+    try:
+        reg = STATES.get(state)
+    except (AttributeError, KeyError):
+        return None
+    if reg is None:
+        return None
+    out: dict[str, Any] = {"state": state, "tier": getattr(reg, "tier", None)}
+    coj = getattr(reg, "coj_allowed", None)
+    out["coj_allowed"] = coj
+    out["coj_citation"] = getattr(reg, "coj_citation", None) or getattr(
+        reg, "citation_url", None
+    )
+    out["broker_fees_prohibited"] = getattr(
+        reg, "broker_advance_fees_prohibited", False
+    )
+    out["broker_fees_citation"] = getattr(reg, "broker_fees_citation", None) or getattr(
+        reg, "statute_citation", None
+    )
+    return out
+
+
+def _match_card(
+    funder: FunderRow,
+    match: FunderMatch,
+    score_input: ScoreInput | None = None,
+) -> dict[str, Any]:
     """Translate a FunderMatch into a card dict the template renders.
 
     ``match_funder`` sets ``match_score=0`` exactly when at least one hard
@@ -1639,6 +1822,10 @@ def _match_card(funder: FunderRow, match: FunderMatch) -> dict[str, Any]:
       * red    — match_score == 0 (any hard fail)
       * yellow — match_score > 0 with at least one soft concern
       * green  — match_score > 0 and zero soft concerns
+
+    When ``score_input`` is supplied, the card also carries a side-by-side
+    criteria comparison and the state regulatory context — both rendered
+    as an expandable details block inside the funder card.
     """
     if match.match_score == 0:
         color = "red"
@@ -1653,6 +1840,12 @@ def _match_card(funder: FunderRow, match: FunderMatch) -> dict[str, Any]:
         hard_reasons = []
         soft_concerns = []
 
+    criteria: list[dict[str, Any]] = []
+    state_ctx: dict[str, Any] | None = None
+    if score_input is not None:
+        criteria = _criteria_comparison(funder, score_input)
+        state_ctx = _state_compliance_card(score_input.state)
+
     return {
         "funder_id": str(funder.id),
         "funder_name": funder.name,
@@ -1660,6 +1853,10 @@ def _match_card(funder: FunderRow, match: FunderMatch) -> dict[str, Any]:
         "color": color,
         "hard_reasons": hard_reasons,
         "soft_concerns": soft_concerns,
+        "criteria_comparison": criteria,
+        "state_compliance": state_ctx,
+        "funder_requires_coj": funder.requires_coj,
+        "funder_charges_merchant_advance_fees": funder.charges_merchant_advance_fees,
     }
 
 

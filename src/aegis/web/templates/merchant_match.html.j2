@@ -153,6 +153,68 @@
                       <div style="font-family:var(--mono);font-size:10.5px;color:var(--pos)">No blockers.</div>
                     {% endif %}
 
+                    {% if c.criteria_comparison %}
+                      <details style="margin-top:8px">
+                        <summary style="cursor:pointer;font-family:var(--mono);font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">
+                          {{ c.criteria_comparison|length }} funder criteria · click to compare
+                        </summary>
+                        <table class="data" style="margin-top:6px;font-size:11px">
+                          <thead>
+                            <tr>
+                              <th>Criterion</th>
+                              <th class="num">Funder requires</th>
+                              <th class="num">Deal value</th>
+                              <th></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {% for row in c.criteria_comparison %}
+                              {% set _row_color = {'pass': 'var(--pos)', 'warn': 'var(--warn)', 'fail': 'var(--neg)'}[row.status] %}
+                              <tr>
+                                <td style="font-size:11px">{{ row.label }}</td>
+                                <td class="num" style="font-size:11px">
+                                  {% if row.unit == 'money' %}{{ row.funder_value | whole_money }}
+                                  {% elif row.unit == 'fico' %}{{ row.funder_value }} FICO
+                                  {% elif row.unit == 'months' %}{{ row.funder_value }} mo
+                                  {% else %}{{ row.funder_value }}{% endif %}
+                                </td>
+                                <td class="num" style="font-size:11px;color:{{ _row_color }};font-weight:500">
+                                  {% if row.deal_value == 'missing' %}<em style="color:var(--muted)">missing</em>
+                                  {% elif row.unit == 'money' %}{{ row.deal_value | whole_money }}
+                                  {% elif row.unit == 'fico' %}{{ row.deal_value }} FICO
+                                  {% elif row.unit == 'months' %}{{ row.deal_value }} mo
+                                  {% else %}{{ row.deal_value }}{% endif %}
+                                </td>
+                                <td style="font-size:11px">
+                                  {% if row.status == 'pass' %}<span style="color:var(--pos)">pass</span>
+                                  {% elif row.status == 'warn' %}<span style="color:var(--warn)">warn</span>
+                                  {% else %}<span style="color:var(--neg)">fail</span>{% endif %}
+                                </td>
+                              </tr>
+                            {% endfor %}
+                          </tbody>
+                        </table>
+                      </details>
+                    {% endif %}
+
+                    {% if c.state_compliance %}
+                      {% set _sc = c.state_compliance %}
+                      <div style="margin-top:8px;padding:6px 8px;border-left:2px solid var(--line);font-size:11px">
+                        <div style="font-family:var(--mono);text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);font-size:10px;margin-bottom:3px">{{ _sc.state }} regulation context</div>
+                        {% if c.funder_requires_coj and _sc.coj_allowed == 'banned' %}
+                          <div style="color:var(--neg)">CoJ banned in {{ _sc.state }}{% if _sc.coj_citation %} ({{ _sc.coj_citation }}){% endif %} — this funder requires CoJ → hard fail.</div>
+                        {% elif c.funder_requires_coj and _sc.coj_allowed == 'conditional' %}
+                          <div style="color:var(--warn)">CoJ allowed conditionally in {{ _sc.state }}{% if _sc.coj_citation %} ({{ _sc.coj_citation }}){% endif %} — confirm the merchant qualifies before signing.</div>
+                        {% endif %}
+                        {% if c.funder_charges_merchant_advance_fees and _sc.broker_fees_prohibited %}
+                          <div style="color:var(--neg)">Merchant-paid broker advance fees prohibited in {{ _sc.state }}{% if _sc.broker_fees_citation %} ({{ _sc.broker_fees_citation }}){% endif %} — this funder collects advance fees → hard fail.</div>
+                        {% endif %}
+                        {% if not c.funder_requires_coj and not c.funder_charges_merchant_advance_fees %}
+                          <div style="color:var(--muted)">No state-specific blockers for this funder × {{ _sc.state }} combination.</div>
+                        {% endif %}
+                      </div>
+                    {% endif %}
+
                     {% set _resp = (funder_responses or {}).get(c.funder_id) %}
                     {% if _resp %}
                       {% set _rs_cls = {
