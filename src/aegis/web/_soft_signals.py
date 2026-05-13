@@ -24,6 +24,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from aegis.logger import get_logger
+
+_logger = get_logger(__name__)
+
 
 @dataclass(frozen=True)
 class CustomerConcentration:
@@ -155,6 +159,14 @@ def parse_soft_signal_flags(all_flags: list[str]) -> SoftSignalSummary:
             continue
 
         unmapped.append(flag)
+
+    if unmapped:
+        # Surface silent degradation when aggregate.py adds a new
+        # soft-signal-prefixed flag format the parser doesn't yet know.
+        _logger.warning(
+            "unmapped_soft_signal_flags",
+            extra={"flags": unmapped, "count": len(unmapped)},
+        )
 
     return SoftSignalSummary(
         customer_concentration=cc,

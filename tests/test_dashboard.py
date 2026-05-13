@@ -606,3 +606,59 @@ def test_api_score_with_matches_returns_combined_payload(
     assert "matched_funders" in body
     assert isinstance(body["matched_funders"], list)
     assert len(funder_repo_seeded.list_active()) >= 1
+
+
+# ----------------------------------------------------------------------
+# Dossier-view smoke tests (default merchant_detail surface)
+# ----------------------------------------------------------------------
+
+
+def test_merchant_detail_dossier_renders_without_error(
+    client: TestClient, merchant: MerchantRow
+) -> None:
+    """The default merchant_detail view is the editorial dossier.
+
+    Asserts the response renders and contains the section anchors that
+    identify the dossier template (not the v2-panel template).
+    """
+    resp = client.get(f"/ui/merchants/{merchant.id}")
+    assert resp.status_code == 200
+    assert "The AEGIS Dossier" in resp.text
+    # Section anchors that only the dossier template emits.
+    assert "§ 1" in resp.text
+    assert "§ 4" in resp.text  # Funder routing always present
+    assert "§ 5" in resp.text  # Disposition always present
+    # The dossier-page body class scopes the namespaced CSS.
+    assert "dossier-page" in resp.text
+
+
+def test_view_v2_query_param_falls_back_to_panels(
+    client: TestClient, merchant: MerchantRow
+) -> None:
+    """?view=v2 explicitly opts back into the panel layout."""
+    resp = client.get(f"/ui/merchants/{merchant.id}?view=v2")
+    assert resp.status_code == 200
+    # Dossier-only marker must NOT appear.
+    assert "The AEGIS Dossier" not in resp.text
+    assert "dossier-page" not in resp.text
+    # v2-panel marker (drill-down aggregates) IS present.
+    assert "True Revenue" in resp.text
+    assert "drill down" in resp.text
+
+
+def test_dossier_omits_audit_section_when_history_empty(
+    client: TestClient, merchant: MerchantRow
+) -> None:
+    """Regression for the empty-audit-history crash fixed in commit 3ccd34f.
+
+    With a fresh fixture audit log (no merchant subject entries), the
+    § 6 Audit log section is gated out of the TOC and the page must still
+    render. § 1 must always be present.
+    """
+    resp = client.get(f"/ui/merchants/{merchant.id}")
+    assert resp.status_code == 200
+    assert "§ 1" in resp.text
+    # § 6 absent — the section + the TOC link are both gated by
+    # `{% if history %}` and the audit log only has unrelated entries
+    # (document persistence, no merchant subject rows).
+    assert "§ 6" not in resp.text
