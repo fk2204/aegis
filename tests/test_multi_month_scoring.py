@@ -26,7 +26,7 @@ def _doc(*, parse_status: str = "proceed", fraud_score: int = 5) -> DocumentRow:
         file_hash="a" * 64,
         byte_size=2048,
         original_filename=f"{parse_status}.pdf",
-        parse_status=parse_status,  # type: ignore[arg-type]
+        parse_status=parse_status,
         fraud_score=fraud_score,
         uploaded_at=datetime.now(UTC),
     )
