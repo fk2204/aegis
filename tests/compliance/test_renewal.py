@@ -259,29 +259,27 @@ def test_render_disclosure_ny_renewal_without_context_raises() -> None:
 
 
 def test_render_disclosure_ny_new_does_not_require_renewal_context() -> None:
-    """Non-renewal NY deal does NOT need RenewalContext; the renewal raise
-    is renewal-only.
+    """Non-renewal NY deal does NOT need RenewalContext; renewal raise is
+    renewal-only.
 
-    The full NY render still requires the additional template variables
-    that ``_build_context`` does not supply (Jinja StrictUndefined would
-    raise on them) — that's a separate, pre-existing render-context gap
-    not part of this change. The renewal validation must pass before
-    any of that.
+    Historically (pre Tier 1 context builder) the NY render also failed
+    on a Jinja ``UndefinedError`` because the Tier 1 template variables
+    weren't computed yet. With ``compliance/disclosure_context.py`` in
+    place the full render now succeeds for a non-renewal NY deal — the
+    renewal-context defaults (``is_renewal_with_double_dip=False`` /
+    ``double_dipping_amount="$0.00"``) are set by the disclosure-context
+    builder so StrictUndefined no longer trips.
     """
-    # We stop short of actually rendering — the validation we care about
-    # is "does render_disclosure refuse to even start for NY renewal +
-    # no context?". For the non-renewal path the validation passes; the
-    # downstream Jinja error is unrelated and out of scope here.
-    from jinja2.exceptions import UndefinedError
-
-    with pytest.raises(UndefinedError):
-        render_disclosure(
-            "NY",
-            _deal("NY"),
-            _score(),
-            transaction_type=TransactionType.NEW,
-            renewal=None,
-        )
+    rendered = render_disclosure(
+        "NY",
+        _deal("NY"),
+        _score(),
+        transaction_type=TransactionType.NEW,
+        renewal=None,
+    )
+    assert rendered.state == "NY"
+    assert rendered.tier == 1
+    assert rendered.transaction_type == TransactionType.NEW
 
 
 def test_render_disclosure_il_renewal_proceeds_without_context() -> None:
