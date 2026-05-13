@@ -124,18 +124,18 @@ def _b3_verify(deal_id: str, funder_pairs: list[tuple[str, str]]) -> None:
                     "GET",
                     f"/crm/v8/Lenders/search?criteria={quote('(Name:equals:' + name + ')')}",
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 print(f"    {name:30}: lookup error {exc}")
                 continue
             data = body.get("data") or []
             if not data:
                 print(f"    {name:30}: NOT FOUND in Zoho Lenders")
                 continue
-            L = data[0]
+            lender = data[0]
             print(
                 f"    {name:30}: "
-                f"Total_Submissions={L.get('Total_Submissions')!r} "
-                f"Last_Submission_Date={L.get('Last_Submission_Date')!r}"
+                f"Total_Submissions={lender.get('Total_Submissions')!r} "
+                f"Last_Submission_Date={lender.get('Last_Submission_Date')!r}"
             )
 
 
