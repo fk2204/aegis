@@ -1,0 +1,115 @@
+{#
+  Soft signals card.
+
+  Inputs:
+    - soft_signals: SoftSignalSummary | None (from aegis.web._soft_signals)
+
+  Renders three subsections (customer concentration, payroll cadence,
+  NSF/negative-day overlap) when the parser emitted them. Each comes
+  with a plain-English explanation of why an underwriter should care
+  about the number, not just the number itself.
+#}
+{% if soft_signals is not none and not soft_signals.is_empty %}
+  <div class="panel" style="margin-bottom:12px">
+    <div class="panel-head">
+      <span class="panel-title">Soft signals</span>
+      <span class="panel-actions mono" style="font-size:10.5px;color:var(--muted)">contextual checks · not fraud flags</span>
+    </div>
+    <div class="panel-body" style="display:flex;flex-direction:column;gap:14px">
+
+      {% if soft_signals.customer_concentration %}
+        {% set cc = soft_signals.customer_concentration %}
+        {% set _cc_band = 'neg' if cc.share_pct >= 70 else ('warn' if cc.share_pct >= 50 else 'pos') %}
+        <div>
+          <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+            <strong style="font-size:13px">Customer concentration</strong>
+            <span class="tag {{ _cc_band }}" style="font-size:11px"><span class="dot"></span>{{ cc.share_pct }}% top payee</span>
+          </div>
+          <div style="font-size:12px;color:var(--ink-2);line-height:1.5">
+            The single largest deposit payer — <span class="mono">{{ cc.top_payee }}</span> — accounted for {{ cc.share_pct }}% of revenue this statement period.
+            {% if cc.share_pct >= 70 %}
+              <span style="color:var(--neg)">This is a high concentration: if that customer leaves, the merchant's revenue base collapses. Most funders treat concentration above 70% as a structural risk.</span>
+            {% elif cc.share_pct >= 50 %}
+              <span style="color:var(--warn)">Moderate concentration. Verify the relationship is contractual (subscription, recurring PO) rather than a one-off project.</span>
+            {% else %}
+              <span style="color:var(--pos)">Healthy diversification — top payee represents under half of revenue.</span>
+            {% endif %}
+          </div>
+        </div>
+      {% endif %}
+
+      {% if soft_signals.payroll_cadence %}
+        {% set pr = soft_signals.payroll_cadence %}
+        <div>
+          <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+            <strong style="font-size:13px">Payroll cadence</strong>
+            <span class="tag {{ 'pos' if pr.cadence in ['weekly','biweekly','monthly'] else 'warn' }}" style="font-size:11px"><span class="dot"></span>{{ pr.cadence }}</span>
+            {% if pr.pct_of_revenue is not none %}
+              <span class="mono" style="font-size:11px;color:var(--muted)">{{ pr.pct_of_revenue }}% of revenue</span>
+            {% endif %}
+          </div>
+          <div style="font-size:12px;color:var(--ink-2);line-height:1.5">
+            {% if pr.cadence == 'weekly' %}
+              Payroll runs weekly. The merchant has W-2 employees with a predictable cash outflow — confirms an active business and gives a stable cost base for DSCR math.
+            {% elif pr.cadence == 'biweekly' %}
+              Payroll runs every 2 weeks. Same signal as weekly — standard for U.S. small businesses.
+            {% elif pr.cadence == 'monthly' %}
+              Payroll runs monthly. Confirms an active workforce. Slightly less common for hourly-worker businesses; verify if the merchant claims a large hourly headcount.
+            {% elif pr.cadence == 'irregular' or pr.cadence == 'irregular_count_1' %}
+              Payroll events are irregular or only one was found. Could mean the merchant pays contractors (1099) rather than employees, runs payroll through an off-statement processor, or is shrinking headcount. Cross-check claimed FTE count with the broker.
+            {% else %}
+              Cadence pattern: {{ pr.cadence }}.
+            {% endif %}
+            {% if pr.pct_of_revenue is not none %}
+              Payroll absorbed {{ pr.pct_of_revenue }}% of revenue this period.
+              {% if pr.pct_of_revenue >= 40 %}
+                <span style="color:var(--warn)">Above 40% is high — limited headroom for added MCA debt service.</span>
+              {% endif %}
+            {% endif %}
+          </div>
+        </div>
+      {% endif %}
+
+      {% if soft_signals.nsf_negative_overlap %}
+        {% set nso = soft_signals.nsf_negative_overlap %}
+        {% set _nso_band = 'neg' if nso.ratio_pct >= 50 else ('warn' if nso.ratio_pct >= 25 else 'pos') %}
+        <div>
+          <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+            <strong style="font-size:13px">NSF / negative-day overlap</strong>
+            <span class="tag {{ _nso_band }}" style="font-size:11px"><span class="dot"></span>{{ nso.overlap }} of {{ nso.total }} ({{ nso.ratio_pct }}%)</span>
+          </div>
+          <div style="font-size:12px;color:var(--ink-2);line-height:1.5">
+            {{ nso.overlap }} of the {{ nso.total }} NSF fees this period landed on a day when the account was already in the red.
+            {% if nso.ratio_pct >= 50 %}
+              <span style="color:var(--neg)">Majority of NSFs are structural cashflow stress, not isolated processing accidents. Treat as a real signal that the merchant is running tight.</span>
+            {% elif nso.ratio_pct >= 25 %}
+              <span style="color:var(--warn)">A meaningful share coincides with negative-balance days. Less alarming than majority overlap but still worth confirming the merchant has a buffer plan.</span>
+            {% else %}
+              <span style="color:var(--pos)">Most NSFs happened on otherwise-positive days — more likely processing anomalies than structural stress.</span>
+            {% endif %}
+          </div>
+        </div>
+      {% endif %}
+
+      {% if soft_signals.adb_partial_coverage %}
+        {% set adb = soft_signals.adb_partial_coverage %}
+        <div>
+          <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+            <strong style="font-size:13px">ADB calculation coverage</strong>
+            <span class="tag warn" style="font-size:11px"><span class="dot"></span>{{ adb.covered_days }} of {{ adb.total_days }} days estimated</span>
+          </div>
+          <div style="font-size:12px;color:var(--ink-2);line-height:1.5">
+            Average daily balance was computed across {{ adb.covered_days }} of {{ adb.total_days }} statement days; the remaining {{ adb.total_days - adb.covered_days }} day(s) had no running-balance data on the source rows so were estimated by carry-forward. The ADB figure on the score breakdown is still usable but treat the precision as approximate when this gap is more than 20% of the period.
+          </div>
+        </div>
+      {% endif %}
+
+      {% if soft_signals.unmapped %}
+        <div style="font-size:11px;color:var(--muted);font-family:var(--mono);padding-top:8px;border-top:1px dashed var(--line)">
+          Other soft signals not yet wired to an operator card: {{ soft_signals.unmapped|join(' · ') }}
+        </div>
+      {% endif %}
+
+    </div>
+  </div>
+{% endif %}

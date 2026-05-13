@@ -77,6 +77,7 @@ from aegis.storage import (
 )
 from aegis.web._pattern_cards import build_pattern_cards
 from aegis.web._slug import slugify
+from aegis.web._soft_signals import parse_soft_signal_flags
 from aegis.web._stacking_card import build_stacking_card
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -1396,6 +1397,11 @@ async def merchant_detail(
     stacking = None
     score_window = None
     pattern_cards: list[Any] = []
+    soft_signals = (
+        parse_soft_signal_flags(list(latest_doc.all_flags))
+        if latest_doc is not None
+        else None
+    )
     if latest_doc is not None and latest_analysis is not None:
         items = _collect_analyzed_for_merchant(docs, merchant_id)
         if items:
@@ -1452,6 +1458,7 @@ async def merchant_detail(
             "aggregate_labels": _AGGREGATE_LABELS,
             "aggregate_unit_kind": _AGGREGATE_UNIT_KIND,
             "pattern_cards": pattern_cards,
+            "soft_signals": soft_signals,
             "from_intake": from_intake,
             "intake_docs_uploaded": intake_docs_uploaded,
             "intake_docs_failed": intake_docs_failed,
