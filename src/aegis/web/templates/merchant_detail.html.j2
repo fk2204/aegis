@@ -66,11 +66,11 @@
         </div>
         <div class="panel-body">
           <div class="kv">
-            {% if merchant.requested_amount %}<span class="k">Requested</span><span class="v">${{ merchant.requested_amount }}</span>{% endif %}
-            {% if merchant.requested_factor %}<span class="k">Factor</span><span class="v">{{ merchant.requested_factor }}</span>{% endif %}
+            {% if merchant.requested_amount %}<span class="k">Requested</span><span class="v">{{ merchant.requested_amount | whole_money }}</span>{% endif %}
+            {% if merchant.requested_factor %}<span class="k">Factor</span><span class="v">{{ merchant.requested_factor }}<span class="unit-hint">× payback</span></span>{% endif %}
             {% if merchant.requested_term_days %}<span class="k">Term</span><span class="v">{{ merchant.requested_term_days }} days</span>{% endif %}
-            {% if merchant.credit_score %}<span class="k">Owner credit</span><span class="v">{{ merchant.credit_score }}</span>{% endif %}
-            {% if merchant.time_in_business_months %}<span class="k">TIB</span><span class="v">{{ merchant.time_in_business_months }} mo</span>{% endif %}
+            {% if merchant.credit_score %}<span class="k">Owner credit</span><span class="v">{{ merchant.credit_score }}<span class="unit-hint">FICO</span></span>{% endif %}
+            {% if merchant.time_in_business_months %}<span class="k">TIB</span><span class="v">{{ merchant.time_in_business_months }}<span class="unit-hint">months</span></span>{% endif %}
           </div>
         </div>
       </div>
@@ -125,16 +125,25 @@
             <div style="font-size:12px"><a href="/ui/upload">Upload statements →</a></div>
           </div>
         {% else %}
+          <div style="padding:6px 14px 0 14px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+            <span class="risk-band-legend" title="Risk bands mirror parse_status thresholds in parser.pipeline">
+              <span class="mono" style="color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-right:4px">Fraud band:</span>
+              <span><span class="swatch clear"></span>0-34 clear</span>
+              <span><span class="swatch review"></span>35-64 review</span>
+              <span><span class="swatch decline"></span>65-100 manual</span>
+            </span>
+            <span class="mono" style="font-size:10.5px;color:var(--muted)">money columns in USD · ADB = average daily balance · days neg = calendar days the balance went below $0</span>
+          </div>
           <table class="data">
             <thead>
               <tr>
                 <th>Period</th>
                 <th>Status</th>
-                <th class="num">Fraud</th>
-                <th class="num">NSF</th>
-                <th class="num">True revenue</th>
-                <th class="num">ADB</th>
-                <th class="num">Days neg</th>
+                <th class="num" title="Fraud score 0-100. Higher = riskier.">Fraud</th>
+                <th class="num" title="Number of NSF (non-sufficient-funds) fees in the statement period.">NSF</th>
+                <th class="num" title="Deposits net of transfers and chargebacks — operator-side revenue proxy.">True revenue</th>
+                <th class="num" title="Average daily balance across the statement period.">ADB</th>
+                <th class="num" title="Calendar days the running balance was below $0.">Days neg</th>
                 <th>Uploaded</th>
               </tr>
             </thead>
@@ -159,11 +168,15 @@
                     {% endif %}
                   </td>
                   <td><span class="tag {{ _cls.get(d.parse_status, '') }}"><span class="dot"></span>{{ d.parse_status }}</span></td>
-                  <td class="num">{{ d.fraud_score if d.fraud_score is not none else '—' }}</td>
+                  <td class="num">
+                    {% with score=d.fraud_score, compact=true %}
+                      {% include "_fraud_score_chip.html.j2" %}
+                    {% endwith %}
+                  </td>
                   <td class="num">{{ a.num_nsf if a else '—' }}</td>
-                  <td class="num">{{ a.true_revenue if a else '—' }}</td>
-                  <td class="num">{{ a.avg_daily_balance if a else '—' }}</td>
-                  <td class="num">{{ a.days_negative if a else '—' }}</td>
+                  <td class="num">{{ (a.true_revenue if a else None) | whole_money }}</td>
+                  <td class="num">{{ (a.avg_daily_balance if a else None) | whole_money }}</td>
+                  <td class="num">{{ a.days_negative | days_label if a else '—' }}</td>
                   <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ d.uploaded_at.strftime("%Y-%m-%d") }}</span></td>
                 </tr>
                 {% if d.parse_status in ('manual_review', 'review', 'error') and d.all_flags %}
@@ -219,9 +232,22 @@
 
             <div class="kpi-row" style="grid-template-columns:repeat(5, 1fr)">
               {% for key, value in agg_metrics %}
+                {% set _kind = aggregate_unit_kind.get(key, 'count') %}
                 <div class="kpi">
                   <div class="label">{{ aggregate_labels[key] }}</div>
-                  <div class="value">{{ value }}</div>
+                  <div class="value">
+                    {% if _kind == 'money' %}{{ value | whole_money }}
+                    {% elif _kind == 'days' %}{{ value | days_label }}
+                    {% else %}{{ value if value is not none else '—' }}
+                    {% endif %}
+                  </div>
+                  <div class="delta" style="font-size:10.5px;color:var(--muted)">
+                    {% if _kind == 'money' %}USD · sourced from {{ key | replace('_', ' ') }}
+                    {% elif _kind == 'days' %}calendar days
+                    {% elif key == 'num_nsf' %}non-sufficient-funds fee count
+                    {% else %}{{ key | replace('_', ' ') }}
+                    {% endif %}
+                  </div>
                   <div class="delta">
                     <button class="btn" style="padding:3px 8px;font-size:11px;margin-top:4px"
                             hx-get="/ui/documents/{{ document.id }}/aggregate/{{ key }}"

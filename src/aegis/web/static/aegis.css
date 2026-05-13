@@ -553,6 +553,102 @@ table.data td .sub { color: var(--muted); font-size: 11px; }
 .flag-title { font-weight: 500; }
 .flag-desc { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
 
+/* ============ FRAUD-SCORE CHIP ============
+ * Bands mirror parser.pipeline thresholds:
+ *   < 35  = clear    (parse_status proceed)
+ *   35–64 = review   (parse_status review)
+ *   ≥ 65  = decline  (parse_status manual_review)
+ * Updating these requires also updating pipeline.REVIEW_THRESHOLD /
+ * HARD_DECLINE_THRESHOLD and the _fraud_band filter in router.py.
+ */
+.fraud-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-feature-settings: "tnum";
+  letter-spacing: 0.01em;
+  border-radius: 2px;
+  cursor: help;
+  white-space: nowrap;
+}
+.fraud-chip .score { font-weight: 600; }
+.fraud-chip .scale { color: var(--muted); font-size: 10.5px; }
+.fraud-chip .band {
+  text-transform: uppercase;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+.fraud-chip.clear   { color: var(--pos);   border-color: color-mix(in oklch, var(--pos)   30%, var(--line)); background: var(--pos-soft); }
+.fraud-chip.clear   .band { background: var(--pos);   color: var(--paper); }
+.fraud-chip.review  { color: var(--warn);  border-color: color-mix(in oklch, var(--warn)  30%, var(--line)); background: var(--warn-soft); }
+.fraud-chip.review  .band { background: var(--warn);  color: var(--paper); }
+.fraud-chip.decline { color: var(--neg);   border-color: color-mix(in oklch, var(--neg)   30%, var(--line)); background: var(--neg-soft); }
+.fraud-chip.decline .band { background: var(--neg);   color: var(--paper); }
+.fraud-chip.unknown { color: var(--muted); }
+.fraud-chip.unknown .band { background: var(--line); color: var(--muted); }
+
+/* Risk-band legend used in panel headers for context. */
+.risk-band-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  align-items: center;
+}
+.risk-band-legend .swatch {
+  display: inline-block;
+  width: 8px; height: 8px;
+  margin-right: 4px;
+  vertical-align: middle;
+  border-radius: 1px;
+}
+.risk-band-legend .swatch.clear   { background: var(--pos); }
+.risk-band-legend .swatch.review  { background: var(--warn); }
+.risk-band-legend .swatch.decline { background: var(--neg); }
+
+/* Unit hint after a value (e.g. "$" prefix or "days" suffix that isn't decorative). */
+.unit-hint {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-left: 4px;
+  letter-spacing: 0.02em;
+}
+
+/* Tier chip — replaces the bare .tag.accent that was used for tier proxy.
+ * Same visual surface, but adds a hover tooltip via title attribute that
+ * the template now supplies.
+ */
+.tier-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  border-radius: 2px;
+  cursor: help;
+}
+.tier-chip.tier-a, .tier-chip.tier-A { color: var(--pos);   border-color: color-mix(in oklch, var(--pos)   30%, var(--line)); background: var(--pos-soft); }
+.tier-chip.tier-b, .tier-chip.tier-B { color: var(--pos);   border-color: color-mix(in oklch, var(--pos)   30%, var(--line)); background: var(--pos-soft); }
+.tier-chip.tier-c, .tier-chip.tier-C { color: var(--warn);  border-color: color-mix(in oklch, var(--warn)  30%, var(--line)); background: var(--warn-soft); }
+.tier-chip.tier-d, .tier-chip.tier-D { color: var(--warn);  border-color: color-mix(in oklch, var(--warn)  30%, var(--line)); background: var(--warn-soft); }
+.tier-chip.tier-f, .tier-chip.tier-F { color: var(--neg);   border-color: color-mix(in oklch, var(--neg)   30%, var(--line)); background: var(--neg-soft); }
+
 /* ============ OFFER CARD ============ */
 .offer {
   border: 1px solid var(--line);

@@ -118,7 +118,14 @@
     <div class="panel">
       <div class="panel-head">
         <span class="panel-title">Needs your attention</span>
-        <span class="panel-actions mono">{{ attention|length }} document{{ '' if attention|length == 1 else 's' }} in manual_review</span>
+        <span class="panel-actions">
+          <span class="risk-band-legend" title="Risk bands mirror parse_status thresholds in parser.pipeline">
+            <span><span class="swatch clear"></span>0-34 clear</span>
+            <span><span class="swatch review"></span>35-64 review</span>
+            <span><span class="swatch decline"></span>65-100 manual</span>
+          </span>
+          <span class="mono" style="margin-left:10px">{{ attention|length }} document{{ '' if attention|length == 1 else 's' }} in manual_review</span>
+        </span>
       </div>
       <div class="panel-body flush">
         <table class="data">
@@ -140,7 +147,11 @@
               {% for a in attention %}
                 <tr>
                   <td>{{ a.merchant_label }}</td>
-                  <td class="num">{{ a.fraud_score }}</td>
+                  <td class="num">
+                    {% with score=a.fraud_score %}
+                      {% include "_fraud_score_chip.html.j2" %}
+                    {% endwith %}
+                  </td>
                   <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ a.flags or '—' }}</span></td>
                   <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ a.uploaded_at }}</span></td>
                   <td><a class="btn" href="/ui/review">review</a></td>

@@ -32,6 +32,12 @@
             <div style="font-size:12px">Pipeline is clean.</div>
           </div>
         {% else %}
+          <div style="padding:8px 14px 0 14px">
+            <span class="risk-band-legend">
+              <span class="mono" style="color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-right:6px">All rows scored ≥ 65 (manual_review band)</span>
+              <span><span class="swatch decline"></span>65-100 manual</span>
+            </span>
+          </div>
           <table class="data">
             <thead>
               <tr>
@@ -49,7 +55,11 @@
                 <td><span class="mono" style="font-size:11.5px">{{ r.uploaded_at }}</span></td>
                 <td>{{ r.merchant_label }}</td>
                 <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ r.filename }}</span></td>
-                <td class="num"><span class="tag neg"><span class="dot"></span>{{ r.fraud_score }}</span></td>
+                <td class="num">
+                  {% with score=r.fraud_score %}
+                    {% include "_fraud_score_chip.html.j2" %}
+                  {% endwith %}
+                </td>
                 <td>
                   {% if r.flags %}
                     <div style="display:flex;flex-wrap:wrap;gap:4px">

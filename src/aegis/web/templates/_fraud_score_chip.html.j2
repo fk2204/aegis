@@ -1,0 +1,37 @@
+{#
+  Fraud-score chip.
+
+  Renders a fraud_score (0-100) as a color-coded chip with band label
+  and a hover tooltip explaining the scale.
+
+  Bands mirror parser.pipeline thresholds exactly:
+    < 35    = clear    (parse_status proceeds)
+    35-64   = review   (parse_status review)
+    ≥ 65    = manual   (parse_status manual_review)
+
+  Inputs:
+    - score: int | None   The raw fraud_score (0-100). None renders an
+                          "—" chip in the "unknown" band.
+    - compact: bool       If true, suppresses the band label (for dense
+                          table cells). Default false.
+
+  Usage:
+    {% with score=d.fraud_score %}
+      {% include "_fraud_score_chip.html.j2" %}
+    {% endwith %}
+#}
+{% set _band = score | fraud_band %}
+{% set _band_label = {
+  'clear':   'clear',
+  'review':  'review',
+  'decline': 'manual',
+  'unknown': 'n/a',
+}[_band] %}
+{% set _tooltip = "Fraud score 0-100 (higher = riskier). 0-34 clear · 35-64 review · 65-100 manual_review. Mirrors parse_status gate." %}
+<span class="fraud-chip {{ _band }}" title="{{ _tooltip }}">
+  <span class="score">{{ score if score is not none else '—' }}</span>
+  <span class="scale">/100</span>
+  {% if not compact|default(false) %}
+    <span class="band">{{ _band_label }}</span>
+  {% endif %}
+</span>

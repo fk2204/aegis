@@ -33,6 +33,14 @@
             <div style="font-size:12px">Add a merchant via <a href="/ui/intake">Intake</a> and upload their bank statement via <a href="/ui/upload">Upload</a>.</div>
           </div>
         {% else %}
+          <div style="padding:8px 14px 0 14px">
+            <span class="risk-band-legend" title="Risk bands mirror parse_status thresholds in parser.pipeline">
+              <span class="mono" style="color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-right:6px">Fraud band legend:</span>
+              <span><span class="swatch clear"></span>0-34 clear</span>
+              <span><span class="swatch review"></span>35-64 review</span>
+              <span><span class="swatch decline"></span>65-100 manual</span>
+            </span>
+          </div>
           <table class="data">
             <thead>
               <tr>
@@ -71,10 +79,21 @@
                     <span class="dot"></span>{{ r.parse_status }}
                   </span>
                 </td>
-                <td class="num">{{ r.fraud_score if r.fraud_score is not none else '—' }}</td>
+                <td class="num">
+                  {% with score=r.fraud_score, compact=true %}
+                    {% include "_fraud_score_chip.html.j2" %}
+                  {% endwith %}
+                </td>
                 <td>
                   {% if r.tier_proxy %}
-                    <span class="tag accent"><span class="dot"></span>{{ r.tier_proxy }}</span>
+                    {% set _tier_tooltips = {
+                      'A': 'Tier A · 80-100 score · approve',
+                      'B': 'Tier B · 65-79 score · approve',
+                      'C': 'Tier C · 50-64 score · refer to manager',
+                      'D': 'Tier D · 35-49 score · refer / decline-likely',
+                      'F': 'Tier F · below 35 score · hard decline',
+                    } %}
+                    <span class="tier-chip tier-{{ r.tier_proxy }}" title="{{ _tier_tooltips.get(r.tier_proxy, r.tier_proxy) }}">{{ r.tier_proxy }}</span>
                   {% else %}
                     <span style="color:var(--muted);font-family:var(--mono);font-size:11.5px">—</span>
                   {% endif %}

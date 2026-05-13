@@ -80,6 +80,71 @@ from aegis.web._stacking_card import build_stacking_card
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
+
+# Jinja filters accept arbitrary template-side values (None, Decimal, int,
+# str). The unions below cover what AEGIS actually sends through — typing
+# more narrowly would force callers to pre-coerce, defeating the filter's
+# purpose. Justifies the broad input types per CLAUDE.md "Any" rule.
+_MoneyLike = Decimal | int | float | str | None
+_NumericLike = int | str | None
+
+
+def _money_filter(value: _MoneyLike, *, whole: bool = False) -> str:
+    """Format a Decimal/int/float as $X,XXX[.XX]. None → em-dash."""
+    if value is None or value == "":
+        return "—"
+    try:
+        d = Decimal(str(value))
+    except (ArithmeticError, ValueError):
+        return str(value)
+    sign = "-" if d < 0 else ""
+    d = abs(d)
+    if whole or d == d.to_integral_value():
+        whole_part = int(d)
+        return f"{sign}${whole_part:,}"
+    cents = d.quantize(Decimal("0.01"))
+    int_part, _, frac = str(cents).partition(".")
+    return f"{sign}${int(int_part):,}.{frac}"
+
+
+def _whole_money_filter(value: _MoneyLike) -> str:
+    return _money_filter(value, whole=True)
+
+
+def _days_label_filter(value: _NumericLike) -> str:
+    if value is None or value == "":
+        return "—"
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{n} day" if n == 1 else f"{n} days"
+
+
+def _fraud_band(score: _NumericLike) -> str:
+    """Map fraud_score 0-100 to a risk band keyed off pipeline.py thresholds.
+
+    Bands mirror parser.pipeline constants exactly: REVIEW_THRESHOLD=35,
+    HARD_DECLINE_THRESHOLD=65. Keeps UI legend in sync with parse_status gate.
+    """
+    if score is None:
+        return "unknown"
+    try:
+        n = int(score)
+    except (TypeError, ValueError):
+        return "unknown"
+    if n < 35:
+        return "clear"
+    if n < 65:
+        return "review"
+    return "decline"
+
+
+templates.env.filters["money"] = _money_filter
+templates.env.filters["whole_money"] = _whole_money_filter
+templates.env.filters["days_label"] = _days_label_filter
+templates.env.filters["fraud_band"] = _fraud_band
+
 router = APIRouter(prefix="/ui", tags=["dashboard"])
 
 
@@ -89,6 +154,17 @@ _AGGREGATE_LABELS: dict[str, str] = {
     "num_nsf": "NSF Count",
     "days_negative": "Days Negative",
     "mca_daily_total": "MCA Daily Total",
+}
+
+# Per-aggregate unit hint shown under the KPI value (e.g. "$" amount,
+# "days", "count"). Kept aligned with _AGGREGATE_LABELS — every key
+# present in labels must have an entry here so the KPI tile can format.
+_AGGREGATE_UNIT_KIND: dict[str, str] = {
+    "true_revenue": "money",
+    "avg_daily_balance": "money",
+    "num_nsf": "count",
+    "days_negative": "days",
+    "mca_daily_total": "money",
 }
 
 _AGGREGATE_SOURCE_FIELDS: dict[str, str] = {
@@ -1315,6 +1391,7 @@ async def merchant_detail(
             "document": latest_doc,
             "analysis": latest_analysis,
             "aggregate_labels": _AGGREGATE_LABELS,
+            "aggregate_unit_kind": _AGGREGATE_UNIT_KIND,
             "score_result": score_result,
             "score_window": score_window,
             "stacking": stacking,
