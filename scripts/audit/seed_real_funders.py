@@ -8,15 +8,23 @@ Sourced from the operator's signed packets in ``OneDrive/COmmera ugovori/``:
 Idempotent: re-running upserts by name (existing IDs preserved if the funder
 already exists).
 
+Multi-barrier guard (same shape as scripts/audit/seed_test_funders.py):
+  1. ``--confirm`` flag required (else dry run + exit).
+  2. If ``AEGIS_STORAGE_BACKEND`` is not ``memory``,
+     ``AEGIS_ALLOW_PRODUCTION_SEED=true`` env var also required.
+
 Run on the box, with /etc/aegis/aegis.env sourced:
 
     set -a; source /etc/aegis/aegis.env; set +a
     cd /opt/aegis
-    .venv/bin/python scripts/_seed_real_funders.py
+    AEGIS_ALLOW_PRODUCTION_SEED=true \\
+        .venv/bin/python scripts/audit/seed_real_funders.py --confirm
 """
 
 from __future__ import annotations
 
+import argparse
+import os
 import sys
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -27,6 +35,40 @@ from aegis.funders.repository import (
     InMemoryFunderRepository,
     SupabaseFunderRepository,
 )
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Seed three real funders from signed ISO packets. "
+        "Refuses to write without --confirm. Refuses production writes "
+        "without AEGIS_ALLOW_PRODUCTION_SEED=true."
+    )
+    p.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Actually perform the write. Without this flag the script "
+        "runs in dry-run mode (lists what would happen, exits 0).",
+    )
+    return p.parse_args()
+
+
+def _gate(confirm: bool) -> bool:
+    """Return True if writes should proceed, False if dry-run only."""
+    if not confirm:
+        print("DRY RUN (no --confirm flag). Would perform the following:\n")
+        return False
+    backend = os.environ.get("AEGIS_STORAGE_BACKEND", "").lower()
+    if backend != "memory":
+        if os.environ.get("AEGIS_ALLOW_PRODUCTION_SEED", "").lower() != "true":
+            print(
+                "REFUSED: writing against a non-memory backend requires "
+                "AEGIS_ALLOW_PRODUCTION_SEED=true in the environment.\n"
+                "  This is a deliberate barrier — funder seeding must be "
+                "an explicit operator decision.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+    return True
 
 _LOGIC_NOTES = (
     "4-tier ISO structure: Elite (1.25 buy, 5+ yrs TIB, 700+ FICO, $100K+ MRR, "
@@ -176,6 +218,9 @@ def _pick_repository() -> FunderRepository:
 
 
 def main() -> int:
+    args = _parse_args()
+    will_write = _gate(args.confirm)
+
     repo = _pick_repository()
     existing = {f.name.lower(): f for f in repo.list_active()}
     funders = _build_funders()
@@ -183,11 +228,18 @@ def main() -> int:
     for incoming in funders:
         prior = existing.get(incoming.name.lower())
         if prior is not None:
-            # Preserve the existing id so re-runs don't churn UUIDs.
             incoming = incoming.model_copy(update={"id": prior.id})
-            action = "UPDATE"
+            action = "WOULD UPDATE" if not will_write else "UPDATE"
         else:
-            action = "INSERT"
+            action = "WOULD INSERT" if not will_write else "INSERT"
+        if not will_write:
+            print(
+                f"{action:13} {incoming.name:30} "
+                f"min_rev={incoming.min_monthly_revenue} "
+                f"max_adv={incoming.max_advance} "
+                f"excl={len(incoming.excluded_industries)}"
+            )
+            continue
         saved = repo.upsert(incoming)
         print(
             f"{action:6} {saved.name:30} "
@@ -197,6 +249,9 @@ def main() -> int:
             f"excl={len(saved.excluded_industries)}"
         )
 
+    if not will_write:
+        print("\nDry run complete. Re-run with --confirm to apply.")
+        return 0
     print(f"\nTotal active funders now: {len(repo.list_active())}")
     return 0
 

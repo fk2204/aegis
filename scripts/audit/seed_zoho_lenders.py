@@ -23,14 +23,22 @@ Field mapping (FunderRow → Lender):
                                 unmapped items captured in Internal_Notes)
   notes                       → Internal_Notes (appended)
 
+Multi-barrier guard (same shape as scripts/audit/seed_real_funders.py):
+  1. ``--confirm`` flag required (else dry run + exit).
+  2. ``AEGIS_ALLOW_PRODUCTION_SEED=true`` env var required for any actual
+     Zoho write (Zoho has no "test" mode — every call hits the real CRM).
+
 Run on the box:
     set -a; source /etc/aegis/aegis.env; set +a
     cd /opt/aegis
-    .venv/bin/python scripts/_seed_zoho_lenders.py
+    AEGIS_ALLOW_PRODUCTION_SEED=true \\
+        .venv/bin/python scripts/audit/seed_zoho_lenders.py --confirm
 """
 
 from __future__ import annotations
 
+import argparse
+import os
 import sys
 from decimal import Decimal
 from typing import Any
@@ -38,6 +46,36 @@ from typing import Any
 from aegis.api.deps import get_funder_repository
 from aegis.funders.models import FunderRow
 from aegis.zoho.client import ZohoClient
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Sync three real AEGIS funders to Zoho Lenders. "
+        "Refuses to write without --confirm. Refuses any Zoho write "
+        "without AEGIS_ALLOW_PRODUCTION_SEED=true (Zoho has no test mode)."
+    )
+    p.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Actually perform the writes. Without this flag the script "
+        "runs in dry-run mode (lists the Zoho payloads it would send).",
+    )
+    return p.parse_args()
+
+
+def _gate(confirm: bool) -> bool:
+    if not confirm:
+        print("DRY RUN (no --confirm flag). Would send these payloads:\n")
+        return False
+    if os.environ.get("AEGIS_ALLOW_PRODUCTION_SEED", "").lower() != "true":
+        print(
+            "REFUSED: writing to Zoho requires "
+            "AEGIS_ALLOW_PRODUCTION_SEED=true in the environment.\n"
+            "  Zoho has no 'test' mode — every call hits the real CRM.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return True
 
 # --- mapping helpers -------------------------------------------------------
 
@@ -238,7 +276,9 @@ def _upsert_lender(client: ZohoClient, payload: dict[str, Any]) -> tuple[str, st
 
 
 def main() -> int:
-    client = ZohoClient()
+    args = _parse_args()
+    will_write = _gate(args.confirm)
+
     repo = get_funder_repository()
     funders = [
         f for f in repo.list_active()
@@ -250,6 +290,22 @@ def main() -> int:
             f"in AEGIS; found {len(funders)}",
             file=sys.stderr,
         )
+
+    if not will_write:
+        for f in funders:
+            payload = _funder_to_lender_payload(f)
+            excl_count = len(payload.get("Excluded_Industries") or [])
+            print(
+                f"WOULD UPSERT {f.name:30} "
+                f"min_rev={payload.get('Minimum_Monthly_Revenue')} "
+                f"max_adv={payload.get('Maximum_Funding_Amount')} "
+                f"excl_picklist={excl_count} "
+                f"type={payload.get('Lender_Type')!r}"
+            )
+        print("\nDry run complete. Re-run with --confirm to apply.")
+        return 0
+
+    client = ZohoClient()
     for f in funders:
         payload = _funder_to_lender_payload(f)
         action, zoho_id = _upsert_lender(client, payload)

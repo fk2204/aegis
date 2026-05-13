@@ -5,10 +5,13 @@ $85K MRR, 680 FICO, 24 mo TIB, 1 stacked position), runs the matcher
 against every active funder in the prod repo, and prints the match
 result + submission-package preview for any non-red card.
 
-Run on the box (read-only, no writes):
+Read-only: no DB writes, no Zoho calls. Safe to run any time with the
+funder repository bound to either backend.
+
+Run on the box:
     set -a; source /etc/aegis/aegis.env; set +a
     cd /opt/aegis
-    .venv/bin/python scripts/_test_real_funders_match.py
+    .venv/bin/python scripts/audit/test_real_funders_match.py
 """
 
 from __future__ import annotations
