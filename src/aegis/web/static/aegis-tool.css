@@ -15,7 +15,7 @@
 /* ===================== DECK (page title bar) ===================== */
 
 .dossier-page .deck {
-  max-width: 1180px;
+  max-width: 1040px;
   margin: 0 auto;
   padding: 18px 56px 14px;
   display: flex;
@@ -55,7 +55,7 @@
 /* ===================== KPI STRIP ===================== */
 
 .dossier-page .strip {
-  max-width: 1180px;
+  max-width: 1040px;
   margin: 0 auto;
   padding: 0 56px;
   display: grid;
@@ -101,7 +101,7 @@
 /* ===================== PAGE BODY ===================== */
 
 .dossier-page .body {
-  max-width: 1180px;
+  max-width: 1040px;
   margin: 0 auto;
   padding: 24px 56px;
   display: grid;
@@ -112,7 +112,7 @@
 .dossier-page .body.cols-2 { grid-template-columns: 1fr 360px; }
 .dossier-page .body.cols-form {
   grid-template-columns: 720px 1fr;
-  max-width: 1180px;
+  max-width: 1040px;
 }
 
 /* ===================== SECTION HEADERS ===================== */
@@ -418,7 +418,7 @@
 /* ===================== COMPLIANCE RIBBON ===================== */
 
 .dossier-page .compliance-ribbon {
-  max-width: 1180px;
+  max-width: 1040px;
   margin: 24px auto 0;
   padding: 14px 56px 0;
   border-top: 1px solid var(--ink);
@@ -449,7 +449,7 @@
 /* ===================== STATUS BAR (foot) ===================== */
 
 .dossier-page .statusbar {
-  max-width: 1180px;
+  max-width: 1040px;
   margin: 32px auto 0;
   padding: 12px 56px;
   border-top: 1px solid var(--rule);

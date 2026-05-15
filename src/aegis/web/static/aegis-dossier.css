@@ -34,8 +34,12 @@
   --approve-soft: #D8E3D8;   /* warm sage */
   --accent:       #1F3E32;   /* Commera accent-dark — link emphasis */
 
-  --serif:  "Fraunces", "Hoefler Text", "Adobe Caslon Pro", "Iowan Old Style", Georgia, serif;
-  --mono:   "JetBrains Mono", "Berkeley Mono", "IBM Plex Mono", ui-monospace, monospace;
+  /* Typography — Commera-matched: Poppins (display) + Inter (body).
+   * The --serif variable name is retained for backward-compat with every
+   * existing selector; it now resolves to Poppins. --mono kept on Inter
+   * so any "mono" text on the page is still Commera body. */
+  --serif:  "Poppins", system-ui, "Segoe UI", Roboto, sans-serif;
+  --mono:   "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
 }
 
 /* Page substrate — flat brand cream. (Was a dotted "paper grain" via
@@ -45,9 +49,11 @@
   margin: 0;
   background: var(--paper);
   background-attachment: fixed;
-  color: var(--ink);
-  font-family: var(--serif);
-  font-feature-settings: "ss01", "kern", "liga";
+  color: var(--ink-2);
+  /* Body defaults to Inter (Commera body). Headings still pick up
+   * Poppins via the existing h1-h6 + .serif uses of var(--serif). */
+  font-family: "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "kern", "liga";
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -104,7 +110,7 @@
 
 /* ============ masthead ============ */
 .dossier-page .masthead {
-  max-width: 1180px;
+  max-width: 1040px;
   margin: 0 auto;
   padding: 28px 56px 0;
   border-bottom: 1px solid var(--ink);
@@ -189,7 +195,7 @@
 
 /* ============ banner (from intake / upload flash) ============ */
 .dossier-page .flash {
-  max-width: 1180px;
+  max-width: 1040px;
   margin: 14px auto 0;
   padding: 14px 56px 0;
 }
@@ -214,7 +220,7 @@
 
 /* ============ sheet (two-column body) ============ */
 .dossier-page .sheet {
-  max-width: 1180px;
+  max-width: 1040px;
   margin: 0 auto;
   padding: 0 56px;
   display: grid;
