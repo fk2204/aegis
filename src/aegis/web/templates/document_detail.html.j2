@@ -1,0 +1,282 @@
+{% extends "base.html.j2" %}
+{% set active = 'Merchants' %}
+{% block title %}{{ document.original_filename }} — Statement · AEGIS{% endblock %}
+
+{% block deck %}
+<header class="deck">
+  <h1>{{ document.original_filename }}<em> · statement</em></h1>
+  <div class="meta">
+    {% if merchant %}{{ merchant.business_name }} &nbsp;·&nbsp; {{ merchant.state }} &nbsp;·&nbsp; {% endif %}
+    doc · {{ document.id|string|truncate(8, True, '') }} &nbsp;·&nbsp; uploaded {{ document.uploaded_at.strftime('%Y-%m-%d %H:%M') }}
+  </div>
+  <div class="actions">
+    {% if merchant %}<a class="btn" href="/ui/merchants/{{ merchant.id }}">← Merchant</a>{% endif %}
+    <a class="btn ghost" href="/ui/review">Review queue</a>
+  </div>
+</header>
+
+{# === KPI strip — statement-level snapshot === #}
+<section class="strip" style="--strip-cols:6">
+  <div class="cell">
+    <div class="k">Parse status</div>
+    <div class="v {% if document.parse_status == 'proceed' %}calm{% elif document.parse_status == 'manual_review' or document.parse_status == 'error' %}bad{% elif document.parse_status == 'review' %}warn{% endif %}" style="font-size:22px">
+      <span class="chip {% if document.parse_status == 'proceed' %}pos{% elif document.parse_status == 'manual_review' or document.parse_status == 'error' %}bad{% elif document.parse_status == 'review' %}warn{% endif %}">{{ document.parse_status }}</span>
+    </div>
+  </div>
+  <div class="cell">
+    <div class="k">Fraud score</div>
+    <div class="v {% if document.fraud_score is number and document.fraud_score >= 65 %}bad{% elif document.fraud_score is number and document.fraud_score >= 35 %}warn{% elif document.fraud_score is number %}calm{% endif %}">
+      {% if document.fraud_score is number %}{{ document.fraud_score }}<span class="sub">/100</span>{% else %}—{% endif %}
+    </div>
+  </div>
+  <div class="cell">
+    <div class="k">Transactions</div>
+    <div class="v">{{ transactions|length }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">Flags</div>
+    <div class="v {{ 'warn' if document.all_flags else '' }}">{{ document.all_flags|length }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">File size</div>
+    <div class="v" style="font-size:22px">{{ "%.1f"|format(document.byte_size / 1024 / 1024) }}<span class="sub">MB</span></div>
+  </div>
+  <div class="cell">
+    <div class="k">Parsed at</div>
+    <div class="v" style="font-size:18px">{% if document.parsed_at %}{{ document.parsed_at.strftime('%H:%M') }}<span class="sub">{{ document.parsed_at.strftime('%Y-%m-%d') }}</span>{% else %}—{% endif %}</div>
+  </div>
+</section>
+{% endblock %}
+
+{% block body %}
+<section class="body cols-2">
+  <div>
+
+    {# === Statement period + aggregates === #}
+    {% if analysis %}
+      <header class="sect-head">
+        <h2>Cashflow aggregates</h2>
+        <div class="rule"></div>
+        <div class="meta">{{ analysis.statement_period_start }} → {{ analysis.statement_period_end }} · {{ analysis.statement_days }} days</div>
+      </header>
+
+      <section class="strip" style="--strip-cols:4;padding-left:0;padding-right:0;margin-top:14px">
+        <div class="cell" style="padding-left:0">
+          <div class="k">True revenue</div>
+          <div class="v" style="font-size:28px">${{ "{:,.0f}".format(analysis.true_revenue) }}</div>
+        </div>
+        <div class="cell">
+          <div class="k">Monthly revenue</div>
+          <div class="v" style="font-size:28px">${{ "{:,.0f}".format(analysis.monthly_revenue) }}</div>
+        </div>
+        <div class="cell">
+          <div class="k">Avg daily balance</div>
+          <div class="v" style="font-size:28px">${{ "{:,.0f}".format(analysis.avg_daily_balance) }}</div>
+        </div>
+        <div class="cell" style="border-right:0;padding-right:0">
+          <div class="k">Lowest balance</div>
+          <div class="v {% if analysis.lowest_balance < 0 %}bad{% endif %}" style="font-size:28px">${{ "{:,.0f}".format(analysis.lowest_balance) }}</div>
+        </div>
+      </section>
+
+      <section class="strip" style="--strip-cols:5;padding-left:0;padding-right:0;border-bottom:0;margin-top:10px">
+        <div class="cell" style="padding-left:0">
+          <div class="k">NSFs</div>
+          <div class="v {{ 'bad' if analysis.num_nsf > 2 else ('warn' if analysis.num_nsf else '') }}" style="font-size:24px">{{ analysis.num_nsf }}</div>
+        </div>
+        <div class="cell">
+          <div class="k">Days negative</div>
+          <div class="v {{ 'bad' if analysis.days_negative > 3 else ('warn' if analysis.days_negative else '') }}" style="font-size:24px">{{ analysis.days_negative }}</div>
+        </div>
+        <div class="cell">
+          <div class="k">MCA positions</div>
+          <div class="v {{ 'warn' if analysis.mca_positions else '' }}" style="font-size:24px">{{ analysis.mca_positions }}</div>
+        </div>
+        <div class="cell">
+          <div class="k">MCA daily total</div>
+          <div class="v" style="font-size:24px">${{ "{:,.0f}".format(analysis.mca_daily_total) }}</div>
+        </div>
+        <div class="cell" style="border-right:0;padding-right:0">
+          <div class="k">Debt-to-revenue</div>
+          <div class="v" style="font-size:24px">{{ "{:.1%}".format(analysis.debt_to_revenue) }}</div>
+        </div>
+      </section>
+
+      {% if analysis.monthly_breakdown %}
+        <header class="sect-head" style="margin-top:32px">
+          <h2>Per-month breakdown</h2>
+          <div class="rule"></div>
+          <div class="meta">{{ analysis.monthly_breakdown|length }} month{{ '' if analysis.monthly_breakdown|length == 1 else 's' }}</div>
+        </header>
+        <table class="queue">
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th class="num">Deposits</th>
+              <th class="num">Withdrawals</th>
+              <th class="num">Avg balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for m in analysis.monthly_breakdown %}
+              <tr class="no-click">
+                <td class="mono-cell">{{ m.get('month', '—') }}</td>
+                <td class="mono-cell" style="text-align:right">${{ m.get('deposits', '0') }}</td>
+                <td class="mono-cell" style="text-align:right">${{ m.get('withdrawals', '0') }}</td>
+                <td class="mono-cell" style="text-align:right">${{ m.get('avg_balance', '0') }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      <header class="sect-head" style="margin-top:32px">
+        <h2>Period balances</h2>
+        <div class="rule"></div>
+      </header>
+      <div class="feed">
+        <div class="event"><div class="t">$</div><div class="txt"><strong>Beginning</strong>&nbsp;&nbsp;${{ "{:,.2f}".format(analysis.beginning_balance) }}</div></div>
+        <div class="event"><div class="t">$</div><div class="txt"><strong>Ending</strong>&nbsp;&nbsp;${{ "{:,.2f}".format(analysis.ending_balance) }}</div></div>
+        <div class="event"><div class="t">Δ</div><div class="txt"><strong>Delta</strong>&nbsp;&nbsp;{% set _delta = analysis.ending_balance - analysis.beginning_balance %}{% if _delta >= 0 %}+{% endif %}${{ "{:,.2f}".format(_delta) }}</div></div>
+        <div class="event"><div class="t">P</div><div class="txt"><strong>Payroll detected</strong>&nbsp;&nbsp;{{ 'yes' if analysis.payroll_detected else 'no' }}</div></div>
+        <div class="event"><div class="t">R</div><div class="txt"><strong>Returned ACH</strong>&nbsp;&nbsp;{{ analysis.returned_ach_count }}</div></div>
+      </div>
+    {% else %}
+      <header class="sect-head">
+        <h2>Cashflow aggregates</h2>
+        <div class="rule"></div>
+        <div class="meta">awaiting analysis</div>
+      </header>
+      <div class="empty">No analysis row<span class="copy">This document has not completed the aggregate pass yet.</span></div>
+    {% endif %}
+
+    {# === Transactions === #}
+    <header class="sect-head" style="margin-top:32px">
+      <h2>Transactions</h2>
+      <div class="rule"></div>
+      <div class="meta">{{ transactions|length }} classified row{{ '' if transactions|length == 1 else 's' }}</div>
+    </header>
+
+    {% if not transactions %}
+      <div class="empty">No transactions extracted yet</div>
+    {% else %}
+      {# Category filter strip — pure CSS, no JS state #}
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin:12px 0">
+        {% for cat, cnt in category_counts|dictsort %}
+          <span class="chip">{{ cat }} · {{ cnt }}</span>
+        {% endfor %}
+      </div>
+
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Description</th>
+            <th>Category</th>
+            <th class="num">Amount</th>
+            <th class="num">Balance</th>
+            <th class="num">Page:Line</th>
+            <th>Sources</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in transactions %}
+            {% set _amt = t.amount %}
+            {% set _is_credit = _amt >= 0 %}
+            <tr class="no-click">
+              <td class="mono-cell">{{ t.posted_date }}</td>
+              <td style="font-family:var(--serif);font-size:13.5px;color:var(--ink-2);max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ t.description }}">{{ t.description }}</td>
+              <td>
+                {% set _cat_cls = {
+                  'deposit':'pos','payroll':'pos','ach_credit':'pos','wire_in':'pos','refund':'pos',
+                  'mca_debit':'bad','nsf_fee':'bad','chargeback':'bad',
+                  'wire_out':'warn','fee':'warn','transfer':'',
+                }.get(t.category, '') %}
+                <span class="chip {{ _cat_cls }}">{{ t.category }}</span>
+              </td>
+              <td class="mono-cell" style="text-align:right;color:{{ 'var(--approve)' if _is_credit else 'var(--decline)' }};font-weight:500">
+                {% if _is_credit %}+{% endif %}${{ "{:,.2f}".format(_amt) }}
+              </td>
+              <td class="mono-cell" style="text-align:right">
+                {% if t.running_balance is not none %}${{ "{:,.2f}".format(t.running_balance) }}{% else %}—{% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right;color:var(--ink-3)">p.{{ t.source_page }}:{{ t.source_line }}</td>
+              <td>
+                {% set _src = contributes.get(t.id, []) %}
+                {% if _src %}
+                  {% for label in _src %}<span class="chip info" style="font-size:9px">{{ label }}</span>{% endfor %}
+                {% else %}
+                  <span class="mono-cell">—</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  {# === Sidebar: metadata + flags + linked merchant === #}
+  <aside>
+    <header class="sect-head">
+      <h2>File metadata</h2>
+      <div class="rule"></div>
+    </header>
+    <div class="feed">
+      <div class="event"><div class="t">F</div><div class="txt"><strong>Filename</strong>&nbsp;&nbsp;<span class="mono-inline">{{ document.original_filename }}</span></div></div>
+      <div class="event"><div class="t">#</div><div class="txt"><strong>Document ID</strong>&nbsp;&nbsp;<span class="mono-inline">{{ document.id }}</span></div></div>
+      <div class="event"><div class="t">H</div><div class="txt"><strong>SHA-256</strong>&nbsp;&nbsp;<span class="mono-inline" style="word-break:break-all">{{ document.file_hash[:32] }}…</span></div></div>
+      <div class="event"><div class="t">B</div><div class="txt"><strong>Size</strong>&nbsp;&nbsp;{{ "{:,}".format(document.byte_size) }} bytes</div></div>
+      <div class="event"><div class="t">U</div><div class="txt"><strong>Uploaded by</strong>&nbsp;&nbsp;{{ document.uploaded_by }}</div></div>
+      <div class="event"><div class="t">↑</div><div class="txt"><strong>Uploaded</strong>&nbsp;&nbsp;{{ document.uploaded_at.strftime('%Y-%m-%d %H:%M UTC') }}</div></div>
+      {% if document.parsed_at %}<div class="event"><div class="t">✓</div><div class="txt"><strong>Parsed</strong>&nbsp;&nbsp;{{ document.parsed_at.strftime('%Y-%m-%d %H:%M UTC') }}</div></div>{% endif %}
+      {% if document.error_detail %}<div class="event"><div class="t" style="color:var(--decline)">!</div><div class="txt" style="color:var(--decline)"><strong>Error</strong>&nbsp;&nbsp;{{ document.error_detail }}</div></div>{% endif %}
+    </div>
+
+    {% if document.all_flags %}
+      <header class="sect-head" style="margin-top:28px">
+        <h2>Flags · {{ document.all_flags|length }}</h2>
+        <div class="rule"></div>
+      </header>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:12px">
+        {% for f in document.all_flags %}
+          <span class="chip {{ 'bad' if f.startswith('[META]') else 'warn' }}" style="justify-content:flex-start;font-size:10.5px">{{ f }}</span>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if document.fraud_score_breakdown %}
+      <header class="sect-head" style="margin-top:28px">
+        <h2>Score breakdown</h2>
+        <div class="rule"></div>
+      </header>
+      <div class="feed">
+        {% for k, v in document.fraud_score_breakdown.items() %}
+          <div class="event"><div class="t" style="text-align:right">{{ v }}</div><div class="txt">{{ k }}</div></div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if merchant %}
+      <header class="sect-head" style="margin-top:28px">
+        <h2>Linked merchant</h2>
+        <div class="rule"></div>
+      </header>
+      <div class="feed">
+        <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/merchants/{{ merchant.id }}"><strong>{{ merchant.business_name }}</strong></a>{% if merchant.dba %} · {{ merchant.dba }}{% endif %}</div></div>
+        <div class="event"><div class="t">O</div><div class="txt"><strong>Owner</strong>&nbsp;&nbsp;{{ merchant.owner_name }}</div></div>
+        <div class="event"><div class="t">St</div><div class="txt"><strong>State</strong>&nbsp;&nbsp;{{ merchant.state }}{% if merchant.industry_naics %} · NAICS {{ merchant.industry_naics }}{% endif %}</div></div>
+        {% if merchant.credit_score %}<div class="event"><div class="t">F</div><div class="txt"><strong>FICO</strong>&nbsp;&nbsp;{{ merchant.credit_score }}</div></div>{% endif %}
+        {% if merchant.time_in_business_months %}<div class="event"><div class="t">T</div><div class="txt"><strong>TIB</strong>&nbsp;&nbsp;{{ merchant.time_in_business_months }} mo</div></div>{% endif %}
+        {% if merchant.entity_type %}<div class="event"><div class="t">E</div><div class="txt"><strong>Entity</strong>&nbsp;&nbsp;{{ merchant.entity_type }}</div></div>{% endif %}
+      </div>
+    {% else %}
+      <header class="sect-head" style="margin-top:28px">
+        <h2>Linked merchant</h2>
+        <div class="rule"></div>
+      </header>
+      <div class="empty" style="padding:20px 0">Orphan — no merchant attached</div>
+    {% endif %}
+  </aside>
+</section>
+{% endblock %}

@@ -109,6 +109,8 @@
       {% if analysis %}<a href="#evidence"><span class="n">§ 2</span> Cashflow evidence</a>{% endif %}
       {% if pattern_cards or stacking or (soft_signals and not soft_signals.is_empty) %}<a href="#findings"><span class="n">§ 3</span> Pattern findings</a>{% endif %}
       <a href="#routing"><span class="n">§ 4</span> Funder routing</a>
+      {% if documents %}<a href="#statements"><span class="n">§ 4½</span> Statements ledger</a>{% endif %}
+      <a href="#profile"><span class="n">§ 4¾</span> Merchant profile</a>
       <a href="#disposition"><span class="n">§ 5</span> Disposition</a>
       {% if history %}<a href="#audit"><span class="n">§ 6</span> Audit log</a>{% endif %}
     </nav>
@@ -137,17 +139,17 @@
       <div class="compliance">
         <h4>Statements · {{ documents|length }}</h4>
         <div class="doc-list">
-          {% for entry in documents[:6] %}
+          {% for entry in documents %}
             {% set d = entry.document %}
             {% set a = entry.analysis %}
-            {% if a %}
-              {{ a.statement_period_start.strftime('%b %Y') }} · <span class="stat-{{ d.parse_status }}">{{ d.parse_status }}</span>
-            {% else %}
-              (uploaded {{ d.uploaded_at.strftime('%Y-%m-%d') }}) · <span class="stat-{{ d.parse_status }}">{{ d.parse_status }}</span>
-            {% endif %}
-            <br>
+            <a href="/ui/documents/{{ d.id }}" style="display:block;color:var(--accent);border-bottom:0;padding:2px 0">
+              {% if a %}
+                {{ a.statement_period_start.strftime('%b %Y') }} · <span class="stat-{{ d.parse_status }}">{{ d.parse_status }}</span>
+              {% else %}
+                (uploaded {{ d.uploaded_at.strftime('%Y-%m-%d') }}) · <span class="stat-{{ d.parse_status }}">{{ d.parse_status }}</span>
+              {% endif %}
+            </a>
           {% endfor %}
-          {% if documents|length > 6 %}<span style="color:var(--ink-3)">+ {{ documents|length - 6 }} older</span>{% endif %}
         </div>
       </div>
     {% endif %}
@@ -555,6 +557,88 @@
           <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Open match panel →</a>
         </div>
       </div>
+    </section>
+
+    {# ============== § 4½ STATEMENTS LEDGER ============== #}
+    {% if documents %}
+    <section id="statements" class="section">
+      <header>
+        <span class="n">§ 4½</span>
+        <h2>Statements <em>· ledger</em></h2>
+        <span class="footnote">{{ documents|length }} on file · click any row → full detail</span>
+      </header>
+      <table class="audit-ledger">
+        <thead>
+          <tr>
+            <th style="width:140px">Period</th>
+            <th style="width:120px">Parse status</th>
+            <th class="num" style="width:80px;text-align:right">Fraud</th>
+            <th class="num" style="width:130px;text-align:right">True revenue</th>
+            <th class="num" style="width:100px;text-align:right">NSFs</th>
+            <th class="num" style="width:100px;text-align:right">Neg days</th>
+            <th style="width:120px">File</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry in documents %}
+            {% set d = entry.document %}
+            {% set a = entry.analysis %}
+            <tr style="cursor:pointer" onclick="window.location.href='/ui/documents/{{ d.id }}'">
+              <td class="when">
+                {% if a %}{{ a.statement_period_start.strftime('%b %Y') }}{% else %}<span style="color:var(--ink-3)">{{ d.uploaded_at.strftime('%Y-%m-%d') }}</span>{% endif %}
+              </td>
+              <td class="action">
+                <span class="pill {% if d.parse_status == 'proceed' %}ok{% elif d.parse_status == 'manual_review' or d.parse_status == 'error' %}bad{% elif d.parse_status == 'review' %}warn{% endif %}">{{ d.parse_status }}</span>
+              </td>
+              <td class="details" style="text-align:right;font-family:var(--mono);color:{% if d.fraud_score is number and d.fraud_score >= 65 %}var(--decline){% elif d.fraud_score is number and d.fraud_score >= 35 %}var(--review){% elif d.fraud_score is number %}var(--approve){% endif %}">
+                {% if d.fraud_score is number %}{{ d.fraud_score }}{% else %}—{% endif %}
+              </td>
+              <td class="details" style="text-align:right;font-family:var(--mono)">
+                {% if a %}${{ "{:,.0f}".format(a.true_revenue) }}{% else %}—{% endif %}
+              </td>
+              <td class="details" style="text-align:right;font-family:var(--mono)">{% if a %}{{ a.num_nsf }}{% else %}—{% endif %}</td>
+              <td class="details" style="text-align:right;font-family:var(--mono)">{% if a %}{{ a.days_negative }}{% else %}—{% endif %}</td>
+              <td class="details" style="font-family:var(--mono);font-size:10.5px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px" title="{{ d.original_filename }}">{{ d.original_filename }}</td>
+              <td class="details" style="text-align:right"><a href="/ui/documents/{{ d.id }}" onclick="event.stopPropagation()" style="font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--accent);border-bottom:0">open ↗</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+    {% endif %}
+
+    {# ============== § 4¾ MERCHANT PROFILE ============== #}
+    <section id="profile" class="section">
+      <header>
+        <span class="n">§ 4¾</span>
+        <h2>Merchant <em>· profile</em></h2>
+        <span class="footnote">all fields · <a href="/ui/merchants/{{ merchant.id }}/edit" style="border-bottom:0">edit ↗</a></span>
+      </header>
+      <table class="audit-ledger">
+        <tbody>
+          <tr><td class="when" style="width:200px">Business name</td><td class="details" style="font-family:var(--serif);font-size:15px;font-weight:500">{{ merchant.business_name }}{% if merchant.dba %} <em style="color:var(--ink-3)">· DBA {{ merchant.dba }}</em>{% endif %}</td></tr>
+          <tr><td class="when">Owner</td><td class="details">{{ merchant.owner_name }}</td></tr>
+          <tr><td class="when">State</td><td class="details"><span class="mono">{{ merchant.state }}</span></td></tr>
+          <tr><td class="when">Entity type</td><td class="details">{{ merchant.entity_type or '—' }}</td></tr>
+          <tr><td class="when">EIN</td><td class="details"><span class="mono">{% if merchant.ein %}{{ merchant.ein[:3] }}-XX-XXXX{% else %}—{% endif %}</span> <span style="font-size:10px;color:var(--ink-3);font-family:var(--mono)">· masked</span></td></tr>
+          <tr><td class="when">NAICS</td><td class="details"><span class="mono">{{ merchant.industry_naics or '—' }}</span>{% if merchant.industry_risk_tier %} · {{ merchant.industry_risk_tier }}{% endif %}</td></tr>
+          <tr><td class="when">FICO</td><td class="details"><span class="mono">{{ merchant.credit_score or '—' }}</span></td></tr>
+          <tr><td class="when">Time in business</td><td class="details">{% if merchant.time_in_business_months %}<span class="mono">{{ merchant.time_in_business_months }}</span> months{% else %}—{% endif %}</td></tr>
+          <tr><td class="when">Contact</td><td class="details">{% if merchant.email %}<span class="mono">{{ merchant.email }}</span>{% else %}—{% endif %}{% if merchant.phone %} · <span class="mono">{{ merchant.phone }}</span>{% endif %}</td></tr>
+          <tr><td class="when">Requested advance</td><td class="details">{% if merchant.requested_amount %}<span class="mono">${{ "{:,.0f}".format(merchant.requested_amount) }}</span>{% else %}—{% endif %}</td></tr>
+          <tr><td class="when">Requested factor</td><td class="details">{% if merchant.requested_factor %}<span class="mono">×{{ merchant.requested_factor }}</span>{% else %}—{% endif %}</td></tr>
+          <tr><td class="when">Requested term</td><td class="details">{% if merchant.requested_term_days %}<span class="mono">{{ merchant.requested_term_days }}</span> days{% else %}—{% endif %}</td></tr>
+          <tr><td class="when">Source / broker</td><td class="details">{{ merchant.broker_source or '—' }}</td></tr>
+          <tr><td class="when">Intake date</td><td class="details"><span class="mono">{{ merchant.intake_date or '—' }}</span></td></tr>
+          <tr><td class="when">Renewal</td><td class="details">{% if merchant.is_renewal %}<span class="pill warn">renewal</span>{% else %}<span style="color:var(--ink-3)">no</span>{% endif %}</td></tr>
+          <tr><td class="when">Zoho deal</td><td class="details"><span class="mono">{{ merchant.zoho_deal_id or '—' }}</span></td></tr>
+          <tr><td class="when">Zoho lead</td><td class="details"><span class="mono">{{ merchant.zoho_lead_id or '—' }}</span></td></tr>
+          <tr><td class="when">Created</td><td class="details"><span class="mono" style="font-size:11px">{% if merchant.created_at %}{{ merchant.created_at.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}—{% endif %}</span></td></tr>
+          <tr><td class="when">Updated</td><td class="details"><span class="mono" style="font-size:11px">{% if merchant.updated_at %}{{ merchant.updated_at.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}—{% endif %}</span></td></tr>
+          <tr><td class="when">Merchant ID</td><td class="details"><span class="mono" style="font-size:10.5px">{{ merchant.id }}</span></td></tr>
+        </tbody>
+      </table>
     </section>
 
     {# ============== § 5 DISPOSITION ============== #}
