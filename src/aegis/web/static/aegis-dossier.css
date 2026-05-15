@@ -121,7 +121,7 @@
 
 /* ============ masthead ============ */
 .dossier-page .masthead {
-  max-width: 1040px;
+  max-width: 900px;
   margin: 0 auto;
   padding: 28px 56px 0;
   border-bottom: 1px solid var(--ink);
@@ -206,7 +206,7 @@
 
 /* ============ banner (from intake / upload flash) ============ */
 .dossier-page .flash {
-  max-width: 1040px;
+  max-width: 900px;
   margin: 14px auto 0;
   padding: 14px 56px 0;
 }
@@ -231,7 +231,7 @@
 
 /* ============ sheet (two-column body) ============ */
 .dossier-page .sheet {
-  max-width: 1040px;
+  max-width: 900px;
   margin: 0 auto;
   padding: 0 56px;
   display: grid;
