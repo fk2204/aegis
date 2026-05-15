@@ -15,7 +15,7 @@
 /* ===================== DECK (page title bar) ===================== */
 
 .dossier-page .deck {
-  max-width: 900px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 18px 56px 14px;
   display: flex;
@@ -57,7 +57,7 @@
 /* ===================== KPI STRIP ===================== */
 
 .dossier-page .strip {
-  max-width: 900px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 0 56px;
   display: grid;
@@ -103,7 +103,7 @@
 /* ===================== PAGE BODY ===================== */
 
 .dossier-page .body {
-  max-width: 900px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 24px 56px;
   display: grid;
@@ -111,10 +111,10 @@
   align-items: start;
 }
 .dossier-page .body.cols-1 { grid-template-columns: 1fr; }
-.dossier-page .body.cols-2 { grid-template-columns: 1fr 360px; }
+.dossier-page .body.cols-2 { grid-template-columns: 1fr 420px; }
 .dossier-page .body.cols-form {
-  grid-template-columns: 720px 1fr;
-  max-width: 900px;
+  grid-template-columns: minmax(0, 880px) 1fr;
+  max-width: 1320px;
 }
 
 /* ===================== SECTION HEADERS ===================== */
@@ -420,12 +420,12 @@
 /* ===================== COMPLIANCE RIBBON ===================== */
 
 .dossier-page .compliance-ribbon {
-  max-width: 900px;
+  max-width: 1320px;
   margin: 24px auto 0;
   padding: 14px 56px 0;
   border-top: 1px solid var(--ink);
   display: grid;
-  grid-template-columns: 200px 1fr 1fr;
+  grid-template-columns: 220px 1fr 1fr;
   gap: 24px;
   align-items: baseline;
 }
@@ -451,13 +451,14 @@
 /* ===================== STATUS BAR (foot) ===================== */
 
 .dossier-page .statusbar {
-  max-width: 900px;
+  max-width: 1320px;
   margin: 32px auto 0;
   padding: 12px 56px;
   border-top: 1px solid var(--rule);
   display: flex;
   gap: 14px;
   align-items: center;
+  flex-wrap: wrap;
   font-family: var(--mono);
   font-size: 10px;
   letter-spacing: 0.14em;
@@ -490,7 +491,8 @@
 .dossier-page button.btn {
   display: inline-flex;
   align-items: center;
-  padding: 6px 12px;
+  padding: 8px 14px;
+  min-height: 32px;
   font-family: var(--mono);
   font-size: 10px;
   letter-spacing: 0.16em;
@@ -500,9 +502,16 @@
   border: 1px solid var(--ink);
   border-bottom: 2px solid var(--ink);
   cursor: pointer;
-  transition: transform .12s ease, background .12s ease;
+  transition: transform .12s ease, background .12s ease, box-shadow .12s ease;
   text-decoration: none;
+  white-space: nowrap;
 }
+.dossier-page .btn:focus-visible,
+.dossier-page button.btn:focus-visible {
+  outline: 2px solid var(--sage-deep);
+  outline-offset: 2px;
+}
+.dossier-page .btn:active { transform: translateY(0); box-shadow: inset 0 1px 0 rgba(0,0,0,0.08); }
 .dossier-page .btn:hover {
   background: var(--paper-2);
   transform: translateY(-1px);
@@ -695,3 +704,50 @@
   border-bottom: 1px solid var(--rule);
 }
 .dossier-page a.subtle:hover { color: var(--ink); border-bottom-color: var(--ink); }
+
+/* ===================== RESPONSIVE FIXES ===================== */
+
+/* Mid desktop — tighten side padding so content uses more of the viewport. */
+@media (max-width: 1320px) {
+  .dossier-page .deck,
+  .dossier-page .strip,
+  .dossier-page .body,
+  .dossier-page .compliance-ribbon,
+  .dossier-page .statusbar { padding-left: 28px; padding-right: 28px; }
+}
+
+/* Tablet / small laptop — collapse two-col body, soften strip. */
+@media (max-width: 1100px) {
+  .dossier-page .body.cols-2 { grid-template-columns: 1fr; }
+  .dossier-page .body.cols-form { grid-template-columns: 1fr; }
+  .dossier-page .strip { grid-template-columns: repeat(3, 1fr) !important; }
+  .dossier-page .deck { flex-wrap: wrap; }
+  .dossier-page .deck h1 { font-size: 32px; }
+  .dossier-page .form .row.three { grid-template-columns: 1fr 1fr; }
+  .dossier-page .compliance-ribbon { grid-template-columns: 1fr; gap: 8px; }
+}
+
+/* Mobile — single column everywhere, scrollable tables. */
+@media (max-width: 720px) {
+  .dossier-page .deck,
+  .dossier-page .strip,
+  .dossier-page .body,
+  .dossier-page .compliance-ribbon,
+  .dossier-page .statusbar { padding-left: 18px; padding-right: 18px; }
+  .dossier-page .strip { grid-template-columns: repeat(2, 1fr) !important; }
+  .dossier-page .strip .v { font-size: 26px; }
+  .dossier-page .deck h1 { font-size: 26px; }
+  .dossier-page .form .row.two,
+  .dossier-page .form .row.three { grid-template-columns: 1fr; }
+  .dossier-page .form-actions { width: 100%; }
+  .dossier-page .form-actions .btn { flex: 1; justify-content: center; }
+}
+
+/* Table overflow safety — never let a wide table push the page wider. */
+.dossier-page table.queue { display: block; overflow-x: auto; width: 100%; }
+.dossier-page table.queue thead,
+.dossier-page table.queue tbody { display: table; width: 100%; table-layout: auto; }
+@media (max-width: 720px) {
+  .dossier-page table.queue thead,
+  .dossier-page table.queue tbody { min-width: 640px; }
+}

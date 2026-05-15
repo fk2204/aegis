@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AEGIS · Today · The Underwriter's Ledger</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..900,0..100,0..1&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --paper:       #ebe2cf;
+      --paper-warm:  #efe9d9;
+      --paper-edge:  #d9cfb8;
+      --ink:         #1a1310;
+      --ink-soft:    #4a3f37;
+      --ink-faint:   #8a7a6c;
+      --rule:        #b8a890;
+      --oxblood:     #8b1a1a;
+      --hunter:      #1f5132;
+      --amber:       #a86b00;
+      --indigo:      #233863;
+
+      --font-display: "Fraunces", "Times New Roman", serif;
+      --font-mono:    "JetBrains Mono", ui-monospace, "Cascadia Code", monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--font-display);
+      font-feature-settings: "ss01", "ss02";
+      font-variant-numeric: oldstyle-nums proportional-nums;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    /* Subtle paper grain — tiny SVG noise tiled at low opacity */
+    body::before {
+      content: "";
+      position: fixed; inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      opacity: .35;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.10  0 0 0 0 0.07  0 0 0 0 0.06  0 0 0 0.06 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    }
+
+    /* Tape edge — top hairline of warmer paper that fades into the field */
+    body::after {
+      content: "";
+      position: fixed; left: 0; right: 0; top: 0; height: 6px;
+      background: linear-gradient(180deg, var(--paper-edge), transparent);
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    .page {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 56px 72px 96px;
+      position: relative;
+      z-index: 2;
+    }
+
+    /* ===================== MASTHEAD ===================== */
+
+    .masthead {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: end;
+      gap: 24px;
+      padding-bottom: 18px;
+      border-bottom: 1.5px solid var(--ink);
+      position: relative;
+    }
+    .masthead::after {
+      content: "";
+      position: absolute; left: 0; right: 0; bottom: -5px;
+      border-bottom: 0.5px solid var(--ink);
+    }
+
+    .mast-meta {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      font-variant-numeric: tabular-nums;
+    }
+    .mast-meta--right { text-align: right; }
+
+    .mast-title {
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 144, "wght" 360, "SOFT" 30, "WONK" 1;
+      font-size: 86px;
+      letter-spacing: -0.04em;
+      line-height: 0.92;
+      text-align: center;
+      white-space: nowrap;
+    }
+    .mast-title em {
+      font-variation-settings: "opsz" 144, "wght" 280, "SOFT" 60;
+      font-style: italic;
+      letter-spacing: -0.03em;
+      color: var(--ink-soft);
+    }
+
+    .subhead {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 28px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      font-variant-numeric: tabular-nums;
+    }
+    .subhead .dot { color: var(--oxblood); padding: 0 8px; }
+    .subhead .center {
+      letter-spacing: 0.32em;
+      color: var(--ink);
+    }
+
+    /* ===================== STAGGER REVEAL ===================== */
+
+    @keyframes riseIn {
+      from { opacity: 0; transform: translateY(14px); }
+      to   { opacity: 1; transform: none; }
+    }
+    .rise { opacity: 0; animation: riseIn .9s cubic-bezier(.2,.7,.2,1) forwards; }
+    .rise.d1 { animation-delay: .05s; }
+    .rise.d2 { animation-delay: .14s; }
+    .rise.d3 { animation-delay: .22s; }
+    .rise.d4 { animation-delay: .30s; }
+    .rise.d5 { animation-delay: .38s; }
+    .rise.d6 { animation-delay: .46s; }
+    .rise.d7 { animation-delay: .54s; }
+    .rise.d8 { animation-delay: .62s; }
+
+    /* ===================== TILE ROW ===================== */
+
+    .tiles {
+      margin-top: 48px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border-top: 0.5px solid var(--rule);
+      border-bottom: 0.5px solid var(--rule);
+    }
+    .tile {
+      padding: 28px 28px 26px;
+      position: relative;
+    }
+    .tile + .tile { border-left: 0.5px solid var(--rule); }
+
+    .tile-label {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+    }
+    .tile-num {
+      margin-top: 14px;
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 144, "wght" 320, "SOFT" 20;
+      font-size: 92px;
+      line-height: 1;
+      letter-spacing: -0.045em;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    .tile-num sup {
+      font-size: 0.28em;
+      vertical-align: top;
+      margin-left: 4px;
+      font-family: var(--font-mono);
+      font-weight: 500;
+      color: var(--ink-soft);
+      letter-spacing: 0;
+    }
+    .tile-delta {
+      margin-top: 12px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      color: var(--ink-soft);
+      font-variant-numeric: tabular-nums;
+    }
+    .tile-delta .up   { color: var(--hunter); }
+    .tile-delta .down { color: var(--oxblood); }
+    .tile-delta .flat { color: var(--ink-faint); }
+
+    .tile.alert .tile-num { color: var(--oxblood); }
+    .tile.calm  .tile-num { color: var(--hunter); }
+
+    /* ===================== MAIN GRID ===================== */
+
+    .layout {
+      margin-top: 56px;
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 56px;
+    }
+
+    /* Section headers — small caps with century-deck flourish */
+    .sect-head {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: baseline;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    .sect-head h2 {
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 11, "wght" 600;
+      font-size: 11px;
+      letter-spacing: 0.32em;
+      text-transform: uppercase;
+      color: var(--ink);
+    }
+    .sect-head .rule {
+      border-top: 0.5px solid var(--rule);
+      height: 1px;
+      transform: translateY(-3px);
+    }
+    .sect-head .meta {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ===================== QUEUE CARDS ===================== */
+
+    .queue { display: flex; flex-direction: column; gap: 0; }
+
+    .item {
+      display: grid;
+      grid-template-columns: 56px 1fr auto;
+      gap: 28px;
+      padding: 26px 0 26px;
+      border-bottom: 0.5px solid var(--rule);
+      align-items: start;
+      cursor: pointer;
+      transition: transform .25s cubic-bezier(.2,.7,.2,1), background .25s ease;
+    }
+    .item:hover {
+      transform: translateX(2px);
+      background: linear-gradient(90deg, transparent, rgba(139,26,26,0.04) 40%, transparent);
+    }
+    .item:hover .pull-quote { color: var(--oxblood); }
+
+    .item-num {
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 60, "wght" 280;
+      font-size: 44px;
+      line-height: 1;
+      color: var(--ink-faint);
+      font-variant-numeric: lining-nums tabular-nums;
+      letter-spacing: -0.03em;
+    }
+    .item-body { min-width: 0; }
+    .item-name {
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 28, "wght" 480, "WONK" 1;
+      font-size: 26px;
+      line-height: 1.1;
+      letter-spacing: -0.018em;
+    }
+    .item-name .state {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.22em;
+      color: var(--ink-faint);
+      margin-left: 10px;
+      vertical-align: 0.18em;
+    }
+    .item-sub {
+      margin-top: 6px;
+      font-family: var(--font-display);
+      font-style: italic;
+      font-variation-settings: "opsz" 14, "wght" 380, "SOFT" 80;
+      font-size: 14px;
+      color: var(--ink-soft);
+      letter-spacing: 0.005em;
+    }
+    .item-tags {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 10px;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+    .tag::before {
+      content: "";
+      display: inline-block;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      margin-right: 8px;
+      background: var(--ink-faint);
+    }
+    .tag.alert::before  { background: var(--oxblood); }
+    .tag.calm::before   { background: var(--hunter); }
+    .tag.warn::before   { background: var(--amber); }
+    .tag.flag::before   { background: var(--indigo); }
+
+    .item-meta { text-align: right; }
+    .score {
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 60, "wght" 380, "WONK" 1;
+      font-size: 48px;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    .score .of { color: var(--ink-faint); font-size: 0.42em; margin-left: 2px; }
+    .tier {
+      margin-top: 6px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.34em;
+      color: var(--ink-soft);
+    }
+    .tier.A { color: var(--hunter); }
+    .tier.B { color: var(--ink); }
+    .tier.C { color: var(--amber); }
+    .tier.F { color: var(--oxblood); }
+
+    /* ===================== EDITORIAL NOTE ===================== */
+
+    .note {
+      background: linear-gradient(180deg, transparent, rgba(139,26,26,0.025));
+      border-top: 1.5px solid var(--ink);
+      border-bottom: 0.5px solid var(--rule);
+      padding: 28px 32px 30px;
+      margin-top: 56px;
+      position: relative;
+    }
+    .note::before {
+      content: "Editor's Note";
+      position: absolute;
+      top: -10px; left: 28px;
+      background: var(--paper);
+      padding: 0 12px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.32em;
+      text-transform: uppercase;
+      color: var(--oxblood);
+    }
+    .note p {
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 18, "wght" 380, "SOFT" 100;
+      font-size: 17px;
+      line-height: 1.55;
+      color: var(--ink);
+      letter-spacing: -0.005em;
+      max-width: 68ch;
+    }
+    .note p + p { margin-top: 12px; }
+    .note p::first-letter {
+      font-variation-settings: "opsz" 144, "wght" 500;
+      font-size: 3.4em;
+      float: left;
+      line-height: 0.85;
+      margin: 4px 12px -4px 0;
+      color: var(--oxblood);
+    }
+    .note p + p::first-letter {
+      font-size: 1em; float: none; margin: 0; color: inherit;
+      font-variation-settings: "opsz" 18, "wght" 380;
+    }
+
+    /* ===================== ACTIVITY ===================== */
+
+    .feed { display: flex; flex-direction: column; gap: 0; }
+    .event {
+      display: grid;
+      grid-template-columns: 60px 1fr;
+      gap: 14px;
+      padding: 14px 0 14px;
+      border-bottom: 0.5px solid var(--rule);
+      align-items: start;
+    }
+    .event-time {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.10em;
+      color: var(--ink-faint);
+      font-variant-numeric: tabular-nums;
+      padding-top: 2px;
+    }
+    .event-text {
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 14, "wght" 380;
+      font-size: 14px;
+      line-height: 1.4;
+      color: var(--ink-soft);
+    }
+    .event-text strong {
+      font-variation-settings: "opsz" 14, "wght" 580, "WONK" 1;
+      font-style: normal;
+      color: var(--ink);
+      letter-spacing: -0.005em;
+    }
+    .event.alert .event-time { color: var(--oxblood); }
+    .event.calm  .event-time { color: var(--hunter); }
+    .event.warn  .event-time { color: var(--amber); }
+
+    /* ===================== COMPLIANCE BAR ===================== */
+
+    .compliance {
+      margin-top: 72px;
+      padding: 32px 0 0;
+      border-top: 1.5px solid var(--ink);
+      position: relative;
+    }
+    .compliance::before {
+      content: "";
+      position: absolute; left: 0; right: 0; top: 4px;
+      border-top: 0.5px solid var(--ink);
+    }
+    .comp-row {
+      display: grid;
+      grid-template-columns: 200px 1fr 1fr;
+      gap: 36px;
+      align-items: start;
+    }
+    .comp-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.32em;
+      text-transform: uppercase;
+      color: var(--ink);
+    }
+    .comp-tier {
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 28, "wght" 420, "WONK" 1;
+      font-size: 22px;
+      letter-spacing: -0.018em;
+      line-height: 1.2;
+    }
+    .comp-tier em {
+      font-family: var(--font-display);
+      font-style: italic;
+      font-variation-settings: "opsz" 28, "wght" 320, "SOFT" 80;
+      color: var(--ink-soft);
+      font-size: 13px;
+      letter-spacing: 0.005em;
+      display: block;
+      margin-top: 4px;
+    }
+    .comp-tier .states {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      letter-spacing: 0.18em;
+      color: var(--ink);
+      font-variation-settings: normal;
+    }
+
+    /* ===================== FOOT ===================== */
+
+    .foot {
+      margin-top: 56px;
+      padding-top: 24px;
+      border-top: 0.5px solid var(--rule);
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 24px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      font-variant-numeric: tabular-nums;
+    }
+    .foot .right { text-align: right; }
+    .foot .center { color: var(--ink-soft); letter-spacing: 0.36em; }
+
+    /* ===================== HOVER & LINKS ===================== */
+
+    a { color: inherit; text-decoration: none; }
+    a:hover { color: var(--oxblood); }
+
+    /* Selection */
+    ::selection { background: var(--oxblood); color: var(--paper); }
+  </style>
+</head>
+<body>
+  <main class="page">
+
+    <!-- ===================== MASTHEAD ===================== -->
+    <header class="masthead rise d1">
+      <div class="mast-meta">
+        Vol.&nbsp;II &nbsp;·&nbsp; No.&nbsp;043<br>
+        Friday Edition
+      </div>
+      <h1 class="mast-title">Ægis<em>·Today</em></h1>
+      <div class="mast-meta mast-meta--right">
+        15 May 2026<br>
+        06:00&nbsp;UTC&nbsp;·&nbsp;02:00&nbsp;ET
+      </div>
+    </header>
+
+    <div class="subhead rise d2">
+      <div>The Underwriter's Ledger</div>
+      <div class="center">Solo Operator · 100&nbsp;Deals/mo · Internal Edition</div>
+      <div style="text-align:right">Tier 1 · CA NY FL GA <span class="dot">·</span> US Data Residency Confirmed</div>
+    </div>
+
+    <!-- ===================== KPI TILES ===================== -->
+    <section class="tiles rise d3">
+      <div class="tile">
+        <div class="tile-label">Parsed Today</div>
+        <div class="tile-num">14</div>
+        <div class="tile-delta"><span class="up">↗ +2</span> &nbsp;vs.&nbsp;7-day avg</div>
+      </div>
+      <div class="tile alert">
+        <div class="tile-label">Manual Review</div>
+        <div class="tile-num">3</div>
+        <div class="tile-delta"><span class="down">↘ −1</span> &nbsp;awaiting operator</div>
+      </div>
+      <div class="tile calm">
+        <div class="tile-label">OFAC Hits</div>
+        <div class="tile-num">0<sup>★</sup></div>
+        <div class="tile-delta"><span class="flat">→</span> &nbsp;SDN list 14h fresh</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Disclosures Pending</div>
+        <div class="tile-num">7</div>
+        <div class="tile-delta"><span class="flat">Tier&nbsp;1</span> &nbsp;CA · NY · FL · GA</div>
+      </div>
+    </section>
+
+    <!-- ===================== EDITOR'S NOTE ===================== -->
+    <section class="note rise d4">
+      <p>Six statements cleared validation this morning; one tripped the daily-reconciliation gate and now sits in manual review. Riverside Auto Body's third bank statement surfaced a fresh MCA debit pattern — <strong>stacking risk flagged</strong>, score recomputed from 78 to 64. The OFAC SDN list refreshed at 03:14&nbsp;UTC; cache is fourteen hours fresh.</p>
+      <p>Outstanding: Park Avenue Deli's New York disclosure rendered cleanly against CFDL template; awaiting operator signature before push to funder. Cantina Verde remains the day's strongest applicant — four funder matches, Tier A, no soft signals worth pulling.</p>
+    </section>
+
+    <!-- ===================== MAIN GRID ===================== -->
+    <div class="layout">
+
+      <!-- ATTENTION QUEUE -->
+      <section class="rise d5">
+        <header class="sect-head">
+          <h2>Attention Queue</h2>
+          <div class="rule"></div>
+          <div class="meta">5 / 14 · Operator action required</div>
+        </header>
+
+        <div class="queue">
+
+          <a class="item" href="#">
+            <div class="item-num">01</div>
+            <div class="item-body">
+              <div class="item-name">Riverside Auto Body Inc <span class="state">· FL · NAICS 8111</span></div>
+              <div class="item-sub">Third statement surfaced an MCA debit pattern absent from months one &amp; two; score recomputed.</div>
+              <div class="item-tags">
+                <span class="tag alert">Stacking flag</span>
+                <span class="tag warn">Score ↓14</span>
+                <span class="tag">3 / 3 statements</span>
+                <span class="tag flag">CFDL Tier 1</span>
+              </div>
+            </div>
+            <div class="item-meta">
+              <div class="score">64<span class="of">/100</span></div>
+              <div class="tier B">Tier&nbsp;B</div>
+            </div>
+          </a>
+
+          <a class="item" href="#">
+            <div class="item-num">02</div>
+            <div class="item-body">
+              <div class="item-name">Park Avenue Deli Corp <span class="state">· NY · NAICS 7225</span></div>
+              <div class="item-sub">Six NSF events across the last 90 days; revenue trend down 11 %. Disclosure rendered, awaiting signature.</div>
+              <div class="item-tags">
+                <span class="tag warn">6 NSFs / 90d</span>
+                <span class="tag">Revenue ↓ 11 %</span>
+                <span class="tag flag">CFDL ready · sign</span>
+              </div>
+            </div>
+            <div class="item-meta">
+              <div class="score">58<span class="of">/100</span></div>
+              <div class="tier C">Tier&nbsp;C</div>
+            </div>
+          </a>
+
+          <a class="item" href="#">
+            <div class="item-num">03</div>
+            <div class="item-body">
+              <div class="item-name">Downtown Hardware Supply <span class="state">· TX · NAICS 4441</span></div>
+              <div class="item-sub">Daily reconciliation gate failed on statement two; deposits printed $48,219.04 vs. extracted $48,196.21. Manual review.</div>
+              <div class="item-tags">
+                <span class="tag alert">Validation fail · $22.83</span>
+                <span class="tag">Δ row 47</span>
+                <span class="tag flag">Tier 2 · disclosure n/a</span>
+              </div>
+            </div>
+            <div class="item-meta">
+              <div class="score">—</div>
+              <div class="tier">Review</div>
+            </div>
+          </a>
+
+          <a class="item" href="#">
+            <div class="item-num">04</div>
+            <div class="item-body">
+              <div class="item-name">Cantina Verde LLC <span class="state">· CA · NAICS 7225</span></div>
+              <div class="item-sub">Strong applicant; clean across four months. Four funder matches surfaced, primary recommendation: Bridge Capital — 1.28×.</div>
+              <div class="item-tags">
+                <span class="tag calm">4 funder matches</span>
+                <span class="tag calm">OFAC clean</span>
+                <span class="tag">Avg daily bal $18,402</span>
+                <span class="tag flag">SB-1235 ready</span>
+              </div>
+            </div>
+            <div class="item-meta">
+              <div class="score">82<span class="of">/100</span></div>
+              <div class="tier A">Tier&nbsp;A</div>
+            </div>
+          </a>
+
+          <a class="item" href="#">
+            <div class="item-num">05</div>
+            <div class="item-body">
+              <div class="item-name">Bright Co Salon LLC <span class="state">· GA · NAICS 8121</span></div>
+              <div class="item-sub">Funded yesterday at 1.32×; first paydown debit landed on schedule. Awaiting day-30 cohort sync.</div>
+              <div class="item-tags">
+                <span class="tag calm">Funded · $42,500</span>
+                <span class="tag">Paydown 1 / 90</span>
+                <span class="tag flag">SB-90 issued</span>
+              </div>
+            </div>
+            <div class="item-meta">
+              <div class="score">78<span class="of">/100</span></div>
+              <div class="tier A">Tier&nbsp;A</div>
+            </div>
+          </a>
+
+        </div>
+      </section>
+
+      <!-- ACTIVITY FEED -->
+      <aside class="rise d6">
+        <header class="sect-head">
+          <h2>Day's Log</h2>
+          <div class="rule"></div>
+          <div class="meta">UTC</div>
+        </header>
+
+        <div class="feed">
+          <div class="event alert">
+            <div class="event-time">06:02</div>
+            <div class="event-text">Stacking pattern surfaced on <strong>Riverside Auto Body</strong>; score recomputed 78 → 64.</div>
+          </div>
+          <div class="event calm">
+            <div class="event-time">05:48</div>
+            <div class="event-text">Disclosure <strong>NY CFDL</strong> rendered for Park Avenue Deli; awaiting operator signature.</div>
+          </div>
+          <div class="event">
+            <div class="event-time">05:31</div>
+            <div class="event-text">Statement #3 parsed for <strong>Riverside Auto Body</strong>; daily reconciliation passed.</div>
+          </div>
+          <div class="event warn">
+            <div class="event-time">05:14</div>
+            <div class="event-text"><strong>Downtown Hardware</strong> statement #2 failed validation; routed to manual review.</div>
+          </div>
+          <div class="event calm">
+            <div class="event-time">04:52</div>
+            <div class="event-text">OFAC SDN list refreshed; <strong>0 matches</strong> across 14 active applicants.</div>
+          </div>
+          <div class="event">
+            <div class="event-time">04:07</div>
+            <div class="event-text">Funder matches recomputed for <strong>Cantina Verde</strong>: 4 active, primary Bridge Capital.</div>
+          </div>
+          <div class="event calm">
+            <div class="event-time">03:14</div>
+            <div class="event-text">First paydown debit confirmed for <strong>Bright Co Salon</strong>; cohort day 1 of 90.</div>
+          </div>
+          <div class="event">
+            <div class="event-time">02:30</div>
+            <div class="event-text">Bedrock pinned to <span style="font-family:var(--font-mono);font-size:12px">us.anthropic.claude-sonnet-4-6</span>; residency confirmed.</div>
+          </div>
+        </div>
+      </aside>
+
+    </div>
+
+    <!-- ===================== COMPLIANCE ===================== -->
+    <section class="compliance rise d7">
+      <div class="comp-row">
+        <div class="comp-label">Compliance<br>Posture</div>
+        <div class="comp-tier">
+          Tier&nbsp;I &nbsp;<span style="color:var(--ink-faint)">·&nbsp;disclosures prescribed by statute</span>
+          <em>Snapshot tests locked. Every disclosure render is verified against the regulator's template — CA DFPI, NY DFS, FL FCFDL, GA SB-90.</em>
+          <div class="states" style="margin-top:14px">CA &nbsp; NY &nbsp; FL &nbsp; GA</div>
+        </div>
+        <div class="comp-tier">
+          Tier&nbsp;II &nbsp;<span style="color:var(--ink-faint)">·&nbsp;federal &amp; broker rules apply</span>
+          <em>States served without prescribed disclosure template; OFAC, BSA/AML, CFPB UDAAP and §1071 still binding.</em>
+          <div class="states" style="margin-top:14px">IL &nbsp; TX &nbsp; VA &nbsp; MD &nbsp; NJ</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== FOOT ===================== -->
+    <footer class="foot rise d8">
+      <div>Hetzner CPX21 · Ashburn VA</div>
+      <div class="center">— § —</div>
+      <div class="right">Set in Fraunces &amp; JetBrains Mono</div>
+    </footer>
+
+  </main>
+</body>
+</html>

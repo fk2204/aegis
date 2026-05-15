@@ -62,7 +62,19 @@
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
   padding-bottom: 160px;
+  overflow-x: hidden;
 }
+
+/* Border-box for every layout container so max-width includes padding —
+ * lets us hit edge-to-edge on common desktop widths without horizontal scroll. */
+.dossier-page .masthead,
+.dossier-page .flash,
+.dossier-page .sheet,
+.dossier-page .deck,
+.dossier-page .strip,
+.dossier-page .body,
+.dossier-page .compliance-ribbon,
+.dossier-page .statusbar { box-sizing: border-box; }
 
 .dossier-page ::selection { background: var(--ink); color: var(--paper); }
 
@@ -121,7 +133,7 @@
 
 /* ============ masthead ============ */
 .dossier-page .masthead {
-  max-width: 900px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 28px 56px 0;
   border-bottom: 1px solid var(--ink);
@@ -165,7 +177,7 @@
   font-size: 16px;
   color: var(--ink-2);
   margin-bottom: 24px;
-  max-width: 820px;
+  max-width: 1100px;
   line-height: 1.55;
 }
 .dossier-page .masthead .meta-row {
@@ -206,7 +218,7 @@
 
 /* ============ banner (from intake / upload flash) ============ */
 .dossier-page .flash {
-  max-width: 900px;
+  max-width: 1320px;
   margin: 14px auto 0;
   padding: 14px 56px 0;
 }
@@ -231,11 +243,11 @@
 
 /* ============ sheet (two-column body) ============ */
 .dossier-page .sheet {
-  max-width: 900px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 0 56px;
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 260px 1fr;
   gap: 0;
 }
 
@@ -1027,8 +1039,22 @@
 }
 
 /* ============ degrade on narrow viewports ============ */
+/* Mid desktop — keep two-column dossier but tighten side padding. */
+@media (max-width: 1320px) {
+  .dossier-page .masthead,
+  .dossier-page .flash,
+  .dossier-page .sheet,
+  .dossier-page .deck,
+  .dossier-page .strip,
+  .dossier-page .body,
+  .dossier-page .compliance-ribbon,
+  .dossier-page .statusbar { padding-left: 28px; padding-right: 28px; }
+  .dossier-page .topstrip { padding-left: 28px; padding-right: 28px; }
+}
+
+/* Narrow viewports — collapse to single column. */
 @media (max-width: 1100px) {
-  .dossier-page .sheet { grid-template-columns: 1fr; padding: 0 28px; }
+  .dossier-page .sheet { grid-template-columns: 1fr; }
   .dossier-page aside.rail {
     position: relative;
     max-height: none;
@@ -1041,7 +1067,22 @@
   .dossier-page .verdict { grid-template-columns: 1fr; }
   .dossier-page .findings { grid-template-columns: 1fr; }
   .dossier-page .spread { grid-template-columns: repeat(2, 1fr); }
-  .dossier-page .masthead { padding: 24px 28px 0; }
   .dossier-page .masthead .title { font-size: 56px; }
-  .dossier-page .topstrip { padding: 8px 28px; }
+  .dossier-page .body.cols-2 { grid-template-columns: 1fr; }
+  .dossier-page .body.cols-form { grid-template-columns: 1fr; }
+  .dossier-page .deck { flex-wrap: wrap; }
+  .dossier-page .strip { grid-template-columns: repeat(3, 1fr) !important; }
+  .dossier-page .compliance-ribbon { grid-template-columns: 1fr; gap: 8px; }
+}
+
+/* Mobile — relax strip + stack everything. */
+@media (max-width: 720px) {
+  .dossier-page .topstrip { flex-wrap: wrap; gap: 8px; }
+  .dossier-page .topstrip .links { flex-wrap: wrap; gap: 12px; }
+  .dossier-page .masthead .title { font-size: 40px; }
+  .dossier-page .strip { grid-template-columns: repeat(2, 1fr) !important; }
+  .dossier-page .masthead .meta-row { grid-template-columns: repeat(2, 1fr); }
+  .dossier-page table.queue { font-size: 12px; }
+  .dossier-page table.queue thead th,
+  .dossier-page table.queue tbody td { padding: 8px 6px 8px 0; }
 }
