@@ -30,6 +30,7 @@ class MerchantRepository(Protocol):
     def get(self, merchant_id: UUID) -> MerchantRow: ...
     def find_by_zoho_deal_id(self, zoho_deal_id: str) -> MerchantRow | None: ...
     def find_by_zoho_lead_id(self, zoho_lead_id: str) -> MerchantRow | None: ...
+    def find_by_email(self, email: str) -> MerchantRow | None: ...
     def list_all(self, *, state: str | None = None) -> list[MerchantRow]: ...
     def count_total(self) -> int: ...
     def upsert(self, merchant: MerchantRow) -> MerchantRow: ...
@@ -57,6 +58,15 @@ class InMemoryMerchantRepository:
     def find_by_zoho_lead_id(self, zoho_lead_id: str) -> MerchantRow | None:
         for m in self._by_id.values():
             if m.zoho_lead_id == zoho_lead_id:
+                return m
+        return None
+
+    def find_by_email(self, email: str) -> MerchantRow | None:
+        needle = email.strip().lower()
+        if not needle:
+            return None
+        for m in self._by_id.values():
+            if m.email and m.email.strip().lower() == needle:
                 return m
         return None
 
@@ -129,6 +139,22 @@ class SupabaseMerchantRepository:
             .table("merchants")
             .select("*")
             .eq("zoho_lead_id", zoho_lead_id)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return None
+        return _row_to_merchant(cast(dict[str, Any], result.data[0]))
+
+    def find_by_email(self, email: str) -> MerchantRow | None:
+        needle = email.strip()
+        if not needle:
+            return None
+        result = (
+            get_supabase()
+            .table("merchants")
+            .select("*")
+            .ilike("email", needle)
             .limit(1)
             .execute()
         )

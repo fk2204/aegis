@@ -662,3 +662,73 @@ def test_dossier_omits_audit_section_when_history_empty(
     # `{% if history %}` and the audit log only has unrelated entries
     # (document persistence, no merchant subject rows).
     assert "§ 6" not in resp.text
+
+
+# /applicants — Zoho CRM "View in Aegis" Lead button (button id 7365508000001462009)
+# routes the operator to the right surface based on whether the merchant has
+# documents uploaded.
+
+
+def test_applicants_unknown_email_redirects_to_dashboard(client: TestClient) -> None:
+    resp = client.get("/applicants?email=nobody@example.com", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/ui/"
+
+
+def test_applicants_known_merchant_with_docs_redirects_to_detail(
+    client: TestClient,
+    merchant_repo: InMemoryMerchantRepository,
+    doc_repo: InMemoryDocumentRepository,
+) -> None:
+    # Seed merchant with email; reuse the already-attached document from the
+    # doc_repo fixture by pointing it at this merchant.
+    m = MerchantRow(
+        business_name="Doc Co", owner_name="Jane Doe", state="CA", email="ops@doc.co"
+    )
+    m = merchant_repo.upsert(m)
+    for row in list(doc_repo._docs.values()):
+        doc_repo._docs[row.id] = row.model_copy(update={"merchant_id": m.id})
+
+    resp = client.get("/applicants?email=ops@doc.co", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == f"/ui/merchants/{m.id}"
+
+
+def test_applicants_known_merchant_no_docs_redirects_to_dashboard(
+    client: TestClient,
+    merchant_repo: InMemoryMerchantRepository,
+    doc_repo: InMemoryDocumentRepository,
+) -> None:
+    # Detach every doc from any merchant so the new merchant has none.
+    for row in list(doc_repo._docs.values()):
+        doc_repo._docs[row.id] = row.model_copy(update={"merchant_id": None})
+    merchant_repo.upsert(
+        MerchantRow(
+            business_name="Bare Co",
+            owner_name="John Doe",
+            state="NY",
+            email="ops@bare.co",
+        )
+    )
+
+    resp = client.get("/applicants?email=ops@bare.co", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/ui/"
+
+
+def test_applicants_email_lookup_is_case_insensitive(
+    client: TestClient,
+    merchant_repo: InMemoryMerchantRepository,
+) -> None:
+    merchant_repo.upsert(
+        MerchantRow(
+            business_name="Mixed Co",
+            owner_name="Pat Doe",
+            state="FL",
+            email="Mixed@Example.COM",
+        )
+    )
+    resp = client.get("/applicants?email=MIXED@example.com", follow_redirects=False)
+    assert resp.status_code == 302
+    # No docs on this merchant -> dashboard.
+    assert resp.headers["location"] == "/ui/"

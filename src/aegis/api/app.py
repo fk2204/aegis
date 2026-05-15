@@ -16,16 +16,20 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from aegis.api.auth import warn_if_bearer_unconfigured
+from aegis.api.deps import get_merchant_repository, get_repository
 from aegis.api.routes import ALL_ROUTERS
 from aegis.compliance.states import validate_states_table
 from aegis.config import get_settings
 from aegis.logger import configure_logging, get_logger
+from aegis.merchants.repository import MerchantRepository
+from aegis.storage import DocumentRepository
 
 _log = get_logger(__name__)
 
@@ -79,6 +83,28 @@ def create_app() -> FastAPI:
         this redirect FastAPI's default 404 surfaces as
         ``{"detail":"Not Found"}`` which is operator-hostile.
         """
+        return RedirectResponse(url="/ui/", status_code=302)
+
+    @app.get("/applicants", include_in_schema=False)
+    async def applicants_lookup(
+        email: str,
+        merchants: Annotated[
+            MerchantRepository, Depends(get_merchant_repository)
+        ],
+        documents: Annotated[DocumentRepository, Depends(get_repository)],
+    ) -> RedirectResponse:
+        # Entry point for the Zoho CRM "View in Aegis" Lead button
+        # (id 7365508000001462009). Routes the operator to the right
+        # surface: merchant detail if statements exist, dashboard
+        # otherwise (including unknown email).
+        merchant = merchants.find_by_email(email)
+        if merchant is None:
+            return RedirectResponse(url="/ui/", status_code=302)
+        has_docs = bool(documents.list_documents(merchant_id=merchant.id, limit=1))
+        if has_docs:
+            return RedirectResponse(
+                url=f"/ui/merchants/{merchant.id}", status_code=302
+            )
         return RedirectResponse(url="/ui/", status_code=302)
 
     for r in ALL_ROUTERS:
