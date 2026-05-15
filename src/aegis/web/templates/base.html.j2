@@ -1,3 +1,18 @@
+{# Base template — dossier-tool chrome (cream paper, Fraunces +
+   JetBrains Mono, compact topstrip nav). All operator pages extend
+   this; merchant_detail_dossier.html.j2 deliberately does NOT extend
+   (it's self-contained for editorial purity on the deal detail view).
+
+   Blocks pages override:
+     - title    : <title> contents
+     - deck     : page title + actions row (.deck wrapper)
+     - body     : main content area (no default wrapper — pages choose)
+     - ribbon   : bottom strip (defaults to compliance posture line)
+
+   Variables provided by the route's index handler (Today):
+     - now, queue_count, parser_version, operator_handle/initials —
+     all optional, statusbar falls back to safe defaults.
+#}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,67 +21,52 @@
   <title>{% block title %}AEGIS{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/ui/static/aegis.css">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/ui/static/aegis-dossier.css">
+  <link rel="stylesheet" href="/ui/static/aegis-tool.css">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
-  <style>
-    html, body { margin: 0; padding: 0; height: 100%; }
-    body { background: var(--paper); }
-  </style>
 </head>
-<body>
-<div class="aegis">
-  <div class="topbar">
-    <div class="brand">
-      <span class="brand-mark"></span>
-      AEGIS
-    </div>
-    <nav class="nav">
-      {% set _active = active|default('') %}
-      <a href="/ui/"          class="{% if _active == 'Today' %}active{% endif %}">Today</a>
-      <a href="/ui/intake"    class="{% if _active == 'Intake' %}active{% endif %}">Intake</a>
-      <a href="/ui/upload"    class="{% if _active == 'Upload' %}active{% endif %}">Upload</a>
-      <a href="/ui/deals"     class="{% if _active == 'Deals' %}active{% endif %}">Deals</a>
-      <a href="/ui/merchants" class="{% if _active == 'Merchants' %}active{% endif %}">Merchants</a>
-      <a href="/ui/funders"   class="{% if _active == 'Funders' %}active{% endif %}">Funders</a>
-      <a href="/ui/review"    class="{% if _active == 'Review' %}active{% endif %}">Review</a>
-    </nav>
-    <div class="topbar-right">
-      <div class="search">
-        <span>Search merchants, deals, EINs…</span>
-        <span class="kbd">⌘K</span>
-      </div>
-      {% if queue_count is defined %}
-        <div class="topbar-btn">Queue · {{ queue_count }}</div>
-      {% endif %}
-      <div class="topbar-btn">
-        <span class="avatar">{{ operator_initials|default('FK') }}</span>
-        {{ operator_handle|default('fk2204') }}
-      </div>
-    </div>
+<body class="dossier-page body-root">
+
+{# === compact topstrip — same chrome as the merchant dossier === #}
+<div class="topstrip">
+  <div class="links">
+    {% set _active = active|default('') %}
+    <a href="/ui/"          {% if _active == 'Today'     %}style="color:var(--ink);font-weight:500"{% endif %}>Today</a>
+    <a href="/ui/deals"     {% if _active == 'Deals'     %}style="color:var(--ink);font-weight:500"{% endif %}>Deals</a>
+    <a href="/ui/merchants" {% if _active == 'Merchants' %}style="color:var(--ink);font-weight:500"{% endif %}>Merchants</a>
+    <a href="/ui/funders"   {% if _active == 'Funders'   %}style="color:var(--ink);font-weight:500"{% endif %}>Funders</a>
+    <a href="/ui/upload"    {% if _active == 'Upload'    %}style="color:var(--ink);font-weight:500"{% endif %}>Upload</a>
+    <a href="/ui/intake"    {% if _active == 'Intake'    %}style="color:var(--ink);font-weight:500"{% endif %}>Intake</a>
+    <a href="/ui/review"    {% if _active == 'Review'    %}style="color:var(--ink);font-weight:500"{% endif %}>Review queue</a>
   </div>
-
-  {% block subhead %}{% endblock %}
-
-  {% block body %}
-    {# Default: single-column content area. Pages that want side rails
-       override this block entirely. #}
-    <div class="body cols-1">
-      <main class="main">
-        {% block content %}{% endblock %}
-      </main>
-    </div>
-  {% endblock %}
-
-  <div class="statusbar">
-    <span class="live">LIVE</span>
-    <span>node: aegis-prod</span>
-    <span class="sep">·</span>
-    <span>parser v{{ parser_version|default('4.2.1') }}</span>
-    <span class="sep">·</span>
-    <span>queue depth {{ queue_count|default(0) }}</span>
-    <span style="margin-left:auto">{{ now|default('') }}</span>
+  <div class="view-toggle">
+    <span style="color:var(--ink-3)">aegis · {{ now|default('') }}</span>
   </div>
 </div>
+
+{% block deck %}{% endblock %}
+
+{% block body %}{% endblock %}
+
+{% block ribbon %}
+<section class="compliance-ribbon">
+  <div class="k">Compliance posture</div>
+  <div class="v"><span class="tier">Tier I · prescribed</span>CA &nbsp;·&nbsp; NY &nbsp;·&nbsp; FL &nbsp;·&nbsp; GA</div>
+  <div class="v"><span class="tier">Tier II · federal</span>IL &nbsp;·&nbsp; TX &nbsp;·&nbsp; VA &nbsp;·&nbsp; MD &nbsp;·&nbsp; NJ</div>
+</section>
+{% endblock %}
+
+<div class="statusbar">
+  <span class="live">LIVE</span>
+  <span>node · aegis-prod</span>
+  <span class="sep">·</span>
+  <span>parser v{{ parser_version|default('4.2.1') }}</span>
+  <span class="sep">·</span>
+  <span>queue depth {{ queue_count|default(0) }}</span>
+  <span class="spacer"></span>
+  <span>{{ now|default('') }}</span>
+</div>
+
 </body>
 </html>

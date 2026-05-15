@@ -2,86 +2,71 @@
 {% set active = 'Funders' %}
 {% block title %}Funders — AEGIS{% endblock %}
 
-{% block subhead %}
-<div class="subhead">
-  <div>
-    <h1>Funders</h1>
-    <div class="meta" style="margin-top:4px">
-      <span><span class="dot"></span>{{ funders|length }} funder{{ '' if funders|length == 1 else 's' }}</span>
-      <span>criteria · click a row for full detail</span>
-    </div>
+{% block deck %}
+<header class="deck">
+  <h1>Funders<em> · criteria</em></h1>
+  <div class="meta">
+    {{ funders|length }} funder{{ '' if funders|length == 1 else 's' }} &nbsp;·&nbsp; click row → full guideline
   </div>
-  <div style="display:flex;gap:8px">
-    <a class="btn btn-primary" href="/ui/funders/import">+ Import PDF</a>
+  <div class="actions">
+    <a class="btn primary" href="/ui/funders/import">+ Import PDF</a>
   </div>
-</div>
+</header>
 {% endblock %}
 
 {% block body %}
-<div class="body cols-1">
-  <main class="main">
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Active funders</span>
-        <span class="panel-actions mono">n = {{ funders|length }}</span>
-      </div>
-      <div class="panel-body flush">
-        {% if not funders %}
-          <div style="padding:32px;text-align:center;color:var(--muted)">
-            <div style="font-size:14px;margin-bottom:6px">No funders configured.</div>
-            <div style="font-size:12px">Add one via <a href="/ui/funders/import">PDF import</a> or <code>POST /funders</code>.</div>
-          </div>
-        {% else %}
-          <table class="data">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th class="num">Min revenue</th>
-                <th class="num">Min credit</th>
-                <th class="num">Min TIB</th>
-                <th class="num">Max pos</th>
-                <th>Stacking</th>
-                <th>Excludes</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for f in funders %}
-              <tr onclick="location.href='/ui/funders/{{ f.id }}'" style="cursor:pointer">
-                <td>
-                  <div class="merch">
-                    <span class="merch-mark">{{ f.name[:2]|upper }}</span>
-                    <div>
-                      <div class="merch-name"><a href="/ui/funders/{{ f.id }}" style="color:inherit;text-decoration:none">{{ f.name }}</a></div>
-                      <div class="merch-id">{{ f.id|string|truncate(8, True, '') }}</div>
-                    </div>
-                  </div>
-                </td>
-                <td class="num">{{ "${:,.0f}".format(f.min_monthly_revenue) if f.min_monthly_revenue else '—' }}</td>
-                <td class="num">{{ f.min_credit_score or '—' }}</td>
-                <td class="num">{{ f.min_months_in_business or '—' }}</td>
-                <td class="num">{{ f.max_positions if f.max_positions is not none else '—' }}</td>
-                <td>
-                  {% if f.accepts_stacking %}
-                    <span class="tag pos"><span class="dot"></span>yes</span>
-                  {% else %}
-                    <span class="tag neg"><span class="dot"></span>no</span>
-                  {% endif %}
-                </td>
-                <td>
-                  <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">
-                    {% if f.excluded_states %}{{ f.excluded_states|length }} state{{ '' if f.excluded_states|length == 1 else 's' }}{% endif %}
-                    {% if f.excluded_states and f.excluded_industries %} · {% endif %}
-                    {% if f.excluded_industries %}{{ f.excluded_industries|length }} ind.{% endif %}
-                    {% if not f.excluded_states and not f.excluded_industries %}—{% endif %}
-                  </span>
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        {% endif %}
-      </div>
-    </div>
-  </main>
-</div>
+<section class="body cols-1">
+  <div>
+    <header class="sect-head">
+      <h2>Active funders</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ funders|length }}</div>
+    </header>
+
+    {% if not funders %}
+      <div class="empty">No funders configured<span class="copy">Add one via <a href="/ui/funders/import">PDF import</a> or <code>POST /funders</code>.</span></div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Funder</th>
+            <th class="num">Min revenue</th>
+            <th class="num">Min FICO</th>
+            <th class="num">Min TIB · mo</th>
+            <th class="num">Max pos</th>
+            <th>Stacking</th>
+            <th>Excludes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in funders %}
+            <tr onclick="window.location.href='/ui/funders/{{ f.id }}'">
+              <td class="merchant">
+                <a href="/ui/funders/{{ f.id }}">{{ f.name }}</a>
+                <span class="sub">{{ f.id|string|truncate(8, True, '') }}</span>
+              </td>
+              <td class="mono-cell" style="text-align:right">{{ "${:,.0f}".format(f.min_monthly_revenue) if f.min_monthly_revenue else '—' }}</td>
+              <td class="mono-cell" style="text-align:right">{{ f.min_credit_score or '—' }}</td>
+              <td class="mono-cell" style="text-align:right">{{ f.min_months_in_business or '—' }}</td>
+              <td class="mono-cell" style="text-align:right">{{ f.max_positions if f.max_positions is not none else '—' }}</td>
+              <td>
+                {% if f.accepts_stacking %}
+                  <span class="chip pos">yes</span>
+                {% else %}
+                  <span class="chip bad">no</span>
+                {% endif %}
+              </td>
+              <td class="mono-cell">
+                {% if f.excluded_states %}{{ f.excluded_states|length }} state{{ '' if f.excluded_states|length == 1 else 's' }}{% endif %}
+                {% if f.excluded_states and f.excluded_industries %} · {% endif %}
+                {% if f.excluded_industries %}{{ f.excluded_industries|length }} ind{% endif %}
+                {% if not f.excluded_states and not f.excluded_industries %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</section>
 {% endblock %}

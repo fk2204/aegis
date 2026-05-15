@@ -2,295 +2,252 @@
 {% set active = 'Merchants' %}
 {% block title %}{{ merchant.business_name }} — Funder match · AEGIS{% endblock %}
 
-{% block subhead %}
-<div class="deal-head">
-  <div class="merch">
-    <span class="merch-mark" style="width:48px;height:48px;font-size:16px">{{ merchant.business_name[:2]|upper }}</span>
+{% block deck %}
+<header class="deck">
+  <h1>{{ merchant.business_name }}<em> · funder match</em></h1>
+  <div class="meta">
+    {{ merchant.owner_name }} &nbsp;·&nbsp; {{ merchant.state }} &nbsp;·&nbsp; match · {{ merchant.id|string|truncate(8, True, '') }}
   </div>
-  <div>
-    <div class="id">match · {{ merchant.id|string|truncate(8, True, '') }}</div>
-    <h2>{{ merchant.business_name }}</h2>
-    <div class="meta-row">
-      <span><span class="lbl">Owner</span>{{ merchant.owner_name }}</span>
-      <span><span class="lbl">State</span>{{ merchant.state }}</span>
-    </div>
+  <div class="actions">
+    <a class="btn ghost" href="/ui/merchants/{{ merchant.id }}">← Detail</a>
   </div>
-  <div style="display:flex;gap:8px;align-items:flex-start">
-    <a class="btn" href="/ui/merchants/{{ merchant.id }}">← Detail</a>
-  </div>
-</div>
+</header>
 {% endblock %}
 
 {% block body %}
-<div class="body cols-1">
-  <main class="main">
+<section class="body cols-1">
+  <div>
+
     {% if missing == "no_document" %}
-      <div class="panel">
-        <div class="panel-body" style="padding:24px;text-align:center;color:var(--muted)">
-          <div style="font-size:14px;margin-bottom:6px">No analyzed document yet for this merchant.</div>
-          <div style="font-size:12px"><a href="/ui/upload">Upload a statement first →</a></div>
-        </div>
-      </div>
+      <div class="empty">No analyzed document yet<span class="copy"><a href="/ui/upload">Upload a statement →</a></span></div>
     {% else %}
-      {% set _tier_cls = {
-          'A': 'pos','B': 'accent','C': 'warn','D': 'warn','F': 'neg',
-      } %}
-      {% set _rec_cls = {
-          'approve': 'pos','refer': 'warn','decline': 'neg',
-      } %}
-      <div class="kpi-row">
-        <div class="kpi">
-          <div class="label">Tier</div>
-          <div class="value">{{ score_result.tier }}</div>
+
+      {# === score strip === #}
+      <section class="strip" style="--strip-cols:5">
+        <div class="cell">
+          <div class="k">Tier</div>
+          <div class="v" style="font-size:48px">{{ score_result.tier }}</div>
         </div>
-        <div class="kpi">
-          <div class="label">Score</div>
-          <div class="value">{{ score_result.score }}<span style="color:var(--muted);font-size:13px"> /100</span></div>
+        <div class="cell">
+          <div class="k">Score</div>
+          <div class="v">{{ score_result.score }}<span class="sub">/100</span></div>
         </div>
-        <div class="kpi">
-          <div class="label">Recommendation</div>
-          <div class="value" style="font-size:14px">
-            <span class="tag {{ _rec_cls.get(score_result.recommendation, '') }}" style="font-size:12px;padding:3px 8px">
-              <span class="dot"></span>{{ score_result.recommendation }}
-            </span>
+        <div class="cell">
+          <div class="k">Recommendation</div>
+          <div class="v" style="font-size:22px">
+            {% set _rec_cls = {'approve':'pos','refer':'warn','decline':'bad'}.get(score_result.recommendation, '') %}
+            <span class="chip {{ _rec_cls }}">{{ score_result.recommendation }}</span>
           </div>
         </div>
-        <div class="kpi">
-          <div class="label">Suggested max</div>
-          <div class="value">${{ score_result.suggested_max_advance }}</div>
+        <div class="cell">
+          <div class="k">Suggested max</div>
+          <div class="v">${{ score_result.suggested_max_advance }}</div>
         </div>
-        <div class="kpi">
-          <div class="label">Matched funders</div>
-          <div class="value">{{ matches|length }}</div>
+        <div class="cell">
+          <div class="k">Matched funders</div>
+          <div class="v">{{ matches|length }}</div>
         </div>
-      </div>
+      </section>
 
+      {# === scoring window === #}
       {% if score_window %}
-        <div class="panel">
-          <div class="panel-head">
-            <span class="panel-title">Scoring window</span>
-            <span class="panel-actions mono">
-              {{ score_window.months_used }} statement{{ '' if score_window.months_used == 1 else 's' }} aggregated
-            </span>
-          </div>
-          <div class="panel-body" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;font-size:12px">
-            <span><span class="lbl mono" style="color:var(--muted);font-size:10.5px;letter-spacing:0.5px;text-transform:uppercase">Period&nbsp;</span><span class="mono">{{ score_window.period_start }} → {{ score_window.period_end }}</span></span>
-            {% if score_window.months_used == 1 %}
-              <span class="tag warn" style="font-size:11px"><span class="dot"></span>only 1 month available — score may not reflect trend</span>
-            {% endif %}
-            {% if score_window.any_manual_review %}
-              <span class="tag neg" style="font-size:11px"><span class="dot"></span>some statements in manual_review — see merchant detail</span>
-            {% endif %}
+        <header class="sect-head" style="margin-top:32px">
+          <h2>Scoring window</h2>
+          <div class="rule"></div>
+          <div class="meta">{{ score_window.months_used }} statement{{ '' if score_window.months_used == 1 else 's' }} aggregated</div>
+        </header>
+        <div class="feed">
+          <div class="event">
+            <div class="t">P</div>
+            <div class="txt">
+              <strong>Period</strong>&nbsp;&nbsp;<span class="mono-inline">{{ score_window.period_start }} → {{ score_window.period_end }}</span>
+              {% if score_window.months_used == 1 %}&nbsp;&nbsp;<span class="chip warn">only 1 month — trend not reliable</span>{% endif %}
+              {% if score_window.any_manual_review %}&nbsp;&nbsp;<span class="chip bad">some statements in manual_review</span>{% endif %}
+            </div>
           </div>
         </div>
       {% endif %}
 
+      {# === hard declines === #}
       {% if score_result.hard_decline_reasons %}
-        <div class="panel">
-          <div class="panel-head">
-            <span class="panel-title" style="color:var(--neg)">Hard declines</span>
-            <span class="panel-actions mono">{{ score_result.hard_decline_reasons|length }}</span>
-          </div>
-          <div class="panel-body flush">
-            {% for r in score_result.hard_decline_reasons %}
-              <div class="flag-row">
-                <span class="flag-icon neg">!</span>
-                <div><div class="flag-title">{{ r }}</div></div>
-              </div>
-            {% endfor %}
-          </div>
+        <header class="sect-head" style="margin-top:32px">
+          <h2>Hard declines</h2>
+          <div class="rule"></div>
+          <div class="meta" style="color:var(--decline)">{{ score_result.hard_decline_reasons|length }} blocker{{ '' if score_result.hard_decline_reasons|length == 1 else 's' }}</div>
+        </header>
+        <div class="feed">
+          {% for r in score_result.hard_decline_reasons %}
+            <div class="event"><div class="t" style="color:var(--decline)">!</div><div class="txt"><strong style="color:var(--decline)">{{ r }}</strong></div></div>
+          {% endfor %}
         </div>
       {% endif %}
+
+      {# === matched funders === #}
+      <header class="sect-head" style="margin-top:32px">
+        <h2>Matched funders</h2>
+        <div class="rule"></div>
+        <div class="meta">sorted by score · green clean · yellow soft · red hard-fail</div>
+      </header>
 
       <form method="post" action="/ui/merchants/{{ merchant.id }}/submit">
-        <div class="panel">
-          <div class="panel-head">
-            <span class="panel-title">Matched Funders</span>
-            <span class="panel-actions mono">sorted by match score · green = clean · yellow = soft · red = hard fail</span>
+        {% if not matches %}
+          <div class="empty">No active funders configured<span class="copy"><a href="/ui/funders/import">Import a funder</a> to begin.</span></div>
+        {% else %}
+          <div class="form-actions" style="margin:14px 0">
+            <button class="btn primary" type="submit">Download submission package</button>
+            <button class="btn ghost" type="button" onclick="document.querySelectorAll('input[name=funder_ids][data-color=green]').forEach(b => b.checked = true)">Select all green</button>
+            <button class="btn ghost" type="button" onclick="document.querySelectorAll('input[name=funder_ids]').forEach(b => b.checked = false)">Clear</button>
+            <span class="mono-cell" style="margin-left:auto">ZIP of N CSVs · forward to each funder</span>
           </div>
-          <div class="panel-body">
-            {% if not matches %}
-              <div style="padding:24px;text-align:center;color:var(--muted)">
-                No active funders configured. Visit <a href="/ui/funders/import">Import</a>.
-              </div>
-            {% else %}
-              <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
-                <button class="btn btn-primary" type="submit">Download submission package</button>
-                <button class="btn" type="button" onclick="document.querySelectorAll('input[name=funder_ids][data-color=green]').forEach(b => b.checked = true)">Select all green</button>
-                <button class="btn" type="button" onclick="document.querySelectorAll('input[name=funder_ids]').forEach(b => b.checked = false)">Clear</button>
-                <span class="mono" style="font-size:11px;color:var(--muted)">ZIP of N CSVs (or one CSV if N = 1). Forward to each funder.</span>
-              </div>
-              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">
-                {% for c in matches %}
-                  {% set _disabled = (c.color == 'red') %}
-                  <label class="offer {% if c.color == 'green' %}best{% endif %}" style="cursor:{% if _disabled %}not-allowed{% else %}pointer{% endif %};display:block">
-                    <div class="offer-head">
-                      <span class="offer-name" style="display:flex;align-items:center;gap:6px">
-                        <input type="checkbox" name="funder_ids" value="{{ c.funder_id }}" data-color="{{ c.color }}" {% if _disabled %}disabled{% endif %}>
-                        <a href="/ui/funders/{{ c.funder_id }}" style="color:inherit;text-decoration:none" onclick="event.stopPropagation()">{{ c.funder_name }}</a>
-                      </span>
-                      <span class="offer-rate" style="color: {% if c.color == 'green' %}var(--pos){% elif c.color == 'yellow' %}var(--warn){% else %}var(--neg){% endif %}">
-                        {{ c.match_score }}<span style="color:var(--muted);font-size:11px"> /100</span>
-                      </span>
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px">
+            {% for c in matches %}
+              {% set _disabled = (c.color == 'red') %}
+              {% set _color_var = 'var(--approve)' if c.color == 'green' else 'var(--review)' if c.color == 'yellow' else 'var(--decline)' %}
+              <label style="display:block;cursor:{% if _disabled %}not-allowed{% else %}pointer{% endif %};border:1px solid var(--rule);border-left:3px solid {{ _color_var }};background:var(--paper);padding:14px 14px 12px;{% if c.color == 'green' %}box-shadow:0 0 0 1px color-mix(in oklch, var(--approve) 30%, transparent);{% endif %}">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:8px">
+                  <span style="display:flex;align-items:center;gap:8px;font-family:var(--serif);font-weight:500;font-size:15px;letter-spacing:-0.005em;color:var(--ink)">
+                    <input type="checkbox" name="funder_ids" value="{{ c.funder_id }}" data-color="{{ c.color }}" {% if _disabled %}disabled{% endif %} style="width:auto">
+                    <a href="/ui/funders/{{ c.funder_id }}" onclick="event.stopPropagation()" style="color:inherit;border-bottom:0">{{ c.funder_name }}</a>
+                  </span>
+                  <span style="font-family:var(--serif);font-size:24px;font-weight:600;letter-spacing:-0.022em;color:{{ _color_var }};font-variant-numeric:tabular-nums">{{ c.match_score }}<span style="font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-left:2px">/100</span></span>
+                </div>
+
+                {% if c.hard_reasons %}
+                  <div style="margin-top:8px">
+                    <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--decline);margin-bottom:4px">Hard fails · {{ c.hard_reasons|length }}</div>
+                    <ul style="margin:0;padding-left:14px;font-family:var(--serif);font-size:12px;color:var(--ink-2);line-height:1.45">
+                      {% for r in c.hard_reasons %}<li>{{ r }}</li>{% endfor %}
+                    </ul>
+                  </div>
+                {% endif %}
+                {% if c.soft_concerns %}
+                  <div style="margin-top:8px">
+                    <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--review);margin-bottom:4px">Soft concerns · {{ c.soft_concerns|length }}</div>
+                    <ul style="margin:0;padding-left:14px;font-family:var(--serif);font-size:12px;color:var(--ink-2);line-height:1.45">
+                      {% for r in c.soft_concerns %}<li>{{ r }}</li>{% endfor %}
+                    </ul>
+                  </div>
+                {% endif %}
+                {% if c.color == "green" %}
+                  <div style="margin-top:6px;font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--approve)">No blockers</div>
+                {% endif %}
+
+                {% if c.criteria_comparison %}
+                  <details style="margin-top:10px">
+                    <summary style="cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3)">{{ c.criteria_comparison|length }} criteria · compare</summary>
+                    <table class="queue" style="margin-top:6px;font-size:12px">
+                      <thead>
+                        <tr><th>Criterion</th><th class="num">Required</th><th class="num">Deal</th><th></th></tr>
+                      </thead>
+                      <tbody>
+                        {% for row in c.criteria_comparison %}
+                          {% set _rc = 'var(--approve)' if row.status == 'pass' else 'var(--review)' if row.status == 'warn' else 'var(--decline)' %}
+                          <tr class="no-click">
+                            <td style="font-size:11.5px;padding:6px 8px 6px 0">{{ row.label }}</td>
+                            <td class="mono-cell" style="text-align:right;font-size:11.5px;padding:6px 8px 6px 0">
+                              {% if row.unit == 'money' %}{{ row.funder_value | whole_money }}{% elif row.unit == 'fico' %}{{ row.funder_value }} FICO{% elif row.unit == 'months' %}{{ row.funder_value }} mo{% else %}{{ row.funder_value }}{% endif %}
+                            </td>
+                            <td class="mono-cell" style="text-align:right;font-size:11.5px;color:{{ _rc }};font-weight:500;padding:6px 8px 6px 0">
+                              {% if row.deal_value == 'missing' %}<em style="color:var(--ink-3)">missing</em>{% elif row.unit == 'money' %}{{ row.deal_value | whole_money }}{% elif row.unit == 'fico' %}{{ row.deal_value }} FICO{% elif row.unit == 'months' %}{{ row.deal_value }} mo{% else %}{{ row.deal_value }}{% endif %}
+                            </td>
+                            <td style="font-family:var(--mono);font-size:10px;letter-spacing:0.10em;text-transform:uppercase;color:{{ _rc }};padding:6px 0">{{ row.status }}</td>
+                          </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </details>
+                {% endif %}
+
+                {% if c.state_compliance %}
+                  {% set _sc = c.state_compliance %}
+                  <div style="margin-top:10px;padding:8px 10px;background:var(--paper-2);border-left:2px solid var(--rule);font-family:var(--serif);font-size:12px;line-height:1.45;color:var(--ink-2)">
+                    <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:4px">{{ _sc.state }} regulation</div>
+                    {% if c.funder_requires_coj and _sc.coj_allowed == 'banned' %}
+                      <div style="color:var(--decline)">CoJ banned in {{ _sc.state }}{% if _sc.coj_citation %} · {{ _sc.coj_citation }}{% endif %} — funder requires CoJ → hard fail.</div>
+                    {% elif c.funder_requires_coj and _sc.coj_allowed == 'conditional' %}
+                      <div style="color:var(--review)">CoJ conditional in {{ _sc.state }}{% if _sc.coj_citation %} · {{ _sc.coj_citation }}{% endif %} — confirm merchant qualifies before signing.</div>
+                    {% endif %}
+                    {% if c.funder_charges_merchant_advance_fees and _sc.broker_fees_prohibited %}
+                      <div style="color:var(--decline)">Merchant-paid advance fees prohibited in {{ _sc.state }}{% if _sc.broker_fees_citation %} · {{ _sc.broker_fees_citation }}{% endif %} — funder collects fees → hard fail.</div>
+                    {% endif %}
+                    {% if not c.funder_requires_coj and not c.funder_charges_merchant_advance_fees %}
+                      <div style="color:var(--ink-3)">No state-specific blockers for this funder × {{ _sc.state }}.</div>
+                    {% endif %}
+                  </div>
+                {% endif %}
+
+                {% set _resp = (funder_responses or {}).get(c.funder_id) %}
+                {% if _resp %}
+                  {% set _rs_cls = {'approved':'pos','declined':'bad','countered':'warn','pending':''}.get(_resp.status, '') %}
+                  <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--rule)">
+                    <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:4px">Funder reply</div>
+                    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+                      <span class="chip {{ _rs_cls }}">{{ _resp.status }}</span>
+                      {% if _resp.offered_amount %}<span class="mono-cell" style="font-size:11.5px">${{ _resp.offered_amount }}</span>{% endif %}
+                      {% if _resp.offered_factor %}<span class="mono-cell" style="font-size:11.5px">×{{ _resp.offered_factor }}</span>{% endif %}
+                      {% if _resp.offered_term_days %}<span class="mono-cell" style="font-size:11.5px">{{ _resp.offered_term_days }}d</span>{% endif %}
                     </div>
-                    {% if c.hard_reasons %}
-                      <div>
-                        <div style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--neg);margin-bottom:4px">Hard fails · {{ c.hard_reasons|length }}</div>
-                        <ul style="margin:0;padding-left:16px;font-size:11.5px;color:var(--ink-2)">
-                          {% for r in c.hard_reasons %}<li>{{ r }}</li>{% endfor %}
-                        </ul>
-                      </div>
+                    {% if _resp.notes %}
+                      <div style="font-family:var(--serif);font-size:12px;color:var(--ink-2);margin-top:4px;line-height:1.4">{{ _resp.notes }}</div>
                     {% endif %}
-                    {% if c.soft_concerns %}
-                      <div>
-                        <div style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--warn);margin-bottom:4px">Soft concerns · {{ c.soft_concerns|length }}</div>
-                        <ul style="margin:0;padding-left:16px;font-size:11.5px;color:var(--ink-2)">
-                          {% for r in c.soft_concerns %}<li>{{ r }}</li>{% endfor %}
-                        </ul>
-                      </div>
-                    {% endif %}
-                    {% if c.color == "green" %}
-                      <div style="font-family:var(--mono);font-size:10.5px;color:var(--pos)">No blockers.</div>
-                    {% endif %}
-
-                    {% if c.criteria_comparison %}
-                      <details style="margin-top:8px">
-                        <summary style="cursor:pointer;font-family:var(--mono);font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">
-                          {{ c.criteria_comparison|length }} funder criteria · click to compare
-                        </summary>
-                        <table class="data" style="margin-top:6px;font-size:11px">
-                          <thead>
-                            <tr>
-                              <th>Criterion</th>
-                              <th class="num">Funder requires</th>
-                              <th class="num">Deal value</th>
-                              <th></th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {% for row in c.criteria_comparison %}
-                              {% set _row_color = {'pass': 'var(--pos)', 'warn': 'var(--warn)', 'fail': 'var(--neg)'}[row.status] %}
-                              <tr>
-                                <td style="font-size:11px">{{ row.label }}</td>
-                                <td class="num" style="font-size:11px">
-                                  {% if row.unit == 'money' %}{{ row.funder_value | whole_money }}
-                                  {% elif row.unit == 'fico' %}{{ row.funder_value }} FICO
-                                  {% elif row.unit == 'months' %}{{ row.funder_value }} mo
-                                  {% else %}{{ row.funder_value }}{% endif %}
-                                </td>
-                                <td class="num" style="font-size:11px;color:{{ _row_color }};font-weight:500">
-                                  {% if row.deal_value == 'missing' %}<em style="color:var(--muted)">missing</em>
-                                  {% elif row.unit == 'money' %}{{ row.deal_value | whole_money }}
-                                  {% elif row.unit == 'fico' %}{{ row.deal_value }} FICO
-                                  {% elif row.unit == 'months' %}{{ row.deal_value }} mo
-                                  {% else %}{{ row.deal_value }}{% endif %}
-                                </td>
-                                <td style="font-size:11px">
-                                  {% if row.status == 'pass' %}<span style="color:var(--pos)">pass</span>
-                                  {% elif row.status == 'warn' %}<span style="color:var(--warn)">warn</span>
-                                  {% else %}<span style="color:var(--neg)">fail</span>{% endif %}
-                                </td>
-                              </tr>
-                            {% endfor %}
-                          </tbody>
-                        </table>
-                      </details>
-                    {% endif %}
-
-                    {% if c.state_compliance %}
-                      {% set _sc = c.state_compliance %}
-                      <div style="margin-top:8px;padding:6px 8px;border-left:2px solid var(--line);font-size:11px">
-                        <div style="font-family:var(--mono);text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);font-size:10px;margin-bottom:3px">{{ _sc.state }} regulation context</div>
-                        {% if c.funder_requires_coj and _sc.coj_allowed == 'banned' %}
-                          <div style="color:var(--neg)">CoJ banned in {{ _sc.state }}{% if _sc.coj_citation %} ({{ _sc.coj_citation }}){% endif %} — this funder requires CoJ → hard fail.</div>
-                        {% elif c.funder_requires_coj and _sc.coj_allowed == 'conditional' %}
-                          <div style="color:var(--warn)">CoJ allowed conditionally in {{ _sc.state }}{% if _sc.coj_citation %} ({{ _sc.coj_citation }}){% endif %} — confirm the merchant qualifies before signing.</div>
-                        {% endif %}
-                        {% if c.funder_charges_merchant_advance_fees and _sc.broker_fees_prohibited %}
-                          <div style="color:var(--neg)">Merchant-paid broker advance fees prohibited in {{ _sc.state }}{% if _sc.broker_fees_citation %} ({{ _sc.broker_fees_citation }}){% endif %} — this funder collects advance fees → hard fail.</div>
-                        {% endif %}
-                        {% if not c.funder_requires_coj and not c.funder_charges_merchant_advance_fees %}
-                          <div style="color:var(--muted)">No state-specific blockers for this funder × {{ _sc.state }} combination.</div>
-                        {% endif %}
-                      </div>
-                    {% endif %}
-
-                    {% set _resp = (funder_responses or {}).get(c.funder_id) %}
-                    {% if _resp %}
-                      {% set _rs_cls = {
-                          'approved': 'pos','declined': 'neg',
-                          'countered': 'warn','pending': '',
-                      } %}
-                      <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--rule)">
-                        <div style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:4px">Funder reply</div>
-                        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11.5px">
-                          <span class="tag {{ _rs_cls.get(_resp.status, '') }}"><span class="dot"></span>{{ _resp.status }}</span>
-                          {% if _resp.offered_amount %}<span class="mono">${{ _resp.offered_amount }}</span>{% endif %}
-                          {% if _resp.offered_factor %}<span class="mono">×{{ _resp.offered_factor }}</span>{% endif %}
-                          {% if _resp.offered_term_days %}<span class="mono">{{ _resp.offered_term_days }}d</span>{% endif %}
-                        </div>
-                        {% if _resp.notes %}
-                          <div style="font-size:11px;color:var(--ink-2);margin-top:4px">{{ _resp.notes }}</div>
-                        {% endif %}
-                      </div>
-                    {% endif %}
-                  </label>
-                {% endfor %}
-              </div>
-            {% endif %}
+                  </div>
+                {% endif %}
+              </label>
+            {% endfor %}
           </div>
-        </div>
+        {% endif %}
       </form>
 
+      {# === record reply === #}
       {% if matches %}
-        <div class="panel">
-          <div class="panel-head">
-            <span class="panel-title">Record funder reply</span>
-            <span class="panel-actions mono">audited · latest reply per funder shown on the cards above</span>
+        <header class="sect-head" style="margin-top:32px">
+          <h2>Record funder reply</h2>
+          <div class="rule"></div>
+          <div class="meta">audited · latest reply shown on each card</div>
+        </header>
+        <form class="form" method="post" action="/ui/merchants/{{ merchant.id }}/funder-response" style="margin-top:14px">
+          <div class="row" style="grid-template-columns:1.4fr 1fr 1fr 1fr 1fr auto;gap:10px;align-items:end">
+            <div class="field">
+              <label>Funder</label>
+              <select name="funder_id" required>
+                {% for c in matches %}<option value="{{ c.funder_id }}">{{ c.funder_name }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="field">
+              <label>Status</label>
+              <select name="response_status" required>
+                <option value="approved">approved</option>
+                <option value="countered">countered</option>
+                <option value="declined">declined</option>
+                <option value="pending">pending</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Amount · $</label>
+              <input class="mono-input" name="offered_amount" type="text" inputmode="decimal" placeholder="50000">
+            </div>
+            <div class="field">
+              <label>Factor</label>
+              <input class="mono-input" name="offered_factor" type="text" inputmode="decimal" placeholder="1.30">
+            </div>
+            <div class="field">
+              <label>Term · d</label>
+              <input class="mono-input" name="offered_term_days" type="text" inputmode="numeric" placeholder="120">
+            </div>
+            <div class="field">
+              <button class="btn primary" type="submit">Record reply</button>
+            </div>
           </div>
-          <div class="panel-body">
-            <form method="post" action="/ui/merchants/{{ merchant.id }}/funder-response" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:8px;align-items:end">
-              <div>
-                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Funder</label>
-                <select name="funder_id" required style="width:100%;padding:6px;font-family:var(--mono);font-size:12px">
-                  {% for c in matches %}
-                    <option value="{{ c.funder_id }}">{{ c.funder_name }}</option>
-                  {% endfor %}
-                </select>
-              </div>
-              <div>
-                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Status</label>
-                <select name="response_status" required style="width:100%;padding:6px;font-family:var(--mono);font-size:12px">
-                  <option value="approved">approved</option>
-                  <option value="countered">countered</option>
-                  <option value="declined">declined</option>
-                  <option value="pending">pending</option>
-                </select>
-              </div>
-              <div>
-                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Amount $</label>
-                <input name="offered_amount" type="text" inputmode="decimal" placeholder="50000" style="width:100%;padding:6px;font-family:var(--mono);font-size:12px">
-              </div>
-              <div>
-                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Factor / Term-days</label>
-                <div style="display:flex;gap:4px">
-                  <input name="offered_factor" type="text" inputmode="decimal" placeholder="1.30" style="flex:1;padding:6px;font-family:var(--mono);font-size:12px">
-                  <input name="offered_term_days" type="text" inputmode="numeric" placeholder="120" style="width:60px;padding:6px;font-family:var(--mono);font-size:12px">
-                </div>
-              </div>
-              <div>
-                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">&nbsp;</label>
-                <button class="btn btn-primary" type="submit" style="width:100%">Record reply</button>
-              </div>
-              <div style="grid-column:1/-1">
-                <label class="lbl" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">Notes (optional)</label>
-                <input name="notes" type="text" placeholder="e.g. funder wants 6-month statements before final approval" style="width:100%;padding:6px;font-size:12px">
-              </div>
-            </form>
+          <div class="field">
+            <label>Notes · optional</label>
+            <input name="notes" type="text" placeholder="e.g. funder wants 6 months of statements before final approval">
           </div>
-        </div>
+        </form>
       {% endif %}
+
     {% endif %}
-  </main>
-</div>
+
+  </div>
+</section>
 {% endblock %}

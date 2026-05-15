@@ -520,7 +520,7 @@ def test_merchant_match_with_funders_renders_cards(
     """Merchant + analyzed doc + funders → match cards rendered with color."""
     resp = client.get(f"/ui/merchants/{merchant.id}/match")
     assert resp.status_code == 200
-    assert "Matched Funders" in resp.text
+    assert "Matched funders" in resp.text
     # Both seeded funders appear.
     assert "Test Capital" in resp.text
     assert "Detail Capital" in resp.text
@@ -632,18 +632,17 @@ def test_merchant_detail_dossier_renders_without_error(
     assert "dossier-page" in resp.text
 
 
-def test_view_v2_query_param_falls_back_to_panels(
+def test_view_v2_query_param_still_responds(
     client: TestClient, merchant: MerchantRow
 ) -> None:
-    """?view=v2 explicitly opts back into the panel layout."""
+    """The legacy ?view=v2 link was retired when the app unified on the
+    dossier. Any bookmarked v2 URL must still 200 — the query param is
+    silently ignored and the dossier render is returned."""
     resp = client.get(f"/ui/merchants/{merchant.id}?view=v2")
     assert resp.status_code == 200
-    # Dossier-only marker must NOT appear.
-    assert "The AEGIS Dossier" not in resp.text
-    assert "dossier-page" not in resp.text
-    # v2-panel marker (drill-down aggregates) IS present.
+    # Dossier render — same as a no-param request.
+    assert "The AEGIS Dossier" in resp.text
     assert "True Revenue" in resp.text
-    assert "drill down" in resp.text
 
 
 def test_dossier_omits_audit_section_when_history_empty(

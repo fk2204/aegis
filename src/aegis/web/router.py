@@ -1471,14 +1471,11 @@ async def merchant_detail(
         subject_type="merchant", subject_id=merchant_id, limit=20
     )
 
-    # Template selection — dossier (editorial v3) is default; ?view=v2
-    # falls back to the panel layout. Same data context, two surfaces.
-    view = request.query_params.get("view", "").strip().lower()
-    template_name = (
-        "merchant_detail.html.j2"
-        if view == "v2"
-        else "merchant_detail_dossier.html.j2"
-    )
+    # Dossier is the only merchant-detail surface. The legacy v2 panel
+    # template was retired when the whole app was unified on the dossier
+    # aesthetic; ?view=v2 is accepted but ignored (kept reachable so any
+    # bookmarked link still 200s instead of 404ing).
+    template_name = "merchant_detail_dossier.html.j2"
 
     # Reshape state_tier into the richer dict the dossier template
     # expects. v2 template ignores extra keys. Citation / verified are
@@ -1509,7 +1506,6 @@ async def merchant_detail(
     else:
         ofac_dossier_status = "pending"
 
-    is_dossier = template_name.endswith("_dossier.html.j2")
     return templates.TemplateResponse(
         request,
         template_name,
@@ -1528,8 +1524,8 @@ async def merchant_detail(
             "score_result": score_result,
             "score_window": score_window,
             "stacking": stacking,
-            "state_tier": state_tier_dossier if is_dossier else state_tier,
-            "ofac_status": ofac_dossier_status if is_dossier else ofac_status,
+            "state_tier": state_tier_dossier,
+            "ofac_status": ofac_dossier_status,
             "ofac_match": ofac_match,
             "trend": trend,
             "history": history,

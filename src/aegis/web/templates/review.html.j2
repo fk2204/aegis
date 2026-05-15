@@ -2,86 +2,64 @@
 {% set active = 'Review' %}
 {% block title %}Manual review — AEGIS{% endblock %}
 
-{% block subhead %}
-<div class="subhead">
-  <div>
-    <h1>Manual review queue</h1>
-    <div class="meta" style="margin-top:4px">
-      <span><span class="dot"></span>{{ rows|length }} document{{ '' if rows|length == 1 else 's' }} flagged</span>
-      <span>parse_status = manual_review · re-upload after fixing the source PDF</span>
-    </div>
+{% block deck %}
+<header class="deck">
+  <h1>Review<em> · manual queue</em></h1>
+  <div class="meta">
+    {{ rows|length }} document{{ '' if rows|length == 1 else 's' }} &nbsp;·&nbsp; parse_status = manual_review
   </div>
-  <div style="display:flex;gap:8px">
-    <a class="btn btn-primary" href="/ui/upload">+ Re-upload</a>
+  <div class="actions">
+    <a class="btn primary" href="/ui/upload">+ Re-upload</a>
   </div>
-</div>
+</header>
 {% endblock %}
 
 {% block body %}
-<div class="body cols-1">
-  <main class="main">
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Documents in manual review</span>
-        <span class="panel-actions mono">n = {{ rows|length }}</span>
-      </div>
-      <div class="panel-body flush">
-        {% if not rows %}
-          <div style="padding:32px;text-align:center;color:var(--muted)">
-            <div style="font-size:14px;margin-bottom:6px">No documents in manual-review state.</div>
-            <div style="font-size:12px">Pipeline is clean.</div>
-          </div>
-        {% else %}
-          <div style="padding:8px 14px 0 14px">
-            <span class="risk-band-legend">
-              <span class="mono" style="color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-right:6px">All rows scored ≥ 65 (manual_review band)</span>
-              <span><span class="swatch decline"></span>65-100 manual</span>
-            </span>
-          </div>
-          <table class="data">
-            <thead>
-              <tr>
-                <th>Uploaded</th>
-                <th>Merchant</th>
-                <th>File</th>
-                <th class="num">Fraud score</th>
-                <th>Flags</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for r in rows %}
-              <tr>
-                <td><span class="mono" style="font-size:11.5px">{{ r.uploaded_at }}</span></td>
-                <td>{{ r.merchant_label }}</td>
-                <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ r.filename }}</span></td>
-                <td class="num">
-                  {% with score=r.fraud_score %}
-                    {% include "_fraud_score_chip.html.j2" %}
-                  {% endwith %}
-                </td>
-                <td>
-                  {% if r.flags %}
-                    <div style="display:flex;flex-wrap:wrap;gap:4px">
-                      {% for f in r.flags[:5] %}
-                        <span class="tag warn"><span class="dot"></span>{{ f }}</span>
-                      {% endfor %}
-                      {% if r.flags|length > 5 %}
-                        <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">+{{ r.flags|length - 5 }} more</span>
-                      {% endif %}
-                    </div>
-                  {% else %}
-                    <span style="color:var(--muted);font-family:var(--mono);font-size:11.5px">—</span>
-                  {% endif %}
-                </td>
-                <td><a class="btn" href="/ui/upload">Re-upload</a></td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        {% endif %}
-      </div>
-    </div>
-  </main>
-</div>
+<section class="body cols-1">
+  <div>
+    <header class="sect-head">
+      <h2>Documents in manual review</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ rows|length }} &nbsp;·&nbsp; all rows scored ≥ 65</div>
+    </header>
+
+    {% if not rows %}
+      <div class="empty">No documents in manual-review state<span class="copy">Pipeline is clean.</span></div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Uploaded</th>
+            <th>Merchant</th>
+            <th>File</th>
+            <th class="num">Fraud</th>
+            <th>Flags</th>
+            <th class="act"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr class="no-click">
+              <td class="mono-cell">{{ r.uploaded_at }}</td>
+              <td class="merchant">{{ r.merchant_label }}</td>
+              <td class="mono-cell">{{ r.filename }}</td>
+              <td class="score {% if r.fraud_score is number and r.fraud_score >= 65 %}bad{% elif r.fraud_score is number and r.fraud_score >= 35 %}warn{% elif r.fraud_score is number %}calm{% endif %}">
+                {% if r.fraud_score is number %}{{ r.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
+              </td>
+              <td class="flags">
+                {% if r.flags %}
+                  {% for f in r.flags[:3] %}<span class="chip warn">{{ f }}</span>{% endfor %}
+                  {% if r.flags|length > 3 %}<span class="mono-cell" style="margin-left:6px">+{{ r.flags|length - 3 }} more</span>{% endif %}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td class="act"><a href="/ui/upload">re-upload ↗</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</section>
 {% endblock %}

@@ -2,79 +2,67 @@
 {% set active = 'Merchants' %}
 {% block title %}Merchants — AEGIS{% endblock %}
 
-{% block subhead %}
-<div class="subhead">
-  <div>
-    <h1>Merchants</h1>
-    <div class="meta" style="margin-top:4px">
-      <span><span class="dot"></span>{{ merchants|length }} merchant{{ '' if merchants|length == 1 else 's' }}</span>
-      <span>directory · click a row for the deal detail view</span>
-    </div>
+{% block deck %}
+<header class="deck">
+  <h1>Merchants<em> · directory</em></h1>
+  <div class="meta">
+    {{ merchants|length }} merchant{{ '' if merchants|length == 1 else 's' }} &nbsp;·&nbsp; click row → dossier
   </div>
-  <div style="display:flex;gap:8px">
-    <a class="btn btn-primary" href="/ui/merchants/new">+ New merchant</a>
+  <div class="actions">
+    <a class="btn" href="/ui/upload">Upload PDF</a>
+    <a class="btn primary" href="/ui/intake">+ New merchant</a>
   </div>
-</div>
+</header>
 {% endblock %}
 
 {% block body %}
-<div class="body cols-1">
-  <main class="main">
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">All merchants</span>
-        <span class="panel-actions mono">n = {{ merchants|length }}</span>
-      </div>
-      <div class="panel-body flush">
-        {% if not merchants %}
-          <div style="padding:32px;text-align:center;color:var(--muted)">
-            <div style="font-size:14px;margin-bottom:6px">No merchants yet.</div>
-            <div style="font-size:12px"><a href="/ui/merchants/new">Create one</a> to begin.</div>
-          </div>
-        {% else %}
-          <table class="data">
-            <thead>
-              <tr>
-                <th>Business</th>
-                <th>Owner</th>
-                <th>State</th>
-                <th>Industry</th>
-                <th class="num">Credit</th>
-                <th class="num">TIB (mo)</th>
-                <th>Zoho</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for m in merchants %}
-              <tr onclick="location.href='/ui/merchants/{{ m.id }}'" style="cursor:pointer">
-                <td>
-                  <div class="merch">
-                    <span class="merch-mark">{{ m.business_name[:2]|upper }}</span>
-                    <div>
-                      <div class="merch-name"><a href="/ui/merchants/{{ m.id }}" style="color:inherit;text-decoration:none">{{ m.business_name }}</a></div>
-                      <div class="merch-id">{{ m.id|string|truncate(8, True, '') }}</div>
-                    </div>
-                  </div>
-                </td>
-                <td>{{ m.owner_name }}</td>
-                <td><span class="mono" style="font-size:11.5px">{{ m.state }}</span></td>
-                <td>{{ m.industry_naics or '—' }}</td>
-                <td class="num">{{ m.credit_score or '—' }}</td>
-                <td class="num">{{ m.time_in_business_months or '—' }}</td>
-                <td>
-                  {% if m.zoho_lead_id or m.zoho_deal_id %}
-                    <span class="tag accent"><span class="dot"></span>{{ 'lead' if m.zoho_lead_id else 'deal' }}</span>
-                  {% else %}
-                    <span style="color:var(--muted);font-family:var(--mono);font-size:11.5px">—</span>
-                  {% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        {% endif %}
-      </div>
-    </div>
-  </main>
-</div>
+<section class="body cols-1">
+  <div>
+    <header class="sect-head">
+      <h2>All merchants</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ merchants|length }}</div>
+    </header>
+
+    {% if not merchants %}
+      <div class="empty">No merchants yet<span class="copy"><a href="/ui/intake">Create one</a> to begin.</span></div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Business</th>
+            <th>Owner</th>
+            <th>State</th>
+            <th>Industry</th>
+            <th class="num">FICO</th>
+            <th class="num">TIB · mo</th>
+            <th>Zoho</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in merchants %}
+            <tr onclick="window.location.href='/ui/merchants/{{ m.id }}'">
+              <td class="merchant">
+                <a href="/ui/merchants/{{ m.id }}">{{ m.business_name }}</a>
+                <span class="sub">{{ m.id|string|truncate(8, True, '') }}</span>
+              </td>
+              <td>{{ m.owner_name }}</td>
+              <td class="mono-cell">{{ m.state }}</td>
+              <td>{{ m.industry_naics or '—' }}</td>
+              <td class="mono-cell" style="text-align:right">{{ m.credit_score or '—' }}</td>
+              <td class="mono-cell" style="text-align:right">{{ m.time_in_business_months or '—' }}</td>
+              <td>
+                {% if m.zoho_lead_id or m.zoho_deal_id %}
+                  <span class="chip info">{{ 'lead' if m.zoho_lead_id else 'deal' }}</span>
+                {% else %}
+                  <span class="mono-cell">—</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</section>
 {% endblock %}

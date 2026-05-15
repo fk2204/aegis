@@ -2,163 +2,112 @@
 {% set active = 'Funders' %}
 {% block title %}{{ funder.name }} — Funder · AEGIS{% endblock %}
 
-{% block subhead %}
-<div class="deal-head">
-  <div class="merch">
-    <span class="merch-mark" style="width:48px;height:48px;font-size:16px">{{ funder.name[:2]|upper }}</span>
+{% block deck %}
+<header class="deck">
+  <h1>{{ funder.name }}<em> · funder</em></h1>
+  <div class="meta">
+    {{ funder.id|string|truncate(8, True, '') }}
+    {% if funder.active %}&nbsp;·&nbsp; <span style="color:var(--approve)">active</span>{% else %}&nbsp;·&nbsp; <span style="color:var(--decline)">inactive</span>{% endif %}
+    {% if funder.guidelines_extracted_at %}&nbsp;·&nbsp; extracted {{ funder.guidelines_extracted_at }}{% endif %}
   </div>
-  <div>
-    <div class="id">funder · {{ funder.id|string|truncate(8, True, '') }}</div>
-    <h2>{{ funder.name }}</h2>
-    <div class="meta-row">
-      {% if funder.active %}
-        <span><span class="tag pos"><span class="dot"></span>active</span></span>
-      {% else %}
-        <span><span class="tag neg"><span class="dot"></span>inactive</span></span>
-      {% endif %}
-      {% if funder.guidelines_extracted_at %}
-        <span><span class="lbl">Extracted</span>{{ funder.guidelines_extracted_at }}</span>
-      {% endif %}
-      {% if funder.guidelines_source_pdf_hash %}
-        <span><span class="lbl">PDF sha</span>{{ funder.guidelines_source_pdf_hash[:12] }}…</span>
-      {% endif %}
-    </div>
+  <div class="actions">
+    <a class="btn ghost" href="/ui/funders">← All funders</a>
   </div>
-  <div style="display:flex;gap:8px;align-items:flex-start">
-    <a class="btn" href="/ui/funders">← All funders</a>
-  </div>
-</div>
+</header>
 {% endblock %}
 
 {% block body %}
-<div class="body cols-1">
-  <main class="main">
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Hard gates</span>
+<section class="body cols-1">
+  <div>
+
+    <header class="sect-head">
+      <h2>Hard gates</h2>
+      <div class="rule"></div>
+      <div class="meta">automatic decline if any fails</div>
+    </header>
+    <section class="strip" style="--strip-cols:4;padding-left:0;padding-right:0">
+      <div class="cell" style="padding-left:0">
+        <div class="k">Min monthly revenue</div>
+        <div class="v">{{ "${:,.0f}".format(funder.min_monthly_revenue) if funder.min_monthly_revenue else "—" }}</div>
       </div>
-      <div class="panel-body">
-        <div class="kpi-row" style="grid-template-columns:repeat(4, 1fr);margin-bottom:0">
-          <div class="kpi">
-            <div class="label">Min monthly revenue</div>
-            <div class="value">{{ "${:,.0f}".format(funder.min_monthly_revenue) if funder.min_monthly_revenue else "—" }}</div>
-          </div>
-          <div class="kpi">
-            <div class="label">Min ADB</div>
-            <div class="value">{{ "${:,.0f}".format(funder.min_avg_daily_balance) if funder.min_avg_daily_balance else "—" }}</div>
-          </div>
-          <div class="kpi">
-            <div class="label">Min credit</div>
-            <div class="value">{{ funder.min_credit_score or "—" }}</div>
-          </div>
-          <div class="kpi">
-            <div class="label">Min TIB</div>
-            <div class="value">{{ funder.min_months_in_business or "—" }}<span style="color:var(--muted);font-size:13px"> mo</span></div>
-          </div>
-        </div>
-        <div class="kpi-row" style="grid-template-columns:repeat(3, 1fr);margin-top:12px;margin-bottom:0">
-          <div class="kpi">
-            <div class="label">Max positions</div>
-            <div class="value">{{ funder.max_positions if funder.max_positions is not none else "—" }}</div>
-          </div>
-          <div class="kpi">
-            <div class="label">Stacking</div>
-            <div class="value" style="font-size:14px">
-              {% if funder.accepts_stacking %}
-                <span class="tag pos"><span class="dot"></span>yes</span>
-              {% else %}
-                <span class="tag neg"><span class="dot"></span>no</span>
-              {% endif %}
-            </div>
-          </div>
-          <div class="kpi">
-            <div class="label">Max NSF</div>
-            <div class="value">{{ funder.max_nsf_tolerance if funder.max_nsf_tolerance is not none else "—" }}</div>
-          </div>
+      <div class="cell">
+        <div class="k">Min ADB</div>
+        <div class="v">{{ "${:,.0f}".format(funder.min_avg_daily_balance) if funder.min_avg_daily_balance else "—" }}</div>
+      </div>
+      <div class="cell">
+        <div class="k">Min FICO</div>
+        <div class="v">{{ funder.min_credit_score or "—" }}</div>
+      </div>
+      <div class="cell">
+        <div class="k">Min TIB · mo</div>
+        <div class="v">{{ funder.min_months_in_business or "—" }}</div>
+      </div>
+    </section>
+
+    <section class="strip" style="--strip-cols:3;border-bottom:0;padding-left:0;padding-right:0;margin-top:14px">
+      <div class="cell" style="padding-left:0">
+        <div class="k">Max positions</div>
+        <div class="v">{{ funder.max_positions if funder.max_positions is not none else "—" }}</div>
+      </div>
+      <div class="cell">
+        <div class="k">Stacking</div>
+        <div class="v" style="font-size:22px">
+          {% if funder.accepts_stacking %}<span class="chip pos">yes</span>{% else %}<span class="chip bad">no</span>{% endif %}
         </div>
       </div>
+      <div class="cell" style="border-right:0;padding-right:0">
+        <div class="k">Max NSF</div>
+        <div class="v">{{ funder.max_nsf_tolerance if funder.max_nsf_tolerance is not none else "—" }}</div>
+      </div>
+    </section>
+
+    <header class="sect-head" style="margin-top:32px">
+      <h2>Pricing envelope</h2>
+      <div class="rule"></div>
+    </header>
+    <div class="feed">
+      <div class="event"><div class="t">$</div><div class="txt"><strong>Advance range</strong>&nbsp;&nbsp;{% if funder.min_advance and funder.max_advance %}${{ "{:,.0f}".format(funder.min_advance) }} – ${{ "{:,.0f}".format(funder.max_advance) }}{% else %}—{% endif %}</div></div>
+      <div class="event"><div class="t">×</div><div class="txt"><strong>Factor range</strong>&nbsp;&nbsp;{% if funder.typical_factor_low and funder.typical_factor_high %}{{ funder.typical_factor_low }} – {{ funder.typical_factor_high }}{% else %}—{% endif %}</div></div>
+      <div class="event"><div class="t">%</div><div class="txt"><strong>Holdback range</strong>&nbsp;&nbsp;{% if funder.typical_holdback_low and funder.typical_holdback_high %}{{ "{:.0%}".format(funder.typical_holdback_low) }} – {{ "{:.0%}".format(funder.typical_holdback_high) }}{% else %}—{% endif %}</div></div>
     </div>
 
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Pricing envelope</span>
-      </div>
-      <div class="panel-body">
-        <div class="kv">
-          <span class="k">Advance range</span>
-          <span class="v">
-            {% if funder.min_advance and funder.max_advance %}
-              ${{ "{:,.0f}".format(funder.min_advance) }} – ${{ "{:,.0f}".format(funder.max_advance) }}
-            {% else %}—{% endif %}
-          </span>
-          <span class="k">Factor range</span>
-          <span class="v">
-            {% if funder.typical_factor_low and funder.typical_factor_high %}
-              {{ funder.typical_factor_low }} – {{ funder.typical_factor_high }}
-            {% else %}—{% endif %}
-          </span>
-          <span class="k">Holdback range</span>
-          <span class="v">
-            {% if funder.typical_holdback_low and funder.typical_holdback_high %}
-              {{ "{:.0%}".format(funder.typical_holdback_low) }} – {{ "{:.0%}".format(funder.typical_holdback_high) }}
-            {% else %}—{% endif %}
-          </span>
-        </div>
-      </div>
+    <header class="sect-head" style="margin-top:32px">
+      <h2>Compliance</h2>
+      <div class="rule"></div>
+    </header>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px">
+      {% if funder.requires_coj %}<span class="chip warn">Requires CoJ</span>{% else %}<span class="chip">No CoJ</span>{% endif %}
+      {% if funder.charges_merchant_advance_fees %}<span class="chip bad">Charges advance fees · FL/GA hard-fail</span>{% else %}<span class="chip pos">No advance fees</span>{% endif %}
     </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Compliance</span>
+    {% if funder.aegis_compensation_disclosure_text %}
+      <div class="feed" style="margin-top:14px">
+        <div class="event"><div class="t">NY</div><div class="txt"><strong>Broker comp disclosure</strong>&nbsp;&nbsp;{{ funder.aegis_compensation_disclosure_text }}</div></div>
       </div>
-      <div class="panel-body">
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
-          {% if funder.requires_coj %}
-            <span class="tag warn"><span class="dot"></span>Requires CoJ</span>
-          {% else %}
-            <span class="tag"><span class="dot"></span>No CoJ</span>
-          {% endif %}
-          {% if funder.charges_merchant_advance_fees %}
-            <span class="tag neg"><span class="dot"></span>Charges advance fees (FL/GA hard-fail)</span>
-          {% else %}
-            <span class="tag pos"><span class="dot"></span>No advance fees</span>
-          {% endif %}
-        </div>
-        {% if funder.aegis_compensation_disclosure_text %}
-          <div class="kv" style="margin-top:8px">
-            <span class="k">NY broker comp</span>
-            <span class="v ui">{{ funder.aegis_compensation_disclosure_text }}</span>
-          </div>
-        {% endif %}
-      </div>
-    </div>
+    {% endif %}
 
     {% if funder.excluded_states or funder.excluded_industries %}
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">Exclusions</span>
-        </div>
-        <div class="panel-body">
-          {% if funder.excluded_states %}
-            <div class="kv"><span class="k">States ({{ funder.excluded_states|length }})</span><span class="v">{{ funder.excluded_states|join(", ") }}</span></div>
-          {% endif %}
-          {% if funder.excluded_industries %}
-            <div class="kv" style="margin-top:8px"><span class="k">Industries ({{ funder.excluded_industries|length }})</span><span class="v">{{ funder.excluded_industries|join(", ") }}</span></div>
-          {% endif %}
-        </div>
+      <header class="sect-head" style="margin-top:32px">
+        <h2>Exclusions</h2>
+        <div class="rule"></div>
+      </header>
+      <div class="feed">
+        {% if funder.excluded_states %}
+          <div class="event"><div class="t">St</div><div class="txt"><strong>States · {{ funder.excluded_states|length }}</strong>&nbsp;&nbsp;<span class="mono-inline">{{ funder.excluded_states|join(", ") }}</span></div></div>
+        {% endif %}
+        {% if funder.excluded_industries %}
+          <div class="event"><div class="t">In</div><div class="txt"><strong>Industries · {{ funder.excluded_industries|length }}</strong>&nbsp;&nbsp;<span class="mono-inline">{{ funder.excluded_industries|join(", ") }}</span></div></div>
+        {% endif %}
       </div>
     {% endif %}
 
     {% if funder.notes %}
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">Notes</span>
-        </div>
-        <div class="panel-body">
-          <div style="font-size:12.5px;color:var(--ink-2);white-space:pre-wrap">{{ funder.notes }}</div>
-        </div>
-      </div>
+      <header class="sect-head" style="margin-top:32px">
+        <h2>Notes</h2>
+        <div class="rule"></div>
+      </header>
+      <div style="font-family:var(--serif);font-size:14px;color:var(--ink-2);white-space:pre-wrap;line-height:1.5;padding-top:14px">{{ funder.notes }}</div>
     {% endif %}
-  </main>
-</div>
+
+  </div>
+</section>
 {% endblock %}

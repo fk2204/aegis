@@ -2,40 +2,38 @@
 {% set active = 'Funders' %}
 {% block title %}Review Extracted Funder — AEGIS{% endblock %}
 
-{% block subhead %}
-<div class="subhead">
-  <div>
-    <h1>Review Extraction</h1>
-    <div class="meta" style="margin-top:4px">
-      <span><span class="dot"></span>overall confidence
-        <strong style="color:{% if extraction.overall_confidence >= 80 %}var(--pos){% elif extraction.overall_confidence >= 60 %}var(--warn){% else %}var(--neg){% endif %}">
-          {{ extraction.overall_confidence }}/100
-        </strong>
-      </span>
-      <span>fields under {{ low_confidence_threshold }} confidence are highlighted · edit anything before saving</span>
-    </div>
+{% block deck %}
+<header class="deck">
+  <h1>Review Extraction<em> · funder draft</em></h1>
+  <div class="meta">
+    overall confidence
+    <strong style="margin-left:6px;color:{% if extraction.overall_confidence >= 80 %}var(--approve){% elif extraction.overall_confidence >= 60 %}var(--review){% else %}var(--decline){% endif %}">{{ extraction.overall_confidence }}/100</strong>
+    &nbsp;·&nbsp; low-confidence fields highlighted
   </div>
-</div>
+  <div class="actions">
+    <a class="btn ghost" href="/ui/funders/import">Cancel</a>
+  </div>
+</header>
 {% endblock %}
 
 {% block body %}
-<div class="body cols-1">
-  <main class="main" style="max-width:820px">
+<section class="body cols-1" style="max-width:920px;margin:0 auto">
+  <div>
     {% set d = extraction.draft %}
     {% set conf = extraction.confidence_by_field %}
 
     {% macro field(label, name, value, kind="text") %}
       {% set c = conf.get(name, 100) %}
       {% set lo = c < low_confidence_threshold %}
-      <div class="{% if lo %}conf-low{% else %}conf-high{% endif %}" style="padding:10px 12px;margin:8px 0;border-radius:2px;{% if lo %}background:var(--warn-soft);border-left:3px solid var(--warn){% else %}background:var(--paper);border-left:3px solid var(--line-2){% endif %}">
-        <label style="display:flex;align-items:baseline;justify-content:space-between;margin:0 0 4px;font-family:var(--mono);font-size:10.5px;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted);font-weight:500">
+      <div class="field {% if lo %}conf-low{% endif %}" style="padding:12px 14px;background:{% if lo %}var(--review-soft){% else %}var(--paper-2){% endif %};border-left:3px solid {% if lo %}var(--review){% else %}var(--rule){% endif %}">
+        <label style="display:flex;justify-content:space-between;align-items:baseline">
           <span>{{ label }}</span>
-          <span style="font-family:var(--mono);font-size:10px;color:{% if lo %}var(--warn){% else %}var(--muted){% endif %}">conf {{ c }}/100</span>
+          <span style="font-family:var(--mono);font-size:9.5px;letter-spacing:0.10em;color:{% if lo %}var(--review){% else %}var(--ink-3){% endif %}">conf {{ c }}/100</span>
         </label>
         {% if kind == "checkbox" %}
-          <div class="checkbox-row" style="margin-top:0">
-            <input type="checkbox" name="{{ name }}" {% if value %}checked{% endif %}>
-            <label for="{{ name }}" style="text-transform:none;letter-spacing:0;font-family:var(--ui);font-size:12.5px;color:var(--ink);margin:0 0 0 6px;font-weight:400">enabled</label>
+          <div style="display:flex;align-items:center;gap:8px;padding-top:4px">
+            <input type="checkbox" name="{{ name }}" {% if value %}checked{% endif %} style="width:auto">
+            <span style="font-family:var(--serif);font-size:13px;color:var(--ink-2)">enabled</span>
           </div>
         {% elif kind == "textarea" %}
           <textarea name="{{ name }}" rows="3">{{ value or "" }}</textarea>
@@ -45,58 +43,63 @@
       </div>
     {% endmacro %}
 
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Edit draft</span>
-        <span class="panel-actions mono">FunderRow</span>
-      </div>
-      <div class="panel-body">
-        <form method="post" action="/ui/funders/import/save">
-          {{ field("Funder name", "name", d.name) }}
-          {{ field("Min monthly revenue", "min_monthly_revenue", d.min_monthly_revenue, "number") }}
-          {{ field("Min avg daily balance", "min_avg_daily_balance", d.min_avg_daily_balance, "number") }}
-          {{ field("Min credit score", "min_credit_score", d.min_credit_score, "number") }}
-          {{ field("Min months in business", "min_months_in_business", d.min_months_in_business, "number") }}
-          {{ field("Max positions", "max_positions", d.max_positions, "number") }}
-          {{ field("Accepts stacking", "accepts_stacking", d.accepts_stacking, "checkbox") }}
-          {{ field("Max NSF tolerance", "max_nsf_tolerance", d.max_nsf_tolerance, "number") }}
-          {{ field("Min advance", "min_advance", d.min_advance, "number") }}
-          {{ field("Max advance", "max_advance", d.max_advance, "number") }}
-          {{ field("Typical factor low", "typical_factor_low", d.typical_factor_low, "number") }}
-          {{ field("Typical factor high", "typical_factor_high", d.typical_factor_high, "number") }}
-          {{ field("Typical holdback low", "typical_holdback_low", d.typical_holdback_low, "number") }}
-          {{ field("Typical holdback high", "typical_holdback_high", d.typical_holdback_high, "number") }}
-          {{ field(
-            "Excluded industries (comma-separated)",
-            "excluded_industries",
-            d.excluded_industries|join(", "),
-          ) }}
-          {{ field(
-            "Excluded states (comma-separated 2-letter codes)",
-            "excluded_states",
-            d.excluded_states|join(", "),
-          ) }}
-          {{ field("Notes", "notes", d.notes, "textarea") }}
+    <header class="sect-head">
+      <h2>Edit draft</h2>
+      <div class="rule"></div>
+      <div class="meta">FunderRow · {{ conf|length }} fields</div>
+    </header>
 
-          {% if extraction.unparseable_fragments %}
-            <h3>Unparseable fragments</h3>
-            <div class="field-help" style="margin-bottom:8px">
-              The LLM returned these as text it couldn't categorize. Operator decides whether they belong in notes or a future field.
-            </div>
-            <ul style="font-size:12px;color:var(--ink-2)">
-              {% for frag in extraction.unparseable_fragments %}
-                <li>{{ frag }}</li>
-              {% endfor %}
-            </ul>
-          {% endif %}
-
-          <div class="form-actions">
-            <button class="btn btn-primary" type="submit">Save funder</button>
-            <a class="btn" href="/ui/funders/import">Cancel</a>
-          </div>
-        </form>
+    <form class="form" method="post" action="/ui/funders/import/save" style="margin-top:14px">
+      {{ field("Funder name", "name", d.name) }}
+      <div class="row two">
+        {{ field("Min monthly revenue", "min_monthly_revenue", d.min_monthly_revenue, "number") }}
+        {{ field("Min avg daily balance", "min_avg_daily_balance", d.min_avg_daily_balance, "number") }}
       </div>
-    </div>
-  </main>
-</div>
+      <div class="row two">
+        {{ field("Min credit score", "min_credit_score", d.min_credit_score, "number") }}
+        {{ field("Min months in business", "min_months_in_business", d.min_months_in_business, "number") }}
+      </div>
+      <div class="row two">
+        {{ field("Max positions", "max_positions", d.max_positions, "number") }}
+        {{ field("Accepts stacking", "accepts_stacking", d.accepts_stacking, "checkbox") }}
+      </div>
+      <div class="row two">
+        {{ field("Max NSF tolerance", "max_nsf_tolerance", d.max_nsf_tolerance, "number") }}
+        {{ field("Min advance", "min_advance", d.min_advance, "number") }}
+      </div>
+      <div class="row two">
+        {{ field("Max advance", "max_advance", d.max_advance, "number") }}
+        {{ field("Typical factor low", "typical_factor_low", d.typical_factor_low, "number") }}
+      </div>
+      <div class="row two">
+        {{ field("Typical factor high", "typical_factor_high", d.typical_factor_high, "number") }}
+        {{ field("Typical holdback low", "typical_holdback_low", d.typical_holdback_low, "number") }}
+      </div>
+      <div class="row two">
+        {{ field("Typical holdback high", "typical_holdback_high", d.typical_holdback_high, "number") }}
+        {{ field("Excluded industries · comma-separated", "excluded_industries", d.excluded_industries|join(", ")) }}
+      </div>
+      {{ field("Excluded states · comma-separated 2-letter codes", "excluded_states", d.excluded_states|join(", ")) }}
+      {{ field("Notes", "notes", d.notes, "textarea") }}
+
+      {% if extraction.unparseable_fragments %}
+        <header class="sect-head" style="margin-top:6px">
+          <h2>Unparseable fragments</h2>
+          <div class="rule"></div>
+          <div class="meta">{{ extraction.unparseable_fragments|length }} item{{ '' if extraction.unparseable_fragments|length == 1 else 's' }}</div>
+        </header>
+        <div class="feed">
+          {% for frag in extraction.unparseable_fragments %}
+            <div class="event"><div class="t">·</div><div class="txt">{{ frag }}</div></div>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      <div class="form-actions">
+        <button class="btn primary" type="submit">Save funder</button>
+        <a class="btn ghost" href="/ui/funders/import">Cancel</a>
+      </div>
+    </form>
+  </div>
+</section>
 {% endblock %}

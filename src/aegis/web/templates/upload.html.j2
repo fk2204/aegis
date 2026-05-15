@@ -2,55 +2,58 @@
 {% set active = 'Upload' %}
 {% block title %}Upload statements — AEGIS{% endblock %}
 
-{% block subhead %}
-<div class="subhead">
-  <div>
-    <h1>Upload bank statements</h1>
-    <div class="meta" style="margin-top:4px">
-      <span><span class="dot"></span>PDF only · per-file cap 25 MB</span>
-      <span>SHA-256 deduped · re-upload returns the same document id</span>
-    </div>
+{% block deck %}
+<header class="deck">
+  <h1>Upload<em> · bank statements</em></h1>
+  <div class="meta">
+    PDF only &nbsp;·&nbsp; per-file 25 MB &nbsp;·&nbsp; SHA-256 deduped
   </div>
-</div>
+  <div class="actions">
+    <a class="btn" href="/ui/deals">Deals →</a>
+  </div>
+</header>
 {% endblock %}
 
 {% block body %}
-<div class="body cols-1">
-  <main class="main" style="max-width:780px">
+<section class="body cols-1" style="max-width:920px;margin:0 auto">
+  <div>
+
     {% if error %}
       <div class="form-error">{{ error }}</div>
     {% endif %}
 
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Drop statements</span>
-        <span class="panel-actions mono">3–4 months per merchant</span>
-      </div>
-      <div class="panel-body">
-        <form action="/ui/upload" method="post" enctype="multipart/form-data">
-          <label>Merchant</label>
-          <select name="merchant_id">
-            <option value="">(no merchant — orphan upload, link later)</option>
-            {% for m in merchants %}
-              <option value="{{ m.id }}">{{ m.business_name }} ({{ m.state }})</option>
-            {% endfor %}
-          </select>
-          <span class="field-help">Or <a href="/ui/intake">create merchant + upload in one step</a>.</span>
+    <header class="sect-head">
+      <h2>Drop statements</h2>
+      <div class="rule"></div>
+      <div class="meta">3-4 months per merchant</div>
+    </header>
 
-          <label>Statement PDFs</label>
-          <div class="dropzone">
-            <div class="big">Drop one or more PDFs</div>
-            <div class="small">…or use the file picker below</div>
-            <input type="file" name="files" accept="application/pdf" multiple required style="max-width:none;background:transparent">
-          </div>
-
-          <div class="form-actions">
-            <button class="btn btn-primary" type="submit">Upload &amp; queue parse</button>
-            <a class="btn" href="/ui/deals">Cancel</a>
-          </div>
-        </form>
+    <form class="form" action="/ui/upload" method="post" enctype="multipart/form-data" style="margin-top:14px">
+      <div class="field">
+        <label>Merchant</label>
+        <select name="merchant_id">
+          <option value="">(no merchant — orphan upload, link later)</option>
+          {% for m in merchants %}
+            <option value="{{ m.id }}">{{ m.business_name }} ({{ m.state }})</option>
+          {% endfor %}
+        </select>
+        <span class="help">Or <a href="/ui/intake">create merchant + upload in one step</a>.</span>
       </div>
-    </div>
+
+      <div class="field">
+        <label>Statement PDFs</label>
+        <div class="dropzone">
+          <div class="big">Drop one or more PDFs</div>
+          <div class="small">or use the file picker below</div>
+          <input type="file" name="files" accept="application/pdf" multiple required>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn primary" type="submit">Upload &amp; queue parse</button>
+        <a class="btn ghost" href="/ui/deals">Cancel</a>
+      </div>
+    </form>
 
     {% if results %}
       {% set _ok_count = results | selectattr('status','equalto','ok') | list | length %}
@@ -58,78 +61,69 @@
       {% set _err_count = results | selectattr('status','equalto','error') | list | length %}
 
       {% if _ok_count > 0 or _dup_count > 0 %}
-        <div class="panel" style="border-color:color-mix(in oklch, var(--pos) 30%, var(--line));background:var(--pos-soft);margin-bottom:14px">
-          <div class="panel-head" style="background:transparent">
-            <span class="panel-title" style="color:var(--pos)">Upload complete · what's next</span>
-            <span class="panel-actions mono" style="color:var(--pos)">{{ _ok_count }} new · {{ _dup_count }} duplicate{% if _err_count %} · {{ _err_count }} error{% endif %}</span>
+        <div class="panel pos" style="margin-top:28px">
+          <div class="panel-head">
+            <span class="panel-title">Upload complete · what's next</span>
+            <span class="panel-actions">{{ _ok_count }} new &nbsp;·&nbsp; {{ _dup_count }} duplicate{% if _err_count %} &nbsp;·&nbsp; {{ _err_count }} error{% endif %}</span>
           </div>
-          <div class="panel-body" style="background:transparent">
-            <div style="font-size:12.5px;margin-bottom:10px;color:var(--ink-2)">
+          <div class="panel-body">
+            <div style="font-family:var(--serif);font-size:14px;color:var(--ink-2);margin-bottom:14px;line-height:1.5">
               {% if _ok_count > 0 %}
-                Statements are queued for parsing. Parsing typically completes in 30-90 seconds per document. Parse status will appear in the merchant detail page.
+                Queued for parsing. Typical parse completes in 30-90 seconds per document. Parse status lands on the merchant detail page.
               {% elif _dup_count > 0 %}
-                These statements were already uploaded previously (matched by SHA-256). No new parse was queued.
+                These statements were already uploaded (matched by SHA-256). No new parse queued.
               {% endif %}
             </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <div class="form-actions">
               {% if merchant_just_uploaded %}
-                <a class="btn btn-primary" href="/ui/merchants/{{ merchant_just_uploaded.id }}">View {{ merchant_just_uploaded.business_name }}</a>
+                <a class="btn primary" href="/ui/merchants/{{ merchant_just_uploaded.id }}">View {{ merchant_just_uploaded.business_name }}</a>
                 <a class="btn" href="/ui/merchants/{{ merchant_just_uploaded.id }}/match">Match funders →</a>
               {% else %}
-                <a class="btn btn-primary" href="/ui/deals">View deals pipeline</a>
+                <a class="btn primary" href="/ui/deals">View deals</a>
               {% endif %}
-              <a class="btn" href="/ui/upload">Upload more</a>
+              <a class="btn ghost" href="/ui/upload">Upload more</a>
               {% if _err_count > 0 %}
-                <span class="tag neg" style="margin-left:auto"><span class="dot"></span>{{ _err_count }} file{{ '' if _err_count == 1 else 's' }} failed — see details below</span>
+                <span class="chip bad" style="margin-left:auto">{{ _err_count }} file{{ '' if _err_count == 1 else 's' }} failed — see below</span>
               {% endif %}
             </div>
           </div>
         </div>
       {% endif %}
 
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">Upload results</span>
-          <span class="panel-actions mono">{{ results|length }} file{{ '' if results|length == 1 else 's' }}</span>
-        </div>
-        <div class="panel-body flush">
-          <table class="data">
-            <thead>
-              <tr>
-                <th>File</th>
-                <th>Status</th>
-                <th>Detail</th>
-                <th>Document</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for r in results %}
-              <tr>
-                <td><span class="mono" style="font-size:11.5px">{{ r.filename }}</span></td>
-                <td>
-                  {% if r.status == 'ok' %}
-                    <span class="tag pos"><span class="dot"></span>ok</span>
-                  {% elif r.status == 'duplicate' %}
-                    <span class="tag warn"><span class="dot"></span>duplicate</span>
-                  {% else %}
-                    <span class="tag neg"><span class="dot"></span>error</span>
-                  {% endif %}
-                </td>
-                <td><span style="color:var(--muted);font-size:11.5px">{{ r.detail }}</span></td>
-                <td>
-                  {% if r.document_id %}
-                    <span class="mono" style="font-size:11px;color:var(--muted)">{{ r.document_id[:8] }}…</span>
-                  {% else %}
-                    —
-                  {% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <header class="sect-head" style="margin-top:28px">
+        <h2>Upload results</h2>
+        <div class="rule"></div>
+        <div class="meta">{{ results|length }} file{{ '' if results|length == 1 else 's' }}</div>
+      </header>
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>File</th>
+            <th>Status</th>
+            <th>Detail</th>
+            <th>Document</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in results %}
+            <tr class="no-click">
+              <td class="mono-cell">{{ r.filename }}</td>
+              <td>
+                {% if r.status == 'ok' %}
+                  <span class="chip pos">ok</span>
+                {% elif r.status == 'duplicate' %}
+                  <span class="chip warn">duplicate</span>
+                {% else %}
+                  <span class="chip bad">error</span>
+                {% endif %}
+              </td>
+              <td class="flags">{{ r.detail }}</td>
+              <td class="mono-cell">{% if r.document_id %}{{ r.document_id[:8] }}…{% else %}—{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
     {% endif %}
-  </main>
-</div>
+  </div>
+</section>
 {% endblock %}

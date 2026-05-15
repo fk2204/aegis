@@ -1,13 +1,10 @@
-{# Merchant detail v3 — "Dossier" view.
+{# Merchant detail — "Dossier" view.
 
-   Self-contained: does NOT extend base.html.j2. Uses its own
-   typography (Fraunces + JetBrains Mono) and chrome (compact topstrip
-   instead of v2's heavy topbar). Same data context as
-   merchant_detail.html.j2 — the route hands both templates the same
-   variables; templates choose what to surface and how.
-
-   Reachable at /ui/merchants/{id} by default. ?view=v2 returns the
-   classic panel layout.
+   Self-contained: does NOT extend base.html.j2 because the masthead +
+   meta-row are bespoke for this surface. Topstrip still matches the
+   rest of the app. Reachable at /ui/merchants/{id}. The legacy
+   ?view=v2 panel layout was retired when the whole app unified on
+   the dossier aesthetic.
 #}
 <!DOCTYPE html>
 <html lang="en">
@@ -34,9 +31,7 @@
     <a href="/ui/review">Review queue</a>
   </div>
   <div class="view-toggle">
-    <span style="color:var(--ink-3)">view:</span>
-    <a href="/ui/merchants/{{ merchant.id }}" class="active">Dossier</a>
-    <a href="/ui/merchants/{{ merchant.id }}?view=v2">Panels (v2)</a>
+    <span style="color:var(--ink-3)">aegis · dossier</span>
   </div>
 </div>
 

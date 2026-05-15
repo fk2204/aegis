@@ -2,57 +2,54 @@
 {% set active = 'Funders' %}
 {% block title %}Import Funder Criteria — AEGIS{% endblock %}
 
-{% block subhead %}
-<div class="subhead">
-  <div>
-    <h1>Import Funder Criteria</h1>
-    <div class="meta" style="margin-top:4px">
-      <span><span class="dot"></span>PDF upload</span>
-      <span>Claude extracts a draft FunderRow with per-field confidence · operator reviews + saves</span>
-    </div>
+{% block deck %}
+<header class="deck">
+  <h1>Import<em> · funder criteria</em></h1>
+  <div class="meta">
+    PDF upload &nbsp;·&nbsp; Claude extracts a draft FunderRow &nbsp;·&nbsp; operator reviews + saves
   </div>
-</div>
+  <div class="actions">
+    <a class="btn ghost" href="/ui/funders">Cancel</a>
+  </div>
+</header>
 {% endblock %}
 
 {% block body %}
-<div class="body cols-1">
-  <main class="main" style="max-width:780px">
-    {% if error %}
-      <div class="form-error">{{ error }}</div>
-    {% endif %}
+<section class="body cols-1" style="max-width:920px;margin:0 auto">
+  <div>
+    {% if error %}<div class="form-error">{{ error }}</div>{% endif %}
 
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Upload criteria PDF</span>
-        <span class="panel-actions mono">max 25 MB · 10–30s extraction</span>
-      </div>
-      <div class="panel-body">
-        <form method="post" enctype="multipart/form-data" action="/ui/funders/import">
-          <label>Criteria PDF</label>
-          <div class="dropzone">
-            <div class="big">Drop a funder's criteria PDF</div>
-            <div class="small">…or use the file picker below</div>
-            <input type="file" name="pdf" accept="application/pdf" required style="max-width:none;background:transparent">
-          </div>
-          <div class="form-actions">
-            <button class="btn btn-primary" type="submit">Run extraction</button>
-            <a class="btn" href="/ui/funders">Cancel</a>
-          </div>
-        </form>
-      </div>
-    </div>
+    <header class="sect-head">
+      <h2>Upload criteria PDF</h2>
+      <div class="rule"></div>
+      <div class="meta">max 25 MB · 10-30s extraction</div>
+    </header>
 
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">How this works</span>
+    <form class="form" method="post" enctype="multipart/form-data" action="/ui/funders/import" style="margin-top:14px">
+      <div class="field">
+        <label>Criteria PDF</label>
+        <div class="dropzone">
+          <div class="big">Drop a funder's criteria PDF</div>
+          <div class="small">or pick a file below</div>
+          <input type="file" name="pdf" accept="application/pdf" required>
+        </div>
       </div>
-      <div class="panel-body" style="color:var(--ink-2);font-size:12.5px;line-height:1.6">
-        <div>1. Upload runs synchronously against Bedrock (~10–30s).</div>
-        <div>2. Review page highlights low-confidence fields.</div>
-        <div>3. Edit any field before saving — AEGIS never auto-creates funders.</div>
-        <div>4. Save persists the FunderRow + source PDF hash for audit.</div>
+      <div class="form-actions">
+        <button class="btn primary" type="submit">Run extraction</button>
+        <a class="btn ghost" href="/ui/funders">Cancel</a>
       </div>
+    </form>
+
+    <header class="sect-head" style="margin-top:32px">
+      <h2>How this works</h2>
+      <div class="rule"></div>
+    </header>
+    <div class="feed">
+      <div class="event"><div class="t">1</div><div class="txt">Upload runs synchronously against Bedrock · ~10-30 s</div></div>
+      <div class="event"><div class="t">2</div><div class="txt">Review page highlights low-confidence fields</div></div>
+      <div class="event"><div class="t">3</div><div class="txt">Edit any field before saving — AEGIS never auto-creates funders</div></div>
+      <div class="event"><div class="t">4</div><div class="txt">Save persists the FunderRow + source PDF hash for audit</div></div>
     </div>
-  </main>
-</div>
+  </div>
+</section>
 {% endblock %}

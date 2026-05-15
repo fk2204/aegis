@@ -2,72 +2,87 @@
 {% set is_edit = merchant is not none %}
 {% set form_data = form if form is defined else {} %}
 {% set active = 'Merchants' %}
-{% block title %}
-  {% if is_edit %}Edit {{ merchant.business_name }}{% else %}New Merchant{% endif %} — AEGIS
-{% endblock %}
+{% block title %}{% if is_edit %}Edit {{ merchant.business_name }}{% else %}New Merchant{% endif %} — AEGIS{% endblock %}
 
-{% block subhead %}
-<div class="subhead">
-  <div>
-    <h1>{% if is_edit %}Edit Merchant{% else %}New Merchant{% endif %}</h1>
-    <div class="meta" style="margin-top:4px">
-      <span><span class="dot"></span>{% if is_edit %}{{ merchant.business_name }}{% else %}create a merchant record{% endif %}</span>
-    </div>
+{% block deck %}
+<header class="deck">
+  <h1>{% if is_edit %}Edit Merchant{% else %}New Merchant{% endif %}<em>{% if is_edit %} · {{ merchant.business_name }}{% else %} · create record{% endif %}</em></h1>
+  <div class="meta">required marked *</div>
+  <div class="actions">
+    <a class="btn ghost" href="{% if is_edit %}/ui/merchants/{{ merchant.id }}{% else %}/ui/merchants{% endif %}">Cancel</a>
   </div>
-</div>
+</header>
 {% endblock %}
 
 {% block body %}
-<div class="body cols-1">
-  <main class="main" style="max-width:780px">
-    {% if error %}
-      <div class="form-error">{{ error }}</div>
-    {% endif %}
+<section class="body cols-1" style="max-width:920px;margin:0 auto">
+  <div>
+    {% if error %}<div class="form-error">{{ error }}</div>{% endif %}
 
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">{% if is_edit %}Edit{% else %}Create{% endif %} Merchant</span>
-      </div>
-      <div class="panel-body">
-        {% set action = "/ui/merchants/" ~ merchant.id ~ "/edit" if is_edit else "/ui/merchants/new" %}
-        <form method="post" action="{{ action }}">
-          <h3>Identity</h3>
+    {% set action = "/ui/merchants/" ~ merchant.id ~ "/edit" if is_edit else "/ui/merchants/new" %}
+    <form class="form" method="post" action="{{ action }}" style="margin-top:14px">
 
+      <header class="sect-head">
+        <h2>Identity</h2>
+        <div class="rule"></div>
+      </header>
+
+      <div class="row two">
+        <div class="field">
           <label>Business name *</label>
           <input name="business_name" required value="{{ form_data.get('business_name') or (merchant.business_name if is_edit else '') }}">
-
+        </div>
+        <div class="field">
           <label>DBA</label>
           <input name="dba" value="{{ form_data.get('dba') or (merchant.dba if is_edit and merchant.dba else '') }}">
+        </div>
+      </div>
 
+      <div class="row two">
+        <div class="field">
           <label>Owner name *</label>
           <input name="owner_name" required value="{{ form_data.get('owner_name') or (merchant.owner_name if is_edit else '') }}">
+        </div>
+        <div class="field">
+          <label>State · 2-letter *</label>
+          <input name="state" required maxlength="2" minlength="2" style="text-transform:uppercase" value="{{ form_data.get('state') or (merchant.state if is_edit else '') }}">
+          <span class="help">Served: 45 states. TX/VA/CT/UT/MO/DC + territories rejected.</span>
+        </div>
+      </div>
 
-          <label>State (2-letter) *</label>
-          <input name="state" required maxlength="2" minlength="2" style="text-transform:uppercase;max-width:80px"
-                 value="{{ form_data.get('state') or (merchant.state if is_edit else '') }}">
-          <span class="field-help">Served: 45 states. TX/VA/CT/UT/MO/DC and territories rejected.</span>
+      <div class="row three">
+        <div class="field">
+          <label>NAICS</label>
+          <input class="mono-input" name="industry_naics" value="{{ form_data.get('industry_naics') or (merchant.industry_naics if is_edit and merchant.industry_naics else '') }}">
+        </div>
+        <div class="field">
+          <label>FICO · 300-850</label>
+          <input class="mono-input" name="credit_score" type="number" min="300" max="850" value="{{ form_data.get('credit_score') or (merchant.credit_score if is_edit and merchant.credit_score else '') }}">
+        </div>
+        <div class="field">
+          <label>Time in business · months</label>
+          <input class="mono-input" name="time_in_business_months" type="number" min="0" value="{{ form_data.get('time_in_business_months') or (merchant.time_in_business_months if is_edit and merchant.time_in_business_months else '') }}">
+        </div>
+      </div>
 
-          <label>NAICS code</label>
-          <input name="industry_naics" value="{{ form_data.get('industry_naics') or (merchant.industry_naics if is_edit and merchant.industry_naics else '') }}">
-
-          <label>Owner credit score (300–850)</label>
-          <input name="credit_score" type="number" min="300" max="850"
-                 value="{{ form_data.get('credit_score') or (merchant.credit_score if is_edit and merchant.credit_score else '') }}">
-
-          <label>Time in business (months)</label>
-          <input name="time_in_business_months" type="number" min="0"
-                 value="{{ form_data.get('time_in_business_months') or (merchant.time_in_business_months if is_edit and merchant.time_in_business_months else '') }}">
-
+      <div class="row two">
+        <div class="field">
           <label>Email</label>
-          <input name="email" type="email"
-                 value="{{ form_data.get('email') or (merchant.email if is_edit and merchant.email else '') }}">
-
+          <input name="email" type="email" value="{{ form_data.get('email') or (merchant.email if is_edit and merchant.email else '') }}">
+        </div>
+        <div class="field">
           <label>Phone</label>
-          <input name="phone"
-                 value="{{ form_data.get('phone') or (merchant.phone if is_edit and merchant.phone else '') }}">
+          <input class="mono-input" name="phone" value="{{ form_data.get('phone') or (merchant.phone if is_edit and merchant.phone else '') }}">
+        </div>
+      </div>
 
-          <h3>Intake context</h3>
+      <header class="sect-head" style="margin-top:8px">
+        <h2>Intake context</h2>
+        <div class="rule"></div>
+      </header>
 
+      <div class="row two">
+        <div class="field">
           {% set selected_entity = form_data.get('entity_type') or (merchant.entity_type if is_edit and merchant.entity_type else '') %}
           <label>Entity type</label>
           <select name="entity_type">
@@ -76,45 +91,51 @@
               <option value="{{ opt }}" {% if selected_entity == opt %}selected{% endif %}>{{ opt }}</option>
             {% endfor %}
           </select>
-
+        </div>
+        <div class="field">
           <label>EIN</label>
-          <input name="ein" placeholder="XX-XXXXXXX"
-                 value="{{ form_data.get('ein') or (merchant.ein if is_edit and merchant.ein else '') }}">
-          <span class="field-help">PII — masked in logs and excluded from CSV/JSON exports.</span>
-
-          <label>Requested advance ($)</label>
-          <input name="requested_amount" type="number" step="0.01" min="0"
-                 value="{{ form_data.get('requested_amount') or (merchant.requested_amount if is_edit and merchant.requested_amount else '') }}">
-
-          <label>Requested factor (e.g. 1.30)</label>
-          <input name="requested_factor" type="number" step="0.01" min="1"
-                 value="{{ form_data.get('requested_factor') or (merchant.requested_factor if is_edit and merchant.requested_factor else '') }}">
-
-          <label>Requested term (days)</label>
-          <input name="requested_term_days" type="number" min="1"
-                 value="{{ form_data.get('requested_term_days') or (merchant.requested_term_days if is_edit and merchant.requested_term_days else '') }}">
-
-          <label>Source / broker</label>
-          <input name="broker_source" placeholder="John @ ABC Brokers"
-                 value="{{ form_data.get('broker_source') or (merchant.broker_source if is_edit and merchant.broker_source else '') }}">
-
-          <label>Intake date</label>
-          <input name="intake_date" type="date"
-                 value="{{ form_data.get('intake_date') or (merchant.intake_date if is_edit and merchant.intake_date else '') }}">
-
-          {% set is_renewal = form_data.get('is_renewal') in ['true','on','yes','1'] or (is_edit and merchant.is_renewal) %}
-          <div class="checkbox-row">
-            <input type="checkbox" id="is_renewal" name="is_renewal" value="true" {% if is_renewal %}checked{% endif %}>
-            <label for="is_renewal">Renewal of a prior AEGIS-served deal</label>
-          </div>
-
-          <div class="form-actions">
-            <button class="btn btn-primary" type="submit">{% if is_edit %}Save{% else %}Create{% endif %}</button>
-            <a class="btn" href="{% if is_edit %}/ui/merchants/{{ merchant.id }}{% else %}/ui/merchants{% endif %}">Cancel</a>
-          </div>
-        </form>
+          <input class="mono-input" name="ein" placeholder="XX-XXXXXXX" value="{{ form_data.get('ein') or (merchant.ein if is_edit and merchant.ein else '') }}">
+          <span class="help">PII — masked in logs.</span>
+        </div>
       </div>
-    </div>
-  </main>
-</div>
+
+      <div class="row three">
+        <div class="field">
+          <label>Requested advance · $</label>
+          <input class="mono-input" name="requested_amount" type="number" step="0.01" min="0" value="{{ form_data.get('requested_amount') or (merchant.requested_amount if is_edit and merchant.requested_amount else '') }}">
+        </div>
+        <div class="field">
+          <label>Factor · e.g. 1.30</label>
+          <input class="mono-input" name="requested_factor" type="number" step="0.01" min="1" value="{{ form_data.get('requested_factor') or (merchant.requested_factor if is_edit and merchant.requested_factor else '') }}">
+        </div>
+        <div class="field">
+          <label>Term · days</label>
+          <input class="mono-input" name="requested_term_days" type="number" min="1" value="{{ form_data.get('requested_term_days') or (merchant.requested_term_days if is_edit and merchant.requested_term_days else '') }}">
+        </div>
+      </div>
+
+      <div class="row two">
+        <div class="field">
+          <label>Source / broker</label>
+          <input name="broker_source" placeholder="John @ ABC Brokers" value="{{ form_data.get('broker_source') or (merchant.broker_source if is_edit and merchant.broker_source else '') }}">
+        </div>
+        <div class="field">
+          <label>Intake date</label>
+          <input class="mono-input" name="intake_date" type="date" value="{{ form_data.get('intake_date') or (merchant.intake_date if is_edit and merchant.intake_date else '') }}">
+        </div>
+      </div>
+
+      {% set is_renewal = form_data.get('is_renewal') in ['true','on','yes','1'] or (is_edit and merchant.is_renewal) %}
+      <div class="field" style="flex-direction:row;align-items:center;gap:10px">
+        <input type="checkbox" id="is_renewal" name="is_renewal" value="true" {% if is_renewal %}checked{% endif %} style="width:auto">
+        <label for="is_renewal" style="margin:0">Renewal of a prior AEGIS-served deal</label>
+      </div>
+
+      <div class="form-actions" style="margin-top:8px">
+        <button class="btn primary" type="submit">{% if is_edit %}Save{% else %}Create{% endif %}</button>
+        <a class="btn ghost" href="{% if is_edit %}/ui/merchants/{{ merchant.id }}{% else %}/ui/merchants{% endif %}">Cancel</a>
+      </div>
+    </form>
+  </div>
+</section>
 {% endblock %}

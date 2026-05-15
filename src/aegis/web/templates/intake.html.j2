@@ -2,47 +2,58 @@
 {% set active = 'Intake' %}
 {% block title %}Intake — AEGIS{% endblock %}
 
-{% block subhead %}
-<div class="subhead">
-  <div>
-    <h1>New merchant + statements</h1>
-    <div class="meta" style="margin-top:4px">
-      <span><span class="dot"></span>One-shot intake</span>
-      <span>6 required fields · everything else editable from the merchant page</span>
-    </div>
+{% block deck %}
+<header class="deck">
+  <h1>Intake<em> · new merchant + statements</em></h1>
+  <div class="meta">
+    6 required fields &nbsp;·&nbsp; everything else editable on the merchant page
   </div>
-</div>
+  <div class="actions">
+    <a class="btn ghost" href="/ui/merchants">Cancel</a>
+  </div>
+</header>
 {% endblock %}
 
 {% block body %}
-<div class="body cols-1">
-  <main class="main" style="max-width:780px">
+<section class="body cols-1" style="max-width:920px;margin:0 auto">
+  <div>
     {% if error %}
       <div class="form-error">{{ error }}</div>
     {% endif %}
 
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Merchant intake</span>
-        <span class="panel-actions mono">required fields marked *</span>
-      </div>
-      <div class="panel-body">
-        <form method="post" action="/ui/intake" enctype="multipart/form-data">
-          <h3>Merchant</h3>
+    <form class="form" method="post" action="/ui/intake" enctype="multipart/form-data" style="margin-top:14px">
 
+      <header class="sect-head">
+        <h2>Merchant</h2>
+        <div class="rule"></div>
+        <div class="meta">required marked *</div>
+      </header>
+
+      <div class="row two">
+        <div class="field">
           <label>Business name *</label>
           <input name="business_name" required value="{{ form.get('business_name', '') }}">
-
+        </div>
+        <div class="field">
           <label>DBA</label>
           <input name="dba" value="{{ form.get('dba', '') }}">
+        </div>
+      </div>
 
+      <div class="row two">
+        <div class="field">
           <label>Owner name *</label>
           <input name="owner_name" required value="{{ form.get('owner_name', '') }}">
+        </div>
+        <div class="field">
+          <label>State · 2-letter *</label>
+          <input name="state" required maxlength="2" minlength="2" style="text-transform:uppercase" value="{{ form.get('state', '') }}">
+          <span class="help">Served: 45 states. TX/VA/CT/UT/MO/DC + territories rejected.</span>
+        </div>
+      </div>
 
-          <label>State (2-letter) *</label>
-          <input name="state" required maxlength="2" minlength="2" style="text-transform:uppercase;max-width:80px" value="{{ form.get('state', '') }}">
-          <span class="field-help">Served: 45 states. TX/VA/CT/UT/MO/DC and territories rejected.</span>
-
+      <div class="row three">
+        <div class="field">
           <label>Entity type</label>
           <select name="entity_type">
             <option value="">—</option>
@@ -50,61 +61,94 @@
               <option value="{{ opt }}" {% if form.get('entity_type') == opt %}selected{% endif %}>{{ opt }}</option>
             {% endfor %}
           </select>
-
+        </div>
+        <div class="field">
           <label>EIN</label>
-          <input name="ein" placeholder="XX-XXXXXXX" value="{{ form.get('ein', '') }}">
-          <span class="field-help">PII — masked in logs and excluded from CSV/JSON exports.</span>
+          <input class="mono-input" name="ein" placeholder="XX-XXXXXXX" value="{{ form.get('ein', '') }}">
+          <span class="help">PII — masked in logs.</span>
+        </div>
+        <div class="field">
+          <label>NAICS</label>
+          <input class="mono-input" name="industry_naics" value="{{ form.get('industry_naics', '') }}">
+        </div>
+      </div>
 
-          <label>NAICS code</label>
-          <input name="industry_naics" value="{{ form.get('industry_naics', '') }}">
+      <div class="row three">
+        <div class="field">
+          <label>FICO · 300-850</label>
+          <input class="mono-input" name="credit_score" type="number" min="300" max="850" value="{{ form.get('credit_score', '') }}">
+        </div>
+        <div class="field">
+          <label>Time in business · months</label>
+          <input class="mono-input" name="time_in_business_months" type="number" min="0" value="{{ form.get('time_in_business_months', '') }}">
+        </div>
+        <div class="field">
+          <label>Intake date</label>
+          <input class="mono-input" name="intake_date" type="date" value="{{ form.get('intake_date', '') }}">
+        </div>
+      </div>
 
-          <label>Owner credit score (300–850)</label>
-          <input name="credit_score" type="number" min="300" max="850" value="{{ form.get('credit_score', '') }}">
-
-          <label>Time in business (months)</label>
-          <input name="time_in_business_months" type="number" min="0" value="{{ form.get('time_in_business_months', '') }}">
-
+      <div class="row two">
+        <div class="field">
           <label>Email</label>
           <input name="email" type="email" value="{{ form.get('email', '') }}">
-
+        </div>
+        <div class="field">
           <label>Phone</label>
-          <input name="phone" value="{{ form.get('phone', '') }}">
+          <input class="mono-input" name="phone" value="{{ form.get('phone', '') }}">
+        </div>
+      </div>
 
-          <h3>Underwriting target</h3>
+      <header class="sect-head" style="margin-top:8px">
+        <h2>Underwriting target</h2>
+        <div class="rule"></div>
+      </header>
 
-          <label>Requested advance ($)</label>
-          <input name="requested_amount" type="number" step="0.01" min="0" value="{{ form.get('requested_amount', '') }}">
+      <div class="row three">
+        <div class="field">
+          <label>Requested advance · $</label>
+          <input class="mono-input" name="requested_amount" type="number" step="0.01" min="0" value="{{ form.get('requested_amount', '') }}">
+        </div>
+        <div class="field">
+          <label>Factor · e.g. 1.30</label>
+          <input class="mono-input" name="requested_factor" type="number" step="0.01" min="1" value="{{ form.get('requested_factor', '') }}">
+        </div>
+        <div class="field">
+          <label>Term · days</label>
+          <input class="mono-input" name="requested_term_days" type="number" min="1" value="{{ form.get('requested_term_days', '') }}">
+        </div>
+      </div>
 
-          <label>Requested factor (e.g. 1.30)</label>
-          <input name="requested_factor" type="number" step="0.01" min="1" value="{{ form.get('requested_factor', '') }}">
-
-          <label>Requested term (days)</label>
-          <input name="requested_term_days" type="number" min="1" value="{{ form.get('requested_term_days', '') }}">
-
+      <div class="row two">
+        <div class="field">
           <label>Source / broker</label>
           <input name="broker_source" placeholder="John @ ABC Brokers" value="{{ form.get('broker_source', '') }}">
-
-          <label>Intake date</label>
-          <input name="intake_date" type="date" value="{{ form.get('intake_date', '') }}">
-
-          <div class="checkbox-row">
-            <input type="checkbox" id="is_renewal" name="is_renewal" value="true" {% if form.get('is_renewal') in ['true','on','yes','1'] %}checked{% endif %}>
-            <label for="is_renewal">Renewal of a prior AEGIS-served deal</label>
-          </div>
-
-          <h3>Statements</h3>
-
-          <label>Bank statement PDFs (3–4 months)</label>
-          <input type="file" name="files" accept="application/pdf" multiple>
-          <span class="field-help">Optional at intake — you can upload later from the merchant page.</span>
-
-          <div class="form-actions">
-            <button class="btn btn-primary" type="submit">Create merchant &amp; queue parse</button>
-            <a class="btn" href="/ui/merchants">Cancel</a>
-          </div>
-        </form>
+        </div>
+        <div class="field" style="flex-direction:row;align-items:center;gap:10px;padding-top:24px">
+          <input type="checkbox" id="is_renewal" name="is_renewal" value="true" {% if form.get('is_renewal') in ['true','on','yes','1'] %}checked{% endif %} style="width:auto">
+          <label for="is_renewal" style="margin:0">Renewal of a prior AEGIS-served deal</label>
+        </div>
       </div>
-    </div>
-  </main>
-</div>
+
+      <header class="sect-head" style="margin-top:8px">
+        <h2>Statements · optional at intake</h2>
+        <div class="rule"></div>
+      </header>
+
+      <div class="field">
+        <label>Bank statement PDFs · 3-4 months</label>
+        <div class="dropzone">
+          <div class="big">Drop PDFs here</div>
+          <div class="small">or pick files below — skip and upload later from the merchant page</div>
+          <input type="file" name="files" accept="application/pdf" multiple>
+        </div>
+      </div>
+
+      <div class="form-actions" style="margin-top:8px">
+        <button class="btn primary" type="submit">Create merchant &amp; queue parse</button>
+        <a class="btn ghost" href="/ui/merchants">Cancel</a>
+      </div>
+    </form>
+  </div>
+</section>
 {% endblock %}
