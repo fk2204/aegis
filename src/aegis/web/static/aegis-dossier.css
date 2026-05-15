@@ -13,23 +13,26 @@
  */
 
 .dossier-page {
-  --paper:        #f1ebdd;
-  --paper-2:      #ebe4d2;
-  --paper-deep:   #d8d0bb;
-  --ink:          #181613;
-  --ink-2:        #3a342c;
-  --ink-3:        #6a6356;
-  --rule:         #c3b89c;
-  --rule-soft:    #ddd3b8;
-  --gild:         #b5852b;
+  /* Commera brand palette — Pale Sage + Deep Forest. The dossier
+   * surfaces share these tokens with commerafunding.com so the
+   * underwriting console and the customer site read as one brand. */
+  --paper:        #FAFAF8;   /* Commera bg-primary — pale cream */
+  --paper-2:      #F0F5F2;   /* Commera bg-muted — light sage tint */
+  --paper-deep:   #E8EDE9;   /* deep sage edge */
+  --ink:          #2D5A47;   /* Commera primary — deep forest, used for headings */
+  --ink-2:        #4A6B5E;   /* Commera text-body — medium forest grey */
+  --ink-3:        #7A8E82;   /* Commera text-muted — sage grey */
+  --rule:         #D1DDD6;   /* Commera border — light sage */
+  --rule-soft:    #E8EDE9;   /* Commera border-subtle — very light sage */
+  --gild:         #92400E;   /* warm amber, kept for review/warning emphasis */
 
   --decline:      #a72f24;
   --decline-soft: #f0ddd8;
-  --review:       #9c721a;
-  --review-soft:  #f0e3c8;
-  --approve:      #2f5a32;
-  --approve-soft: #d8e3d4;
-  --accent:       #1a3a5c;
+  --review:       #92400E;   /* Commera amber-text-dark */
+  --review-soft:  #FEF3C7;   /* Commera amber-bg */
+  --approve:      #2D5A47;   /* matches brand primary — clean clear signal */
+  --approve-soft: #D8E3D8;   /* warm sage */
+  --accent:       #1F3E32;   /* Commera accent-dark — link emphasis */
 
   --serif:  "Fraunces", "Hoefler Text", "Adobe Caslon Pro", "Iowan Old Style", Georgia, serif;
   --mono:   "JetBrains Mono", "Berkeley Mono", "IBM Plex Mono", ui-monospace, monospace;
@@ -40,9 +43,9 @@
   margin: 0;
   background: var(--paper);
   background-image:
-    radial-gradient(circle at 30% 20%, rgba(120,100,60,.045) 0 1px, transparent 1px),
-    radial-gradient(circle at 70% 60%, rgba(120,100,60,.04)  0 1px, transparent 1px),
-    radial-gradient(circle at 90% 90%, rgba(120,100,60,.035) 0 1px, transparent 1px),
+    radial-gradient(circle at 30% 20%, rgba(45,90,71,.04)  0 1px, transparent 1px),
+    radial-gradient(circle at 70% 60%, rgba(45,90,71,.035) 0 1px, transparent 1px),
+    radial-gradient(circle at 90% 90%, rgba(45,90,71,.03)  0 1px, transparent 1px),
     linear-gradient(0deg, var(--paper), var(--paper));
   background-size: 7px 7px, 11px 11px, 13px 13px, 100%;
   background-attachment: fixed;
