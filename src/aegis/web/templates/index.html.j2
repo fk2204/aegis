@@ -1,186 +1,571 @@
-{% extends "base.html.j2" %}
-{% set active = 'Today' %}
-{% block title %}AEGIS — Today{% endblock %}
+{# Today — operator dashboard, dossier palette, tool-dense layout.
 
-{% block subhead %}
-<div class="subhead">
-  <div>
-    <h1>Today · Underwriting desk</h1>
-    <div class="meta" style="margin-top:4px">
-      <span><span class="dot"></span>All systems nominal</span>
-      <span>{{ now|default('') }}</span>
-    </div>
+   Self-contained: does NOT extend base.html.j2 (the v2 chrome). Uses
+   the same Fraunces + JetBrains Mono pairing as merchant_detail_dossier
+   and the same cream-paper substrate, but trades broadsheet prose for
+   high information density. No editorial copy, no drop caps — just
+   labels, numbers, and an attention queue the operator can scan
+   without reading.
+#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AEGIS — Today</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,700;1,9..144,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/ui/static/aegis-dossier.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <style>
+    /* Today-only overrides on top of aegis-dossier.css */
+    .dossier-page.today { padding-bottom: 64px; }
+
+    .today .deck {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 18px 56px 4px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 24px;
+      border-bottom: 1px solid var(--ink);
+    }
+    .today .deck h1 {
+      font-family: var(--serif);
+      font-weight: 600;
+      font-size: 42px;
+      line-height: 1;
+      letter-spacing: -0.022em;
+      font-variation-settings: "opsz" 96;
+      margin: 0;
+    }
+    .today .deck h1 em {
+      font-style: italic;
+      font-weight: 400;
+      color: var(--ink-2);
+    }
+    .today .deck .actions { display: flex; gap: 6px; }
+    .today .deck .meta {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* KPI strip — single dense row */
+    .today .strip {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 0 56px;
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      border-bottom: 1px solid var(--rule);
+    }
+    .today .strip .cell {
+      padding: 16px 14px 14px 0;
+      border-right: 1px solid var(--rule-soft);
+    }
+    .today .strip .cell:last-child { border-right: 0; padding-right: 0; }
+    .today .strip .cell:first-child { padding-left: 0; }
+    .today .strip .cell:not(:first-child) { padding-left: 14px; }
+    .today .strip .k {
+      font-family: var(--mono);
+      font-size: 9.5px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      margin-bottom: 6px;
+    }
+    .today .strip .v {
+      font-family: var(--serif);
+      font-weight: 500;
+      font-size: 36px;
+      line-height: 1;
+      letter-spacing: -0.022em;
+      font-variation-settings: "opsz" 96;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    .today .strip .v.warn { color: var(--review); }
+    .today .strip .v.bad  { color: var(--decline); }
+    .today .strip .v.calm { color: var(--approve); }
+    .today .strip .v .sub {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--ink-3);
+      letter-spacing: 0.04em;
+      margin-left: 6px;
+      vertical-align: 6px;
+    }
+
+    /* Two-column body: attention queue + sidebar */
+    .today .body {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 24px 56px;
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 36px;
+      align-items: start;
+    }
+
+    /* Section heading — compact, no big serif numbers */
+    .today .sect-head {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 14px;
+      align-items: baseline;
+      padding-bottom: 6px;
+      border-bottom: 2px solid var(--ink);
+      margin-bottom: 0;
+    }
+    .today .sect-head h2 {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--ink);
+      font-weight: 500;
+      margin: 0;
+    }
+    .today .sect-head .meta {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.10em;
+      color: var(--ink-3);
+      font-variant-numeric: tabular-nums;
+      text-transform: uppercase;
+    }
+    .today .sect-head .rule {
+      border-top: 1px dotted var(--rule);
+      align-self: center;
+      transform: translateY(-2px);
+    }
+
+    /* Attention table — dense row-per-merchant */
+    .today table.queue {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-family: var(--serif);
+      font-size: 14px;
+    }
+    .today table.queue thead th {
+      font-family: var(--mono);
+      font-size: 9.5px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      font-weight: 500;
+      text-align: left;
+      padding: 10px 12px 10px 0;
+      border-bottom: 1px solid var(--rule);
+    }
+    .today table.queue thead th.num,
+    .today table.queue thead th.act { text-align: right; }
+    .today table.queue tbody td {
+      padding: 12px 12px 12px 0;
+      border-bottom: 1px solid var(--rule-soft);
+      vertical-align: middle;
+      font-variant-numeric: tabular-nums;
+    }
+    .today table.queue tbody tr {
+      cursor: pointer;
+      transition: background .15s ease;
+    }
+    .today table.queue tbody tr:hover {
+      background: color-mix(in oklch, var(--paper-deep) 50%, transparent);
+    }
+    .today table.queue tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 var(--ink); }
+    .today table.queue tbody td.merchant {
+      font-family: var(--serif);
+      font-weight: 500;
+      font-size: 15px;
+      letter-spacing: -0.005em;
+      padding-left: 0;
+    }
+    .today table.queue tbody td.merchant a {
+      color: var(--ink);
+      border-bottom: 0;
+    }
+    .today table.queue tbody td.merchant a:hover { color: var(--accent); }
+    .today table.queue tbody td.merchant .sub {
+      display: block;
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      color: var(--ink-3);
+      margin-top: 2px;
+      text-transform: uppercase;
+    }
+    .today table.queue tbody td.score {
+      font-family: var(--serif);
+      font-size: 22px;
+      font-weight: 500;
+      line-height: 1;
+      letter-spacing: -0.022em;
+      text-align: right;
+      font-variation-settings: "opsz" 36;
+    }
+    .today table.queue tbody td.score.bad  { color: var(--decline); }
+    .today table.queue tbody td.score.warn { color: var(--review); }
+    .today table.queue tbody td.score.calm { color: var(--approve); }
+    .today table.queue tbody td.score .of {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--ink-3);
+      margin-left: 2px;
+      vertical-align: 0.4em;
+    }
+    .today table.queue tbody td.tier {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.20em;
+      color: var(--ink-3);
+    }
+    .today table.queue tbody td.tier.A { color: var(--approve); }
+    .today table.queue tbody td.tier.C,
+    .today table.queue tbody td.tier.D { color: var(--review); }
+    .today table.queue tbody td.tier.F { color: var(--decline); }
+    .today table.queue tbody td.flags {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--ink-2);
+      letter-spacing: 0.04em;
+    }
+    .today table.queue tbody td.uploaded {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--ink-3);
+      text-align: right;
+    }
+    .today table.queue tbody td.act {
+      text-align: right;
+      padding-right: 0;
+    }
+    .today table.queue tbody td.act a {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--accent);
+      border-bottom: 1px solid transparent;
+    }
+    .today table.queue tbody td.act a:hover { border-bottom-color: var(--accent); }
+
+    .today .empty {
+      padding: 32px 0;
+      text-align: center;
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      border-bottom: 1px solid var(--rule-soft);
+    }
+
+    /* Funnel — compact horizontal bars */
+    .today .funnel {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .today .funnel .row {
+      display: grid;
+      grid-template-columns: 110px 1fr 50px;
+      align-items: center;
+      gap: 12px;
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      color: var(--ink-2);
+      font-variant-numeric: tabular-nums;
+    }
+    .today .funnel .row .bar {
+      height: 6px;
+      background: var(--paper-deep);
+      position: relative;
+      overflow: hidden;
+    }
+    .today .funnel .row .bar .fill {
+      position: absolute; inset: 0 auto 0 0;
+      background: var(--ink-2);
+    }
+    .today .funnel .row .bar .fill.accent { background: var(--accent); }
+    .today .funnel .row .bar .fill.pos    { background: var(--approve); }
+    .today .funnel .row .bar .fill.neg    { background: var(--decline); }
+    .today .funnel .row .n {
+      text-align: right;
+      color: var(--ink);
+      font-weight: 500;
+    }
+
+    /* Activity feed */
+    .today .feed {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+    }
+    .today .feed .event {
+      display: grid;
+      grid-template-columns: 52px 1fr;
+      gap: 10px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--rule-soft);
+      align-items: baseline;
+    }
+    .today .feed .event:last-child { border-bottom: 0; }
+    .today .feed .event .t {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--ink-3);
+      letter-spacing: 0.04em;
+      font-variant-numeric: tabular-nums;
+    }
+    .today .feed .event .txt {
+      font-family: var(--serif);
+      font-size: 13px;
+      color: var(--ink-2);
+      line-height: 1.4;
+      letter-spacing: -0.003em;
+    }
+    .today .feed .event .txt strong {
+      font-weight: 600;
+      color: var(--ink);
+      font-style: normal;
+    }
+    .today .feed .event .txt .mono-inline {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--ink-3);
+      margin-left: 2px;
+    }
+    .today .feed .empty { padding: 20px 0; }
+
+    /* Compliance ribbon at bottom */
+    .today .compliance-ribbon {
+      max-width: 1280px;
+      margin: 24px auto 0;
+      padding: 14px 56px 0;
+      border-top: 1px solid var(--ink);
+      display: grid;
+      grid-template-columns: 200px 1fr 1fr;
+      gap: 24px;
+      align-items: baseline;
+    }
+    .today .compliance-ribbon .k {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--ink);
+    }
+    .today .compliance-ribbon .v {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      color: var(--ink-2);
+    }
+    .today .compliance-ribbon .v .tier {
+      color: var(--ink-3);
+      letter-spacing: 0.12em;
+      margin-right: 6px;
+    }
+
+    /* Buttons — compact, monospaced */
+    .today .btn {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 12px;
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink);
+      background: var(--paper);
+      border: 1px solid var(--ink);
+      border-bottom: 2px solid var(--ink);
+      cursor: pointer;
+      transition: transform .12s ease, background .12s ease;
+    }
+    .today .btn:hover {
+      background: var(--paper-2);
+      transform: translateY(-1px);
+      border-bottom-width: 2px;
+    }
+    .today .btn.primary {
+      background: var(--ink);
+      color: var(--paper);
+    }
+    .today .btn.primary:hover { background: var(--ink-2); }
+  </style>
+</head>
+<body class="dossier-page body-root today">
+
+{# === compact topstrip — same as dossier === #}
+<div class="topstrip">
+  <div class="links">
+    <a href="/ui/" style="color:var(--ink);font-weight:500">Today</a>
+    <a href="/ui/deals">Deals</a>
+    <a href="/ui/merchants">Merchants</a>
+    <a href="/ui/funders">Funders</a>
+    <a href="/ui/upload">Upload</a>
+    <a href="/ui/review">Review queue</a>
   </div>
-  <div style="display:flex;gap:8px">
-    <a class="btn" href="/ui/upload">Upload statement</a>
-    <a class="btn btn-primary" href="/ui/intake">+ New deal</a>
+  <div class="view-toggle">
+    <span style="color:var(--ink-3)">aegis · {{ now|default('') }}</span>
   </div>
 </div>
-{% endblock %}
 
-{% block body %}
-<div class="body cols-2" style="grid-template-columns:220px 1fr">
-  <aside class="side">
-    <div class="side-section">
-      <div class="side-label">Queue</div>
-      <div class="side-item {{ 'active' if manual_review_count > 0 else '' }}"><a href="/ui/review" style="color:inherit;text-decoration:none;flex:1">Manual review</a><span class="count">{{ manual_review_count }}</span></div>
-      <div class="side-item"><a href="/ui/deals" style="color:inherit;text-decoration:none;flex:1">All deals</a><span class="count">{{ in_pipeline }}</span></div>
-      <div class="side-item"><a href="/ui/merchants" style="color:inherit;text-decoration:none;flex:1">All merchants</a><span class="count">{{ merchant_total }}</span></div>
+{# === Deck — title + actions === #}
+<header class="deck">
+  <h1>Today<em> · Underwriting desk</em></h1>
+  <div class="meta">
+    {{ merchant_total }} merchant{{ '' if merchant_total == 1 else 's' }} &nbsp;·&nbsp; {{ in_pipeline }} in pipeline
+  </div>
+  <div class="actions">
+    <a class="btn" href="/ui/upload">Upload PDF</a>
+    <a class="btn primary" href="/ui/intake">+ New deal</a>
+  </div>
+</header>
+
+{# === KPI strip — seven dense cells, no narrative === #}
+<section class="strip">
+  <div class="cell">
+    <div class="k">Merchants</div>
+    <div class="v">{{ merchant_total }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">In pipeline</div>
+    <div class="v">{{ in_pipeline }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">Cleared</div>
+    <div class="v {{ 'calm' if proceed_count > 0 else '' }}">{{ proceed_count }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">Review</div>
+    <div class="v {{ 'warn' if review_count > 0 else '' }}">{{ review_count }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">Manual review</div>
+    <div class="v {{ 'bad' if manual_review_count > 0 else '' }}">{{ manual_review_count }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">Pending</div>
+    <div class="v">{{ pending_count }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">Errors</div>
+    <div class="v {{ 'bad' if error_count > 0 else '' }}">{{ error_count }}</div>
+  </div>
+</section>
+
+{# === Two-column body === #}
+<section class="body">
+
+  <div>
+    <header class="sect-head">
+      <h2>Attention queue</h2>
+      <div class="rule"></div>
+      <div class="meta">{{ attention|length }} document{{ '' if attention|length == 1 else 's' }} · manual_review</div>
+    </header>
+
+    {% if not attention %}
+      <div class="empty">Pipeline clear — no documents awaiting manual review.</div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th class="num">Fraud</th>
+            <th>Flags</th>
+            <th>Uploaded</th>
+            <th class="act"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in attention %}
+            <tr onclick="window.location.href='/ui/review'">
+              <td class="merchant">
+                <a href="/ui/review">{{ a.merchant_label }}</a>
+                <span class="sub">doc · {{ a.document_id[:8] }}</span>
+              </td>
+              <td class="score {% if a.fraud_score is number and a.fraud_score >= 65 %}bad{% elif a.fraud_score is number and a.fraud_score >= 35 %}warn{% else %}calm{% endif %}">
+                {% if a.fraud_score is number %}{{ a.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
+              </td>
+              <td class="flags">{{ a.flags or '—' }}</td>
+              <td class="uploaded">{{ a.uploaded_at }}</td>
+              <td class="act"><a href="/ui/review">review ↗</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    <header class="sect-head" style="margin-top:32px">
+      <h2>Pipeline funnel</h2>
+      <div class="rule"></div>
+      <div class="meta">parse_status + audit_log</div>
+    </header>
+    <div class="funnel">
+      {% for row in funnel_rows %}
+        <div class="row">
+          <span>{{ row.label }}</span>
+          <div class="bar"><div class="fill {{ row.cls }}" style="width:{{ row.width }}%"></div></div>
+          <span class="n">{{ row.count }}</span>
+        </div>
+      {% endfor %}
     </div>
-    <div class="side-section">
-      <div class="side-label">Parse status</div>
-      <div class="side-item"><span>Proceed</span><span class="count">{{ proceed_count }}</span></div>
-      <div class="side-item"><span>Review</span><span class="count">{{ review_count }}</span></div>
-      <div class="side-item"><span>Manual review</span><span class="count">{{ manual_review_count }}</span></div>
-      <div class="side-item"><span>Pending</span><span class="count">{{ pending_count }}</span></div>
-      <div class="side-item"><span>Error</span><span class="count">{{ error_count }}</span></div>
+  </div>
+
+  <aside>
+    <header class="sect-head">
+      <h2>Day's log</h2>
+      <div class="rule"></div>
+      <div class="meta">last {{ recent_activity|length }}</div>
+    </header>
+    <div class="feed">
+      {% if not recent_activity %}
+        <div class="empty">No activity logged yet.</div>
+      {% else %}
+        {% for r in recent_activity %}
+          <div class="event">
+            <div class="t">{{ r.time_short }}</div>
+            <div class="txt">
+              <strong>{{ r.actor }}</strong> {{ r.action }}{% if r.subject_type %}<span class="mono-inline">· {{ r.subject_type }}{% if r.subject_id %}/{{ r.subject_id[:8] }}{% endif %}</span>{% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      {% endif %}
     </div>
-    <div class="side-section">
-      <div class="side-label">Jump to</div>
-      <div class="side-item"><a href="/ui/upload" style="color:inherit;text-decoration:none;flex:1">Upload</a><span class="count mono">PDF</span></div>
-      <div class="side-item"><a href="/ui/intake" style="color:inherit;text-decoration:none;flex:1">New deal</a><span class="count mono">+</span></div>
-      <div class="side-item"><a href="/ui/funders" style="color:inherit;text-decoration:none;flex:1">Funders</a><span class="count mono">$</span></div>
+
+    <header class="sect-head" style="margin-top:28px">
+      <h2>Jump to</h2>
+      <div class="rule"></div>
+    </header>
+    <div class="feed">
+      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/upload"><strong>Upload</strong> bank statement (PDF)</a></div></div>
+      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/intake"><strong>Intake</strong> new merchant</a></div></div>
+      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/deals"><strong>Deals</strong> live pipeline</a></div></div>
+      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/merchants"><strong>Merchants</strong> directory</a></div></div>
+      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/funders"><strong>Funders</strong> criteria + matching</a></div></div>
+      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/review"><strong>Review</strong> manual queue</a></div></div>
     </div>
   </aside>
 
-  <main class="main">
-    <div class="kpi-row">
-      <div class="kpi">
-        <div class="label">Merchants</div>
-        <div class="value">{{ merchant_total }}</div>
-        <div class="delta">total in book</div>
-      </div>
-      <div class="kpi">
-        <div class="label">In pipeline</div>
-        <div class="value">{{ in_pipeline }}</div>
-        <div class="delta">documents not yet declined</div>
-      </div>
-      <div class="kpi">
-        <div class="label">Cleared (proceed)</div>
-        <div class="value">{{ proceed_count }}</div>
-        <div class="delta">parse_status = proceed</div>
-      </div>
-      <div class="kpi">
-        <div class="label">Manual review</div>
-        <div class="value" style="color:{% if manual_review_count > 0 %}var(--warn){% else %}var(--ink){% endif %}">{{ manual_review_count }}</div>
-        <div class="delta"><a href="/ui/review">open queue</a></div>
-      </div>
-      <div class="kpi">
-        <div class="label">Errors</div>
-        <div class="value" style="color:{% if error_count > 0 %}var(--neg){% else %}var(--ink){% endif %}">{{ error_count }}</div>
-        <div class="delta">parse_status = error</div>
-      </div>
-    </div>
+</section>
 
-    <div class="grid-2">
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">Pipeline funnel</span>
-          <span class="panel-actions mono">live · parse_status + audit_log</span>
-        </div>
-        <div class="panel-body">
-          <div class="funnel">
-            {% for row in funnel_rows %}
-              <div class="funnel-row">
-                <span>{{ row.label }}</span>
-                <div class="funnel-bar"><div class="funnel-fill {{ row.cls }}" style="width:{{ row.width }}%"></div></div>
-                <span class="funnel-num">{{ row.count }}</span>
-              </div>
-            {% endfor %}
-          </div>
-        </div>
-      </div>
+{# === Compliance ribbon === #}
+<section class="compliance-ribbon">
+  <div class="k">Compliance posture</div>
+  <div class="v"><span class="tier">Tier I · prescribed</span>CA &nbsp;·&nbsp; NY &nbsp;·&nbsp; FL &nbsp;·&nbsp; GA</div>
+  <div class="v"><span class="tier">Tier II · federal</span>IL &nbsp;·&nbsp; TX &nbsp;·&nbsp; VA &nbsp;·&nbsp; MD &nbsp;·&nbsp; NJ</div>
+</section>
 
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">Quick links</span>
-          <span class="panel-actions mono">workflows</span>
-        </div>
-        <div class="panel-body">
-          <div class="kv">
-            <span class="k">Upload</span>
-            <span class="v ui"><a href="/ui/upload">Drop bank statements (PDF)</a></span>
-            <span class="k">Intake</span>
-            <span class="v ui"><a href="/ui/intake">Start a new deal</a></span>
-            <span class="k">Deals</span>
-            <span class="v ui"><a href="/ui/deals">Live pipeline</a></span>
-            <span class="k">Merchants</span>
-            <span class="v ui"><a href="/ui/merchants">Merchant directory</a></span>
-            <span class="k">Funders</span>
-            <span class="v ui"><a href="/ui/funders">Funder criteria + matching</a></span>
-            <span class="k">Review</span>
-            <span class="v ui"><a href="/ui/review">Parser manual-review queue</a></span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Needs your attention</span>
-        <span class="panel-actions">
-          <span class="risk-band-legend" title="Risk bands mirror parse_status thresholds in parser.pipeline">
-            <span><span class="swatch clear"></span>0-34 clear</span>
-            <span><span class="swatch review"></span>35-64 review</span>
-            <span><span class="swatch decline"></span>65-100 manual</span>
-          </span>
-          <span class="mono" style="margin-left:10px">{{ attention|length }} document{{ '' if attention|length == 1 else 's' }} in manual_review</span>
-        </span>
-      </div>
-      <div class="panel-body flush">
-        <table class="data">
-          <thead>
-            <tr>
-              <th>Merchant</th>
-              <th class="num">Fraud score</th>
-              <th>Flags</th>
-              <th>Uploaded</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {% if not attention %}
-              <tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px;font-family:var(--mono);font-size:11.5px">
-                no documents in manual_review · pipeline is clear
-              </td></tr>
-            {% else %}
-              {% for a in attention %}
-                <tr>
-                  <td>{{ a.merchant_label }}</td>
-                  <td class="num">
-                    {% with score=a.fraud_score %}
-                      {% include "_fraud_score_chip.html.j2" %}
-                    {% endwith %}
-                  </td>
-                  <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ a.flags or '—' }}</span></td>
-                  <td><span class="mono" style="font-size:11px;color:var(--muted)">{{ a.uploaded_at }}</span></td>
-                  <td><a class="btn" href="/ui/review">review</a></td>
-                </tr>
-              {% endfor %}
-            {% endif %}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Recent activity</span>
-        <span class="panel-actions mono">audit_log · last {{ recent_activity|length }}</span>
-      </div>
-      <div class="panel-body flush">
-        {% if not recent_activity %}
-          <div style="padding:16px;color:var(--muted);font-size:12px">No activity logged yet.</div>
-        {% else %}
-          {% for r in recent_activity %}
-            <div class="activity-item">
-              <span class="time">{{ r.time_short }}</span>
-              <span><span class="who">{{ r.actor }}</span> <span class="what">{{ r.action }}</span>{% if r.subject_type %} <span class="obj">{{ r.subject_type }}{% if r.subject_id %} · {{ r.subject_id[:8] }}{% endif %}</span>{% endif %}</span>
-            </div>
-          {% endfor %}
-        {% endif %}
-      </div>
-    </div>
-  </main>
-</div>
-{% endblock %}
+</body>
+</html>

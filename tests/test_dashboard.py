@@ -139,7 +139,7 @@ def test_index_renders_live_kpis(
     # KPI labels for the live counts are present.
     assert "Merchants" in resp.text
     assert "In pipeline" in resp.text
-    assert "Cleared (proceed)" in resp.text
+    assert "Cleared" in resp.text
     # Funnel rows now live (have non-zero counts somewhere).
     assert "Pipeline funnel" in resp.text
 
