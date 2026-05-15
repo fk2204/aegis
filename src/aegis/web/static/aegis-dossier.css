@@ -26,6 +26,9 @@
   --rule-soft:    #E8EDE9;   /* Commera border-subtle — very light sage */
   --gild:         #92400E;   /* warm amber, kept for review/warning emphasis */
 
+  --sage:         #A8D5BA;   /* Commera secondary — bright sage, used as visible accent */
+  --sage-deep:    #85C6A0;   /* Commera secondary-dark */
+
   --decline:      #a72f24;
   --decline-soft: #f0ddd8;
   --review:       #92400E;   /* Commera amber-text-dark */
@@ -85,28 +88,36 @@
 .dossier-page .num  { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .dossier-page .tnum { font-variant-numeric: tabular-nums; }
 
-/* ============ minimal topbar (replaces v2 chrome) ============ */
+/* Topstrip — solid deep-forest bar (matches Commera's utility bar).
+ * White-ish text on forest green for high contrast brand presence. */
 .dossier-page .topstrip {
-  border-bottom: 1px solid var(--rule);
-  background: var(--paper);
-  padding: 8px 56px;
+  background: var(--ink);
+  padding: 10px 56px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--ink-3);
+  color: var(--sage);
 }
-.dossier-page .topstrip .links { display: flex; gap: 18px; }
-.dossier-page .topstrip a { color: var(--ink-3); border-bottom: 0; }
-.dossier-page .topstrip a:hover { color: var(--ink); }
+.dossier-page .topstrip .links { display: flex; gap: 22px; }
+.dossier-page .topstrip a {
+  color: rgba(255,255,255,0.78);
+  border-bottom: 0;
+  transition: color .15s ease;
+}
+.dossier-page .topstrip a:hover { color: #fff; }
+.dossier-page .topstrip .view-toggle {
+  color: rgba(255,255,255,0.6);
+  font-family: var(--mono);
+}
 .dossier-page .topstrip .view-toggle a {
-  color: var(--ink-3);
+  color: rgba(255,255,255,0.78);
   margin-left: 14px;
 }
-.dossier-page .topstrip .view-toggle a.active { color: var(--ink); font-weight: 500; }
+.dossier-page .topstrip .view-toggle a.active { color: #fff; font-weight: 500; }
 
 /* ============ masthead ============ */
 .dossier-page .masthead {

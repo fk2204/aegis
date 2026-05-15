@@ -32,16 +32,16 @@
 <div class="topstrip">
   <div class="links">
     {% set _active = active|default('') %}
-    <a href="/ui/"          {% if _active == 'Today'     %}style="color:var(--ink);font-weight:500"{% endif %}>Today</a>
-    <a href="/ui/deals"     {% if _active == 'Deals'     %}style="color:var(--ink);font-weight:500"{% endif %}>Deals</a>
-    <a href="/ui/merchants" {% if _active == 'Merchants' %}style="color:var(--ink);font-weight:500"{% endif %}>Merchants</a>
-    <a href="/ui/funders"   {% if _active == 'Funders'   %}style="color:var(--ink);font-weight:500"{% endif %}>Funders</a>
-    <a href="/ui/upload"    {% if _active == 'Upload'    %}style="color:var(--ink);font-weight:500"{% endif %}>Upload</a>
-    <a href="/ui/intake"    {% if _active == 'Intake'    %}style="color:var(--ink);font-weight:500"{% endif %}>Intake</a>
-    <a href="/ui/review"    {% if _active == 'Review'    %}style="color:var(--ink);font-weight:500"{% endif %}>Review queue</a>
+    <a href="/ui/"          {% if _active == 'Today'     %}style="color:#fff;font-weight:600"{% endif %}>Today</a>
+    <a href="/ui/deals"     {% if _active == 'Deals'     %}style="color:#fff;font-weight:600"{% endif %}>Deals</a>
+    <a href="/ui/merchants" {% if _active == 'Merchants' %}style="color:#fff;font-weight:600"{% endif %}>Merchants</a>
+    <a href="/ui/funders"   {% if _active == 'Funders'   %}style="color:#fff;font-weight:600"{% endif %}>Funders</a>
+    <a href="/ui/upload"    {% if _active == 'Upload'    %}style="color:#fff;font-weight:600"{% endif %}>Upload</a>
+    <a href="/ui/intake"    {% if _active == 'Intake'    %}style="color:#fff;font-weight:600"{% endif %}>Intake</a>
+    <a href="/ui/review"    {% if _active == 'Review'    %}style="color:#fff;font-weight:600"{% endif %}>Review queue</a>
   </div>
   <div class="view-toggle">
-    <span style="color:var(--ink-3)">aegis · {{ now|default('') }}</span>
+    <span style="color:var(--sage)">aegis · {{ now|default('') }}</span>
   </div>
 </div>
 

@@ -34,9 +34,11 @@
   margin: 0;
 }
 .dossier-page .deck h1 em {
-  font-style: italic;
-  font-weight: 400;
-  color: var(--ink-2);
+  font-style: normal;
+  font-weight: 500;
+  color: var(--sage-deep);
+  /* Sage subtitle accent — mirrors commerafunding.com's
+   * "$10K-$2M in Business Capital" subhead-on-headline pattern. */
 }
 .dossier-page .deck .meta {
   font-family: var(--mono);
