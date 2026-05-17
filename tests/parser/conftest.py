@@ -183,6 +183,15 @@ class _StubLLM:
         _ = (pdf_bytes, prompt)
         return self._extraction, self._truncated
 
+    def extract_raw_json_from_images(
+        self, page_images_png: list[bytes], prompt: str
+    ) -> tuple[dict[str, Any], bool]:
+        # OCR fallback path — return the same canned payload so a vision-routed
+        # document goes through identical extraction → validation → classify
+        # machinery as the text path.
+        _ = (page_images_png, prompt)
+        return self._extraction, self._truncated
+
     def classify_batch_json(self, prompt: str) -> dict[str, Any]:
         # The header ends with "(JSON array follows):" then a newline + the
         # actual array. Locate by sentinel so schema-shape brackets in the

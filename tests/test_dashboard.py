@@ -413,6 +413,11 @@ def stub_llm_extraction() -> object:
                 False,
             )
 
+        def extract_raw_json_from_images(
+            self, page_images_png: list[bytes], prompt: str
+        ) -> tuple[dict[str, object], bool]:
+            raise NotImplementedError
+
         def classify_batch_json(self, prompt: str) -> dict[str, object]:
             raise NotImplementedError
 

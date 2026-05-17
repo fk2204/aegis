@@ -75,6 +75,16 @@ class LLMClient(Protocol):
         instead of letting truncation get misdiagnosed as a math failure.
         """
 
+    def extract_raw_json_from_images(
+        self, page_images_png: list[bytes], prompt: str
+    ) -> tuple[dict[str, Any], bool]:
+        """Run extraction over rasterised page images (OCR fallback path).
+
+        Each entry of `page_images_png` is a PNG-encoded image of one PDF
+        page, in 1-indexed page order. Returned tuple shape matches
+        `extract_raw_json` so the rest of the parser is identical.
+        """
+
     def classify_batch_json(self, prompt: str) -> dict[str, Any]:
         """Run a classification batch: instructions+payload in, classification JSON out."""
 
@@ -136,6 +146,45 @@ class BedrockClient:
                     ],
                 }
             ],
+        ) as stream:
+            response = stream.get_final_message()
+        truncated = getattr(response, "stop_reason", None) == "max_tokens"
+        return _first_json_object(_text_blocks(response)), truncated
+
+    @retry(
+        retry=retry_if_exception(_is_retryable_bedrock_error),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
+    def extract_raw_json_from_images(
+        self, page_images_png: list[bytes], prompt: str
+    ) -> tuple[dict[str, Any], bool]:
+        """Vision-pass extraction: page images + extraction prompt -> JSON.
+
+        Same retry / streaming semantics as `extract_raw_json`. Image
+        blocks are sent first (in page order so the model can refer to
+        them as page 1, page 2, ...) followed by the text prompt.
+        """
+        import base64
+
+        content: list[dict[str, Any]] = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64.b64encode(png).decode("ascii"),
+                },
+            }
+            for png in page_images_png
+        ]
+        content.append({"type": "text", "text": prompt})
+
+        with self._client.messages.stream(
+            model=self._model,
+            max_tokens=64000,
+            messages=[{"role": "user", "content": content}],  # type: ignore[typeddict-item]
         ) as stream:
             response = stream.get_final_message()
         truncated = getattr(response, "stop_reason", None) == "max_tokens"

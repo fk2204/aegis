@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from typing import Any, Final
 
+import pymupdf
 from pydantic import ValidationError
 
 from aegis.llm import LLMClient
 from aegis.parser.models import ExtractedStatement
-from aegis.parser.prompts import EXTRACTION_PROMPT
+from aegis.parser.prompts import EXTRACTION_PROMPT, EXTRACTION_PROMPT_VISION
 
 
 class ExtractionError(RuntimeError):
@@ -48,6 +49,11 @@ class ExtractionPass1Result:
 # Defensive cap. Pass 1 should never need more than the document itself.
 _MAX_PDF_BYTES: Final[int] = 25 * 1024 * 1024
 
+# Rasterization DPI for the OCR fallback. 200 DPI produces ~1700x2200 PNG
+# for a US Letter page — enough resolution for Claude vision to read printed
+# numbers and descriptions accurately, without ballooning the token cost.
+_VISION_DPI: Final[int] = 200
+
 
 def extract_statement(pdf_bytes: bytes, llm: LLMClient) -> ExtractionPass1Result:
     """Run pass 1 — extract raw transactions + printed summary.
@@ -74,6 +80,69 @@ def extract_statement(pdf_bytes: bytes, llm: LLMClient) -> ExtractionPass1Result
 
     try:
         raw, truncated = llm.extract_raw_json(pdf_bytes, EXTRACTION_PROMPT)
+    except ValueError as exc:
+        raise ExtractionError(f"LLM returned malformed JSON: {exc}") from exc
+
+    if "summary" not in raw or "transactions" not in raw:
+        raise ExtractionError(
+            f"extraction JSON missing required keys; got {sorted(raw.keys())}"
+        )
+
+    indicators = _coerce_indicators(raw.get("synthetic_risk_indicators", []))
+
+    payload: dict[str, Any] = {
+        "summary": _coerce_summary(raw["summary"]),
+        "transactions": [_coerce_transaction(t) for t in raw["transactions"]],
+    }
+
+    try:
+        statement = ExtractedStatement.model_validate(payload)
+    except ValidationError as exc:
+        raise ExtractionError(f"extraction payload failed schema validation: {exc}") from exc
+
+    _enforce_source_attribution(statement)
+    statement = _renumber_duplicate_source_lines(statement)
+
+    return ExtractionPass1Result(
+        statement=statement,
+        synthetic_risk_indicators=indicators,
+        truncated=truncated,
+    )
+
+
+def extract_statement_via_vision(
+    pdf_bytes: bytes, llm: LLMClient
+) -> ExtractionPass1Result:
+    """OCR fallback for image-only PDFs.
+
+    Rasterises every page to PNG via pymupdf and runs extraction through
+    the vision-pass LLM call. Output shape is identical to
+    `extract_statement`, so the downstream validation gate runs unchanged.
+    The pipeline branches on `metadata.has_text_layer`; this function is
+    only invoked when the document has no extractable text layer.
+    """
+    if len(pdf_bytes) == 0:
+        raise ExtractionError("empty PDF buffer")
+    if len(pdf_bytes) > _MAX_PDF_BYTES:
+        raise ExtractionError(
+            f"PDF buffer too large: {len(pdf_bytes)} bytes (max {_MAX_PDF_BYTES})"
+        )
+
+    page_images: list[bytes] = []
+    try:
+        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:  # type: ignore[no-untyped-call]
+            if doc.page_count == 0:
+                raise ExtractionError("PDF has zero pages")
+            for i in range(doc.page_count):
+                pix = doc.load_page(i).get_pixmap(dpi=_VISION_DPI)
+                page_images.append(pix.tobytes("png"))
+    except pymupdf.FileDataError as exc:
+        raise ExtractionError(f"pymupdf could not open PDF: {exc}") from exc
+
+    try:
+        raw, truncated = llm.extract_raw_json_from_images(
+            page_images, EXTRACTION_PROMPT_VISION
+        )
     except ValueError as exc:
         raise ExtractionError(f"LLM returned malformed JSON: {exc}") from exc
 
@@ -218,4 +287,9 @@ def _renumber_duplicate_source_lines(
     return statement.model_copy(update={"transactions": new_transactions})
 
 
-__all__ = ["ExtractionError", "ExtractionPass1Result", "extract_statement"]
+__all__ = [
+    "ExtractionError",
+    "ExtractionPass1Result",
+    "extract_statement",
+    "extract_statement_via_vision",
+]

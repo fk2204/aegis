@@ -33,6 +33,11 @@ class _StubLLM:
         _ = (pdf_bytes, prompt)
         return self._payload, False
 
+    def extract_raw_json_from_images(
+        self, page_images_png: list[bytes], prompt: str
+    ) -> tuple[dict[str, Any], bool]:
+        raise NotImplementedError("funder extraction does not run a vision pass")
+
     def classify_batch_json(self, prompt: str) -> dict[str, Any]:
         raise NotImplementedError("funder extraction does not run a classification pass")
 

@@ -20,6 +20,7 @@ dependencies = [
     "anthropic[bedrock]>=0.39",
     "boto3>=1.35",
     "pikepdf>=9.0",
+    "pymupdf>=1.24",
     "reportlab>=4.2",
     "scipy>=1.14",
     "jinja2>=3.1",
@@ -54,6 +55,21 @@ no_implicit_optional = true
 [[tool.mypy.overrides]]
 module = ["reportlab.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["fitz", "pymupdf"]
+ignore_missing_imports = true
+
+# pymupdf ships partial stubs: classes like Document and its methods are
+# typed as untyped functions in the stubs. Test modules that build small
+# image-only fixtures via pymupdf don't benefit from the strict
+# no-untyped-call enforcement.
+[[tool.mypy.overrides]]
+module = [
+    "tests.parser.test_text_layer_detection",
+    "tests.parser.test_extract_vision",
+]
+disable_error_code = ["no-untyped-call"]
 
 [tool.ruff]
 line-length = 100

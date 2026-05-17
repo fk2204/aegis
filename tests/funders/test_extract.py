@@ -68,6 +68,11 @@ def test_extract_rejects_missing_draft_key() -> None:
         ) -> tuple[dict[str, Any], bool]:
             return {"confidence_by_field": {}}, False
 
+        def extract_raw_json_from_images(
+            self, page_images_png: list[bytes], prompt: str
+        ) -> tuple[dict[str, Any], bool]:
+            raise NotImplementedError
+
         def classify_batch_json(self, prompt: str) -> dict[str, Any]:
             raise NotImplementedError
 
@@ -97,6 +102,11 @@ def test_extract_handles_null_money_fields() -> None:
                 },
                 False,
             )
+
+        def extract_raw_json_from_images(
+            self, page_images_png: list[bytes], prompt: str
+        ) -> tuple[dict[str, Any], bool]:
+            raise NotImplementedError
 
         def classify_batch_json(self, prompt: str) -> dict[str, Any]:
             raise NotImplementedError

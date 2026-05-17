@@ -47,7 +47,11 @@ from aegis.parser.classify import (
     classify_transactions,
     per_category_confidence,
 )
-from aegis.parser.extract import ExtractionPass1Result, extract_statement
+from aegis.parser.extract import (
+    ExtractionPass1Result,
+    extract_statement,
+    extract_statement_via_vision,
+)
 from aegis.parser.metadata import MetadataAnalysis, analyze_metadata
 from aegis.parser.models import Aggregates, ClassifiedTransaction, ValidationResult
 from aegis.parser.patterns import PatternAnalysis, analyze_patterns
@@ -67,6 +71,13 @@ METADATA_HARD_DECLINE: Final[int] = 60
 # viewer/browser re-save appends another). 3+ indicates real incremental
 # save tampering.
 EOF_HARD_DECLINE: Final[int] = 2
+
+# Maximum page count for the OCR vision fallback. Vision tokens are
+# ~5-8x text-extraction tokens; capping the page count bounds the
+# Bedrock cost on accidentally-uploaded huge scans. Statements above
+# this cap that lack a text layer land in manual_review with reason
+# `ocr_oversize_image_pdf` so the operator can split or rescan them.
+MAX_OCR_PAGES: Final[int] = 20
 
 # Average classification-confidence floor. Below this, the document goes
 # to manual_review regardless of math / metadata / pattern scores —
@@ -127,7 +138,31 @@ def run_pipeline(
     metadata = analyze_metadata(pdf_path)
 
     pdf_bytes = _read_pdf(pdf_path)
-    extraction = extract_statement(pdf_bytes, llm)
+
+    used_ocr_fallback = False
+    if not metadata.has_text_layer:
+        if metadata.page_count > MAX_OCR_PAGES:
+            # Image-only PDF larger than the vision-cost cap. Refuse to
+            # OCR; route to manual_review so the operator can split the
+            # document or request a fresh export with a text layer.
+            synthetic_validation = ValidationResult(
+                passed=False,
+                failures=[
+                    f"ocr_oversize_image_pdf: page_count={metadata.page_count}"
+                    f" max={MAX_OCR_PAGES}"
+                ],
+            )
+            return PipelineResult(
+                parse_status="manual_review",
+                metadata=metadata,
+                extraction=None,
+                validation=synthetic_validation,
+                all_flags=_collect_flags(metadata, synthetic_validation, None, []),
+            )
+        extraction = extract_statement_via_vision(pdf_bytes, llm)
+        used_ocr_fallback = True
+    else:
+        extraction = extract_statement(pdf_bytes, llm)
 
     validation = validate_extraction(
         extraction.statement,
@@ -136,12 +171,15 @@ def run_pipeline(
     )
 
     if not validation.passed:
+        flags = _collect_flags(metadata, validation, None, [])
+        if used_ocr_fallback:
+            flags.append("[META] ocr_fallback_used")
         return PipelineResult(
             parse_status="manual_review",
             metadata=metadata,
             extraction=extraction,
             validation=validation,
-            all_flags=_collect_flags(metadata, validation, None, []),
+            all_flags=flags,
         )
 
     classified = classify_transactions(extraction.statement.transactions, llm)
@@ -185,6 +223,8 @@ def run_pipeline(
     all_flags.extend(f"[CONFIDENCE] {f}" for f in confidence_failures)
     if triangulation_flag is not None:
         all_flags.append(f"[COMPOUND] {triangulation_flag}")
+    if used_ocr_fallback:
+        all_flags.append("[META] ocr_fallback_used")
 
     return PipelineResult(
         parse_status=parse_status,
@@ -359,6 +399,7 @@ __all__ = [
     "HARD_DECLINE_THRESHOLD",
     "HIGH_IMPACT_CATEGORIES",
     "HIGH_IMPACT_CATEGORY_CONFIDENCE_FLOOR",
+    "MAX_OCR_PAGES",
     "METADATA_HARD_DECLINE",
     "REVIEW_THRESHOLD",
     "PipelineResult",

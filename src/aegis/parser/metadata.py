@@ -22,9 +22,10 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pikepdf
+import pymupdf
 
 # Editors / toolchains that show up in tampered PDFs more often than not.
 # `reportlab` is INTENTIONALLY excluded: AEGIS's synthetic corpus is built
@@ -117,6 +118,15 @@ class MetadataAnalysis:
     file_size_bytes: int
     eof_markers: int
     page_sizes: list[str]
+    # True when the first few pages yield enough extractable text to suggest
+    # the document has a real text layer; False when the PDF is image-only
+    # (scanned, photo-of-screen, password-stripped export that lost its text
+    # layer). The parser pipeline reads this BEFORE pass 1 so it can route
+    # image-only PDFs through a vision-based extraction instead of wasting
+    # a text-extraction call. Default True so any detection failure falls
+    # back to the existing text path (conservative — never hides a real
+    # text PDF behind OCR by accident).
+    has_text_layer: bool = True
     flags: list[str] = field(default_factory=list)
     fraud_score: int = 0
 
@@ -182,6 +192,35 @@ def _coerce_dt(value: object) -> datetime | None:
         return datetime(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5])
     except ValueError:
         return None
+
+
+# Minimum non-whitespace characters across the first probe-window pages
+# required to count as "has a text layer." Real bank statements yield
+# hundreds-to-thousands of characters per page; the floor of 50 protects
+# against a single watermark glyph or page-number text in an otherwise
+# image-only PDF flipping us back to the text path.
+_TEXT_LAYER_MIN_CHARS: Final[int] = 50
+_TEXT_LAYER_PROBE_PAGES: Final[int] = 3
+
+
+def _detect_text_layer(pdf_path: str | Path) -> bool:
+    """Return True iff the first few pages contain extractable text.
+
+    Defaults to True on any exception so an unexpected pymupdf failure
+    never silently hides a legitimate text-bearing PDF behind the OCR
+    fallback (which is slower and costs more tokens).
+    """
+    try:
+        with pymupdf.open(pdf_path) as doc:  # type: ignore[no-untyped-call]
+            pages_to_probe = min(_TEXT_LAYER_PROBE_PAGES, doc.page_count)
+            for i in range(pages_to_probe):
+                text = doc.load_page(i).get_text("text") or ""
+                # Strip whitespace — a page of blank lines is not a text layer.
+                if sum(1 for ch in text if not ch.isspace()) >= _TEXT_LAYER_MIN_CHARS:
+                    return True
+            return False
+    except Exception:
+        return True
 
 
 def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
@@ -266,6 +305,8 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
 
     pdf.close()
 
+    has_text_layer = _detect_text_layer(path)
+
     return MetadataAnalysis(
         pdf_creation_date=creation,
         pdf_modification_date=modification,
@@ -276,6 +317,7 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
         file_size_bytes=len(raw),
         eof_markers=eof_markers,
         page_sizes=page_sizes,
+        has_text_layer=has_text_layer,
         flags=flags,
         fraud_score=min(100, score),
     )
