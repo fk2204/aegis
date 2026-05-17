@@ -1,13 +1,13 @@
 # Corpus findings
 
-Per Phase 5.5 of `REWRITE_PLAN.md`, every fix surfaced by the corpus
-suite is logged here with the scenario, root cause, fix, and the SHA
-that resolved it.
+Every fix surfaced by the corpus suite is logged here with the scenario,
+root cause, fix, and the SHA that resolved it. (Originally introduced as
+Phase 5.5 of the now-archived `docs/archive/REWRITE_PLAN.md`.)
 
 ## Corpus expansion (2026-05-10)
 
 **Expanded corpus to 56 PDFs across 13 scenarios × 6 banks**,
-satisfying Phase 5.5's "≥ 50 synthetic" gate.
+satisfying the original "≥ 50 synthetic" gate.
 
 | Scenario                          | Chase | BoA | Wells | CapOne | Regional | CU |
 |-----------------------------------|:-----:|:---:|:-----:|:------:|:--------:|:--:|
@@ -53,7 +53,7 @@ All 56 PDFs + the `real/` README check pass under `make test-fast`
   after a clean regen, even though manifest content was unchanged.
 - **Root cause:** `reportlab.canvas.Canvas` embeds the current
   wall-clock time into `/CreationDate` and `/ModDate` by default,
-  breaking REWRITE_PLAN's "fixed seed produces identical PDFs" gate.
+  breaking the "fixed seed produces identical PDFs" gate.
 - **Fix:** `scripts/generate_corpus.py` — pass `invariant=True` to
   `canvas.Canvas`. reportlab then omits the date entries and produces
   byte-identical output across runs with the same seed. Verified:
@@ -72,7 +72,7 @@ All 56 PDFs + the `real/` README check pass under `make test-fast`
 - **Fix:** `scripts/generate_corpus.py` — store `withdrawal_total` as
   `-withdrawals_signed` and print as a positive figure on the rendered
   PDF. Manifest schema unchanged.
-- **Commit:** initial Phase 5.5 commit (2026-05-09).
+- **Commit:** initial corpus commit (2026-05-09).
 
 ## Conventions for future entries
 

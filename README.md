@@ -9,11 +9,13 @@ Solo operator, ~100 deals/month. Internal-only. Python 3.12+.
 
 1. **`CLAUDE.md`** — working agreement: architecture, non-negotiable rules,
    project structure. Read this before changing anything.
-2. **`REWRITE_PLAN.md`** — phased rewrite plan with done/pending status.
-3. **`COMPLIANCE.md`** — quick-reference table for state regulation tiers
+2. **`COMPLIANCE.md`** — quick-reference table for state regulation tiers
    and federal obligations. The detailed dossiers live under
    `docs/compliance/`.
-4. **`CORPUS_FINDINGS.md`** — Phase 5.5 corpus failures and their fixes.
+3. **`CORPUS_FINDINGS.md`** — corpus failures and their fixes. Living log;
+   add an entry every time a corpus run surfaces a parser bug.
+4. **`docs/archive/REWRITE_PLAN.md`** — historical phased rewrite plan
+   (archived; no longer maintained, kept for context only).
 
 ## Run locally
 
@@ -32,8 +34,8 @@ make check        # mypy --strict + ruff + pytest with corpus
 make test-fast    # quick iteration without corpus
 ```
 
-`make check` is the only gate. There is no CI by design — REWRITE_PLAN
-chose manual ssh + git for a solo operator.
+`make check` is the only gate. There is no CI by design — manual ssh + git
+is appropriate for a solo operator.
 
 ## Generate the synthetic corpus
 

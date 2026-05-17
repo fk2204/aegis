@@ -54,3 +54,8 @@ logs/
 # Node (we don't use it but listed per spec)
 node_modules/
 .tmp/
+
+# Claude Code artifacts (added 2026-05-16)
+.claude/worktrees/
+.claude/settings.local.json
+CLAUDE.local.md
