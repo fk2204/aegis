@@ -55,6 +55,15 @@ Single Hetzner CPX21 box behind Cloudflare Tunnel + Access. See
 key rotation). First-time setup: `deploy/install.sh`. Routine deploy:
 `scripts/deploy.sh`.
 
+## PDF dossier dev (Windows)
+
+The dossier PDF export (`/ui/merchants/{id}/dossier.pdf`) uses
+WeasyPrint, which needs native Pango/Cairo/HarfBuzz libs. Those ship
+on the Hetzner box via `deploy/install.sh` but are absent on a stock
+Windows dev box. Use WSL2 for local PDF rendering. The dossier route
+returns a 503 with an explanatory `detail` field when the libs are
+missing — the rest of the app is unaffected.
+
 ## License
 
 Internal — not for redistribution.

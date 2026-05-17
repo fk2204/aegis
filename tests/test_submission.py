@@ -271,6 +271,48 @@ def test_submit_multiple_funders_returns_zip(
         assert n.endswith(".csv")
 
 
+def test_submit_audit_records_attachment_sha256(
+    client: TestClient,
+    merchant: MerchantRow,
+    funder_repo: InMemoryFunderRepository,
+    audit_log: InMemoryAuditLog,
+) -> None:
+    """The deal.submit_to_funders audit row must record the SHA-256 of
+    each attached artifact (submission CSV/ZIP and the dossier PDF when
+    rendered). The dossier SHA is None when weasyprint native libs
+    aren't available — that's expected and explicit, not silent."""
+    ids = [str(f.id) for f in funder_repo.list_active()]
+    resp = client.post(
+        f"/ui/merchants/{merchant.id}/submit",
+        data={"funder_ids": ids},
+    )
+    assert resp.status_code == 200
+
+    submit_rows = [
+        e for e in audit_log.entries if e["action"] == "deal.submit_to_funders"
+    ]
+    assert len(submit_rows) == 1
+    details = submit_rows[0]["details"]
+
+    # CSV/ZIP attachment SHA is always present and a 64-char hex string.
+    assert "attachment_sha256" in details
+    assert isinstance(details["attachment_sha256"], str)
+    assert len(details["attachment_sha256"]) == 64
+    assert "attachment_filename" in details
+
+    # PDF SHA + filename keys are always present; values are either both
+    # populated (native libs rendered the PDF) or both None (Windows dev
+    # without WSL2). Either way, the operator can tell from the audit
+    # row whether a dossier was attached.
+    assert "dossier_pdf_sha256" in details
+    assert "dossier_pdf_filename" in details
+    if details["dossier_pdf_sha256"] is not None:
+        assert len(details["dossier_pdf_sha256"]) == 64
+        assert details["dossier_pdf_filename"] is not None
+    else:
+        assert details["dossier_pdf_filename"] is None
+
+
 def test_submit_audits_with_funder_ids(
     client: TestClient,
     merchant: MerchantRow,

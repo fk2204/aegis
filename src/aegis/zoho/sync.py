@@ -231,6 +231,8 @@ class ZohoSync:
         funder_names: list[str],
         zip_bytes: bytes,
         zip_filename: str,
+        dossier_pdf: bytes | None = None,
+        dossier_filename: str | None = None,
     ) -> None:
         """Reflect an AEGIS funder submission on the Zoho Deal record.
 
@@ -375,6 +377,18 @@ class ZohoSync:
             csv_bytes=zip_bytes,
             filename=zip_filename,
         )
+
+        # 4. Optional PDF dossier attachment alongside the submission ZIP.
+        # Same best-effort posture — attachment failures are audited but
+        # never raised; AEGIS audit log is the authoritative record.
+        if dossier_pdf is not None and dossier_filename is not None:
+            self.attach_findings_csv(
+                module="Deals",
+                record_id=deal_id,
+                merchant_id=merchant_id,
+                csv_bytes=dossier_pdf,
+                filename=dossier_filename,
+            )
 
     _AEGIS_DESC_BEGIN = "[AEGIS-SUBMISSIONS]"
     _AEGIS_DESC_END = "[/AEGIS-SUBMISSIONS]"

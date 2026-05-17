@@ -1,0 +1,256 @@
+{# Print-friendly dossier for the WeasyPrint PDF export.
+
+   NOT a fork of merchant_detail_dossier.html.j2 — that template carries
+   HTMX, sidebar nav, web fonts, and interactive drill-downs that have
+   no place on paper. This template renders the same data set through a
+   layout sized for US Letter, with @page rules, page-break controls,
+   and a system font stack so WeasyPrint never reaches out to Google
+   Fonts. Same context dict as ``merchant_detail`` so values are
+   identical to the on-screen dossier the operator sees.
+#}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AEGIS dossier · {{ merchant.business_name }}</title>
+<style>
+  @page {
+    size: Letter;
+    margin: 0.6in 0.5in 0.7in 0.5in;
+    @bottom-left   { content: "AEGIS dossier · {{ merchant.business_name }}"; font-size: 8pt; color: #555; }
+    @bottom-right  { content: "page " counter(page) " of " counter(pages); font-size: 8pt; color: #555; }
+  }
+  html, body { font-family: "Helvetica", "Arial", sans-serif; color: #111; }
+  body { font-size: 10.5pt; line-height: 1.35; margin: 0; }
+  h1, h2, h3, h4 { font-family: "Helvetica", "Arial", sans-serif; margin: 0 0 4pt 0; }
+  h1 { font-size: 18pt; }
+  h2 { font-size: 13pt; border-bottom: 1pt solid #333; padding-bottom: 2pt; margin-top: 14pt; }
+  h3 { font-size: 11pt; margin-top: 8pt; }
+  h4 { font-size: 10pt; color: #444; }
+  p  { margin: 0 0 6pt 0; }
+  .meta { color: #555; font-size: 9pt; }
+  .section { page-break-inside: avoid; margin-bottom: 10pt; }
+  .scoreboard { width: 100%; border-collapse: collapse; margin-top: 6pt; }
+  .scoreboard td { padding: 3pt 6pt; border-bottom: 1pt solid #ddd; vertical-align: top; }
+  .scoreboard .k { width: 35%; color: #444; }
+  .scoreboard .v { font-weight: bold; width: 20%; }
+  .scoreboard .q { color: #666; font-size: 9pt; }
+  .tier {
+    display: inline-block;
+    padding: 3pt 8pt;
+    border: 1pt solid #111;
+    font-weight: bold;
+    font-size: 12pt;
+  }
+  .tier.A, .tier.B { background: #e6f4ea; }
+  .tier.C { background: #fff3cd; }
+  .tier.D, .tier.F { background: #f8d7da; }
+  .reason { margin: 2pt 0; }
+  .reason.hard { color: #800; }
+  .reason.soft { color: #844; }
+  .chip { display: inline-block; padding: 1pt 5pt; border: 1pt solid #888; border-radius: 3pt; font-size: 9pt; margin: 1pt 2pt 1pt 0; }
+  .chip.warn { border-color: #b58105; color: #6b4d00; }
+  table.ledger { width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: 4pt; }
+  table.ledger th, table.ledger td { padding: 3pt 4pt; border-bottom: 1pt solid #ddd; text-align: left; }
+  table.ledger th { background: #f1f1f1; }
+  table.ledger td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .footer-note { color: #777; font-size: 8.5pt; margin-top: 12pt; }
+  .pagebreak { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>{{ merchant.business_name }}</h1>
+  <div class="meta">
+    {% if merchant.dba %}DBA {{ merchant.dba }} · {% endif %}
+    {{ merchant.state | upper }} ·
+    {% if merchant.industry_naics %}NAICS {{ merchant.industry_naics }} · {% endif %}
+    {% if merchant.time_in_business_months %}{{ merchant.time_in_business_months }} months in business · {% endif %}
+    AEGIS dossier generated {{ generated_at }}
+  </div>
+</header>
+
+{# ============== § 1 VERDICT ============== #}
+<section class="section">
+  <h2>§ 1 &nbsp; Verdict</h2>
+  {% if score_result %}
+    <p>
+      <span class="tier {{ score_result.tier }}">Tier {{ score_result.tier }}</span>
+      &nbsp;
+      Recommendation: <strong>{{ score_result.recommendation }}</strong>
+    </p>
+    <table class="scoreboard">
+      <tr>
+        <td class="k">Composite score</td>
+        <td class="v">{{ score_result.score }}/100</td>
+        <td class="q">
+          {% if score_window %}window {{ score_window.period_start }} → {{ score_window.period_end }} · {{ score_window.months_used }} month{{ '' if score_window.months_used == 1 else 's' }}{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td class="k">Fraud score</td>
+        <td class="v">{{ document.fraud_score if document else 0 }}/100</td>
+        <td class="q">
+          {% set _fraud = (document.fraud_score if document else 0) or 0 %}
+          {% if _fraud >= 65 %}manual-review band — patterns require attention
+          {% elif _fraud >= 35 %}review band — verify findings below
+          {% else %}clear band — no fraud signal of consequence{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td class="k">Suggested max advance</td>
+        <td class="v">{{ score_result.suggested_max_advance | whole_money }}</td>
+        <td class="q">tier × monthly revenue, rounded</td>
+      </tr>
+      <tr>
+        <td class="k">Requested advance</td>
+        <td class="v">{{ merchant.requested_amount | whole_money if merchant.requested_amount else '—' }}</td>
+        <td class="q">
+          {% if merchant.requested_factor %}factor {{ merchant.requested_factor }}{% endif %}
+          {% if merchant.requested_term_days %} · term {{ merchant.requested_term_days }} days{% endif %}
+        </td>
+      </tr>
+    </table>
+
+    {% if score_result.hard_decline_reasons %}
+      <h4>Hard declines</h4>
+      {% for reason in score_result.hard_decline_reasons %}
+        <p class="reason hard">• {{ reason }}</p>
+      {% endfor %}
+    {% endif %}
+    {% if score_result.soft_concerns %}
+      <h4>Soft concerns</h4>
+      {% for c in score_result.soft_concerns %}
+        <p class="reason soft">• {{ c }}</p>
+      {% endfor %}
+    {% endif %}
+  {% else %}
+    <p>Score unavailable — no analyzed statement on file yet, or scoring failed during ingest.</p>
+  {% endif %}
+
+  {% if statement_coverage %}
+    <h4>Statement coverage</h4>
+    <p class="meta">
+      {% set _bank = statement_coverage.bundle_bank_name %}
+      {% set _last4 = statement_coverage.bundle_account_last4 %}
+      {% if _bank or _last4 %}
+        <strong>{{ _bank or 'Bank not detected' }}</strong>
+        {% if _last4 %} · last4 <strong>{{ _last4 }}</strong>{% endif %}
+      {% else %}
+        <strong>Bank not detected</strong> — bundle unverified
+      {% endif %}
+      · {{ statement_coverage.statements_in_bundle }} statement{{ '' if statement_coverage.statements_in_bundle == 1 else 's' }} bundled
+      ({{ statement_coverage.period_start }} → {{ statement_coverage.period_end }})
+    </p>
+    {% if statement_coverage.missing_months %}
+      <p>
+        <strong>Coverage gaps:</strong>
+        {% for m in statement_coverage.missing_months %}<span class="chip warn">{{ m }}</span>{% endfor %}
+      </p>
+    {% endif %}
+  {% endif %}
+</section>
+
+{# ============== § 2 CASHFLOW EVIDENCE ============== #}
+{% if analysis %}
+<section class="section">
+  <h2>§ 2 &nbsp; Cashflow evidence</h2>
+  <p class="meta">period {{ analysis.statement_period_start }} → {{ analysis.statement_period_end }} · {{ analysis.statement_days }} days</p>
+  <table class="scoreboard">
+    <tr><td class="k">True revenue</td><td class="v">{{ analysis.true_revenue | whole_money }}</td><td class="q">deposits net of transfers/chargebacks</td></tr>
+    <tr><td class="k">Monthly revenue (normalized)</td><td class="v">{{ analysis.monthly_revenue | whole_money }}</td><td class="q">true revenue × 30 / statement days</td></tr>
+    <tr><td class="k">Average daily balance</td><td class="v">{{ analysis.avg_daily_balance | whole_money }}</td><td class="q">EOD balance averaged over period</td></tr>
+    <tr><td class="k">Lowest balance</td><td class="v">{{ analysis.lowest_balance | whole_money }}</td><td class="q">running balance minimum</td></tr>
+    <tr><td class="k">NSF events</td><td class="v">{{ analysis.num_nsf }}</td><td class="q">overdraft / returned-item fees</td></tr>
+    <tr><td class="k">Days negative</td><td class="v">{{ analysis.days_negative }}</td><td class="q">distinct dates where running balance &lt; 0</td></tr>
+    <tr><td class="k">MCA positions</td><td class="v">{{ analysis.mca_positions }}</td><td class="q">distinct funder cadences detected</td></tr>
+    <tr><td class="k">MCA daily total</td><td class="v">{{ analysis.mca_daily_total | whole_money }}</td><td class="q">sum of detected daily MCA debits</td></tr>
+    <tr><td class="k">Debt to revenue</td><td class="v">{{ analysis.debt_to_revenue }}</td><td class="q">monthly MCA burden / monthly revenue</td></tr>
+  </table>
+</section>
+{% endif %}
+
+{# ============== § 3 STACKING & PATTERN FINDINGS ============== #}
+{% if stacking or pattern_cards %}
+<section class="section">
+  <h2>§ 3 &nbsp; Pattern findings</h2>
+
+  {% if stacking %}
+    <h3>MCA stacking — {{ stacking.position_count }} active position{{ '' if stacking.position_count == 1 else 's' }}</h3>
+    <p>Daily burden <strong>${{ stacking.daily_total }}</strong> · projected monthly <strong>${{ stacking.monthly_burden }}</strong> · {{ stacking.debit_count }} contributing debits</p>
+  {% endif %}
+
+  {% for card in pattern_cards %}
+    <h3>{{ card.title or card.code }}</h3>
+    <p class="meta">severity {{ card.severity }}</p>
+    <p>{{ card.detail }}</p>
+  {% endfor %}
+</section>
+{% endif %}
+
+{# ============== § 4 STATE COMPLIANCE ============== #}
+{% if state_tier %}
+<section class="section">
+  <h2>§ 4 &nbsp; State compliance</h2>
+  <p><strong>{{ state_tier.label }}</strong> &mdash; {{ state_tier.summary }}</p>
+  {% if state_tier.citation %}<p class="meta">Citation: {{ state_tier.citation }}</p>{% endif %}
+  {% if state_tier.verified %}<p class="meta">Verified: {{ state_tier.verified }}</p>{% endif %}
+
+  <p>
+    <strong>OFAC SDN screening:</strong>
+    {% if ofac_status == 'match' %}
+      MATCH — see /Treasury OFAC Initial Report of Blocked Property workflow.
+    {% elif ofac_status == 'clean' %}
+      Clean — no SDN match against business name or owner.
+    {% elif ofac_status == 'unavailable' %}
+      Unavailable — re-run before submission.
+    {% else %}
+      Pending — re-run before submission.
+    {% endif %}
+  </p>
+</section>
+{% endif %}
+
+{# ============== § 5 STATEMENTS LEDGER ============== #}
+{% if documents %}
+<section class="section">
+  <h2>§ 5 &nbsp; Statements on file</h2>
+  <table class="ledger">
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Period</th>
+        <th>Bank · last4</th>
+        <th class="num">Revenue</th>
+        <th class="num">ADB</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for row in documents %}
+      <tr>
+        <td>{{ row.document.original_filename }}</td>
+        <td>
+          {% if row.analysis %}{{ row.analysis.statement_period_start }} → {{ row.analysis.statement_period_end }}{% else %}—{% endif %}
+        </td>
+        <td>
+          {% if row.analysis %}{{ row.analysis.bank_name or '—' }}{% if row.analysis.account_last4 %} · {{ row.analysis.account_last4 }}{% endif %}{% else %}—{% endif %}
+        </td>
+        <td class="num">{{ row.analysis.true_revenue | whole_money if row.analysis else '—' }}</td>
+        <td class="num">{{ row.analysis.avg_daily_balance | whole_money if row.analysis else '—' }}</td>
+        <td>{{ row.document.parse_status }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<p class="footer-note">
+  Source attribution: every aggregate in this dossier is traceable to specific
+  transaction rows on the underlying statements via the AEGIS audit drill-down.
+  Decimal money math throughout; APR via scipy IRR on the actual payment stream.
+</p>
+
+</body>
+</html>

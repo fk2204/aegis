@@ -1104,6 +1104,29 @@ async def merchant_submit_to_funders(
 
     files = build_submission_files(score_input, score_result, matched)
 
+    merchant_slug = slugify(merchant.business_name)
+    if len(files) == 1:
+        only = files[0]
+        download_bytes = only.csv_bytes
+        download_filename = only.filename
+        download_media = "text/csv; charset=utf-8"
+    else:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for sub in files:
+                zf.writestr(sub.filename, sub.csv_bytes)
+        download_bytes = buf.getvalue()
+        download_filename = f"submission_{merchant_slug}.zip"
+        download_media = "application/zip"
+
+    # Render the PDF dossier for Zoho attachment. WeasyPrint native libs
+    # ship on the Hetzner box; on Windows dev they're absent and we log
+    # the OSError + continue without a PDF. The submission flow MUST
+    # complete even if PDF rendering fails.
+    dossier_pdf, dossier_filename = _maybe_render_dossier_pdf(
+        merchant=merchant, docs=docs, ofac=ofac
+    )
+
     audit.record(
         actor="dashboard",
         action="deal.submit_to_funders",
@@ -1114,6 +1137,12 @@ async def merchant_submit_to_funders(
             "funder_names": [sub.funder_name for sub in files],
             "score_tier": score_result.tier,
             "score": score_result.score,
+            "attachment_sha256": _sha256_hex(download_bytes),
+            "attachment_filename": download_filename,
+            "dossier_pdf_sha256": (
+                _sha256_hex(dossier_pdf) if dossier_pdf is not None else None
+            ),
+            "dossier_pdf_filename": dossier_filename,
         },
     )
 
@@ -1140,21 +1169,6 @@ async def merchant_submit_to_funders(
             exc,
         )
 
-    merchant_slug = slugify(merchant.business_name)
-    if len(files) == 1:
-        only = files[0]
-        download_bytes = only.csv_bytes
-        download_filename = only.filename
-        download_media = "text/csv; charset=utf-8"
-    else:
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for sub in files:
-                zf.writestr(sub.filename, sub.csv_bytes)
-        download_bytes = buf.getvalue()
-        download_filename = f"submission_{merchant_slug}.zip"
-        download_media = "application/zip"
-
     _record_submission_to_zoho(
         merchant=merchant,
         files=files,
@@ -1162,6 +1176,8 @@ async def merchant_submit_to_funders(
         zip_filename=download_filename,
         merchants=merchants,
         audit=audit,
+        dossier_pdf=dossier_pdf,
+        dossier_filename=dossier_filename,
     )
 
     return Response(
@@ -1288,6 +1304,47 @@ def _latest_funder_responses(
     return out
 
 
+def _sha256_hex(payload: bytes) -> str:
+    """Cheap content-addressable handle for an audit-log attachment row."""
+    import hashlib
+
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _maybe_render_dossier_pdf(
+    *,
+    merchant: MerchantRow,
+    docs: DocumentRepository,
+    ofac: OFACClient | None,
+) -> tuple[bytes | None, str | None]:
+    """Render the merchant's PDF dossier for Zoho attachment, or fail soft.
+
+    Returns ``(pdf_bytes, filename)`` on success; ``(None, None)`` if the
+    Hetzner box / WSL2 native libs are unavailable. The submission flow
+    must not fail just because a PDF can't be produced — the CSV ZIP
+    download and the audit row are the authoritative record.
+    """
+    try:
+        import weasyprint
+
+        context = _build_pdf_dossier_context(merchant, docs, ofac)
+        html = templates.get_template("merchant_detail_dossier_pdf.html.j2").render(
+            context
+        )
+        pdf_bytes = cast(bytes, weasyprint.HTML(string=html).write_pdf())
+        filename = f"{slugify(merchant.business_name)}_dossier.pdf"
+        return pdf_bytes, filename
+    except (OSError, ImportError) as exc:
+        from aegis.logger import get_logger
+
+        get_logger(__name__).warning(
+            "dossier_pdf_render_failed merchant_id=%s err=%s",
+            merchant.id,
+            exc,
+        )
+        return None, None
+
+
 def _record_submission_to_zoho(
     *,
     merchant: MerchantRow,
@@ -1297,6 +1354,8 @@ def _record_submission_to_zoho(
     zip_filename: str,
     merchants: MerchantRepository,
     audit: AuditLog,
+    dossier_pdf: bytes | None = None,
+    dossier_filename: str | None = None,
 ) -> None:
     """Mirror the funder submission into Zoho (Deal + each Lender record).
 
@@ -1347,6 +1406,8 @@ def _record_submission_to_zoho(
             funder_names=[sub.funder_name for sub in files],
             zip_bytes=zip_bytes,
             zip_filename=zip_filename,
+            dossier_pdf=dossier_pdf,
+            dossier_filename=dossier_filename,
         )
     except Exception as exc:
         log.warning(
@@ -1568,6 +1629,171 @@ async def merchant_detail(
             "history": history,
         },
     )
+
+
+@router.get("/merchants/{merchant_id}/dossier.pdf")
+async def merchant_dossier_pdf(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+) -> Response:
+    """Downloadable PDF dossier of the merchant.
+
+    Same data as the HTML dossier at ``/ui/merchants/{id}`` but laid out
+    for paper: US Letter, page-break controls, no HTMX, no sidebar,
+    system fonts. Always renders the *default* bundle (most-populated
+    bank/last4 pair); operators switching bundles on the dashboard get
+    the on-screen view, not a separate PDF per bundle.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    context = _build_pdf_dossier_context(merchant, docs, ofac)
+    template = templates.get_template("merchant_detail_dossier_pdf.html.j2")
+    html = template.render(context)
+
+    # WeasyPrint native libs (Pango / Cairo / HarfBuzz) ship on the
+    # Hetzner production box via deploy/install.sh. Local Windows dev
+    # boxes don't have them — both the import itself and the render
+    # can OSError when libgobject / libpango aren't on the loader path.
+    # Operators developing on Windows should use WSL2 (documented in
+    # README) and see a useful 503 here instead of a 500 stack trace.
+    try:
+        import weasyprint
+
+        pdf_bytes = cast(bytes, weasyprint.HTML(string=html).write_pdf())
+    except (OSError, ImportError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"weasyprint native libs unavailable: {exc}. Run from "
+                "WSL2 / Linux, or use the Hetzner production deploy."
+            ),
+        ) from exc
+
+    filename = f"{slugify(merchant.business_name)}_dossier.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"content-disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _build_pdf_dossier_context(
+    merchant: MerchantRow,
+    docs: DocumentRepository,
+    ofac: OFACClient | None,
+) -> dict[str, Any]:
+    """Build the print-template context (subset of merchant_detail's context).
+
+    The print template only needs the fields it actually renders. This
+    helper keeps the PDF route concise and the data sourcing identical
+    to the HTML dossier (same scoring, same bundle pick, same pattern
+    cards, same OFAC ribbon).
+    """
+    all_docs = docs.list_documents(merchant_id=merchant.id, limit=50)
+    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in all_docs])
+    documents_table: list[dict[str, Any]] = [
+        {"document": d, "analysis": analyses_by_doc.get(d.id)} for d in all_docs
+    ]
+
+    latest_doc = all_docs[0] if all_docs else None
+    latest_analysis = analyses_by_doc.get(latest_doc.id) if latest_doc else None
+
+    score_result = None
+    score_window = None
+    statement_coverage: dict[str, Any] | None = None
+    stacking = None
+    pattern_cards: list[Any] = []
+
+    if latest_doc is not None and latest_analysis is not None:
+        all_items = _collect_analyzed_for_merchant(
+            docs, merchant.id, window=999, bundle=None
+        )
+        bundle_options = _bundle_keys_for_merchant(all_items)
+        items = _collect_analyzed_for_merchant(docs, merchant.id, bundle=None)
+        active_bundle = _select_default_bundle(all_items)
+        if items:
+            score_input = _score_input_multi_month(merchant, items)
+            try:
+                score_result = score_deal(score_input, ofac=ofac)
+            except OFACStaleError:
+                score_result = None
+            score_window = {
+                "months_used": len(items),
+                "period_start": score_input.statement_period_start,
+                "period_end": score_input.statement_period_end,
+                "any_manual_review": any(
+                    d.parse_status == "manual_review" for d, _ in items
+                ),
+            }
+            statement_coverage = {
+                "bundle_bank_name": active_bundle[0] if active_bundle else None,
+                "bundle_account_last4": active_bundle[1] if active_bundle else None,
+                "statements_in_bundle": len(items),
+                "period_start": score_input.statement_period_start,
+                "period_end": score_input.statement_period_end,
+                "missing_months": _detect_missing_months(items),
+                "bundle_options": _build_bundle_summaries(bundle_options, active_bundle),
+            }
+
+        latest_transactions = docs.list_transactions(latest_doc.id)
+        stacking = build_stacking_card(latest_analysis, latest_transactions)
+        try:
+            pattern_analysis = analyze_patterns(
+                latest_transactions,
+                latest_analysis.statement_period_start,
+                latest_analysis.statement_period_end,
+            )
+        except Exception:
+            pattern_analysis = None
+        pattern_cards = list(build_pattern_cards(pattern_analysis, latest_transactions))
+
+    state_tier = _state_tier(merchant.state)
+    state_reg = STATES.get(merchant.state.upper()) if merchant.state else None
+    state_tier_dossier: dict[str, Any] | None = None
+    if isinstance(state_tier, int):
+        tier_summaries = {
+            1: "Commercial-finance disclosure law applies. Pre-signature disclosure required.",
+            2: "General state law applies. No MCA-specific statute; standard contract law governs.",
+            3: "Served but not yet audited. Disclosure renderer raises StateNotAudited.",
+        }
+        state_tier_dossier = {
+            "label": f"Tier {['', 'I', 'II', 'III'][state_tier]}",
+            "summary": tier_summaries.get(state_tier, ""),
+            "citation": getattr(state_reg, "citation_url", None)
+            or getattr(state_reg, "statute_citation", None),
+            "verified": getattr(state_reg, "verified_date", None),
+        }
+
+    ofac_status_raw, ofac_match = _ofac_ribbon_status(ofac, merchant.business_name)
+    if ofac_status_raw == "checked":
+        ofac_dossier_status = "match" if ofac_match else "clean"
+    elif ofac_status_raw == "stale":
+        ofac_dossier_status = "unavailable"
+    elif ofac_status_raw == "unavailable":
+        ofac_dossier_status = "unavailable"
+    else:
+        ofac_dossier_status = "pending"
+
+    return {
+        "merchant": merchant,
+        "document": latest_doc,
+        "analysis": latest_analysis,
+        "documents": documents_table,
+        "score_result": score_result,
+        "score_window": score_window,
+        "statement_coverage": statement_coverage,
+        "stacking": stacking,
+        "pattern_cards": pattern_cards,
+        "state_tier": state_tier_dossier,
+        "ofac_status": ofac_dossier_status,
+        "ofac_match": ofac_match,
+        "generated_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+    }
 
 
 @router.get("/merchants/{merchant_id}/findings.csv")

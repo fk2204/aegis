@@ -22,6 +22,7 @@ dependencies = [
     "pikepdf>=9.0",
     "pymupdf>=1.24",
     "reportlab>=4.2",
+    "weasyprint>=60",
     "scipy>=1.14",
     "jinja2>=3.1",
     "arq>=0.26",
@@ -57,17 +58,19 @@ module = ["reportlab.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["fitz", "pymupdf"]
+module = ["fitz", "pymupdf", "weasyprint"]
 ignore_missing_imports = true
 
 # pymupdf ships partial stubs: classes like Document and its methods are
 # typed as untyped functions in the stubs. Test modules that build small
-# image-only fixtures via pymupdf don't benefit from the strict
-# no-untyped-call enforcement.
+# image-only fixtures via pymupdf, or that crack open generated PDFs to
+# verify content, don't benefit from the strict no-untyped-call
+# enforcement.
 [[tool.mypy.overrides]]
 module = [
     "tests.parser.test_text_layer_detection",
     "tests.parser.test_extract_vision",
+    "tests.web.test_dossier_pdf",
 ]
 disable_error_code = ["no-untyped-call"]
 
