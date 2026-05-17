@@ -26,6 +26,7 @@ single-month builder, so callers can use this unconditionally.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 from aegis.merchants.models import MerchantRow
@@ -102,4 +103,50 @@ def score_input_multi_month(
     )
 
 
-__all__ = ["score_input_multi_month"]
+def detect_missing_months(
+    items: list[tuple[DocumentRow, AnalysisRow]],
+) -> list[str]:
+    """Return calendar months absent from the bundle's coverage.
+
+    Walks every month from ``min(statement_period_start)`` to
+    ``max(statement_period_end)`` and returns those that don't appear in
+    any analysis's ``monthly_breakdown``. Output is sorted "YYYY-MM"
+    strings.
+
+    Examples
+    --------
+    Three statements covering Jan/Feb/Mar 2026 — returns ``[]``.
+    Jan + Mar statements (Feb missing) — returns ``["2026-02"]``.
+    A single statement covering one month — returns ``[]``.
+    An empty bundle — returns ``[]``.
+    """
+    if not items:
+        return []
+
+    earliest = min(a.statement_period_start for _, a in items)
+    latest = max(a.statement_period_end for _, a in items)
+
+    expected: list[str] = []
+    cursor = date(earliest.year, earliest.month, 1)
+    last_month = date(latest.year, latest.month, 1)
+    while cursor <= last_month:
+        expected.append(f"{cursor.year:04d}-{cursor.month:02d}")
+        cursor = _next_month(cursor)
+
+    actual: set[str] = set()
+    for _, analysis in items:
+        for entry in analysis.monthly_breakdown:
+            month = entry.get("month")
+            if month:
+                actual.add(month)
+
+    return [m for m in expected if m not in actual]
+
+
+def _next_month(d: date) -> date:
+    if d.month == 12:
+        return date(d.year + 1, 1, 1)
+    return date(d.year, d.month + 1, 1)
+
+
+__all__ = ["detect_missing_months", "score_input_multi_month"]

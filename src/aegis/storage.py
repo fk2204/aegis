@@ -117,6 +117,15 @@ class AnalysisRow(_StrictModel):
     # stored as strings to round-trip cleanly through jsonb).
     monthly_breakdown: list[dict[str, str]] = Field(default_factory=list)
 
+    # Bank identity carried forward from StatementSummary (migration 014).
+    # Nullable because (a) pass-1 occasionally fails to recover them on
+    # noisy statements and (b) pre-migration analyses don't have them.
+    # The merchant detail bundling groups by
+    # (merchant_id, bank_name, account_last4); rows where either is None
+    # land in a single "bank not detected" bundle.
+    bank_name: str | None = None
+    account_last4: str | None = Field(default=None, max_length=4)
+
 
 # Protocol ---------------------------------------------------------------------
 
@@ -263,11 +272,12 @@ class InMemoryDocumentRepository:
         self._txs[document_id] = list(result.classified)
 
         if result.aggregates is not None and result.extraction is not None:
+            summary = result.extraction.statement.summary
             self._analyses[document_id] = _build_analysis(
                 document_id=document_id,
                 merchant_id=merchant_id,
                 aggregates=result.aggregates,
-                summary=result.extraction.statement.summary,
+                summary=summary,
                 classified=result.classified,
                 patterns=result.patterns,
                 monthly_breakdown=result.monthly_breakdown,
@@ -421,6 +431,7 @@ class SupabaseDocumentRepository:
                 summary=result.extraction.statement.summary,
                 classified=result.classified,
                 patterns=result.patterns,
+                monthly_breakdown=result.monthly_breakdown,
             )
             client.table("analyses").insert(_analysis_to_db_row(analysis)).execute()
 
@@ -609,6 +620,8 @@ def _build_analysis(
         days_negative_source_ids=list(aggregates.days_negative.source_ids),
         mca_daily_total_source_ids=list(aggregates.mca_daily_total.source_ids),
         monthly_breakdown=monthly_breakdown or [],
+        bank_name=summary.bank_name,
+        account_last4=summary.account_last4,
     )
 
 
@@ -714,6 +727,8 @@ def _analysis_to_db_row(analysis: AnalysisRow) -> dict[str, Any]:
         "days_negative_source_ids": [str(u) for u in analysis.days_negative_source_ids],
         "mca_daily_total_source_ids": [str(u) for u in analysis.mca_daily_total_source_ids],
         "monthly_breakdown": analysis.monthly_breakdown,
+        "bank_name": analysis.bank_name,
+        "account_last4": analysis.account_last4,
     }
 
 
@@ -746,6 +761,8 @@ def _db_row_to_analysis(row: dict[str, Any]) -> AnalysisRow:
         days_negative_source_ids=[UUID(u) for u in row.get("days_negative_source_ids") or []],
         mca_daily_total_source_ids=[UUID(u) for u in row.get("mca_daily_total_source_ids") or []],
         monthly_breakdown=row.get("monthly_breakdown") or [],
+        bank_name=row.get("bank_name"),
+        account_last4=row.get("account_last4"),
     )
 
 

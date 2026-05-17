@@ -293,6 +293,53 @@
           Score unavailable &mdash; no analyzed statement on file yet, or scoring failed during ingest. Upload at least one statement and refresh.
         </div>
       {% endif %}
+
+      {# Statement coverage — surfaces the active (bank, last4) bundle, any
+         alternate bundles for the merchant, and any missing months between
+         the earliest and latest statement in the bundle. Always render when
+         coverage data is present, even if scoring failed. #}
+      {% if statement_coverage %}
+        <div class="coverage marginalia">
+          <h4>Statement coverage</h4>
+          <p>
+            {% set _bank = statement_coverage.bundle_bank_name %}
+            {% set _last4 = statement_coverage.bundle_account_last4 %}
+            {% if _bank or _last4 %}
+              <strong>{{ _bank or 'Bank not detected' }}</strong>
+              {% if _last4 %} · last4 <strong>{{ _last4 }}</strong>{% endif %}
+            {% else %}
+              <strong>Bank not detected</strong> &mdash; bundle unverified.
+              Re-uploading statements with a visible bank name + account
+              number lets AEGIS group them safely.
+            {% endif %}
+            &mdash; {{ statement_coverage.statements_in_bundle }} statement{{ '' if statement_coverage.statements_in_bundle == 1 else 's' }} bundled
+            ({{ statement_coverage.period_start }} → {{ statement_coverage.period_end }}).
+          </p>
+
+          {% if statement_coverage.missing_months %}
+            <p>
+              <span class="warn">Coverage gaps:</span>
+              {% for m in statement_coverage.missing_months %}
+                <span class="chip warn">{{ m }}</span>
+              {% endfor %}
+            </p>
+          {% endif %}
+
+          {% if statement_coverage.bundle_options and statement_coverage.bundle_options|length > 1 %}
+            <p>
+              <span class="qual">Other accounts on file:</span>
+              {% for opt in statement_coverage.bundle_options %}
+                {% if not opt.is_active %}
+                  <a href="/ui/merchants/{{ merchant.id }}?bundle={{ opt.query | urlencode }}">
+                    {{ opt.bank_name or 'unknown bank' }}{% if opt.account_last4 %} · {{ opt.account_last4 }}{% endif %}
+                    ({{ opt.count }})
+                  </a>{% if not loop.last %} · {% endif %}
+                {% endif %}
+              {% endfor %}
+            </p>
+          {% endif %}
+        </div>
+      {% endif %}
     </section>
 
     {# ============== § 2 CASHFLOW EVIDENCE ============== #}

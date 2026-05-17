@@ -64,6 +64,9 @@ from aegis.parser.patterns import analyze_patterns
 from aegis.scoring.match_funders import match_funder
 from aegis.scoring.models import FunderMatch, ScoreInput
 from aegis.scoring.multi_month import (
+    detect_missing_months as _detect_missing_months,
+)
+from aegis.scoring.multi_month import (
     score_input_multi_month as _score_input_multi_month,
 )
 from aegis.scoring.ofac import OFACClient, OFACStaleError
@@ -1417,9 +1420,17 @@ async def merchant_detail(
     latest_doc = all_docs[0] if all_docs else None
     latest_analysis = analyses_by_doc.get(latest_doc.id) if latest_doc else None
 
+    # Bundle switcher: ?bundle=<bank>|<last4>. Empty segments mean
+    # "unknown" (encoded back as None). Falls back to most-populated
+    # bundle when the param is absent or names a bundle that no longer
+    # exists for this merchant.
+    selected_bundle = _parse_bundle_query(request.query_params.get("bundle"))
+
     score_result = None
     stacking = None
     score_window = None
+    bundle_summaries: list[dict[str, Any]] = []
+    statement_coverage: dict[str, Any] | None = None
     pattern_cards: list[Any] = []
     soft_signals = (
         parse_soft_signal_flags(list(latest_doc.all_flags))
@@ -1427,7 +1438,23 @@ async def merchant_detail(
         else None
     )
     if latest_doc is not None and latest_analysis is not None:
-        items = _collect_analyzed_for_merchant(docs, merchant_id)
+        all_items = _collect_analyzed_for_merchant(
+            docs, merchant_id, window=999, bundle=None
+        )
+        bundle_options = _bundle_keys_for_merchant(all_items)
+        if selected_bundle is not None and selected_bundle not in {
+            k for k, _ in bundle_options
+        }:
+            selected_bundle = None
+        items = _collect_analyzed_for_merchant(
+            docs, merchant_id, bundle=selected_bundle
+        )
+        active_bundle = (
+            selected_bundle
+            if selected_bundle is not None
+            else _select_default_bundle(all_items)
+        )
+        bundle_summaries = _build_bundle_summaries(bundle_options, active_bundle)
         if items:
             score_input = _score_input_multi_month(merchant, items)
             try:
@@ -1441,6 +1468,15 @@ async def merchant_detail(
                 "any_manual_review": any(
                     d.parse_status == "manual_review" for d, _ in items
                 ),
+            }
+            statement_coverage = {
+                "bundle_bank_name": active_bundle[0] if active_bundle else None,
+                "bundle_account_last4": active_bundle[1] if active_bundle else None,
+                "statements_in_bundle": len(items),
+                "period_start": score_input.statement_period_start,
+                "period_end": score_input.statement_period_end,
+                "missing_months": _detect_missing_months(items),
+                "bundle_options": bundle_summaries,
             }
         # Pattern cards are re-derived on view rather than persisted: the
         # parser emits Pattern dataclasses whose fields (severity, detail,
@@ -1523,6 +1559,7 @@ async def merchant_detail(
             "intake_docs_failed": intake_docs_failed,
             "score_result": score_result,
             "score_window": score_window,
+            "statement_coverage": statement_coverage,
             "stacking": stacking,
             "state_tier": state_tier_dossier,
             "ofac_status": ofac_dossier_status,
@@ -1681,11 +1718,111 @@ def _find_latest_for_merchant(
 _SCORE_WINDOW_MONTHS: int = 3
 
 
+BundleKey = tuple[str | None, str | None]
+
+
+def _bundle_key(analysis: AnalysisRow) -> BundleKey:
+    """The (bank_name, account_last4) key used to group statements into bundles."""
+    return (analysis.bank_name, analysis.account_last4)
+
+
+def _bundle_keys_for_merchant(
+    items: list[tuple[DocumentRow, AnalysisRow]],
+) -> list[tuple[BundleKey, int]]:
+    """Return distinct bundle keys with their statement counts, most-populated first.
+
+    Ties broken by latest ``statement_period_end`` so the most-recent
+    bundle wins when two accounts have equal statement counts.
+    """
+    counts: dict[BundleKey, int] = {}
+    latest_end: dict[BundleKey, date] = {}
+    for _, analysis in items:
+        key = _bundle_key(analysis)
+        counts[key] = counts.get(key, 0) + 1
+        if (
+            key not in latest_end
+            or analysis.statement_period_end > latest_end[key]
+        ):
+            latest_end[key] = analysis.statement_period_end
+
+    def _sort_key(item: tuple[BundleKey, int]) -> tuple[int, date]:
+        key, count = item
+        return (count, latest_end[key])
+
+    return sorted(counts.items(), key=_sort_key, reverse=True)
+
+
+def _select_default_bundle(
+    items: list[tuple[DocumentRow, AnalysisRow]],
+) -> BundleKey | None:
+    """Pick the most-populated bundle, or ``None`` if no items.
+
+    See ``_bundle_keys_for_merchant`` for the tiebreak rule.
+    """
+    keys = _bundle_keys_for_merchant(items)
+    return keys[0][0] if keys else None
+
+
+def _filter_to_bundle(
+    items: list[tuple[DocumentRow, AnalysisRow]],
+    bundle: BundleKey,
+) -> list[tuple[DocumentRow, AnalysisRow]]:
+    """Keep only items whose ``(bank_name, account_last4)`` matches ``bundle``."""
+    return [(d, a) for d, a in items if _bundle_key(a) == bundle]
+
+
+def _bundle_to_query(bundle: BundleKey) -> str:
+    """Encode a bundle key as the ``?bundle=`` query value (``bank|last4``)."""
+    bank, last4 = bundle
+    return f"{bank or ''}|{last4 or ''}"
+
+
+def _parse_bundle_query(value: str | None) -> BundleKey | None:
+    """Parse a ``?bundle=`` query value back into a bundle key.
+
+    Returns ``None`` for missing / blank / malformed inputs (caller then
+    picks the default bundle). Empty segments are mapped to ``None`` so
+    a pre-migration ``(None, None)`` bundle is addressable as ``|``.
+    """
+    if not value:
+        return None
+    parts = value.split("|", 1)
+    if len(parts) != 2:
+        return None
+    bank, last4 = parts
+    return (bank or None, last4 or None)
+
+
+def _build_bundle_summaries(
+    bundle_options: list[tuple[BundleKey, int]],
+    active: BundleKey | None,
+) -> list[dict[str, Any]]:
+    """Template-friendly view of the merchant's bundles.
+
+    Each entry carries the bank/last4 labels, the statement count, the
+    URL-safe query value, and whether the bundle is currently active.
+    """
+    out: list[dict[str, Any]] = []
+    for key, count in bundle_options:
+        bank, last4 = key
+        out.append(
+            {
+                "bank_name": bank,
+                "account_last4": last4,
+                "count": count,
+                "query": _bundle_to_query(key),
+                "is_active": key == active,
+            }
+        )
+    return out
+
+
 def _collect_analyzed_for_merchant(
     docs: DocumentRepository,
     merchant_id: UUID,
     *,
     window: int = _SCORE_WINDOW_MONTHS,
+    bundle: BundleKey | None = None,
 ) -> list[tuple[DocumentRow, AnalysisRow]]:
     """Return up to ``window`` most-recent analyzed docs for a merchant.
 
@@ -1697,17 +1834,35 @@ def _collect_analyzed_for_merchant(
 
     Returned newest first so the caller can pick the latest doc as the
     "current state" anchor and use the remainder as historical context.
+
+    Bundling
+    --------
+    A merchant with two bank accounts produces two bundles of statements.
+    Scoring across mixed-account statements is wrong: revenue sums across
+    accounts double-count cash that just moved between them. The default
+    behavior here is therefore "pick the most-populated bundle" — pass
+    ``bundle`` explicitly to override (operator switching bundles in the
+    UI). Pre-migration analyses without ``bank_name``/``account_last4``
+    all share the ``(None, None)`` bundle and behave identically to the
+    pre-bundling implementation.
     """
     rows = docs.list_documents(merchant_id=merchant_id, limit=window * 4)
-    out: list[tuple[DocumentRow, AnalysisRow]] = []
+    analyzed: list[tuple[DocumentRow, AnalysisRow]] = []
     for d in rows:
         a = docs.get_analysis(d.id)
         if a is None:
             continue
-        out.append((d, a))
-        if len(out) >= window:
-            break
-    return out
+        analyzed.append((d, a))
+
+    if not analyzed:
+        return []
+
+    selected_bundle = bundle if bundle is not None else _select_default_bundle(analyzed)
+    if selected_bundle is None:
+        return []
+
+    filtered = _filter_to_bundle(analyzed, selected_bundle)
+    return filtered[:window]
 
 
 def _decimal_or_none(value: str) -> Decimal | None:

@@ -15,6 +15,9 @@ from uuid import uuid4
 
 from aegis.merchants.models import MerchantRow
 from aegis.scoring.multi_month import (
+    detect_missing_months,
+)
+from aegis.scoring.multi_month import (
     score_input_multi_month as _score_input_multi_month,
 )
 from aegis.storage import AnalysisRow, DocumentRow
@@ -47,6 +50,7 @@ def _analysis(
     payroll_detected: bool = True,
     returned_ach_count: int = 0,
     statement_days: int = 30,
+    monthly_breakdown: list[dict[str, str]] | None = None,
 ) -> AnalysisRow:
     return AnalysisRow(
         id=uuid4(),
@@ -67,7 +71,13 @@ def _analysis(
         debt_to_revenue=debt_to_revenue,
         payroll_detected=payroll_detected,
         returned_ach_count=returned_ach_count,
+        monthly_breakdown=monthly_breakdown or [],
     )
+
+
+def _mb(month: str) -> dict[str, str]:
+    """Tiny monthly_breakdown entry — only ``month`` matters for gap detection."""
+    return {"month": month, "deposits": "0.00", "withdrawals": "0.00", "avg_balance": "0.00"}
 
 
 def _merchant() -> MerchantRow:
@@ -205,6 +215,74 @@ def test_multi_month_single_item_is_equivalent_to_single_month() -> None:
     assert out.mca_positions == 2
     assert out.fraud_score == 18
     assert out.statement_days == 30
+
+
+def test_detect_missing_months_returns_empty_for_no_gaps() -> None:
+    items = [
+        (_doc(), _analysis(
+            period_start=date(2026, 3, 1), period_end=date(2026, 3, 31),
+            true_revenue=Decimal("30000"),
+            monthly_breakdown=[_mb("2026-03")],
+        )),
+        (_doc(), _analysis(
+            period_start=date(2026, 2, 1), period_end=date(2026, 2, 28),
+            true_revenue=Decimal("30000"),
+            monthly_breakdown=[_mb("2026-02")],
+        )),
+        (_doc(), _analysis(
+            period_start=date(2026, 1, 1), period_end=date(2026, 1, 31),
+            true_revenue=Decimal("30000"),
+            monthly_breakdown=[_mb("2026-01")],
+        )),
+    ]
+    assert detect_missing_months(items) == []
+
+
+def test_detect_missing_months_flags_single_gap() -> None:
+    items = [
+        (_doc(), _analysis(
+            period_start=date(2026, 3, 1), period_end=date(2026, 3, 31),
+            true_revenue=Decimal("30000"),
+            monthly_breakdown=[_mb("2026-03")],
+        )),
+        (_doc(), _analysis(
+            period_start=date(2026, 1, 1), period_end=date(2026, 1, 31),
+            true_revenue=Decimal("30000"),
+            monthly_breakdown=[_mb("2026-01")],
+        )),
+    ]
+    assert detect_missing_months(items) == ["2026-02"]
+
+
+def test_detect_missing_months_flags_multiple_gaps_across_year_boundary() -> None:
+    items = [
+        (_doc(), _analysis(
+            period_start=date(2026, 2, 1), period_end=date(2026, 2, 28),
+            true_revenue=Decimal("30000"),
+            monthly_breakdown=[_mb("2026-02")],
+        )),
+        (_doc(), _analysis(
+            period_start=date(2025, 11, 1), period_end=date(2025, 11, 30),
+            true_revenue=Decimal("30000"),
+            monthly_breakdown=[_mb("2025-11")],
+        )),
+    ]
+    assert detect_missing_months(items) == ["2025-12", "2026-01"]
+
+
+def test_detect_missing_months_handles_single_statement() -> None:
+    items = [
+        (_doc(), _analysis(
+            period_start=date(2026, 3, 1), period_end=date(2026, 3, 31),
+            true_revenue=Decimal("30000"),
+            monthly_breakdown=[_mb("2026-03")],
+        )),
+    ]
+    assert detect_missing_months(items) == []
+
+
+def test_detect_missing_months_returns_empty_for_empty_input() -> None:
+    assert detect_missing_months([]) == []
 
 
 def test_multi_month_means_adb_and_dtr() -> None:
