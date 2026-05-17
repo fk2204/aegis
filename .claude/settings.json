@@ -1,0 +1,30 @@
+﻿{
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(uv run:*)",
+      "Bash(uv sync)",
+      "Bash(uv lock)",
+      "Bash(uv add:*)",
+      "Bash(python -m scripts.generate_corpus:*)"
+    ],
+    "deny": [
+      "Bash(scripts/audit/*)",
+      "Read(./.env)",
+      "Read(/etc/aegis/aegis.env)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"Write-Host '=== AEGIS session start ===' -ForegroundColor Cyan; Write-Host ('Branch: ' + (git branch --show-current)); Write-Host 'Last 5 commits:'; git log --oneline -5; $changes = git status --porcelain; if ($changes) { Write-Host ('Uncommitted: ' + ($changes -split \\\"`n\\\").Count + ' files') -ForegroundColor Yellow } else { Write-Host 'Working tree clean' -ForegroundColor Green }; Write-Host '===========================' -ForegroundColor Cyan\""
+          }
+        ]
+      }
+    ]
+  }
+}

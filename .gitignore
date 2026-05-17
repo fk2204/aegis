@@ -43,8 +43,30 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Claude Code session artifacts (agent transcripts, worktrees, plans)
-.claude/
+# Claude Code: track config (CLAUDE.md, settings.json, rules) but exclude session artifacts
+.claude/worktrees/
+.claude/settings.local.json
+.claude/cache/
+.claude/projects/
+.claude/sessions/
+.claude/file-history/
+.claude/shell-snapshots/
+.claude/tasks/
+.claude/todos/
+.claude/plans/
+.claude/debug/
+.claude/paste-cache/
+.claude/image-cache/
+.claude/session-env/
+.claude/telemetry/
+.claude/ide/
+.claude/backups/
+.claude/.credentials.json
+.claude/.last-cleanup
+.claude/history.jsonl
+.claude/mcp-needs-auth-cache.json
+.claude/stats-cache.json
+.claude/.benchmarks/
 
 # App-local
 .tmp/
@@ -55,7 +77,4 @@ logs/
 node_modules/
 .tmp/
 
-# Claude Code artifacts (added 2026-05-16)
-.claude/worktrees/
-.claude/settings.local.json
 CLAUDE.local.md
