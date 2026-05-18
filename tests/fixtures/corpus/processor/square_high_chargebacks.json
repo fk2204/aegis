@@ -1,0 +1,26 @@
+{
+  "processor": "square",
+  "scenario": "high_chargebacks",
+  "seed": 2103,
+  "period_start": "2026-01-01",
+  "period_end": "2026-01-31",
+  "printed_summary": {
+    "gross_volume": "8300.00",
+    "refunds_total": "90.00",
+    "chargebacks_total": "500.00",
+    "fees_total": "240.70",
+    "payouts_total": "7469.30"
+  },
+  "summed_line_items": {
+    "gross_charge": "8300.00",
+    "refund": "90.00",
+    "chargeback": "500.00",
+    "fee": "240.70",
+    "payout": "7469.30"
+  },
+  "expected": {
+    "validation_passed": true,
+    "expected_parse_status": "review",
+    "chargeback_ratio": "0.06024096385542168674698795181"
+  }
+}

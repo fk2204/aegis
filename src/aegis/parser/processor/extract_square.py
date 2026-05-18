@@ -1,0 +1,160 @@
+"""Square statement extraction (LLM pass 1).
+
+Reads a Square statement PDF and returns ``ExtractedProcessorStatement``.
+Same contract as ``extract_stripe`` — the deterministic validator
+gates the result. The prompt is the only Square-specific knob; the
+JSON shape and coercion path are shared with Stripe.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Any, Final
+
+from pydantic import ValidationError
+
+from aegis.llm import LLMClient
+from aegis.parser.processor.extract_stripe import ProcessorExtractionError
+from aegis.parser.processor.models import ExtractedProcessorStatement
+
+_MAX_PDF_BYTES: Final[int] = 25 * 1024 * 1024
+
+
+SQUARE_EXTRACTION_PROMPT: Final[str] = """
+You are extracting structured data from a Square payment-processor monthly
+statement PDF. Return ONLY a JSON object — no prose, no markdown.
+
+Required JSON shape:
+{
+  "summary": {
+    "processor": "square",
+    "business_name": "<merchant business name as printed on the statement, or null>",
+    "period_start": "YYYY-MM-DD",
+    "period_end": "YYYY-MM-DD",
+    "gross_volume": "<money string, positive>",
+    "refunds_total": "<money string, positive>",
+    "chargebacks_total": "<money string, positive>",
+    "fees_total": "<money string, positive>",
+    "payouts_total": "<money string, positive>",
+    "transaction_count": <integer or null>
+  },
+  "transactions": [
+    {
+      "posted_date": "YYYY-MM-DD",
+      "description": "<row description as printed>",
+      "kind": "gross_charge" | "refund" | "chargeback" | "fee" | "payout" | "adjustment",
+      "amount": "<money string, POSITIVE — flow direction is on `kind`>",
+      "source_page": <1-indexed page>,
+      "source_line": <1-indexed line within the page>
+    }
+  ]
+}
+
+CRITICAL RULES (silent violation here corrupts the audit trail):
+- Amounts are ALWAYS positive. The ``kind`` field carries the direction.
+- ``source_page`` and ``source_line`` MUST be set on every row.
+- Do NOT compute aggregates. Return the printed totals on `summary`
+  exactly as the statement shows them, and the line items as they
+  appear in the Sales activity / Payment activity table.
+- Square line items map to ``kind`` as follows:
+    * "Sale" / "Card sale" / "Payment" → gross_charge
+    * "Refund" / "Returned" → refund
+    * "Chargeback" / "Dispute" → chargeback
+    * "Processing fee" / "Square fee" → fee
+    * "Transfer" / "Deposit to bank" / "Instant deposit" → payout
+    * "Adjustment" / "Balance adjustment" → adjustment
+- All money fields must be strings (preserve precision; never floats).
+"""
+
+
+def extract_square(
+    pdf_bytes: bytes, llm: LLMClient
+) -> ExtractedProcessorStatement:
+    """LLM pass 1 for a Square statement.
+
+    Mirrors ``extract_stripe``. The only difference is the prompt;
+    keeping the wrapper in a separate function lets the upload
+    pipeline pick the right extractor without an if/else in the
+    extraction layer.
+    """
+    if len(pdf_bytes) == 0:
+        raise ProcessorExtractionError("empty PDF buffer")
+    if len(pdf_bytes) > _MAX_PDF_BYTES:
+        raise ProcessorExtractionError(
+            f"PDF buffer too large: {len(pdf_bytes)} bytes (max {_MAX_PDF_BYTES})"
+        )
+
+    try:
+        raw, _truncated = llm.extract_raw_json(pdf_bytes, SQUARE_EXTRACTION_PROMPT)
+    except ValueError as exc:
+        raise ProcessorExtractionError(
+            f"LLM returned malformed JSON: {exc}"
+        ) from exc
+
+    if "summary" not in raw or "transactions" not in raw:
+        raise ProcessorExtractionError(
+            f"extraction JSON missing required keys; got {sorted(raw.keys())}"
+        )
+
+    payload: dict[str, Any] = {
+        "summary": _coerce_summary(raw["summary"]),
+        "transactions": [_coerce_row(t) for t in raw["transactions"]],
+    }
+
+    try:
+        return ExtractedProcessorStatement.model_validate(payload)
+    except ValidationError as exc:
+        raise ProcessorExtractionError(
+            f"extraction payload failed schema validation: {exc}"
+        ) from exc
+
+
+def _coerce_summary(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ProcessorExtractionError(
+            f"summary must be an object, got {type(value).__name__}"
+        )
+    out: dict[str, Any] = dict(value)
+    for k in (
+        "gross_volume",
+        "refunds_total",
+        "chargebacks_total",
+        "fees_total",
+        "payouts_total",
+    ):
+        if k in out and out[k] is not None:
+            out[k] = _num_to_str(out[k])
+    return out
+
+
+def _coerce_row(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ProcessorExtractionError(
+            f"transaction must be an object, got {type(value).__name__}"
+        )
+    out: dict[str, Any] = dict(value)
+    if "amount" in out and out["amount"] is not None:
+        out["amount"] = _abs_str(_num_to_str(out["amount"]))
+    return out
+
+
+def _num_to_str(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, Decimal):
+        return str(value)
+    return str(value)
+
+
+def _abs_str(value: str) -> str:
+    return value.lstrip("-+")
+
+
+__all__ = [
+    "SQUARE_EXTRACTION_PROMPT",
+    "extract_square",
+]

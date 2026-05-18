@@ -1,0 +1,26 @@
+{
+  "processor": "stripe",
+  "scenario": "clean",
+  "seed": 2001,
+  "period_start": "2026-01-01",
+  "period_end": "2026-01-31",
+  "printed_summary": {
+    "gross_volume": "8100.00",
+    "refunds_total": "0.00",
+    "chargebacks_total": "0.00",
+    "fees_total": "234.90",
+    "payouts_total": "7865.10"
+  },
+  "summed_line_items": {
+    "gross_charge": "8100.00",
+    "refund": "0.00",
+    "chargeback": "0.00",
+    "fee": "234.90",
+    "payout": "7865.10"
+  },
+  "expected": {
+    "validation_passed": true,
+    "expected_parse_status": "proceed",
+    "chargeback_ratio": "0"
+  }
+}
