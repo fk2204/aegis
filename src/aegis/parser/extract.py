@@ -3,17 +3,28 @@
 PDF -> Claude (Bedrock, document block) -> JSON -> Pydantic-validated
 ExtractedStatement. NO classification here. NO aggregates here. The
 downstream validation gate decides whether the document proceeds.
+
+Per-page routing (mp Phase 6.5): when ``extract_statement_per_page``
+is invoked, the PDF is sliced into contiguous same-strategy page
+groups; each group is extracted with its preferred strategy (text or
+vision), and the resulting transaction lists are unioned. The
+``source_page`` on each transaction is remapped from the slice-local
+page number back to the original 1-indexed page number so the audit
+drill-down stays accurate.
 """
 
 from __future__ import annotations
 
+import io
 from typing import Any, Final
 
+import pikepdf
 import pymupdf
 from pydantic import ValidationError
 
 from aegis.llm import LLMClient
-from aegis.parser.models import ExtractedStatement
+from aegis.parser.models import ExtractedStatement, Transaction
+from aegis.parser.page_router import PageStrategy, PageStrategyDecision
 from aegis.parser.prompts import EXTRACTION_PROMPT, EXTRACTION_PROMPT_VISION
 
 
@@ -287,9 +298,206 @@ def _renumber_duplicate_source_lines(
     return statement.model_copy(update={"transactions": new_transactions})
 
 
+# ---------------------------------------------------------------------------
+# Per-page routing (mp Phase 6.5)
+# ---------------------------------------------------------------------------
+
+
+def extract_statement_per_page(
+    pdf_bytes: bytes,
+    llm: LLMClient,
+    decisions: list[PageStrategyDecision],
+) -> ExtractionPass1Result:
+    """Extract the statement using per-page strategy routing.
+
+    Splits the PDF into contiguous same-strategy page groups, runs the
+    appropriate extractor on each group (text-extraction for text
+    pages, vision for image pages), and unions the resulting
+    transaction lists. ``source_page`` on each transaction is remapped
+    from the slice-local page number back to the original 1-indexed
+    page number so the audit trail stays accurate.
+
+    The summary block is taken from the FIRST group's extraction —
+    bank statements print the summary on the first page (cover) and
+    that page's strategy is the one that read the printed totals.
+
+    Pre-conditions enforced by the caller (``pipeline.run_pipeline``):
+      - ``decisions`` length matches the PDF's page count.
+      - ``has_low_confidence(decisions)`` is False (otherwise the
+        pipeline routes the doc to manual_review without calling here).
+
+    Raises ``ExtractionError`` on the same conditions as
+    ``extract_statement`` / ``extract_statement_via_vision``.
+    """
+    if not decisions:
+        raise ExtractionError("per-page extraction requires non-empty decisions list")
+    if len(pdf_bytes) == 0:
+        raise ExtractionError("empty PDF buffer")
+    if len(pdf_bytes) > _MAX_PDF_BYTES:
+        raise ExtractionError(
+            f"PDF buffer too large: {len(pdf_bytes)} bytes (max {_MAX_PDF_BYTES})"
+        )
+
+    groups = _group_pages_by_strategy(decisions)
+    if not groups:  # pragma: no cover — guarded by the `not decisions` check above
+        raise ExtractionError("page grouping produced no groups")
+
+    sub_results: list[tuple[ExtractionPass1Result, list[int]]] = []
+    for strategy, page_indices in groups:
+        slice_bytes = _slice_pdf(pdf_bytes, page_indices)
+        if strategy == "text":
+            result = extract_statement(slice_bytes, llm)
+        else:
+            result = extract_statement_via_vision(slice_bytes, llm)
+        sub_results.append((result, page_indices))
+
+    return _merge_sub_results(sub_results)
+
+
+def _group_pages_by_strategy(
+    decisions: list[PageStrategyDecision],
+) -> list[tuple[PageStrategy, list[int]]]:
+    """Walk decisions in order, batching consecutive same-strategy pages.
+
+    Returns list of (strategy, [original_page_indices]) tuples in the
+    order they appear in the source PDF. Each call to the LLM pays a
+    per-request overhead, so grouping consecutive pages keeps the call
+    count down on hybrid PDFs (e.g. 4 text pages + 2 vision pages = 2
+    calls, not 6).
+    """
+    groups: list[tuple[PageStrategy, list[int]]] = []
+    current_strategy: PageStrategy | None = None
+    current_indices: list[int] = []
+    for d in decisions:
+        if d.strategy == current_strategy:
+            current_indices.append(d.page_index)
+        else:
+            if current_strategy is not None:
+                groups.append((current_strategy, current_indices))
+            current_strategy = d.strategy
+            current_indices = [d.page_index]
+    if current_strategy is not None:
+        groups.append((current_strategy, current_indices))
+    return groups
+
+
+def _slice_pdf(pdf_bytes: bytes, page_indices: list[int]) -> bytes:
+    """Build a new PDF containing just ``page_indices`` (in given order).
+
+    pikepdf's page-extraction creates a fresh PDF; the slice is
+    self-contained (no shared references to the source) so it can be
+    sent to Bedrock as its own document block.
+
+    Raises ``ExtractionError`` on slicing failures so the pipeline can
+    fail the document cleanly rather than crashing the worker.
+    """
+    if not page_indices:
+        raise ExtractionError("cannot slice PDF with empty page index list")
+    try:
+        with pikepdf.open(io.BytesIO(pdf_bytes)) as src:
+            new = pikepdf.Pdf.new()
+            for idx in page_indices:
+                if idx < 0 or idx >= len(src.pages):
+                    raise ExtractionError(
+                        f"page_router decision references out-of-range page "
+                        f"{idx} (doc has {len(src.pages)} pages)"
+                    )
+                new.pages.append(src.pages[idx])
+            buf = io.BytesIO()
+            new.save(buf)
+            return buf.getvalue()
+    except pikepdf.PdfError as exc:
+        raise ExtractionError(f"pikepdf slice failed: {exc}") from exc
+
+
+def _merge_sub_results(
+    sub_results: list[tuple[ExtractionPass1Result, list[int]]],
+) -> ExtractionPass1Result:
+    """Union the transaction lists, remap source_page, pick summary.
+
+    Summary selection: the first group's summary is used. Bank
+    statements print the summary on page 1, so whichever strategy
+    handled the first group read the authoritative printed totals.
+    The other groups' summaries are discarded (each sub-LLM-call
+    re-parses 'the summary' on its slice and may invent totals from
+    the visible rows — only the first slice's summary is trusted).
+
+    truncated: True if ANY sub-call truncated. One truncated slice
+    means the doc's transaction list is incomplete; the validation
+    gate already routes truncated extractions to manual_review.
+
+    synthetic_risk_indicators: union (dedup preserving first-seen
+    order) so any indicator any strategy raised is surfaced.
+    """
+    if not sub_results:  # pragma: no cover — caller guarantees non-empty
+        raise ExtractionError("merge requires at least one sub-result")
+
+    first_summary = sub_results[0][0].statement.summary
+    merged_txns: list[Transaction] = []
+    indicators: list[str] = []
+    seen_indicators: set[str] = set()
+    any_truncated = False
+
+    for result, original_page_indices in sub_results:
+        any_truncated = any_truncated or result.truncated
+        for indicator in result.synthetic_risk_indicators:
+            if indicator not in seen_indicators:
+                seen_indicators.add(indicator)
+                indicators.append(indicator)
+        merged_txns.extend(
+            _remap_txn_source_pages(result.statement.transactions, original_page_indices)
+        )
+
+    merged_statement = ExtractedStatement(summary=first_summary, transactions=merged_txns)
+    # The combined statement passes through the same source-attribution
+    # check that the single-call paths run, in case a sub-call slipped
+    # a bad row past its own validator (shouldn't, but defense in depth).
+    _enforce_source_attribution(merged_statement)
+    merged_statement = _renumber_duplicate_source_lines(merged_statement)
+    return ExtractionPass1Result(
+        statement=merged_statement,
+        synthetic_risk_indicators=indicators,
+        truncated=any_truncated,
+    )
+
+
+def _remap_txn_source_pages(
+    transactions: list[Transaction], original_page_indices: list[int]
+) -> list[Transaction]:
+    """Translate slice-local source_page (1-indexed) back to original.
+
+    The LLM returns transactions with ``source_page=N`` where N is the
+    1-indexed page within the SUBMITTED slice. We need to map that to
+    the 1-indexed page number in the ORIGINAL PDF.
+
+    Example: slice contained original pages [0, 3, 5] (0-indexed) and
+    the LLM returned source_page=2 for a transaction; that means the
+    second page of the slice → original page 3 (0-indexed) → 4
+    (1-indexed). Transactions with out-of-range source_page (LLM
+    hallucinated a page beyond the slice) are kept but flagged: we
+    don't drop them silently because the validator/aggregator may
+    still produce a meaningful tie-out, and the operator should see
+    the row in manual_review.
+    """
+    remapped: list[Transaction] = []
+    for txn in transactions:
+        local_page_1idx = txn.source_page
+        if 1 <= local_page_1idx <= len(original_page_indices):
+            original_0idx = original_page_indices[local_page_1idx - 1]
+            new_source_page = original_0idx + 1
+            remapped.append(txn.model_copy(update={"source_page": new_source_page}))
+        else:
+            # Out-of-range — preserve as-is so the validator's source
+            # attribution check fires and routes the doc to
+            # manual_review. Silent drop here would hide the bug.
+            remapped.append(txn)
+    return remapped
+
+
 __all__ = [
     "ExtractionError",
     "ExtractionPass1Result",
     "extract_statement",
+    "extract_statement_per_page",
     "extract_statement_via_vision",
 ]

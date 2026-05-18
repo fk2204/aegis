@@ -40,7 +40,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Final, Literal
 
+from aegis.config import get_settings
 from aegis.llm import LLMClient
+from aegis.logger import get_logger
 from aegis.parser.aggregate import aggregate
 from aegis.parser.classify import (
     avg_classification_confidence,
@@ -50,12 +52,22 @@ from aegis.parser.classify import (
 from aegis.parser.extract import (
     ExtractionPass1Result,
     extract_statement,
+    extract_statement_per_page,
     extract_statement_via_vision,
 )
 from aegis.parser.metadata import MetadataAnalysis, analyze_metadata
 from aegis.parser.models import Aggregates, ClassifiedTransaction, ValidationResult
+from aegis.parser.page_router import (
+    PageStrategyDecision,
+    classify_pages,
+    has_low_confidence,
+    is_homogeneous,
+    summarize,
+)
 from aegis.parser.patterns import PatternAnalysis, analyze_patterns
 from aegis.parser.validate import validate_extraction
+
+_log = get_logger(__name__)
 
 # THE thresholds. Read from here, not from anywhere else. (TS had three.)
 FRAUD_WEIGHTS: Final[dict[str, float]] = {
@@ -139,8 +151,40 @@ def run_pipeline(
 
     pdf_bytes = _read_pdf(pdf_path)
 
+    settings = get_settings()
+    page_decisions: list[PageStrategyDecision] = []
+    if settings.aegis_parser_page_routing:
+        page_decisions = classify_pages(pdf_path)
+        _log.info(
+            "parser.page_router.decisions",
+            extra={"document": str(pdf_path), **summarize(page_decisions)},
+        )
+        if page_decisions and has_low_confidence(page_decisions):
+            # Per master plan §6.5: any page with both strategies below
+            # the floor fails the whole doc closed. Partial extraction
+            # would poison the aggregates.
+            synthetic_validation = ValidationResult(
+                passed=False,
+                failures=["page_router_low_confidence"],
+            )
+            return PipelineResult(
+                parse_status="manual_review",
+                metadata=metadata,
+                extraction=None,
+                validation=synthetic_validation,
+                all_flags=_collect_flags(metadata, synthetic_validation, None, []),
+            )
+
     used_ocr_fallback = False
-    if not metadata.has_text_layer:
+    used_per_page_routing = False
+    if settings.aegis_parser_page_routing and page_decisions and not is_homogeneous(page_decisions):
+        # Mixed strategies → per-page extraction. is_homogeneous None /
+        # homogeneous → fall through to the legacy single-call path so
+        # the simple cases keep the cheaper one-shot behavior.
+        extraction = extract_statement_per_page(pdf_bytes, llm, page_decisions)
+        used_per_page_routing = True
+        used_ocr_fallback = any(d.strategy == "vision" for d in page_decisions)
+    elif not metadata.has_text_layer:
         if metadata.page_count > MAX_OCR_PAGES:
             # Image-only PDF larger than the vision-cost cap. Refuse to
             # OCR; route to manual_review so the operator can split the
@@ -174,6 +218,8 @@ def run_pipeline(
         flags = _collect_flags(metadata, validation, None, [])
         if used_ocr_fallback:
             flags.append("[META] ocr_fallback_used")
+        if used_per_page_routing:
+            flags.append("[META] per_page_routing_used")
         return PipelineResult(
             parse_status="manual_review",
             metadata=metadata,
@@ -225,6 +271,8 @@ def run_pipeline(
         all_flags.append(f"[COMPOUND] {triangulation_flag}")
     if used_ocr_fallback:
         all_flags.append("[META] ocr_fallback_used")
+    if used_per_page_routing:
+        all_flags.append("[META] per_page_routing_used")
 
     return PipelineResult(
         parse_status=parse_status,

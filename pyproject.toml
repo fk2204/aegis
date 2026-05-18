@@ -73,6 +73,9 @@ ignore_missing_imports = true
 module = [
     "tests.parser.test_text_layer_detection",
     "tests.parser.test_extract_vision",
+    "tests.parser.test_page_router",
+    "tests.parser.test_extract_per_page",
+    "tests.parser.test_pipeline_page_routing",
     "tests.web.test_dossier_pdf",
 ]
 disable_error_code = ["no-untyped-call"]

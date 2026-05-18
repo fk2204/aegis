@@ -94,6 +94,13 @@ class Settings(BaseSettings):
         default=600, ge=30, description="seconds; longer than typical parse to allow LLM retries"
     )
 
+    # Per-page parser routing (mp Phase 6.5). When True, the pipeline
+    # classifies each page and routes text-bearing pages through the
+    # text extractor / image pages through vision, instead of using
+    # the legacy whole-doc strategy choice. Off by default until the
+    # corpus + token-cost data validates the per-deal savings.
+    aegis_parser_page_routing: bool = False
+
     @field_validator("bedrock_model_id")
     @classmethod
     def _model_must_be_regional_us(cls, v: str) -> str:
