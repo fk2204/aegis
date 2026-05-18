@@ -1,0 +1,476 @@
+# AEGIS state compliance matrix (machine-readable).
+#
+# This file is the single source of truth for the per-state regulatory
+# surface AEGIS enforces. Loaded at boot by aegis.compliance.state_matrix.
+# Strict Pydantic validation — typo here = boot fails closed.
+#
+# All values for Tier 1 states are sourced from
+# docs/AEGIS_MASTER_PLAN.md §8.2 and §8.5. Where the master plan does not
+# give an explicit citation, the entry is marked with a TODO: verify note
+# in the per-state folder under docs/compliance/states/{ST}/.
+#
+# Schema:
+#   - Tier 1: CFDL enacted, full disclosure surface, locked Jinja template.
+#   - Tier 2: pending bill, watch list — no live enforcement.
+#   - Tier 3: no MCA-specific law; generate defensive disclosure only.
+#
+# Version bumps: increment ``version`` on every substantive change. The
+# anti-drift boot check logs this on startup; an unexpected change is the
+# operator's signal to inspect.
+
+version: "2026.05.18"
+
+tier_3_default:
+  generate_defensive_disclosure: true
+  persist_decision_snapshot: true
+  flag_ag_enforcement_states: ["MA", "NJ", "DE", "MD"]
+
+# Tier 2 watch list (master plan §8.3).
+watchlist:
+  NJ:
+    bills: ["S1760"]
+    likelihood: high
+    notes: "Reintroduced 2026; Reg Z APR; threshold approx $500k; 5-deal de minimis. Dem trifecta."
+    last_reviewed: 2026-05-17
+  MD:
+    bills: ["SB754", "HB693"]
+    likelihood: medium
+    notes: "Prior-session text suggested Oct 1 2025 effective; recheck enactment status."
+    last_reviewed: 2026-05-17
+  IL:
+    bills: ["SB 2234 (Small Business TIL Act)"]
+    likelihood: medium
+    notes: "Reassigned to Financial Institutions; threshold approx $2.5M."
+    last_reviewed: 2026-05-17
+  PA:
+    bills: ["HB 1792"]
+    likelihood: medium
+    notes: "Includes a private right of action — uniquely dangerous. Watch closely."
+    last_reviewed: 2026-05-17
+  MS:
+    bills: ["draft 2025"]
+    likelihood: low
+    notes: "Drafting stage; no committee action observed."
+    last_reviewed: 2026-05-17
+  NC:
+    bills: ["considering"]
+    likelihood: low
+    notes: "Pre-draft consideration only."
+    last_reviewed: 2026-05-17
+  HI:
+    bills: ["draft 2025"]
+    likelihood: low
+    notes: "Drafting stage."
+    last_reviewed: 2026-05-17
+  NH:
+    bills: ["draft 2025"]
+    likelihood: low
+    notes: "Drafting stage."
+    last_reviewed: 2026-05-17
+  OH:
+    bills: ["draft 2025"]
+    likelihood: low
+    notes: "Drafting stage."
+    last_reviewed: 2026-05-17
+
+states:
+
+  # =========================================================================
+  # TIER 1 — CFDL enacted, AEGIS serves with locked disclosure template
+  # =========================================================================
+
+  CA:
+    tier: 1
+    name: California
+    last_reviewed: 2026-05-17
+    cfdl:
+      statute: ["SB 1235 (2018)", "SB 362 (2025/eff 2026-01-01)"]
+      effective: 2022-12-09
+      threshold_usd: 500000
+      product_scope: [sales_based, closed_end, open_end, factoring, lease, asset_based]
+      apr_required: true
+      apr_method: reg_z_1026_22
+      broker_registration: false
+      renewal_redisclosure: true
+      retention_years: 4
+      template_path: docs/compliance/states/CA/03_disclosure_template.j2
+      notes: "SB 362 limits 'rate'/'interest' usage in marketing and triggers re-disclosure on material renewal terms."
+    overlays:
+      coj: banned
+      autodebit: permitted
+      broker_advance_fee: permitted
+      forum_restriction: none
+      ag_enforcement_risk: high
+    penalties:
+      enforcement_authority: "DFPI"
+      private_right_of_action: false
+      notes: "DFPI civil enforcement + restitution. Provider needs CFL license."
+    hard_decline_rules: []
+
+  NY:
+    tier: 1
+    name: New York
+    last_reviewed: 2026-05-17
+    cfdl:
+      statute: ["CFDL Article 8", "23 NYCRR Part 600"]
+      effective: 2023-08-01
+      threshold_usd: 2500000
+      product_scope: [sales_based, closed_end, open_end, factoring, lease, asset_based]
+      apr_required: true
+      apr_method: reg_z_1026_22
+      broker_registration: false
+      renewal_redisclosure: true
+      retention_years: 4
+      template_path: docs/compliance/states/NY/03_disclosure_template.j2
+      notes: "Broker compensation must be disclosed in writing (§600.21(f)). Renewal re-disclosure §600.17. Mandatory compliance from 2023-08-01."
+    overlays:
+      coj: conditional
+      autodebit: permitted
+      broker_advance_fee: permitted
+      forum_restriction: none
+      ag_enforcement_risk: high
+    penalties:
+      enforcement_authority: "NY DFS"
+      private_right_of_action: false
+      max_per_violation_usd: 2000
+      max_aggregate_usd: 10000
+      notes: "$2k per violation; $10k for intentional. 2025 Yellowstone settlement ($1.065B) reflects active AG posture."
+    hard_decline_rules: []
+
+  UT:
+    tier: 1
+    name: Utah
+    last_reviewed: 2026-05-17
+    cfdl:
+      statute: ["HB 198 (2022)"]
+      effective: 2023-01-01
+      threshold_usd: 1000000
+      product_scope: [sales_based, closed_end, open_end, factoring, lease, asset_based]
+      apr_required: false
+      broker_registration: true
+      registration_authority: "UT DFI via NMLS"
+      registration_renewal: annual
+      retention_years: 4
+      template_path: docs/compliance/states/UT/03_disclosure_template.j2
+      notes: "Provider must disclose funds paid to brokers."
+    overlays:
+      coj: permitted
+      autodebit: permitted
+      broker_advance_fee: permitted
+      forum_restriction: none
+      ag_enforcement_risk: low
+    penalties:
+      enforcement_authority: "UT DFI"
+      private_right_of_action: false
+      max_per_violation_usd: 20000
+      notes: "Civil penalty up to $20k."
+    hard_decline_rules: []
+
+  VA:
+    tier: 1
+    name: Virginia
+    last_reviewed: 2026-05-17
+    cfdl:
+      statute: ["HB 1027 (2022)"]
+      effective: 2022-07-01
+      threshold_usd: 500000
+      product_scope: [sales_based]
+      apr_required: false
+      broker_registration: true
+      registration_authority: "VA SCC"
+      registration_renewal: annual
+      retention_years: 4
+      template_path: docs/compliance/states/VA/03_disclosure_template.j2
+      notes: "MCA-only law. Forum restriction: VA venue mandatory. COJ void in MCA contracts."
+    overlays:
+      coj: banned_in_mca
+      autodebit: permitted
+      broker_advance_fee: permitted
+      forum_restriction: mandatory_in_state
+      ag_enforcement_risk: medium
+    penalties:
+      enforcement_authority: "VA SCC"
+      private_right_of_action: false
+      max_per_violation_usd: 50000
+      notes: "Up to $50k per deal."
+    hard_decline_rules: []
+
+  FL:
+    tier: 1
+    name: Florida
+    last_reviewed: 2026-05-17
+    cfdl:
+      statute: ["HB 1353 (FCFDL)"]
+      effective: 2024-01-01
+      threshold_usd: 500000
+      product_scope: [sales_based, closed_end, open_end, factoring]
+      apr_required: false
+      broker_registration: false
+      retention_years: 4
+      template_path: docs/compliance/states/FL/03_disclosure_template.j2
+      notes: "Fla. Stat. § 559.961 et seq. Address + phone required in broker advertising."
+    overlays:
+      coj: banned
+      autodebit: permitted
+      broker_advance_fee: prohibited
+      forum_restriction: none
+      ag_enforcement_risk: medium
+    penalties:
+      enforcement_authority: "Florida AG (FDACS)"
+      private_right_of_action: false
+      max_per_violation_usd: 20000
+      notes: "$500-$20k per violation; up to $50k for continued violations. Broker advance-fee prohibited (Fla. Stat. § 559.9614)."
+    hard_decline_rules: []
+
+  GA:
+    tier: 1
+    name: Georgia
+    last_reviewed: 2026-05-17
+    cfdl:
+      statute: ["SB 90 (2023) — amends FBPA, OCGA § 10-1-393.18 et seq."]
+      effective: 2024-01-01
+      threshold_usd: 500000
+      product_scope: [sales_based, closed_end, factoring]
+      apr_required: false
+      apr_method: actuarial_reg_z
+      broker_registration: false
+      retention_years: 4
+      template_path: docs/compliance/states/GA/03_disclosure_template.j2
+      notes: "No PRA — AG-only enforcement. Civil usury cap may apply on recharacterization. Venue restricted (OCGA § 9-12-18)."
+    overlays:
+      coj: permitted
+      autodebit: permitted
+      broker_advance_fee: prohibited
+      forum_restriction: none
+      ag_enforcement_risk: medium
+    penalties:
+      enforcement_authority: "Georgia AG"
+      private_right_of_action: false
+      max_per_violation_usd: 20000
+      notes: "$500-$20k per violation; up to $50k for continued conduct. Broker advance-fee prohibited (OCGA § 10-1-393.20)."
+    hard_decline_rules: []
+
+  CT:
+    tier: 1
+    name: Connecticut
+    last_reviewed: 2026-05-17
+    cfdl:
+      statute: ["SB 1032 (2023)"]
+      effective: 2024-07-01
+      threshold_usd: 250000
+      product_scope: [sales_based]
+      apr_required: false
+      broker_registration: true
+      registration_authority: "CT DOB"
+      registration_renewal: annual_by_october_1
+      renewal_redisclosure: true
+      retention_years: 4
+      template_path: docs/compliance/states/CT/03_disclosure_template.j2
+      notes: "MCA-only law. No-action posture through 2024-10-01 per CT DOB guidance. Broker compensation + double-dipping disclosure required."
+    overlays:
+      coj: void
+      autodebit: permitted
+      broker_advance_fee: permitted
+      forum_restriction: none
+      ag_enforcement_risk: low
+    penalties:
+      enforcement_authority: "CT DOB"
+      private_right_of_action: false
+      max_per_violation_usd: 100000
+      notes: "Up to $100k per violation."
+    hard_decline_rules: []
+
+  KS:
+    tier: 1
+    name: Kansas
+    last_reviewed: 2026-05-17
+    cfdl:
+      statute: ["SB 345 (2024)"]
+      effective: 2024-07-01
+      threshold_usd: 500000
+      product_scope: [sales_based, closed_end, open_end, factoring]
+      apr_required: false
+      broker_registration: false
+      retention_years: 4
+      template_path: docs/compliance/states/KS/03_disclosure_template.j2
+      notes: "Standard disclosures; merchant signature required."
+    overlays:
+      coj: void
+      autodebit: permitted
+      broker_advance_fee: permitted
+      forum_restriction: none
+      ag_enforcement_risk: low
+    penalties:
+      enforcement_authority: "Kansas AG"
+      private_right_of_action: false
+      notes: "Standard civil penalties; no MCA-specific cap published. TODO: verify cap with KS AG opinion."
+    hard_decline_rules: []
+
+  MO:
+    tier: 1
+    name: Missouri
+    last_reviewed: 2026-05-17
+    cfdl:
+      statute: ["SB 1359 § 427.300"]
+      effective: 2025-02-28
+      threshold_usd: 500000
+      product_scope: [sales_based, closed_end, open_end, factoring]
+      apr_required: false
+      broker_registration: true
+      registration_authority: "MO Division of Finance"
+      registration_renewal: one_time
+      retention_years: 4
+      template_path: docs/compliance/states/MO/03_disclosure_template.j2
+      notes: "Unusual: brokers register, providers do not. Broker registration is one-time + maintenance."
+    overlays:
+      coj: permitted
+      autodebit: permitted
+      broker_advance_fee: permitted
+      forum_restriction: none
+      ag_enforcement_risk: medium
+    penalties:
+      enforcement_authority: "Missouri AG"
+      private_right_of_action: false
+      notes: "AG civil enforcement; no MCA-specific cap published."
+    hard_decline_rules: []
+
+  LA:
+    tier: 1
+    name: Louisiana
+    last_reviewed: 2026-05-17
+    cfdl:
+      statute: ["HB 470 (2025)"]
+      effective: 2025-08-01
+      no_threshold: true
+      product_scope: [sales_based]
+      apr_required: false
+      broker_registration: false
+      retention_years: 4
+      template_path: docs/compliance/states/LA/03_disclosure_template.j2
+      notes: "No deal-size cap. MCA-only. No entity exemptions, no bank carve-out. 6 disclosures. AG-only enforcement; no PRA."
+    overlays:
+      coj: permitted
+      autodebit: permitted
+      broker_advance_fee: permitted
+      forum_restriction: none
+      ag_enforcement_risk: low
+    penalties:
+      enforcement_authority: "Louisiana AG"
+      private_right_of_action: false
+      max_per_violation_usd: 50000
+      notes: "$500-$50k per violation; no PRA."
+    hard_decline_rules: []
+
+  TX:
+    tier: 1
+    name: Texas
+    last_reviewed: 2026-05-17
+    cfdl:
+      statute: ["HB 700 (Ch. 398, TX Finance Code)"]
+      effective: 2025-09-01
+      threshold_usd: 1000000
+      product_scope: [sales_based]
+      apr_required: false
+      broker_registration: true
+      registration_authority: "TX OCCC"
+      registration_effective: 2026-12-31
+      registration_renewal: annual_by_january_31
+      retention_years: 4
+      template_path: docs/compliance/states/TX/03_disclosure_template.j2
+      notes: "Disclosure threshold ≤$1M; registration applies regardless of deal size by 2026-12-31. AUTO-DEBIT PROHIBITED without first-priority perfected UCC lien — deal-killer for standard MCA."
+    overlays:
+      coj: banned_in_mca
+      autodebit: prohibited_without_first_priority_lien
+      broker_advance_fee: permitted
+      forum_restriction: none
+      ag_enforcement_risk: medium
+    penalties:
+      enforcement_authority: "TX OCCC"
+      private_right_of_action: false
+      max_per_violation_usd: 10000
+      notes: "$10k per violation; no PRA. Counsel gate required before any TX deal — standard ACH-debit MCA cannot satisfy the first-priority-lien requirement."
+    hard_decline_rules:
+      - code: tx_autodebit_without_first_priority_lien
+        message: |
+          TX HB 700 prohibits automatic ACH debit unless the provider holds
+          a first-priority perfected UCC security interest in the merchant's
+          deposit account. Standard MCA structures cannot satisfy this.
+          Decline or restructure with funder counsel.
+
+  # =========================================================================
+  # TIER 2 — Active pending bills, watch-list only (no live enforcement)
+  # Mirrors `watchlist:` above; included here so the loader's
+  # _verify_state_coverage check passes (51-code requirement).
+  # =========================================================================
+
+  NJ: { tier: 2, name: "New Jersey", pending_bills: ["S1760"], likelihood: high,
+        notes: "Reg Z APR; threshold approx $500k; 5-deal de minimis exemption.",
+        last_reviewed: 2026-05-17 }
+  MD: { tier: 2, name: "Maryland", pending_bills: ["SB754", "HB693"], likelihood: medium,
+        notes: "Recheck enactment status; prior-session text suggested Oct 1 2025 effective.",
+        last_reviewed: 2026-05-17 }
+  IL: { tier: 2, name: "Illinois", pending_bills: ["SB 2234"], likelihood: medium,
+        notes: "Small Business TIL Act; threshold approx $2.5M.",
+        last_reviewed: 2026-05-17 }
+  PA: { tier: 2, name: "Pennsylvania", pending_bills: ["HB 1792"], likelihood: medium,
+        notes: "Includes private right of action — uniquely dangerous.",
+        last_reviewed: 2026-05-17 }
+  MS: { tier: 2, name: "Mississippi", pending_bills: ["draft 2025"], likelihood: low,
+        notes: "Drafting stage.",
+        last_reviewed: 2026-05-17 }
+  NC: { tier: 2, name: "North Carolina", pending_bills: ["considering"], likelihood: low,
+        notes: "Pre-draft consideration.",
+        last_reviewed: 2026-05-17 }
+  HI: { tier: 2, name: "Hawaii", pending_bills: ["draft 2025"], likelihood: low,
+        notes: "Drafting stage.",
+        last_reviewed: 2026-05-17 }
+  NH: { tier: 2, name: "New Hampshire", pending_bills: ["draft 2025"], likelihood: low,
+        notes: "Drafting stage.",
+        last_reviewed: 2026-05-17 }
+  OH: { tier: 2, name: "Ohio", pending_bills: ["draft 2025"], likelihood: low,
+        notes: "Drafting stage.",
+        last_reviewed: 2026-05-17 }
+
+  # =========================================================================
+  # TIER 3 — No MCA-specific law; defensive disclosure only
+  # AG enforcement risk flagged for MA (treats high-factor MCA as usurious)
+  # and DE (Division of Banking active 2025 actions).
+  # =========================================================================
+
+  AL: { tier: 3, name: "Alabama", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  AK: { tier: 3, name: "Alaska", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  AZ: { tier: 3, name: "Arizona", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  AR: { tier: 3, name: "Arkansas", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  CO: { tier: 3, name: "Colorado", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  DE: { tier: 3, name: "Delaware", posture: defensive_disclosure_only, ag_enforcement_risk: high,
+        notes: "Division of Banking pursued 2 large enforcement actions in 2025.",
+        last_reviewed: 2026-05-17 }
+  DC: { tier: 3, name: "District of Columbia", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  ID: { tier: 3, name: "Idaho", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  IN: { tier: 3, name: "Indiana", posture: defensive_disclosure_only, ag_enforcement_risk: low,
+        notes: "COJ banned outright (general statute).",
+        last_reviewed: 2026-05-17 }
+  IA: { tier: 3, name: "Iowa", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  KY: { tier: 3, name: "Kentucky", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  ME: { tier: 3, name: "Maine", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  MA: { tier: 3, name: "Massachusetts", posture: defensive_disclosure_only, ag_enforcement_risk: high,
+        notes: "AG treats high-factor MCA as usurious. COJ banned outright (general statute).",
+        last_reviewed: 2026-05-17 }
+  MI: { tier: 3, name: "Michigan", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  MN: { tier: 3, name: "Minnesota", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  MT: { tier: 3, name: "Montana", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  NE: { tier: 3, name: "Nebraska", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  NV: { tier: 3, name: "Nevada", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  NM: { tier: 3, name: "New Mexico", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  ND: { tier: 3, name: "North Dakota", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  OK: { tier: 3, name: "Oklahoma", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  OR: { tier: 3, name: "Oregon", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  RI: { tier: 3, name: "Rhode Island", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  SC: { tier: 3, name: "South Carolina", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  SD: { tier: 3, name: "South Dakota", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  TN: { tier: 3, name: "Tennessee", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  VT: { tier: 3, name: "Vermont", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  WA: { tier: 3, name: "Washington", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  WV: { tier: 3, name: "West Virginia", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  WI: { tier: 3, name: "Wisconsin", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }
+  WY: { tier: 3, name: "Wyoming", posture: defensive_disclosure_only, ag_enforcement_risk: low, last_reviewed: 2026-05-17 }

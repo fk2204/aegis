@@ -28,7 +28,6 @@ from aegis.compliance.state_matrix import (
     Tier3Regulation,
 )
 
-
 # Product types the router accepts. Identical to ``ProductScope`` in the
 # matrix module but kept as a separate frozenset so the router can validate
 # inputs without exposing the Literal type at the call site.
@@ -49,7 +48,7 @@ class UnknownProductTypeError(ValueError):
     """Raised when the product type is not in the canonical set."""
 
 
-class StateMatrixCorruption(RuntimeError):
+class StateMatrixCorruptionError(RuntimeError):
     """Defensive — should be unreachable given the discriminated union.
 
     Raised only if the loaded matrix is hand-mutated post-load to contain
@@ -167,7 +166,7 @@ def router(
     if isinstance(regulation, Tier3Regulation):
         return _route_tier3(normalized)
     # Should be unreachable because StateRegulation is a closed union.
-    raise StateMatrixCorruption(  # pragma: no cover
+    raise StateMatrixCorruptionError(  # pragma: no cover
         f"unexpected tier model for {normalized}: {type(regulation).__name__}"
     )
 
@@ -247,7 +246,7 @@ def _route_tier3(state_code: str) -> RouterResult:
 
 __all__ = [
     "RouterResult",
-    "StateMatrixCorruption",
+    "StateMatrixCorruptionError",
     "UnknownProductTypeError",
     "UnknownStateError",
     "router",

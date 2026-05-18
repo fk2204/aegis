@@ -33,7 +33,39 @@ from pathlib import Path
 from typing import Annotated, Final, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
+
+
+def _coerce_to_decimal(v: object) -> Decimal:
+    """Coerce YAML scalars to Decimal for money fields.
+
+    YAML has no native Decimal type. We accept Decimal (passthrough),
+    int (lossless), and str (explicit). float is rejected — money never
+    transits binary float, per CLAUDE.md mathematical-correctness rules.
+    Used via ``Money`` annotated alias below so the rest of the matrix
+    can stay strict-mode while money fields accept YAML-shaped inputs.
+    """
+    if isinstance(v, Decimal):
+        return v
+    if isinstance(v, bool):  # bool is an int subclass — reject before int check
+        raise TypeError(f"money field cannot be bool: {v!r}")
+    if isinstance(v, int):
+        return Decimal(v)
+    if isinstance(v, str):
+        return Decimal(v)
+    raise TypeError(
+        f"money field must be Decimal, int, or str; got {type(v).__name__}"
+    )
+
+
+# Money type alias for the matrix — same constraints as the original
+# inline annotation, plus a BeforeValidator that converts YAML scalars to
+# Decimal so strict mode at the model level still works.
+Money = Annotated[
+    Decimal,
+    BeforeValidator(_coerce_to_decimal),
+    Field(max_digits=14, decimal_places=2, gt=Decimal("0")),
+]
 
 DEFAULT_MATRIX_PATH: Final[Path] = (
     Path(__file__).resolve().parents[3] / "docs" / "compliance" / "states.yaml"
@@ -158,12 +190,8 @@ class Penalties(_StrictModel):
 
     enforcement_authority: str = Field(min_length=1)
     private_right_of_action: bool
-    max_per_violation_usd: Annotated[
-        Decimal, Field(max_digits=14, decimal_places=2, ge=Decimal("0"))
-    ] | None = None
-    max_aggregate_usd: Annotated[
-        Decimal, Field(max_digits=14, decimal_places=2, ge=Decimal("0"))
-    ] | None = None
+    max_per_violation_usd: Money | None = None
+    max_aggregate_usd: Money | None = None
     notes: str | None = Field(default=None, min_length=1, max_length=2000)
 
 
@@ -178,9 +206,7 @@ class Cfdl(_StrictModel):
 
     statute: list[str] = Field(min_length=1)
     effective: date
-    threshold_usd: Annotated[
-        Decimal, Field(max_digits=14, decimal_places=2, gt=Decimal("0"))
-    ] | None = None
+    threshold_usd: Money | None = None
     # When True, registration / disclosure obligations apply regardless of
     # deal size. TX HB 700 sets this True for registration even though the
     # disclosure threshold is $1M.
@@ -325,7 +351,7 @@ def _verify_state_coverage(matrix: StateMatrix) -> None:
         problems.append(f"unknown state code: {code}")
     # Each state's key must match its USPS code uppercase.
     for code in sorted(present):
-        if code != code.upper() or len(code) != 2 and code != "DC":
+        if code != code.upper() or (len(code) != 2 and code != "DC"):
             problems.append(f"state key not normalized uppercase 2-letter: {code!r}")
     if problems:
         raise StateMatrixError(
