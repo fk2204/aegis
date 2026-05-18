@@ -100,7 +100,7 @@ def test_payload_is_frozen() -> None:
 def test_payload_rejects_float_money() -> None:
     """Strict-mode Decimal rejects float for money fields (CLAUDE.md)."""
     with pytest.raises(ValidationError):
-        _payload(score=72.5)  # type: ignore[arg-type]
+        _payload(score=72.5)
 
 
 # ---------------------------------------------------------------------------

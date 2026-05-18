@@ -14,6 +14,11 @@ from __future__ import annotations
 from functools import lru_cache
 
 from aegis.audit import AuditLog, InMemoryAuditLog, SupabaseAuditLog
+from aegis.compliance.snapshot import (
+    DecisionSnapshot,
+    InMemoryDecisionSnapshot,
+    SupabaseDecisionSnapshot,
+)
 from aegis.config import get_settings
 from aegis.funders.repository import (
     FunderRepository,
@@ -73,6 +78,18 @@ def get_llm() -> LLMClient:
 
 
 @lru_cache(maxsize=1)
+def get_decision_snapshot() -> DecisionSnapshot:
+    """Process-wide DecisionSnapshot writer (mp Phase 2).
+
+    Memory backend → in-memory list (tests); supabase → the real writer
+    that inserts into the immutable ``decisions`` table.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryDecisionSnapshot()
+    return SupabaseDecisionSnapshot()
+
+
+@lru_cache(maxsize=1)
 def get_ofac_client() -> OFACClient | None:
     """OFAC SDN screening client. Returns ``None`` in in-memory test mode so
     the deals route doesn't hit the Treasury feed during unit tests; tests
@@ -93,12 +110,14 @@ def reset_dependency_caches() -> None:
     get_merchant_repository.cache_clear()
     get_funder_repository.cache_clear()
     get_audit.cache_clear()
+    get_decision_snapshot.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
 
 
 __all__ = [
     "get_audit",
+    "get_decision_snapshot",
     "get_funder_repository",
     "get_llm",
     "get_merchant_repository",
