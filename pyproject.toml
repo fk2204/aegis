@@ -30,6 +30,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "tenacity>=9.0",
     "python-multipart>=0.0.12",
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]
@@ -41,7 +42,9 @@ dev = [
     "pytest-snapshot>=0.9",
     "hypothesis>=6.115",
     "types-redis",
+    "types-PyYAML",
     "boto3-stubs[bedrock-runtime]",
+    "pytest-cov>=5.0",
 ]
 
 [tool.mypy]

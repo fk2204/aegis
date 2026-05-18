@@ -1,0 +1,10 @@
+state: NY
+date_audited: 2026-05-18
+audited_by: "Filip (operator) per docs/AEGIS_MASTER_PLAN.md §8.2"
+sources:
+  - "docs/AEGIS_MASTER_PLAN.md §8.2"
+  - "23 NYCRR Part 600 official text"
+  - "TODO: NY DFS Part 600 official page"
+next_review_due: 2026-08-18
+statute: "CFDL — SB 5470 + S898 (2020, amended 2021); 23 NYCRR Part 600"
+effective: "2023-08-01"

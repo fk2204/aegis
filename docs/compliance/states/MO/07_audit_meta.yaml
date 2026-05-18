@@ -1,0 +1,9 @@
+state: MO
+date_audited: 2026-05-18
+audited_by: "Filip (operator) per docs/AEGIS_MASTER_PLAN.md §8.2"
+sources:
+  - "docs/AEGIS_MASTER_PLAN.md §8.2"
+  - "TODO: MO Division of Finance § 427.300 implementing rules"
+next_review_due: 2026-08-18
+statute: "SB 1359; § 427.300 RSMo."
+effective: "2025-02-28"

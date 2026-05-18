@@ -1,0 +1,10 @@
+state: CA
+date_audited: 2026-05-18
+audited_by: "Filip (operator) per docs/AEGIS_MASTER_PLAN.md §8.2"
+sources:
+  - "docs/AEGIS_MASTER_PLAN.md §8.2"
+  - "TODO: DFPI SB 1235 rulemaking page"
+  - "TODO: Buchalter 2026-02 commentary on CA SB 362"
+next_review_due: 2026-08-18
+statute: "SB 1235 (2018) + SB 362 (2025/eff 2026-01-01)"
+effective: "2022-12-09 (regs); SB 362 effective 2026-01-01"

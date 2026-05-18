@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from aegis.api.auth import warn_if_bearer_unconfigured
 from aegis.api.deps import get_merchant_repository, get_repository
 from aegis.api.routes import ALL_ROUTERS
+from aegis.compliance.state_matrix import load_matrix
 from aegis.compliance.states import validate_states_table
 from aegis.config import get_settings
 from aegis.logger import configure_logging, get_logger
@@ -38,7 +39,16 @@ _log = get_logger(__name__)
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging()
-    validate_states_table()  # boot-time fail-closed compliance check
+    validate_states_table()  # legacy boot-time fail-closed compliance check
+    # mp Phase 1: load + validate states.yaml; fail closed on drift.
+    app.state.state_matrix = load_matrix()
+    _log.info(
+        "api.lifespan.state_matrix_loaded",
+        extra={
+            "matrix_version": app.state.state_matrix.version,
+            "state_count": len(app.state.state_matrix.states),
+        },
+    )
     warn_if_bearer_unconfigured()  # once-per-process operator visibility
 
     app.state.arq_pool = None

@@ -1,0 +1,9 @@
+state: UT
+date_audited: 2026-05-18
+audited_by: "Filip (operator) per docs/AEGIS_MASTER_PLAN.md §8.2"
+sources:
+  - "docs/AEGIS_MASTER_PLAN.md §8.2"
+  - "TODO: UT DFI HB 198 implementing rules"
+next_review_due: 2026-08-18
+statute: "HB 198 (2022)"
+effective: "2023-01-01"
