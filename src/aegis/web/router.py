@@ -2638,4 +2638,39 @@ def _txs_to_rows(txs: list[ClassifiedTransaction]) -> list[dict[str, Any]]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Phase 10 — operator override capture (mp §20). RESERVED by 2D-prep.
+# ---------------------------------------------------------------------------
+#
+# Stub route reserves the line range so Stage 2 agents 2B (parser) and 2C
+# (processor) don't conflict with 2D-main (capture) on this file. Body is
+# intentionally minimal: 2D-main fills in the modal handler, writes an
+# ``overrides`` row tied to ``decision_id``, and surfaces validation
+# errors. The /ui surface is gated by Cloudflare Access in production
+# (not require_bearer), matching the rest of this router.
+
+
+@router.post(
+    "/decisions/{decision_id}/override",
+    response_model=None,
+    include_in_schema=False,
+)
+async def decision_override_stub(
+    decision_id: UUID,
+    audit: Annotated[AuditLog, Depends(get_audit)],
+) -> Response:
+    """Operator-override capture (mp Phase 10). Not yet implemented.
+
+    Returns 501 until 2D-main lands the modal handler. The route exists
+    on prep so 2C's processor-metrics-card commit doesn't fight 2D-main's
+    override-button commit over this file. The ``audit`` dep is wired
+    now so 2D-main only edits the body, not the signature.
+    """
+    _ = (decision_id, audit)  # reserved for 2D-main; silence unused-arg
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="override_capture_not_yet_wired",
+    )
+
+
 __all__ = ["router"]
