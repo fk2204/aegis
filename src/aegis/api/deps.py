@@ -14,12 +14,22 @@ from __future__ import annotations
 from functools import lru_cache
 
 from aegis.audit import AuditLog, InMemoryAuditLog, SupabaseAuditLog
+from aegis.compliance.overrides import (
+    InMemoryOverrideRepository,
+    OverrideRepository,
+    SupabaseOverrideRepository,
+)
 from aegis.compliance.snapshot import (
     DecisionSnapshot,
     InMemoryDecisionSnapshot,
     SupabaseDecisionSnapshot,
 )
 from aegis.config import get_settings
+from aegis.funders.replies import (
+    FunderReplyRepository,
+    InMemoryFunderReplyRepository,
+    SupabaseFunderReplyRepository,
+)
 from aegis.funders.repository import (
     FunderRepository,
     InMemoryFunderRepository,
@@ -78,6 +88,24 @@ def get_llm() -> LLMClient:
 
 
 @lru_cache(maxsize=1)
+def get_override_repository() -> OverrideRepository:
+    """Process-wide OverrideRepository (mp Phase 10). Same memory /
+    supabase toggle as the other repositories."""
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryOverrideRepository()
+    return SupabaseOverrideRepository()
+
+
+@lru_cache(maxsize=1)
+def get_funder_reply_repository() -> FunderReplyRepository:
+    """Process-wide FunderReplyRepository (mp Phase 10). Same memory /
+    supabase toggle as the other repositories."""
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryFunderReplyRepository()
+    return SupabaseFunderReplyRepository()
+
+
+@lru_cache(maxsize=1)
 def get_decision_snapshot() -> DecisionSnapshot:
     """Process-wide DecisionSnapshot writer (mp Phase 2).
 
@@ -109,6 +137,8 @@ def reset_dependency_caches() -> None:
     get_repository.cache_clear()
     get_merchant_repository.cache_clear()
     get_funder_repository.cache_clear()
+    get_funder_reply_repository.cache_clear()
+    get_override_repository.cache_clear()
     get_audit.cache_clear()
     get_decision_snapshot.cache_clear()
     get_llm.cache_clear()
@@ -118,10 +148,12 @@ def reset_dependency_caches() -> None:
 __all__ = [
     "get_audit",
     "get_decision_snapshot",
+    "get_funder_reply_repository",
     "get_funder_repository",
     "get_llm",
     "get_merchant_repository",
     "get_ofac_client",
+    "get_override_repository",
     "get_repository",
     "reset_dependency_caches",
 ]

@@ -31,23 +31,33 @@ from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 
 from aegis.api.deps import (
     get_audit,
+    get_funder_reply_repository,
     get_funder_repository,
     get_llm,
     get_merchant_repository,
     get_ofac_client,
+    get_override_repository,
     get_repository,
 )
 from aegis.api.routes.upload import persist_pdf_upload
 from aegis.audit import AuditLog
+from aegis.compliance.overrides import (
+    OverrideError,
+    OverridePayload,
+    OverrideRepository,
+    record_override,
+)
 from aegis.compliance.states import STATES, StateNotServed, validate_state_served
 from aegis.config import get_settings
 from aegis.funders.extract import FunderExtractionError, extract_funder_guidelines
 from aegis.funders.models import FunderRow
+from aegis.funders.replies import FunderReplyRepository
 from aegis.funders.repository import (
     FunderNotFoundError,
     FunderRepository,
@@ -2639,15 +2649,17 @@ def _txs_to_rows(txs: list[ClassifiedTransaction]) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Phase 10 — operator override capture (mp §20). RESERVED by 2D-prep.
+# Phase 10 — operator override capture (mp §20).
 # ---------------------------------------------------------------------------
 #
-# Stub route reserves the line range so Stage 2 agents 2B (parser) and 2C
-# (processor) don't conflict with 2D-main (capture) on this file. Body is
-# intentionally minimal: 2D-main fills in the modal handler, writes an
-# ``overrides`` row tied to ``decision_id``, and surfaces validation
-# errors. The /ui surface is gated by Cloudflare Access in production
-# (not require_bearer), matching the rest of this router.
+# Operator clicks "I disagree" on the dossier, picks a reason code +
+# (optionally) typed-in pattern false-positives, and AEGIS persists an
+# ``overrides`` row tied to ``decision_id``. Outcome stamping lives on
+# the funder_replies side (refinement 5); ``record_override`` back-
+# stamps from any pending reply at creation time.
+#
+# The /ui surface is gated by Cloudflare Access in production (not
+# require_bearer), matching the rest of this router.
 
 
 @router.post(
@@ -2655,21 +2667,63 @@ def _txs_to_rows(txs: list[ClassifiedTransaction]) -> list[dict[str, Any]]:
     response_model=None,
     include_in_schema=False,
 )
-async def decision_override_stub(
+async def decision_override(
     decision_id: UUID,
     audit: Annotated[AuditLog, Depends(get_audit)],
-) -> Response:
-    """Operator-override capture (mp Phase 10). Not yet implemented.
+    override_repo: Annotated[OverrideRepository, Depends(get_override_repository)],
+    reply_repo: Annotated[FunderReplyRepository, Depends(get_funder_reply_repository)],
+    deal_id: Annotated[UUID, Form()],
+    original_recommendation: Annotated[str, Form()],
+    operator_decision: Annotated[str, Form()],
+    reason_code: Annotated[str, Form()],
+    reason_detail: Annotated[str, Form()] = "",
+    pattern_false_positive: Annotated[str, Form()] = "",
+) -> JSONResponse:
+    """Persist one operator override + back-stamp from pending replies.
 
-    Returns 501 until 2D-main lands the modal handler. The route exists
-    on prep so 2C's processor-metrics-card commit doesn't fight 2D-main's
-    override-button commit over this file. The ``audit`` dep is wired
-    now so 2D-main only edits the body, not the signature.
+    ``pattern_false_positive`` is a comma-separated list of detector
+    codes (the modal renders the active detectors as checkboxes and
+    serializes the selection into one form field). Empty entries are
+    dropped so a blank submit doesn't write ``[""]`` to the array
+    column.
     """
-    _ = (decision_id, audit)  # reserved for 2D-main; silence unused-arg
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="override_capture_not_yet_wired",
+    patterns = [p.strip() for p in pattern_false_positive.split(",") if p.strip()]
+    try:
+        payload = OverridePayload(
+            deal_id=deal_id,
+            decision_id=decision_id,
+            original_recommendation=original_recommendation,
+            operator_decision=operator_decision,
+            reason_code=reason_code,
+            reason_detail=reason_detail.strip() or None,
+            pattern_false_positive=patterns,
+            operator_id="dashboard",
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid override payload: {exc}",
+        ) from exc
+
+    try:
+        result = record_override(
+            payload,
+            repo=override_repo,
+            reply_repo=reply_repo,
+            audit=audit,
+        )
+    except OverrideError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"override_persist_unavailable: {exc}",
+        ) from exc
+
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={
+            "override_id": str(result.override_id),
+            "back_stamped_outcome": result.back_stamped_outcome,
+        },
     )
 
 

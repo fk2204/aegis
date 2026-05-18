@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     zoho_api_base: str = "https://www.zohoapis.com"
     zoho_webhook_secret: SecretStr | None = None
 
+    # Funder-reply webhook (mp Phase 10). HMAC-SHA256 over the raw body
+    # with this secret. Missing -> the webhook returns 503 so an
+    # accidental deploy without the secret can't silently fail open.
+    funder_reply_webhook_secret: SecretStr | None = None
+
     # API auth
     api_bearer_token: SecretStr | None = None
 
