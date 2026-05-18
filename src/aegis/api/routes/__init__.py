@@ -6,6 +6,7 @@ Add new route modules here so the wiring stays in one place.
 
 from __future__ import annotations
 
+from aegis.api.routes.audit import router as audit_router
 from aegis.api.routes.deals import router as deals_router
 from aegis.api.routes.disclosures import router as disclosures_router
 from aegis.api.routes.findings import router as findings_router
@@ -24,6 +25,7 @@ ALL_ROUTERS = (
     disclosures_router,
     deals_router,
     findings_router,
+    audit_router,
     webhooks_zoho_router,
     web_router,
 )
@@ -31,6 +33,7 @@ ALL_ROUTERS = (
 
 __all__ = [
     "ALL_ROUTERS",
+    "audit_router",
     "deals_router",
     "disclosures_router",
     "findings_router",
