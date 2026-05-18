@@ -61,12 +61,10 @@ def _log_matrix_version_and_templates() -> None:
     this branch (transitional state before Agent 1A merges).
     """
     try:
-        # state_matrix is built by Agent 1A on a sibling branch. Until 1A
-        # merges + py.typed propagates to the editable install, mypy
-        # reports the module as untyped (py.typed added in this commit
-        # only takes effect after re-install). Runtime behavior is the
-        # same — try/except handles both pre- and post-merge states.
-        import aegis.compliance.state_matrix as _state_matrix  # type: ignore[import-untyped]
+        # state_matrix is built by master plan Phase 1. Lazy import keeps
+        # this module loadable even when state_matrix is absent; runtime
+        # behavior is unchanged either way.
+        import aegis.compliance.state_matrix as _state_matrix
     except ImportError:
         _log.info(
             "compliance.anti_drift.matrix_not_available",
