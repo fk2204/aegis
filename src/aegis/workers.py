@@ -130,10 +130,38 @@ async def _on_shutdown(ctx: dict[str, Any]) -> None:
     _log.info("worker.shutdown")
 
 
+# ---------------------------------------------------------------------------
+# Phase 10 — funder-reply ingestion task (mp §20). RESERVED by 2D-prep.
+# ---------------------------------------------------------------------------
+#
+# 2D-main fills in the body: pull the email/paste from Redis, two-pass
+# LLM extract with deterministic reconciliation (amount * factor ==
+# payback +/- $0.01), write a funder_replies row, stamp the matching
+# override per refinement (5) idempotency rules. The stub here reserves
+# the WorkerSettings.functions tuple entry so 2B (parser) and 2C
+# (processor) can edit workers.py without colliding with 2D-main.
+
+
+async def process_funder_reply(
+    ctx: dict[str, Any],
+    reply_payload_json: str,
+) -> dict[str, Any]:
+    """arq task for funder-reply ingestion. Not yet implemented.
+
+    Raises ``NotImplementedError`` until 2D-main lands the LLM extractor
+    + validation gate + funder_replies persistence + override stamping.
+    Enqueueing this task on prep yields a job failure (intentional —
+    the capture surface isn't ready yet).
+    """
+    raise NotImplementedError(
+        "process_funder_reply is reserved by 2D-prep; 2D-main lands the body."
+    )
+
+
 class WorkerSettings:
     """arq config. Reads concurrency + timeout from env via Settings."""
 
-    functions = (parse_document,)
+    functions = (parse_document, process_funder_reply)
     on_startup = _on_startup
     on_shutdown = _on_shutdown
 
@@ -177,4 +205,4 @@ except (RedisError, ConnectionError):
     _log.debug("worker.attributes_deferred", exc_info=True)
 
 
-__all__ = ["WorkerSettings", "parse_document"]
+__all__ = ["WorkerSettings", "parse_document", "process_funder_reply"]
