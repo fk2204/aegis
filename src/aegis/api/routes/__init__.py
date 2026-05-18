@@ -10,6 +10,7 @@ from aegis.api.routes.audit import router as audit_router
 from aegis.api.routes.deals import router as deals_router
 from aegis.api.routes.disclosures import router as disclosures_router
 from aegis.api.routes.findings import router as findings_router
+from aegis.api.routes.funder_replies import router as funder_replies_router
 from aegis.api.routes.funders import router as funders_router
 from aegis.api.routes.merchants import router as merchants_router
 from aegis.api.routes.transactions import router as transactions_router
@@ -22,6 +23,7 @@ ALL_ROUTERS = (
     merchants_router,
     transactions_router,
     funders_router,
+    funder_replies_router,
     disclosures_router,
     deals_router,
     findings_router,
@@ -37,6 +39,7 @@ __all__ = [
     "deals_router",
     "disclosures_router",
     "findings_router",
+    "funder_replies_router",
     "funders_router",
     "merchants_router",
     "transactions_router",
