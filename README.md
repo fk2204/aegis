@@ -30,12 +30,20 @@ make worker       # arq worker (separate terminal)
 ## Pre-commit gate
 
 ```bash
-make check        # mypy --strict + ruff + pytest with corpus
-make test-fast    # quick iteration without corpus
+make check         # mypy --strict + ruff + pytest with corpus
+make test-fast     # quick iteration without corpus
+make install-hooks # one-time: enable the compliance-review pre-commit hook
 ```
 
-`make check` is the only gate. There is no CI by design — manual ssh + git
-is appropriate for a solo operator.
+`make check` is the only gate for the bulk of the codebase. There is no CI
+by design — manual ssh + git is appropriate for a solo operator.
+
+**Narrow no-CI exception:** commits that stage any file under
+`docs/compliance/states/**` must include a `compliance-review:` annotation
+(`approved by <name>`, `pending`, or `not-applicable`) in the commit
+body. Enforced by `.githooks/pre-commit`; installed via
+`make install-hooks`. Background and rationale in
+`docs/AEGIS_MASTER_PLAN.md` §13.
 
 ## Generate the synthetic corpus
 
