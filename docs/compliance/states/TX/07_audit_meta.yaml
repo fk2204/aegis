@@ -1,6 +1,11 @@
-# TODO: populate per docs/AEGIS_MASTER_PLAN.md §10
 state: TX
-date_audited: null
-audited_by: null
-sources: []
-next_review_due: null
+date_audited: 2026-05-18
+audited_by: "Filip (operator) per docs/AEGIS_MASTER_PLAN.md §8.2"
+sources:
+  - "docs/AEGIS_MASTER_PLAN.md §8.2"
+  - "TX Finance Code Ch. 398 (HB 700)"
+  - "TODO: TX OCCC HB 700 advance notice (2025-11)"
+  - "TODO: Holland & Knight, Mayer Brown, Sheppard Mullin commentary"
+next_review_due: 2026-08-18
+statute: "HB 700 (2025); TX Finance Code Ch. 398"
+effective: "2025-09-01 disclosure; 2026-12-31 registration"
