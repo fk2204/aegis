@@ -31,6 +31,11 @@ from aegis.config import get_settings
 from aegis.llm import LLMClient
 from aegis.logger import configure_logging, get_logger
 from aegis.parser.pipeline import PipelineResult, run_pipeline
+from aegis.parser.processor import (
+    ProcessorPipelineResult,
+    detect_processor,
+    run_processor_pipeline,
+)
 from aegis.storage import DocumentNotFoundError, DocumentRepository
 
 _log = get_logger(__name__)
@@ -66,6 +71,48 @@ async def parse_document(
         subject_id=document_id,
         details={"pdf_path": pdf_path},
     )
+
+    # Brand detection — Stripe / Square statements take a different
+    # pipeline than bank statements. ``ambiguous`` fails closed; the
+    # operator handles documents that look like both processors at
+    # once rather than the parser guessing. (mp Phase 6.6 / Stage 2C.)
+    detection = await asyncio.to_thread(detect_processor, pdf_path)
+    if detection.brand == "ambiguous":
+        _log.error("worker.parse.ambiguous_processor document_id=%s", document_id)
+        audit.record(
+            actor="worker",
+            action="document.parse.error",
+            subject_type="document",
+            subject_id=document_id,
+            details={
+                "error": "AmbiguousProcessor",
+                "message": (
+                    f"detector saw both stripe ({detection.stripe_hits}) and "
+                    f"square ({detection.square_hits}) signatures; "
+                    "operator must classify manually"
+                ),
+            },
+        )
+        if hasattr(repository, "mark_error"):
+            repository.mark_error(
+                document_id,
+                "AmbiguousProcessor: stripe + square signatures present",
+            )
+        _safe_unlink(pdf_path)
+        return {
+            "document_id": str(document_id),
+            "parse_status": "manual_review",
+            "fraud_score": 0,
+        }
+    if detection.brand in ("stripe", "square"):
+        return await _run_processor_branch(
+            document_id=document_id,
+            pdf_path=pdf_path,
+            brand=detection.brand,
+            llm=llm,
+            audit=audit,
+            repository=repository,
+        )
 
     try:
         result: PipelineResult = await asyncio.to_thread(run_pipeline, pdf_path, llm)
@@ -103,6 +150,91 @@ async def parse_document(
         "document_id": str(document_id),
         "parse_status": result.parse_status,
         "fraud_score": result.fraud_score,
+    }
+
+
+async def _run_processor_branch(
+    *,
+    document_id: UUID,
+    pdf_path: str,
+    brand: str,
+    llm: LLMClient,
+    audit: AuditLog,
+    repository: DocumentRepository,
+) -> dict[str, Any]:
+    """Run the processor pipeline + audit the result (mp Phase 6.6).
+
+    Persistence to the ``processor_statements`` table needs a
+    repository method that doesn't exist yet — punted to a follow-up
+    commit on this branch. For now we audit the aggregates onto
+    ``audit_log`` so the operator can see the parsed result in the
+    dashboard's recent-activity feed, and mark the document's
+    parse_status so downstream queries can filter on it.
+    """
+    try:
+        pdf_bytes = await asyncio.to_thread(Path(pdf_path).read_bytes)
+        result: ProcessorPipelineResult = await asyncio.to_thread(
+            run_processor_pipeline, pdf_path, pdf_bytes, llm, brand=brand,  # type: ignore[arg-type]
+        )
+    except Exception as exc:
+        _log.exception(
+            "worker.processor.failed document_id=%s brand=%s", document_id, brand
+        )
+        audit.record(
+            actor="worker",
+            action="document.parse.error",
+            subject_type="document",
+            subject_id=document_id,
+            details={
+                "error": type(exc).__name__,
+                "message": str(exc)[:500],
+                "brand": brand,
+            },
+        )
+        if hasattr(repository, "mark_error"):
+            repository.mark_error(document_id, f"{type(exc).__name__}: {exc}")
+        _safe_unlink(pdf_path)
+        raise
+    finally:
+        _safe_unlink(pdf_path)
+
+    details: dict[str, Any] = {
+        "brand": brand,
+        "parse_status": result.parse_status,
+        "validation_passed": result.validation.passed,
+        "failure_count": len(result.validation.failures),
+    }
+    if result.aggregates is not None:
+        details.update(
+            {
+                "gross_volume": str(result.aggregates.gross_volume.value),
+                "refunds_total": str(result.aggregates.refunds_total.value),
+                "chargebacks_total": str(result.aggregates.chargebacks_total.value),
+                "fees_total": str(result.aggregates.fees_total.value),
+                "payouts_total": str(result.aggregates.payouts_total.value),
+                "net_revenue": str(result.aggregates.net_revenue.value),
+                "chargeback_ratio": str(result.aggregates.chargeback_ratio),
+                "transaction_count": result.aggregates.transaction_count.value,
+            }
+        )
+
+    audit.record(
+        actor="worker",
+        action="document.parse.processor_complete",
+        subject_type="document",
+        subject_id=document_id,
+        details=details,
+    )
+
+    if hasattr(repository, "mark_processor_parsed"):
+        # Future repository method — when it lands, we'll persist the
+        # aggregates to the processor_statements table here.
+        repository.mark_processor_parsed(document_id, parse_status=result.parse_status)
+
+    return {
+        "document_id": str(document_id),
+        "parse_status": result.parse_status,
+        "fraud_score": 0,  # processor pipeline doesn't compute a fraud_score
     }
 
 

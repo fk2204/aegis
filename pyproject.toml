@@ -76,6 +76,7 @@ module = [
     "tests.parser.test_page_router",
     "tests.parser.test_extract_per_page",
     "tests.parser.test_pipeline_page_routing",
+    "tests.parser.test_processor_detect",
     "tests.web.test_dossier_pdf",
 ]
 disable_error_code = ["no-untyped-call"]
