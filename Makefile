@@ -1,7 +1,15 @@
-.PHONY: install dev worker test test-fast typecheck lint format check
+.PHONY: install install-hooks dev worker test test-fast typecheck lint format check
 
 install:
 	uv sync
+
+# Install the pre-commit hook that enforces compliance-review annotations
+# on commits touching docs/compliance/states/**. The narrow no-CI
+# exception documented in README.md. Re-runnable; idempotent.
+install-hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit
+	@echo "[install-hooks] core.hooksPath -> .githooks; pre-commit executable."
 
 dev:
 	uv run uvicorn aegis.api.app:app --reload --port 5555

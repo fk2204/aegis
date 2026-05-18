@@ -714,10 +714,10 @@ When operator promotes a watchlist state to Tier 1, AEGIS triggers a checklist: 
 **Tasks:**
 1. Boot-time check: `states.yaml` version + every template SHA256 logged on startup. Mismatch = fail closed.
 2. Per-state `07_audit_meta.yaml` has `next_review_due` date. Boot-time warning if overdue.
-3. CI check: every PR touching `docs/compliance/states/**` requires a `compliance-review` label from designated reviewer.
+3. **Pre-commit hook** (revised from "CI check" — README.md documents the repo is no-CI by design): every commit touching `docs/compliance/states/**` must carry a `compliance-review:` annotation (`approved by <name>`, `pending`, or `not-applicable`) in the body. Hook lives at `.githooks/pre-commit`; installed by `make install-hooks` (idempotent, sets `core.hooksPath`). Rejected commits get a helpful message explaining the rule and the three valid forms.
 4. Quarterly automated test: synthetic deal through every Tier 1 state, render disclosure, verify snapshot. Catches silent rendering bugs.
 
-**Acceptance:** Anti-drift checks in place; overdue reviews surface as warnings, not silent.
+**Acceptance:** Anti-drift checks in place; overdue reviews surface as warnings, not silent. Pre-commit hook rejects unannotated state-folder commits.
 
 **Effort:** 1 day. No counsel gate.
 

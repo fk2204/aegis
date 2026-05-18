@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# AEGIS pre-commit hook — compliance-review enforcement (mp Phase 3).
+#
+# Installed by `make install-hooks`. Enforces the narrow no-CI exception
+# documented in README.md: every commit that touches
+# docs/compliance/states/** must include one of three compliance-review
+# annotations in the commit message body.
+#
+# Three valid annotations (case-sensitive, must appear on their own line
+# or at end-of-body):
+#   compliance-review: approved by <name>
+#   compliance-review: pending
+#   compliance-review: not-applicable
+#
+# Rationale: state-prescribed disclosure templates and statute citations
+# are regulator-mandated. Silent edits without review create compliance
+# exposure. The hook is the gate; the master-plan §13 "CI check" line is
+# implemented this way because the repo has no CI by design.
+
+set -euo pipefail
+
+# Files staged for this commit.
+STAGED="$(git diff --cached --name-only)"
+
+# If no staged files touch the state compliance surface, exit clean.
+if ! printf '%s\n' "$STAGED" | grep -q '^docs/compliance/states/'; then
+  exit 0
+fi
+
+# Read the commit message file. Git passes it as $1 to commit-msg hooks
+# but not to pre-commit hooks, so read it from the standard location.
+COMMIT_MSG_FILE=".git/COMMIT_EDITMSG"
+if [ ! -f "$COMMIT_MSG_FILE" ]; then
+  # Fallback for unusual git configurations: try the worktree-relative
+  # path resolved from git itself.
+  COMMIT_MSG_FILE="$(git rev-parse --git-path COMMIT_EDITMSG)"
+fi
+
+if [ ! -f "$COMMIT_MSG_FILE" ]; then
+  echo "[pre-commit] cannot find COMMIT_EDITMSG; skipping compliance-review check" >&2
+  exit 0
+fi
+
+MSG="$(cat "$COMMIT_MSG_FILE")"
+
+# Match any of the three valid forms. -E for extended regex; case-
+# sensitive on purpose (lower-case is the canonical form).
+if printf '%s' "$MSG" \
+  | grep -Eq '^compliance-review:[[:space:]]+(approved by .+|pending|not-applicable)[[:space:]]*$'; then
+  exit 0
+fi
+
+cat >&2 <<'REJECT'
+[pre-commit] Compliance-review annotation required.
+
+A staged file touches docs/compliance/states/**, which is the
+regulator-mandated state-prescribed disclosure surface. Every commit on
+this surface must include ONE of these lines in the commit body:
+
+    compliance-review: approved by <reviewer name>
+    compliance-review: pending
+    compliance-review: not-applicable
+
+If you're not sure which to pick:
+  - "pending" is correct for skeleton / placeholder / TODO commits.
+  - "not-applicable" is correct for typo fixes that don't change content
+    or refactors that only move files.
+  - "approved by <name>" is for substantive content updates after a
+    legal-review cycle.
+
+Re-run `git commit` with the annotation in the message body.
+REJECT
+exit 1

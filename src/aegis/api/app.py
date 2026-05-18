@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from aegis.api.auth import warn_if_bearer_unconfigured
 from aegis.api.deps import get_merchant_repository, get_repository
 from aegis.api.routes import ALL_ROUTERS
+from aegis.compliance.anti_drift import run_boot_checks
 from aegis.compliance.state_matrix import load_matrix
 from aegis.compliance.states import validate_states_table
 from aegis.config import get_settings
@@ -49,6 +50,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             "state_count": len(app.state.state_matrix.states),
         },
     )
+    # mp Phase 3: anti-drift (template SHA256, overdue reviews). Runs after
+    # load_matrix() so the matrix is available for the template-SHA scan.
+    run_boot_checks()
     warn_if_bearer_unconfigured()  # once-per-process operator visibility
 
     app.state.arq_pool = None
