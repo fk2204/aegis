@@ -89,6 +89,101 @@ sudo systemctl restart aegis-web aegis-worker
 
 ---
 
+## Database migrations
+
+All schema changes go through `scripts/apply_migrations.py` (3C-extra runner). Never paste SQL into the Supabase dashboard. Never edit a previously-applied migration file — drift detection rejects modified files.
+
+### Prerequisites
+
+Populate `.env.local` (gitignored) with the Postgres URI for whichever environments you operate against. Get the URI from **Supabase dashboard → Settings → Database → Connection string → URI** (Transaction pooler, port 6543). The runner refuses to connect to a prod-tenanted URI unless `--target prod` is set explicitly.
+
+```
+MIGRATIONS_DB_URL_DEV=postgresql://...
+MIGRATIONS_DB_URL_STAGING=postgresql://...
+MIGRATIONS_DB_URL_PROD=postgresql://...
+```
+
+### Usage
+
+Dry-run (preview pending migrations, touches nothing):
+```bash
+make migrate TARGET=prod DRY_RUN=1
+```
+
+Apply for real:
+```bash
+make migrate TARGET=prod
+```
+
+### What it does, in order
+
+1. Acquires the session-scoped advisory lock `pg_try_advisory_lock(4736294826)`. Concurrent runners get `LOCK: another apply_migrations run is in progress (pid=N)` and exit 4.
+2. Creates `schema_migrations` (filename, sha256, applied_at, applied_by) if absent.
+3. **Bootstrap** (first run only — when `schema_migrations` is empty): probes each migration's effect (table/column existence). For each detected pre-existing migration, inserts a `schema_migrations` row with `applied_by='manual_pre_runner'`. The runner does NOT re-apply those.
+4. For each migration not in `schema_migrations`: opens a single transaction, executes the migration body, inserts the `schema_migrations` row, inserts an `audit_log` row with `action='migration_applied'`, commits. On failure: rolls back the body, the schema_migrations row, and the audit row together.
+5. Drift check: if any row in `schema_migrations` has a `sha256` that no longer matches the file on disk, raises `MigrationDriftError` and exits 3 without applying anything.
+
+### Retrieve migration history
+
+The audit row carries `filename`, `sha256`, `target`, `started_at`, `finished_at`, plus the `aegis_version` (short git SHA at runner invocation time).
+
+```sql
+SELECT
+  created_at,
+  actor,
+  aegis_version,
+  details->>'filename'    AS filename,
+  details->>'target'      AS target,
+  details->>'sha256'      AS sha256,
+  details->>'started_at'  AS started_at,
+  details->>'finished_at' AS finished_at
+FROM audit_log
+WHERE action = 'migration_applied'
+ORDER BY created_at DESC
+LIMIT 50;
+```
+
+For a count of applies per target:
+```sql
+SELECT details->>'target' AS target, COUNT(*)
+FROM audit_log
+WHERE action = 'migration_applied'
+GROUP BY 1
+ORDER BY 2 DESC;
+```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0    | Success — applied N (possibly zero) migrations. |
+| 1    | Migration body raised — full rollback completed. Investigate the error and re-run. |
+| 2    | Config error — missing env var, unknown `--target`, prod DSN without `--target prod`. |
+| 3    | Drift — a previously-applied migration file's sha256 has changed. Restore the file (`git checkout migrations/<file>`) or roll forward via a NEW migration. Never edit applied SQL. |
+| 4    | Lock held — another runner is in progress. Wait, then re-run. |
+
+### Lock-contention recovery
+
+The advisory lock is session-scoped — closing the runner's connection releases it automatically. If a runner crashed and the lock seems stuck:
+```sql
+SELECT pid, granted
+FROM pg_locks
+WHERE locktype='advisory' AND objid=4736294826;
+-- Confirm the pid is not an active backend; terminate if needed.
+SELECT pg_terminate_backend(<pid>);
+```
+
+### Adding a new migration
+
+1. Create `migrations/NNN_short_name.sql` where NNN is the next integer (one greater than the highest existing prefix).
+2. Add a probe entry to `scripts/apply_migrations.py` `MIGRATION_PROBES` (a single SELECT that returns a row iff the migration has been applied — usually a `pg_tables` / `information_schema.columns` check).
+3. Run `make migrate TARGET=dev DRY_RUN=1` to preview.
+4. Run `make migrate TARGET=dev`, then the test suite, then promote to staging/prod.
+
+The `tests/test_apply_migrations.py::test_migration_probes_cover_every_real_migration` test fails CI if step (2) is forgotten.
+
+---
+
 ## Secrets + key rotation
 
 ### Rotate the API bearer token
