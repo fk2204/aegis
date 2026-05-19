@@ -46,7 +46,8 @@ dev = [
     "boto3-stubs[bedrock-runtime]",
     "pytest-cov>=5.0",
     # Operator tooling (scripts/apply_migrations.py, scripts/db_verify.py).
-    # The running app uses supabase-py over REST; psycopg is operator-side only.
+    # Not used by the running app — the prod aegis-web + aegis-worker units
+    # use the supabase-py REST client. psycopg is operator/dev-side only.
     "psycopg[binary]>=3.2",
 ]
 
