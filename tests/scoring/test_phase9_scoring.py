@@ -17,7 +17,6 @@ from decimal import Decimal
 from aegis.scoring.models import ScoreInput
 from aegis.scoring.score import compute_paper_grade, score_deal
 
-
 # -- paper grade -------------------------------------------------------------
 
 
@@ -139,7 +138,11 @@ def test_top_counterparty_concentration_60pct_penalty(clean_deal: ScoreInput) ->
     factors = {f["factor"] for f in penalized.breakdown}
     assert "top_counterparty_60pct+" in factors
     # The penalty delta should be -12 per the scorer's grid.
-    delta = next(f["delta"] for f in penalized.breakdown if f["factor"] == "top_counterparty_60pct+")
+    delta = next(
+        f["delta"]
+        for f in penalized.breakdown
+        if f["factor"] == "top_counterparty_60pct+"
+    )
     assert delta == -12
 
 

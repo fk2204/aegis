@@ -1526,8 +1526,30 @@ async def merchant_detail(
             else _select_default_bundle(all_items)
         )
         bundle_summaries = _build_bundle_summaries(bundle_options, active_bundle)
+        # Pattern cards are re-derived on view rather than persisted: the
+        # parser emits Pattern dataclasses whose fields (severity, detail,
+        # source_ids) aren't on AnalysisRow yet, so the dashboard recomputes
+        # from the stored transactions. ~100ms overhead for typical
+        # statements — cheap relative to the value of source-row drill-down.
+        # Phase 9: pattern_analysis is also feed into score_input so the
+        # counterparty / detector signals reach the scorer.
+        latest_transactions = docs.list_transactions(latest_doc.id)
+        stacking = build_stacking_card(latest_analysis, latest_transactions)
+        try:
+            pattern_analysis = analyze_patterns(
+                latest_transactions,
+                latest_analysis.statement_period_start,
+                latest_analysis.statement_period_end,
+            )
+        except Exception:
+            pattern_analysis = None
+        pattern_cards = list(
+            build_pattern_cards(pattern_analysis, latest_transactions)
+        )
         if items:
-            score_input = _score_input_multi_month(merchant, items)
+            score_input = _score_input_multi_month(
+                merchant, items, pattern_analysis=pattern_analysis
+            )
             try:
                 score_result = score_deal(score_input, ofac=ofac)
             except OFACStaleError:
@@ -1549,24 +1571,6 @@ async def merchant_detail(
                 "missing_months": _detect_missing_months(items),
                 "bundle_options": bundle_summaries,
             }
-        # Pattern cards are re-derived on view rather than persisted: the
-        # parser emits Pattern dataclasses whose fields (severity, detail,
-        # source_ids) aren't on AnalysisRow yet, so the dashboard recomputes
-        # from the stored transactions. ~100ms overhead for typical
-        # statements — cheap relative to the value of source-row drill-down.
-        latest_transactions = docs.list_transactions(latest_doc.id)
-        stacking = build_stacking_card(latest_analysis, latest_transactions)
-        try:
-            pattern_analysis = analyze_patterns(
-                latest_transactions,
-                latest_analysis.statement_period_start,
-                latest_analysis.statement_period_end,
-            )
-        except Exception:
-            pattern_analysis = None
-        pattern_cards = list(
-            build_pattern_cards(pattern_analysis, latest_transactions)
-        )
 
     state_tier = _state_tier(merchant.state)
     ofac_status, ofac_match = _ofac_ribbon_status(ofac, merchant.business_name)
@@ -1726,8 +1730,25 @@ def _build_pdf_dossier_context(
         bundle_options = _bundle_keys_for_merchant(all_items)
         items = _collect_analyzed_for_merchant(docs, merchant.id, bundle=None)
         active_bundle = _select_default_bundle(all_items)
+
+        # Phase 9: derive pattern_analysis BEFORE score_input so the
+        # counterparty + Phase 9 detector signals reach the scorer.
+        latest_transactions = docs.list_transactions(latest_doc.id)
+        stacking = build_stacking_card(latest_analysis, latest_transactions)
+        try:
+            pattern_analysis = analyze_patterns(
+                latest_transactions,
+                latest_analysis.statement_period_start,
+                latest_analysis.statement_period_end,
+            )
+        except Exception:
+            pattern_analysis = None
+        pattern_cards = list(build_pattern_cards(pattern_analysis, latest_transactions))
+
         if items:
-            score_input = _score_input_multi_month(merchant, items)
+            score_input = _score_input_multi_month(
+                merchant, items, pattern_analysis=pattern_analysis
+            )
             try:
                 score_result = score_deal(score_input, ofac=ofac)
             except OFACStaleError:
@@ -1749,18 +1770,6 @@ def _build_pdf_dossier_context(
                 "missing_months": _detect_missing_months(items),
                 "bundle_options": _build_bundle_summaries(bundle_options, active_bundle),
             }
-
-        latest_transactions = docs.list_transactions(latest_doc.id)
-        stacking = build_stacking_card(latest_analysis, latest_transactions)
-        try:
-            pattern_analysis = analyze_patterns(
-                latest_transactions,
-                latest_analysis.statement_period_start,
-                latest_analysis.statement_period_end,
-            )
-        except Exception:
-            pattern_analysis = None
-        pattern_cards = list(build_pattern_cards(pattern_analysis, latest_transactions))
 
     state_tier = _state_tier(merchant.state)
     state_reg = STATES.get(merchant.state.upper()) if merchant.state else None

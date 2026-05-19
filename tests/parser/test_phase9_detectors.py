@@ -34,7 +34,6 @@ from aegis.parser.patterns import (
     analyze_patterns,
 )
 
-
 PERIOD_START = date(2026, 1, 1)
 PERIOD_END = date(2026, 1, 31)
 TODAY = date(2026, 2, 5)
@@ -442,7 +441,7 @@ def test_payroll_absent_skips_when_payroll_present() -> None:
         amount=Decimal("-2500.00"),
         category="payroll",
     )
-    res = _analyze(revenue + [payroll])
+    res = _analyze([*revenue, payroll])
     assert "payroll_absent" not in _by_code(res)
     assert res.payroll_present is True
 

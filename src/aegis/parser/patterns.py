@@ -1249,14 +1249,14 @@ def _ai_generated_statement_score(
 
 __all__ = [
     "CHARGEBACK_KEYWORDS",
-    "CounterpartySignals",
     "GENERIC_MCA_TERMS",
     "KNOWN_CARD_PROCESSORS",
     "KNOWN_FUNDERS",
     "KNOWN_PAYROLL_PROCESSORS",
+    "REVERSAL_KEYWORDS",
+    "CounterpartySignals",
     "McaPosition",
     "Pattern",
     "PatternAnalysis",
-    "REVERSAL_KEYWORDS",
     "analyze_patterns",
 ]

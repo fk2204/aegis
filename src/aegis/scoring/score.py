@@ -438,7 +438,7 @@ def _score_counterparty_concentration(deal: ScoreInput, b: _Builder) -> None:
 def _score_payroll_present(deal: ScoreInput, b: _Builder) -> None:
     """New payroll signal layered with the legacy ``payroll_detected``.
 
-    Both pass through the same +8 / −5 grid as ``_score_payroll`` to
+    Both pass through the same +8 / -5 grid as ``_score_payroll`` to
     keep the score envelope stable, but only ``payroll_present`` (the
     detector-derived signal) is decremented for high-revenue businesses
     with no payroll. The legacy field is kept untouched so test
@@ -459,8 +459,8 @@ def _score_ai_generated(deal: ScoreInput, b: _Builder) -> None:
     """Composite AI-generated-statement score.
 
     Per master plan §6.4, AI-generated fakes should be *scored*, never
-    auto-declined. Thresholds: ≥85 = strong signal (−15), ≥70 = medium
-    (−8), ≥55 = weak (−3). Below 55 is no signal.
+    auto-declined. Thresholds: >=85 = strong signal (-15), >=70 = medium
+    (-8), >=55 = weak (-3). Below 55 is no signal.
     """
     score = deal.ai_generated_score
     if score >= 85:

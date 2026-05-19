@@ -30,6 +30,7 @@ from datetime import date
 from decimal import Decimal
 
 from aegis.merchants.models import MerchantRow
+from aegis.parser.patterns import PatternAnalysis
 from aegis.scoring.models import ScoreInput
 from aegis.storage import AnalysisRow, DocumentRow
 
@@ -45,8 +46,16 @@ def _project_monthly(period_revenue: Decimal, statement_days: int) -> Decimal:
 def score_input_multi_month(
     merchant: MerchantRow,
     items: list[tuple[DocumentRow, AnalysisRow]],
+    pattern_analysis: PatternAnalysis | None = None,
 ) -> ScoreInput:
-    """Build a multi-month ScoreInput. ``items`` ordered newest-first."""
+    """Build a multi-month ScoreInput. ``items`` ordered newest-first.
+
+    Phase 9: ``pattern_analysis`` is the latest-period detector output
+    (computed by ``analyze_patterns`` over the latest doc's classified
+    transactions). When supplied, counterparty + Phase 9 detector
+    signals are populated. Callers may omit it (legacy callers / tests);
+    the new fields fall back to None / False / 0.
+    """
     if not items:
         raise ValueError("score_input_multi_month requires at least one analysis")
 
@@ -104,19 +113,47 @@ def score_input_multi_month(
         requested_amount=Decimal("50000.00"),
         requested_factor=Decimal("1.30"),
         requested_term_days=120,
-        top_counterparty_pct=getattr(latest, "top_counterparty_pct", None),
-        top_counterparty_label=getattr(latest, "top_counterparty_label", None),
-        top_5_revenue_share_pct=getattr(latest, "top_5_revenue_share_pct", None),
-        top_5_expense_share_pct=getattr(latest, "top_5_expense_share_pct", None),
-        payroll_present=bool(getattr(latest, "payroll_present", False)),
-        acceleration_clause_triggered=bool(
-            getattr(latest, "acceleration_clause_triggered", False)
+        top_counterparty_pct=(
+            pattern_analysis.counterparty_signals.top_counterparty_pct
+            if pattern_analysis is not None
+            else getattr(latest, "top_counterparty_pct", None)
         ),
-        unauthorized_withdrawal_dispute=bool(
-            getattr(latest, "unauthorized_withdrawal_dispute", False)
+        top_counterparty_label=(
+            pattern_analysis.counterparty_signals.top_counterparty_label
+            if pattern_analysis is not None
+            else getattr(latest, "top_counterparty_label", None)
+        ),
+        top_5_revenue_share_pct=(
+            pattern_analysis.counterparty_signals.top_5_revenue_share_pct
+            if pattern_analysis is not None
+            else getattr(latest, "top_5_revenue_share_pct", None)
+        ),
+        top_5_expense_share_pct=(
+            pattern_analysis.counterparty_signals.top_5_expense_share_pct
+            if pattern_analysis is not None
+            else getattr(latest, "top_5_expense_share_pct", None)
+        ),
+        payroll_present=(
+            pattern_analysis.payroll_present
+            if pattern_analysis is not None
+            else bool(getattr(latest, "payroll_present", False))
+        ),
+        acceleration_clause_triggered=(
+            pattern_analysis.acceleration_clause_triggered
+            if pattern_analysis is not None
+            else bool(getattr(latest, "acceleration_clause_triggered", False))
+        ),
+        unauthorized_withdrawal_dispute=(
+            pattern_analysis.unauthorized_withdrawal_dispute
+            if pattern_analysis is not None
+            else bool(getattr(latest, "unauthorized_withdrawal_dispute", False))
         ),
         tampering_confirmed=bool(getattr(latest, "tampering_confirmed", False)),
-        ai_generated_score=int(getattr(latest, "ai_generated_score", 0) or 0),
+        ai_generated_score=(
+            pattern_analysis.ai_generated_score
+            if pattern_analysis is not None
+            else int(getattr(latest, "ai_generated_score", 0) or 0)
+        ),
     )
 
 
