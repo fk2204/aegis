@@ -244,13 +244,25 @@ def main() -> int:
         default=0,
         help="If set, only run the first N corpus PDFs (for smoke).",
     )
+    parser.add_argument(
+        "--corpus-root",
+        type=Path,
+        default=None,
+        help=(
+            "Absolute path to the synthetic corpus directory. Default: "
+            "<repo-root>/tests/fixtures/corpus/synthetic. Required when the "
+            "script is invoked from outside the repo (e.g. scp'd to /tmp/ "
+            "by scripts/verify_bedrock.py on the Hetzner box)."
+        ),
+    )
     args = parser.parse_args()
 
-    pdfs = _discover_pdfs()
+    corpus_root = args.corpus_root if args.corpus_root is not None else CORPUS_ROOT
+    pdfs = sorted(corpus_root.glob("*.pdf"))
     if args.limit:
         pdfs = pdfs[: args.limit]
     if not pdfs:
-        print(f"No PDFs found under {CORPUS_ROOT}", file=sys.stderr)
+        print(f"No PDFs found under {corpus_root}", file=sys.stderr)
         return 2
 
     flag = os.environ.get("AEGIS_PARSER_PAGE_ROUTING", "0")

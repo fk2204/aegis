@@ -86,13 +86,19 @@ def _build_corpus_invocation(
     limit: int,
 ) -> str:
     flag = "1" if page_routing else "0"
+    # The harness scripts are scp'd into /tmp/aegis-verify-XXX/ so they live
+    # OUTSIDE the deployed repo. run_corpus_bedrock.py's default CORPUS_ROOT
+    # resolves relative to the script location, which would point at /tmp.
+    # Pass the absolute deployed corpus path explicitly via --corpus-root.
+    corpus_root = f"{DEFAULT_REMOTE_REPO}/tests/fixtures/corpus/synthetic"
     parts = [
         f"set -a && source {shlex.quote(ENV_FILE_ON_BOX)} && set +a",
         f"cd {shlex.quote(DEFAULT_REMOTE_REPO)}",
         (
             f"AEGIS_PARSER_PAGE_ROUTING={flag} "
             f"uv run python {shlex.quote(remote_dir + '/run_corpus_bedrock.py')} "
-            f"--out {shlex.quote(remote_dir + '/' + out_filename)}"
+            f"--out {shlex.quote(remote_dir + '/' + out_filename)} "
+            f"--corpus-root {shlex.quote(corpus_root)}"
             + (f" --limit {limit}" if limit else "")
         ),
     ]
