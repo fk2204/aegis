@@ -15,7 +15,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from scripts.backup_supabase import _sha256, garbage_collect, main
 
 

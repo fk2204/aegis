@@ -24,12 +24,9 @@ import os
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
 import pytest
-
-if TYPE_CHECKING:
-    pass
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -217,7 +214,7 @@ def clean_db(pg_dsn: str) -> str:
 
 
 @pytest.fixture()
-def synthetic_migrations(tmp_path: Path) -> list:
+def synthetic_migrations(tmp_path: Path) -> list[Any]:
     """Two trivial idempotent migrations + a third whose body raises."""
     # Realism: real migration 000 creates audit_log WITHOUT aegis_version.
     # That column is added by migration 019. Tests must match — otherwise we
@@ -237,11 +234,12 @@ def synthetic_migrations(tmp_path: Path) -> list:
     (tmp_path / "001_t1.sql").write_text(
         "CREATE TABLE IF NOT EXISTS t1 (id INT PRIMARY KEY);\n"
     )
-    return apply_migrations.discover_migrations(tmp_path)
+    discovered: list[Any] = apply_migrations.discover_migrations(tmp_path)
+    return discovered
 
 
 def test_integration_synthetic_apply_and_reapply_skip(
-    clean_db: str, synthetic_migrations: list
+    clean_db: str, synthetic_migrations: list[Any]
 ) -> None:
     """First run applies everything; second run skips with no writes."""
     import psycopg
@@ -283,7 +281,9 @@ def test_integration_synthetic_apply_and_reapply_skip(
 
 
 def test_integration_drift_detection_blocks_modified_file(
-    clean_db: str, synthetic_migrations: list, tmp_path: Path
+    clean_db: str,
+    synthetic_migrations: list[Any],
+    tmp_path: Path,
 ) -> None:
     """Editing a previously-applied migration must raise MigrationDriftError."""
     runner = apply_migrations.MigrationRunner(

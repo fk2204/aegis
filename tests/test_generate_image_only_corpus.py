@@ -84,8 +84,9 @@ def test_image_only_pdfs_route_to_vision(isolated_corpus_dir: Path) -> None:
     OCR'd by viewer software, this test fails — surfacing the
     regression before it silently neutralizes the gate.
     """
-    from aegis.parser.page_router import classify_pages, is_homogeneous
     from scripts.generate_image_only_corpus import main as gen_main
+
+    from aegis.parser.page_router import classify_pages, is_homogeneous
 
     gen_main([])
 
@@ -115,8 +116,8 @@ def test_image_only_manifests_match_text_synthetic_numbers(
     grading the parser against a different ground truth without any
     operator change — that's the silent failure this test guards.
     """
-    from scripts.generate_corpus import _build_statement
     from scripts.generate_corpus import Recipe as BaseRecipe
+    from scripts.generate_corpus import _build_statement
     from scripts.generate_image_only_corpus import IMAGE_ONLY_RECIPES
     from scripts.generate_image_only_corpus import main as gen_main
 
