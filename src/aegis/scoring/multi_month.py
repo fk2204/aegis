@@ -68,6 +68,10 @@ def score_input_multi_month(
         sum((a.debt_to_revenue for a in analyses), start=Decimal("0")) / n
     ).quantize(Decimal("0.0001"))
 
+    # Phase 9 counterparty + detector fields take the latest analysis's
+    # values when available. AnalysisRow may not yet carry them (storage
+    # round-trip lands in a separate migration); fall back to None.
+    latest = latest_analysis
     return ScoreInput(
         merchant_id=merchant.id,
         business_name=merchant.business_name,
@@ -100,6 +104,19 @@ def score_input_multi_month(
         requested_amount=Decimal("50000.00"),
         requested_factor=Decimal("1.30"),
         requested_term_days=120,
+        top_counterparty_pct=getattr(latest, "top_counterparty_pct", None),
+        top_counterparty_label=getattr(latest, "top_counterparty_label", None),
+        top_5_revenue_share_pct=getattr(latest, "top_5_revenue_share_pct", None),
+        top_5_expense_share_pct=getattr(latest, "top_5_expense_share_pct", None),
+        payroll_present=bool(getattr(latest, "payroll_present", False)),
+        acceleration_clause_triggered=bool(
+            getattr(latest, "acceleration_clause_triggered", False)
+        ),
+        unauthorized_withdrawal_dispute=bool(
+            getattr(latest, "unauthorized_withdrawal_dispute", False)
+        ),
+        tampering_confirmed=bool(getattr(latest, "tampering_confirmed", False)),
+        ai_generated_score=int(getattr(latest, "ai_generated_score", 0) or 0),
     )
 
 

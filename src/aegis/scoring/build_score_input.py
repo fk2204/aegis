@@ -32,7 +32,12 @@ class StaleStatementError(RuntimeError):
 
 @dataclass
 class ParserSnapshot:
-    """The parser-side facts the scorer needs."""
+    """The parser-side facts the scorer needs.
+
+    Phase 9 fields (all optional; default to None / False to keep
+    existing callers working unchanged) carry counterparty + detector
+    outputs from ``patterns.PatternAnalysis`` into the scorer.
+    """
 
     aggregates: Aggregates
     fraud_score: int
@@ -42,6 +47,15 @@ class ParserSnapshot:
     statement_period_start: date
     statement_period_end: date
     statement_days: int
+    top_counterparty_pct: int | None = None
+    top_counterparty_label: str | None = None
+    top_5_revenue_share_pct: int | None = None
+    top_5_expense_share_pct: int | None = None
+    payroll_present: bool = False
+    acceleration_clause_triggered: bool = False
+    unauthorized_withdrawal_dispute: bool = False
+    tampering_confirmed: bool = False
+    ai_generated_score: int = 0
 
 
 def build_score_input(
@@ -97,6 +111,15 @@ def build_score_input(
         is_renewal=bool(merchant_row.get("is_renewal", False)),
         prior_payoff_performance=merchant_row.get("prior_payoff_performance"),
         prior_advance_count=int(merchant_row.get("prior_advance_count", 0)),
+        top_counterparty_pct=parser.top_counterparty_pct,
+        top_counterparty_label=parser.top_counterparty_label,
+        top_5_revenue_share_pct=parser.top_5_revenue_share_pct,
+        top_5_expense_share_pct=parser.top_5_expense_share_pct,
+        payroll_present=parser.payroll_present,
+        acceleration_clause_triggered=parser.acceleration_clause_triggered,
+        unauthorized_withdrawal_dispute=parser.unauthorized_withdrawal_dispute,
+        tampering_confirmed=parser.tampering_confirmed,
+        ai_generated_score=parser.ai_generated_score,
     )
 
 
