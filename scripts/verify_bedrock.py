@@ -16,13 +16,23 @@ Flow:
      them: without this, the gate would silently miss them and report
      a misleading PASS.
   3. SSH in twice, running the corpus once with AEGIS_PARSER_PAGE_ROUTING=0
-     (baseline) and once with =1 (page-routing). Output JSON files land in
-     the remote temp dir.
-  4. SSH in a third time to run the diff via `compare_corpus_runs.py`. Its
-     stdout (the PASS / GATE FAILURES block) is streamed back to the
-     operator.
+     (baseline) and once with =1 (page-routing). Each is its own SSH
+     session: the baseline session opens, runs ~25-30 min, exits; THEN
+     a fresh SSH opens for page-routing. Splitting them this way limits
+     the maximum sustained session length and lets a transport-level
+     failure in one leg leave the other leg's option of re-running open
+     without re-doing successful work. Output JSON files land in the
+     remote temp dir (the dir persists across the per-leg sessions).
+  4. SSH in a third (short) time to run the diff via
+     `compare_corpus_runs.py`. Its stdout (the PASS / GATE FAILURES
+     block) is streamed back to the operator.
   5. Remote temp dir is cleaned up on success. On failure the temp dir is
      left in place so the operator can inspect — the path is printed.
+
+Every ssh/scp call carries SSH_KEEPALIVE_OPTS (`-o ServerAliveInterval=30
+-o ServerAliveCountMax=10`) so the connection survives the multi-second
+gaps during Bedrock 503-retries without the local sshd or any
+intermediate Cloudflare Access tunnel cutting the session as idle.
 
 The SSH host defaults to `aegis@aegis-ssh.commerafunding.com`, matching
 `scripts/deploy.sh`. Override with `--host` or `AEGIS_HOST`.
@@ -53,6 +63,26 @@ DEFAULT_HOST = "aegis@aegis-ssh.commerafunding.com"
 DEFAULT_REMOTE_REPO = "/opt/aegis"
 ENV_FILE_ON_BOX = "/etc/aegis/aegis.env"
 
+# Keepalive options applied to every ssh/scp invocation.
+#
+# The 2026-05-19 baseline run died at the 32-min mark with
+# "Connection to <host> closed by remote host; client_loop: send disconnect:
+# Broken pipe" (exit 255) — a transport-level disconnect, NOT a corpus or
+# gate failure. The corpus run streams bursts of httpx INFO lines but
+# pauses for seconds at a time during Bedrock 503-retries; from sshd's
+# perspective those pauses can look like idle.
+#
+# ServerAliveInterval=30 sends a null packet every 30s of idle so the
+# remote sshd (and any intermediate Cloudflare Access tunnel) does not
+# treat the session as dead. ServerAliveCountMax=10 then tolerates up to
+# 5 minutes of network unreachability before giving up on the
+# connection — generous enough for transient Bedrock or Cloudflare
+# hiccups without holding a dead session forever.
+SSH_KEEPALIVE_OPTS = [
+    "-o", "ServerAliveInterval=30",
+    "-o", "ServerAliveCountMax=10",
+]
+
 
 def _ssh(host: str, remote_cmd: str, *, stream: bool = True) -> int:
     """Run `remote_cmd` on `host` via ssh. Stream output to local tty."""
@@ -70,7 +100,7 @@ def _ssh(host: str, remote_cmd: str, *, stream: bool = True) -> int:
     # Fix: send `remote_cmd` as one ssh argv element; the remote login
     # shell (bash for the `aegis` user) parses it normally. Same convention
     # `scripts/deploy.sh` uses.
-    argv = ["ssh", host, remote_cmd]
+    argv = ["ssh", *SSH_KEEPALIVE_OPTS, host, remote_cmd]
     completed = subprocess.run(
         argv,
         stdout=None if stream else subprocess.PIPE,
@@ -83,7 +113,7 @@ def _ssh(host: str, remote_cmd: str, *, stream: bool = True) -> int:
 def _scp(local: Path, host: str, remote_path: str) -> int:
     print(f"[scp] {local} -> {host}:{remote_path}", file=sys.stderr)
     completed = subprocess.run(
-        ["scp", "-q", str(local), f"{host}:{remote_path}"],
+        ["scp", *SSH_KEEPALIVE_OPTS, "-q", str(local), f"{host}:{remote_path}"],
         check=False,
     )
     return completed.returncode
@@ -93,7 +123,7 @@ def _scp_dir(local_dir: Path, host: str, remote_parent: str) -> int:
     """Recursively scp `local_dir` so it appears as `remote_parent/<basename>`."""
     print(f"[scp -r] {local_dir} -> {host}:{remote_parent}/", file=sys.stderr)
     completed = subprocess.run(
-        ["scp", "-rq", str(local_dir), f"{host}:{remote_parent}/"],
+        ["scp", *SSH_KEEPALIVE_OPTS, "-rq", str(local_dir), f"{host}:{remote_parent}/"],
         check=False,
     )
     return completed.returncode
@@ -191,21 +221,25 @@ def main() -> int:
         # Print the EXACT subprocess argv that would be executed. Post-2026-05-18
         # fix: `remote_cmd` is passed as a SINGLE argv element to ssh — note
         # the absence of any `bash -lc` wrapping that ssh would otherwise
-        # flatten and break.
+        # flatten and break. SSH_KEEPALIVE_OPTS prefix every ssh/scp call
+        # (2026-05-19 transport-disconnect fix).
         mkdir_cmd = f"mkdir -p {shlex.quote(remote_dir)}"
         baseline = _build_corpus_invocation(remote_dir, False, "baseline.json", args.limit)
         pagerouting = _build_corpus_invocation(remote_dir, True, "pagerouting.json", args.limit)
         compare = _build_compare_invocation(remote_dir)
         cleanup = f"rm -rf {shlex.quote(remote_dir)}"
-        scp_corpus = ["scp", "-rq", str(LOCAL_CORPUS_DIR), f"{host}:{remote_dir}/"]
-        print(f"[dry-run] subprocess argv: {['ssh', host, mkdir_cmd]!r}")
-        print(f"[dry-run] subprocess argv: {['scp', '-q', str(local_runner), f'{host}:{remote_dir}/run_corpus_bedrock.py']!r}")
-        print(f"[dry-run] subprocess argv: {['scp', '-q', str(local_compare), f'{host}:{remote_dir}/compare_corpus_runs.py']!r}")
+        ssh_pre = ["ssh", *SSH_KEEPALIVE_OPTS]
+        scp_pre = ["scp", *SSH_KEEPALIVE_OPTS, "-q"]
+        scp_dir_pre = ["scp", *SSH_KEEPALIVE_OPTS, "-rq"]
+        scp_corpus = [*scp_dir_pre, str(LOCAL_CORPUS_DIR), f"{host}:{remote_dir}/"]
+        print(f"[dry-run] subprocess argv: {[*ssh_pre, host, mkdir_cmd]!r}")
+        print(f"[dry-run] subprocess argv: {[*scp_pre, str(local_runner), f'{host}:{remote_dir}/run_corpus_bedrock.py']!r}")
+        print(f"[dry-run] subprocess argv: {[*scp_pre, str(local_compare), f'{host}:{remote_dir}/compare_corpus_runs.py']!r}")
         print(f"[dry-run] subprocess argv: {scp_corpus!r}  # ships {pdf_count} PDFs")
-        print(f"[dry-run] subprocess argv: {['ssh', host, baseline]!r}")
-        print(f"[dry-run] subprocess argv: {['ssh', host, pagerouting]!r}")
-        print(f"[dry-run] subprocess argv: {['ssh', host, compare]!r}")
-        print(f"[dry-run] subprocess argv: {['ssh', host, cleanup]!r}")
+        print(f"[dry-run] subprocess argv: {[*ssh_pre, host, baseline]!r}")
+        print(f"[dry-run] subprocess argv: {[*ssh_pre, host, pagerouting]!r}")
+        print(f"[dry-run] subprocess argv: {[*ssh_pre, host, compare]!r}")
+        print(f"[dry-run] subprocess argv: {[*ssh_pre, host, cleanup]!r}")
         return 0
 
     if _ssh(host, f"mkdir -p {shlex.quote(remote_dir)}") != 0:
