@@ -125,18 +125,18 @@ make migrate TARGET=prod
 
 ### Retrieve migration history
 
-The audit row carries `filename`, `sha256`, `target`, `started_at`, `finished_at`, plus the `aegis_version` (short git SHA at runner invocation time).
+The audit row's `details` JSONB carries `filename`, `sha256`, `target`, `started_at`, `finished_at`, and `aegis_version` (short git SHA at runner invocation time). Everything beyond the migration-000 base columns lives inside `details` so the same INSERT works against pre-019 and post-019 audit_log schemas.
 
 ```sql
 SELECT
   created_at,
   actor,
-  aegis_version,
-  details->>'filename'    AS filename,
-  details->>'target'      AS target,
-  details->>'sha256'      AS sha256,
-  details->>'started_at'  AS started_at,
-  details->>'finished_at' AS finished_at
+  details->>'aegis_version' AS aegis_version,
+  details->>'filename'      AS filename,
+  details->>'target'        AS target,
+  details->>'sha256'        AS sha256,
+  details->>'started_at'    AS started_at,
+  details->>'finished_at'   AS finished_at
 FROM audit_log
 WHERE action = 'migration_applied'
 ORDER BY created_at DESC

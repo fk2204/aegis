@@ -127,6 +127,49 @@ def test_advisory_lock_key_is_stable() -> None:
     assert apply_migrations.ADVISORY_LOCK_KEY == 4736294826
 
 
+def test_audit_log_insert_uses_only_pre_019_columns() -> None:
+    """Regression for the 2026-05-18 prod failure.
+
+    The audit_log INSERT must reference only columns that exist in the
+    migration-000 baseline (actor, action, subject_type, details). Any
+    new field — including aegis_version — must live inside the `details`
+    JSONB. Migrations 015..018 run BEFORE migration 019 adds the new
+    top-level columns; an INSERT that referenced `aegis_version` as a
+    column raised ``UndefinedColumn`` and atomically rolled back 015's
+    apply against prod.
+
+    This unit test fails without a database, catching the bug at lint /
+    pre-commit time. The integration counterpart is
+    ``test_integration_apply_against_pre_019_audit_log_schema``.
+    """
+    sql = apply_migrations._AUDIT_LOG_INSERT_SQL.lower()
+
+    # Extract the INSERT column list — the parens immediately after "into audit_log".
+    head, _, rest = sql.partition("into audit_log")
+    assert rest, "audit_log INSERT not found in _AUDIT_LOG_INSERT_SQL"
+    column_list = rest.split("(", 1)[1].split(")", 1)[0]
+
+    # Top-level columns: only those from migration 000.
+    forbidden_top_level = {
+        "aegis_version",
+        "deal_id",
+        "state_change",
+        "rule_pack_version",
+    }
+    for forbidden in forbidden_top_level:
+        assert forbidden not in column_list, (
+            f"{forbidden!r} must not be a top-level audit_log column in the "
+            f"INSERT — it lives in details JSONB. Found column list: {column_list!r}"
+        )
+
+    # And every forbidden top-level key must still be recorded — just inside details.
+    # We at least require aegis_version (the one the runner actually writes).
+    assert "aegis_version" in sql, (
+        "aegis_version must still be written into details JSONB so the audit "
+        "trail records which runner SHA performed each apply"
+    )
+
+
 def test_migration_probes_cover_every_real_migration() -> None:
     """Every numbered migration in migrations/ has a bootstrap probe.
 
@@ -176,6 +219,10 @@ def clean_db(pg_dsn: str) -> str:
 @pytest.fixture()
 def synthetic_migrations(tmp_path: Path) -> list:
     """Two trivial idempotent migrations + a third whose body raises."""
+    # Realism: real migration 000 creates audit_log WITHOUT aegis_version.
+    # That column is added by migration 019. Tests must match — otherwise we
+    # silently mask the pre-019-schema compatibility requirement (the bug
+    # that escaped to prod on 2026-05-18).
     (tmp_path / "000_init.sql").write_text(
         "CREATE TABLE IF NOT EXISTS audit_log (\n"
         "  id BIGSERIAL PRIMARY KEY,\n"
@@ -184,7 +231,6 @@ def synthetic_migrations(tmp_path: Path) -> list:
         "  subject_type TEXT,\n"
         "  subject_id UUID,\n"
         "  details JSONB NOT NULL DEFAULT '{}'::jsonb,\n"
-        "  aegis_version TEXT,\n"
         "  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n"
         ");\n"
     )
@@ -268,10 +314,93 @@ def test_integration_drift_detection_blocks_modified_file(
         runner2.run()
 
 
+def test_integration_apply_against_pre_019_audit_log_schema(
+    clean_db: str, tmp_path: Path
+) -> None:
+    """Regression for the 2026-05-18 prod failure.
+
+    Real migration 000 creates ``audit_log`` with columns (id, actor, action,
+    subject_type, subject_id, details, created_at). Migration 019 later adds
+    deal_id, state_change, aegis_version, rule_pack_version. The runner must
+    write audit rows successfully against the pre-019 schema — that is the
+    state during the apply of 015..018.
+
+    Pre-fix code referenced aegis_version as a top-level column and raised
+    UndefinedColumn against prod. This test sets up exactly that pre-019
+    schema and asserts the apply lands cleanly with aegis_version recorded
+    inside details JSONB.
+    """
+    (tmp_path / "000_pre019_baseline.sql").write_text(
+        "CREATE TABLE IF NOT EXISTS audit_log (\n"
+        "  id BIGSERIAL PRIMARY KEY,\n"
+        "  actor TEXT NOT NULL,\n"
+        "  action TEXT NOT NULL,\n"
+        "  subject_type TEXT,\n"
+        "  subject_id UUID,\n"
+        "  details JSONB NOT NULL DEFAULT '{}'::jsonb,\n"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n"
+        ");\n"
+    )
+    (tmp_path / "001_pre019_payload.sql").write_text(
+        "CREATE TABLE IF NOT EXISTS pre019_marker (id INT PRIMARY KEY);\n"
+    )
+    migs = apply_migrations.discover_migrations(tmp_path)
+
+    runner = apply_migrations.MigrationRunner(
+        dsn=clean_db,
+        target="dev",
+        actor="apply_migrations:test",
+        dry_run=False,
+        aegis_version="aegisv-test",
+        migrations=migs,
+    )
+    report = runner.run()
+    assert sorted(report.applied) == [
+        "000_pre019_baseline.sql",
+        "001_pre019_payload.sql",
+    ]
+
+    import psycopg
+    with psycopg.connect(clean_db) as conn:
+        with conn.cursor() as cur:
+            # Test-invariant sanity: audit_log must remain at the pre-019
+            # baseline (no aegis_version column). If a future fixture starts
+            # adding the column, this test stops being meaningful.
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='audit_log' "
+                "AND column_name='aegis_version'"
+            )
+            assert cur.fetchone() is None, (
+                "test fixture invariant broken: audit_log should remain at "
+                "the pre-019 baseline (no aegis_version column)"
+            )
+
+            cur.execute(
+                "SELECT details FROM audit_log "
+                "WHERE action='migration_applied' "
+                "  AND details->>'filename'='001_pre019_payload.sql'"
+            )
+            row = cur.fetchone()
+            assert row is not None, (
+                "audit_log row for 001_pre019_payload.sql is missing — "
+                "pre-019 compat regression"
+            )
+            details = row[0]
+            assert details["aegis_version"] == "aegisv-test"
+            assert details["filename"] == "001_pre019_payload.sql"
+            assert details["target"] == "dev"
+            assert "started_at" in details and "finished_at" in details
+
+
 def test_integration_failed_migration_rolls_back_audit_row(
     clean_db: str, tmp_path: Path
 ) -> None:
     """If the migration body raises, the audit_log row must not land."""
+    # Realism: real migration 000 creates audit_log WITHOUT aegis_version.
+    # That column is added by migration 019. Tests must match — otherwise we
+    # silently mask the pre-019-schema compatibility requirement (the bug
+    # that escaped to prod on 2026-05-18).
     (tmp_path / "000_init.sql").write_text(
         "CREATE TABLE IF NOT EXISTS audit_log (\n"
         "  id BIGSERIAL PRIMARY KEY,\n"
@@ -280,7 +409,6 @@ def test_integration_failed_migration_rolls_back_audit_row(
         "  subject_type TEXT,\n"
         "  subject_id UUID,\n"
         "  details JSONB NOT NULL DEFAULT '{}'::jsonb,\n"
-        "  aegis_version TEXT,\n"
         "  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n"
         ");\n"
     )
@@ -330,6 +458,10 @@ def test_integration_concurrent_runner_hits_lock_error(
     """Two simultaneous runners — one acquires the lock, the other raises."""
     # A migration with a deliberate pg_sleep so the first runner holds the
     # lock long enough for the second to attempt acquisition.
+    # Realism: real migration 000 creates audit_log WITHOUT aegis_version.
+    # That column is added by migration 019. Tests must match — otherwise we
+    # silently mask the pre-019-schema compatibility requirement (the bug
+    # that escaped to prod on 2026-05-18).
     (tmp_path / "000_init.sql").write_text(
         "CREATE TABLE IF NOT EXISTS audit_log (\n"
         "  id BIGSERIAL PRIMARY KEY,\n"
@@ -338,7 +470,6 @@ def test_integration_concurrent_runner_hits_lock_error(
         "  subject_type TEXT,\n"
         "  subject_id UUID,\n"
         "  details JSONB NOT NULL DEFAULT '{}'::jsonb,\n"
-        "  aegis_version TEXT,\n"
         "  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n"
         ");\n"
     )
