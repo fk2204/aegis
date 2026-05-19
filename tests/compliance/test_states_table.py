@@ -31,15 +31,22 @@ from aegis.compliance.states import (
 # (1) ------------------------------------------------------------------------
 
 
-def test_all_45_states_present() -> None:
+def test_all_49_states_present() -> None:
+    """Phase 4 (mp §14): served set grew by 4 — VA, CT, UT, MO joined.
+
+    TX is intentionally NOT in the served set yet (counsel review per
+    ``docs/counsel/phase-4-questions.md``). DC and U.S. territories
+    remain out of scope.
+    """
     expected = {
-        "AL", "AK", "AZ", "AR", "CA", "CO", "DE", "FL", "GA", "HI", "ID", "IL",
-        "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MT",
-        "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA",
-        "RI", "SC", "SD", "TN", "VT", "WA", "WV", "WI", "WY",
+        "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
+        "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
+        "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+        "OR", "PA", "RI", "SC", "SD", "TN", "UT", "VT", "VA", "WA", "WV", "WI",
+        "WY",
     }
     assert set(STATES.keys()) == expected
-    assert len(STATES) == 45
+    assert len(STATES) == 49
 
 
 def test_skeleton_states_are_all_tier_3_except_promoted() -> None:
@@ -70,15 +77,34 @@ def test_skeleton_table_validates() -> None:
 # (5) ------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("non_served", ["TX", "VA", "CT", "UT", "MO", "DC", "PR"])
+# Phase 4 (mp §14): VA, CT, UT, MO moved to served; TX remains
+# counsel-gated. DC + territories continue to raise StateNotServed.
+@pytest.mark.parametrize("non_served", ["TX", "DC", "PR"])
 def test_non_served_state_rejected(non_served: str) -> None:
     with pytest.raises(StateNotServed, match=r"state_not_served"):
         validate_state_served(non_served)
 
 
+@pytest.mark.parametrize("phase_4_served", ["VA", "CT", "UT", "MO"])
+def test_phase_4_states_now_served(phase_4_served: str) -> None:
+    """Phase 4 promotion smoke: each of VA/CT/UT/MO no longer raises
+    ``StateNotServed`` at intake (deal-flow win per master plan §14).
+    Disclosure rendering still raises ``StateNotAudited`` until Phase 5
+    builds the locked Jinja template for each state — the gating moves
+    from intake to render, where the operator can see the deal in the
+    dashboard but cannot ship without a template.
+    """
+    validate_state_served(phase_4_served)  # must not raise
+
+
 def test_served_state_does_not_raise() -> None:
     validate_state_served("CA")
     validate_state_served("ny")  # case-insensitive
+    # Phase 4 spot-check — lower-case forms also work.
+    validate_state_served("va")
+    validate_state_served("ct")
+    validate_state_served("ut")
+    validate_state_served("mo")
 
 
 # (2) ------------------------------------------------------------------------
