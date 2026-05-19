@@ -303,6 +303,16 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
         flags.append("xref_offset_mismatch")
         score += 25
 
+    # Phase 9 forensics (master plan §6.4 forensic layer).
+    font_flag, font_score = _font_inconsistency(pdf)
+    if font_flag:
+        flags.append(font_flag)
+        score += font_score
+    layer_flag, layer_score = _page_layer_anomaly(pdf)
+    if layer_flag:
+        flags.append(layer_flag)
+        score += layer_score
+
     pdf.close()
 
     has_text_layer = _detect_text_layer(path)
@@ -320,6 +330,141 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
         has_text_layer=has_text_layer,
         flags=flags,
         fraud_score=min(100, score),
+    )
+
+
+def _extract_page_fonts(page: pikepdf.Page) -> set[str]:
+    """Return the set of /BaseFont names referenced by ``page``.
+
+    Empty set when the page has no font resources (image-only, watermark
+    only, or any pikepdf accessor failure). pikepdf raises a mix of
+    PdfError, KeyError, ValueError on malformed object graphs; we treat
+    any of them as "no fonts extracted" — the calling detector counts
+    pages by font-overlap, so a silent miss simply lowers sensitivity
+    rather than skewing the result.
+    """
+    names: set[str] = set()
+    # pikepdf objects are weakly typed in stubs; Any avoids fighting
+    # Page.get's overload with default args. Narrower except clauses
+    # to keep ruff S/BLE rules satisfied.
+    try:
+        resources: Any = page.get("/Resources")
+    except (pikepdf.PdfError, KeyError, ValueError):
+        return names
+    if resources is None or not hasattr(resources, "get"):
+        return names
+    try:
+        fonts: Any = resources.get("/Font")
+    except (pikepdf.PdfError, KeyError, ValueError):
+        return names
+    if not fonts:
+        return names
+    for _, font_obj in fonts.items():
+        try:
+            base = font_obj.get("/BaseFont")
+        except (pikepdf.PdfError, KeyError, ValueError):
+            continue
+        if base is not None:
+            names.add(str(base))
+    return names
+
+
+def _font_inconsistency(pdf: pikepdf.Pdf) -> tuple[str | None, int]:
+    """Flag pages whose font set differs significantly from the document baseline.
+
+    Bank statements typically use one consistent font family across every
+    page. A page with a markedly different font subset is a signal that
+    content was pasted in from an external source (text-modification
+    tampering). We count distinct embedded-font base names per page; a
+    page whose font set has zero overlap with the union of fonts seen on
+    other pages flags as inconsistent.
+
+    Single-page PDFs return None — no inter-page comparison possible.
+    Returns ``(flag, score_delta)`` or ``(None, 0)`` when no anomaly.
+    """
+    try:
+        pages = list(pdf.pages)
+    except (pikepdf.PdfError, RuntimeError, ValueError, KeyError):
+        return None, 0
+    if len(pages) < 2:
+        return None, 0
+
+    per_page_fonts: list[set[str]] = []
+    for p in pages:
+        names = _extract_page_fonts(p)
+        per_page_fonts.append(names)
+
+    # Skip when no fonts are extractable at all (image-only PDFs).
+    if not any(per_page_fonts):
+        return None, 0
+
+    inconsistent_pages = 0
+    for i, this_page in enumerate(per_page_fonts):
+        if not this_page:
+            continue
+        other_union: set[str] = set().union(
+            *(s for j, s in enumerate(per_page_fonts) if j != i)
+        )
+        if other_union and not (this_page & other_union):
+            inconsistent_pages += 1
+
+    if inconsistent_pages == 0:
+        return None, 0
+    return (
+        f"font_inconsistency: {inconsistent_pages} page(s) have no font overlap",
+        20,
+    )
+
+
+def _page_layer_anomaly(pdf: pikepdf.Pdf) -> tuple[str | None, int]:
+    """Detect pages whose content-stream count differs from siblings.
+
+    Pages assembled by overlaying one PDF onto another often carry
+    multiple ``/Contents`` streams while the rest of the document uses
+    a single stream per page. The variance is not conclusive (some
+    legit exports also split streams) but per master plan §6.4 it
+    contributes to the multi-layer fraud composite, not as a hard
+    decline.
+    """
+    try:
+        pages = list(pdf.pages)
+    except (pikepdf.PdfError, RuntimeError, ValueError, KeyError):
+        return None, 0
+    if len(pages) < 2:
+        return None, 0
+
+    stream_counts: list[int] = []
+    for p in pages:
+        try:
+            contents: Any = p.get("/Contents")
+        except (pikepdf.PdfError, KeyError, ValueError):
+            stream_counts.append(-1)
+            continue
+        if contents is None:
+            stream_counts.append(0)
+        elif isinstance(contents, pikepdf.Array):
+            stream_counts.append(len(contents))
+        else:
+            stream_counts.append(1)
+
+    # Anomaly: any page has a stream count that disagrees with the mode.
+    valid_counts = [c for c in stream_counts if c >= 0]
+    if len(set(valid_counts)) <= 1:
+        return None, 0
+    # Identify minority value(s); flag if at least one but not all pages
+    # disagree.
+    counter: dict[int, int] = {}
+    for c in valid_counts:
+        counter[c] = counter.get(c, 0) + 1
+    if len(counter) < 2:
+        return None, 0
+    mode_count = max(counter.values())
+    odd = sum(v for c, v in counter.items() if v != mode_count)
+    if odd == 0:
+        return None, 0
+    return (
+        f"page_layer_anomaly: {odd} page(s) have an off-mode /Contents stream count",
+        15,
     )
 
 
