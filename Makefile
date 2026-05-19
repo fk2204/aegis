@@ -1,4 +1,4 @@
-.PHONY: install install-hooks dev worker test test-fast typecheck lint format check verify-bedrock verify-db verify-db-list
+.PHONY: install install-hooks dev worker test test-fast typecheck lint format check migrate migrate-dry verify-bedrock verify-db verify-db-list
 
 install:
 	uv sync
@@ -38,6 +38,30 @@ format:
 # CORPUS=1 is set inside `test` so the operator can never accidentally
 # ship without corpus validation. The opt-out is `make test-fast`.
 check: typecheck lint test
+
+# 3C-extra migration runner. The operator never SSHes or opens the
+# Supabase SQL editor for migrations.
+#
+# Usage:
+#   make migrate TARGET=dev
+#   make migrate TARGET=prod DRY_RUN=1
+#   make migrate TARGET=prod
+#
+# Reads scripts/db_checks-style .env.local for MIGRATIONS_DB_URL_<TARGET>.
+# See deploy/RUNBOOK.md "Database migrations" for the audit-log query.
+migrate:
+	@if [ -z "$(TARGET)" ]; then \
+		echo "usage: make migrate TARGET=<dev|staging|prod> [DRY_RUN=1]"; \
+		exit 2; \
+	fi
+	uv run python scripts/apply_migrations.py --target $(TARGET) $(if $(DRY_RUN),--dry-run,)
+
+migrate-dry:
+	@if [ -z "$(TARGET)" ]; then \
+		echo "usage: make migrate-dry TARGET=<dev|staging|prod>"; \
+		exit 2; \
+	fi
+	uv run python scripts/apply_migrations.py --target $(TARGET) --dry-run
 
 # Operator-zero-touch verification harnesses.
 # See scripts/verify_bedrock.py and scripts/db_verify.py.
