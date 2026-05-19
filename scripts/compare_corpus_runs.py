@@ -4,34 +4,43 @@ Compares a baseline run (page_routing_enabled=False) against a
 new-path run (page_routing_enabled=True). Prints both the validation
 results and the token-reduction signal.
 
-Gate criteria — split into hard gates (must pass for exit 0) and soft
-signals (printed and tagged as informational warnings, never failing
-the run on their own):
+Gate criteria (post Phase 11 task #6 — image-only synthetic PDFs):
 
   HARD GATES
     - failed_docs == 0 on baseline
     - failed_docs == 0 on page-routing
     - clean-only TEXT-mode pct >= 80 on the page-routing run
+    - image-only token reduction > 0% on the page-routing run
+      (vision-routed pages should run cheaper on the page-routing path
+      than on the baseline whole-doc path; the page-routing classifier
+      lets text-bearing pages skip the expensive vision call. With
+      image_only_* PDFs in the corpus this branch is now exercisable.)
 
-  SOFT SIGNAL (warn only, does NOT fail the run)
-    - clean-only token reduction percentage on page-routing vs baseline
+  REPORTED SIGNALS (printed, do NOT fail the run on their own)
+    - clean-only token reduction (clean_profitable_*) — informational
+      because clean docs are 100% text-bearing and the optimization
+      has no opportunity to win there; near-zero or slightly negative
+      delta from classifier overhead is expected.
 
-  Why token reduction is a soft signal: the page-routing optimization
-  saves tokens only when a PDF contains a mix of text-readable and
-  image-only pages (text pages skip the expensive vision call). For an
-  all-text single-page corpus — which the current synthetic corpus is —
-  every page routes to text mode anyway, so the optimization adds the
-  per-page classifier's fixed overhead without ever exploiting the
-  vision-vs-text tradeoff. Verified on 2026-05-19 verify-bedrock run:
-  56/56 docs passed both legs, 100% TEXT-mode pages, token delta
-  -1.18% (page-routing slightly more expensive due to classifier
-  overhead). The signal will become meaningful — and re-promotable to
-  a hard gate — once the corpus includes image-only / scanned-style
-  PDFs that exercise the text-vs-vision branch. See Phase 11 task #6
-  in docs/AEGIS_MASTER_PLAN.md.
+History of the token-reduction criterion
+----------------------------------------
+The token-reduction criterion lived in ``hard_gate_failures`` from
+introduction (Stage 2B page-routing) through 2026-05-19, when the
+first end-to-end verify-bedrock run on real Bedrock surfaced that the
+synthetic corpus was 100% text-readable (56/56 docs, 100% TEXT-mode
+pages, -1.18% token delta from per-page classifier overhead). It was
+demoted to a soft signal in commit 9487ea2 so the gate would not
+falsely fail on a corpus that couldn't exercise the optimization.
+
+Phase 11 task #6 added image-only synthetic PDFs (``image_only_*``
+under ``tests/fixtures/corpus/synthetic/``) that route to vision under
+the page router. Those PDFs give the optimization a real branch to
+exploit, so the criterion is promoted back to a HARD gate against the
+``image_only_*`` subset. The clean-only criterion stays soft for the
+historical reason above.
 
 Exit codes:
-  0 — all hard gates passed (soft signal still reported, with WARN if negative)
+  0 — all hard gates passed (soft signals still reported)
   1 — at least one hard gate failed
   2 — caller-side mistake (wrong file passed, page_routing flag mismatch)
 """
@@ -45,11 +54,46 @@ from pathlib import Path
 from typing import Any
 
 CLEAN_PREFIX = "clean_profitable_"
+IMAGE_ONLY_PREFIX = "image_only_"
 
 
 def _load(p: Path) -> dict[str, Any]:
     loaded: dict[str, Any] = json.loads(p.read_text(encoding="utf-8"))
     return loaded
+
+
+def _token_totals(results: list[dict[str, Any]]) -> tuple[int, int]:
+    """Sum (input, output) tokens across results."""
+    return (
+        sum(r["input_tokens"] for r in results),
+        sum(r["output_tokens"] for r in results),
+    )
+
+
+def _reduction_pct(base_total: int, new_total: int) -> float:
+    if base_total == 0:
+        return 0.0
+    return round(100 * (base_total - new_total) / base_total, 2)
+
+
+def _per_doc_avg_reduction(
+    base: list[dict[str, Any]], new: list[dict[str, Any]]
+) -> float | None:
+    """Average per-doc % reduction. Returns None when no overlap."""
+    by_name = {r["pdf"]: r for r in new}
+    deltas: list[float] = []
+    for b in base:
+        n = by_name.get(b["pdf"])
+        if not n:
+            continue
+        base_total = b["input_tokens"] + b["output_tokens"]
+        new_total = n["input_tokens"] + n["output_tokens"]
+        if base_total == 0:
+            continue
+        deltas.append(100 * (base_total - new_total) / base_total)
+    if not deltas:
+        return None
+    return round(sum(deltas) / len(deltas), 2)
 
 
 def main() -> int:
@@ -84,38 +128,30 @@ def main() -> int:
     text_pct = new_path["summary"]["text_strategy_pct"]
     print(f"page-route TEXT-mode % (all pages): {text_pct}")
 
+    hard_gate_failures: list[str] = []
+    soft_signal_warnings: list[str] = []
+
+    if base_fails or new_fails:
+        hard_gate_failures.append(
+            f"failed_docs (baseline={base_fails}, new={new_fails})"
+        )
+
+    # --- Clean-only subset (soft signal — historical, kept for visibility).
     clean_base = [r for r in baseline["results"] if r["pdf"].startswith(CLEAN_PREFIX)]
     clean_new = [r for r in new_path["results"] if r["pdf"].startswith(CLEAN_PREFIX)]
+    clean_text_pct: float | None = None
     if clean_base and clean_new:
-        base_in = sum(r["input_tokens"] for r in clean_base)
-        base_out = sum(r["output_tokens"] for r in clean_base)
-        new_in = sum(r["input_tokens"] for r in clean_new)
-        new_out = sum(r["output_tokens"] for r in clean_new)
+        base_in, base_out = _token_totals(clean_base)
+        new_in, new_out = _token_totals(clean_new)
         total_base = base_in + base_out
         total_new = new_in + new_out
-        reduction_pct = (
-            round(100 * (total_base - total_new) / total_base, 2)
-            if total_base
-            else 0.0
-        )
+        reduction_pct = _reduction_pct(total_base, total_new)
         print(f"clean-only baseline tokens (in+out): {total_base}")
         print(f"clean-only page-route tokens (in+out): {total_new}")
         print(f"clean-only token reduction:           {reduction_pct}%")
-        # Per-doc average reduction
-        per_doc = []
-        by_name = {r["pdf"]: r for r in clean_new}
-        for b in clean_base:
-            n = by_name.get(b["pdf"])
-            if not n:
-                continue
-            base_total = b["input_tokens"] + b["output_tokens"]
-            new_total = n["input_tokens"] + n["output_tokens"]
-            if base_total == 0:
-                continue
-            per_doc.append(100 * (base_total - new_total) / base_total)
-        if per_doc:
-            avg = round(sum(per_doc) / len(per_doc), 2)
-            print(f"avg per-doc token reduction (clean): {avg}%")
+        per_doc = _per_doc_avg_reduction(clean_base, clean_new)
+        if per_doc is not None:
+            print(f"avg per-doc token reduction (clean): {per_doc}%")
 
         clean_pages_total = sum(len(r["page_strategies"]) for r in clean_new)
         clean_text_pages = sum(
@@ -128,46 +164,108 @@ def main() -> int:
         )
         print(f"clean-only TEXT-mode %: {clean_text_pct}")
 
-        # Hard gates — failing any of these returns exit code 1.
-        hard_gate_failures: list[str] = []
-        if base_fails or new_fails:
-            hard_gate_failures.append(
-                f"failed_docs (baseline={base_fails}, new={new_fails})"
-            )
         if clean_text_pct < 80:
-            hard_gate_failures.append(f"clean TEXT-mode pct {clean_text_pct} < 80")
+            hard_gate_failures.append(
+                f"clean TEXT-mode pct {clean_text_pct} < 80"
+            )
 
-        # Soft signal — reported as a WARN when token usage didn't drop, but
-        # NEVER fails the run on its own. See module docstring for why this
-        # criterion is soft until the corpus includes mixed-modality PDFs.
-        soft_signal_warnings: list[str] = []
+        # Clean-only token reduction stays a SOFT signal. Clean PDFs are
+        # 100% text-bearing — the per-page classifier's fixed overhead is
+        # the only thing the optimization can spend tokens on there, so a
+        # small negative delta is expected and shouldn't fail the gate.
         if total_new >= total_base:
             soft_signal_warnings.append(
-                f"page-routing used >= baseline tokens "
+                f"clean-only page-routing used >= baseline tokens "
                 f"(new={total_new} base={total_base}, "
                 f"delta={total_new - total_base:+d}, {reduction_pct}%). "
-                "Likely cause: corpus is 100% text-only — optimization can't "
-                "win without image-only pages to bypass. See module docstring + "
-                "Phase 11 task #6."
+                "Expected for a 100% text-bearing subset — the per-page "
+                "classifier adds overhead with no offsetting vision skip. "
+                "The image_only_* subset is what we hard-gate on."
             )
 
-        if hard_gate_failures:
-            print()
-            print("HARD GATE FAILURES:")
-            for f in hard_gate_failures:
-                print(f"  - {f}")
-            if soft_signal_warnings:
-                print()
-                print("SOFT SIGNAL WARNINGS (informational):")
-                for w in soft_signal_warnings:
-                    print(f"  - {w}")
-            return 1
+    # --- Image-only subset (HARD gate — Phase 11 task #6).
+    img_base = [r for r in baseline["results"] if r["pdf"].startswith(IMAGE_ONLY_PREFIX)]
+    img_new = [r for r in new_path["results"] if r["pdf"].startswith(IMAGE_ONLY_PREFIX)]
+    if img_base and img_new:
+        base_in, base_out = _token_totals(img_base)
+        new_in, new_out = _token_totals(img_new)
+        total_base = base_in + base_out
+        total_new = new_in + new_out
+        img_reduction_pct = _reduction_pct(total_base, total_new)
+        print(f"image-only baseline tokens (in+out): {total_base}")
+        print(f"image-only page-route tokens (in+out): {total_new}")
+        print(f"image-only token reduction:           {img_reduction_pct}%")
+        per_doc = _per_doc_avg_reduction(img_base, img_new)
+        if per_doc is not None:
+            print(f"avg per-doc token reduction (image-only): {per_doc}%")
 
+        img_pages_total = sum(len(r["page_strategies"]) for r in img_new)
+        img_vision_pages = sum(
+            sum(1 for s in r["page_strategies"] if s == "vision") for r in img_new
+        )
+        img_vision_pct = (
+            round(100 * img_vision_pages / img_pages_total, 2)
+            if img_pages_total
+            else 0.0
+        )
+        print(f"image-only VISION-mode %: {img_vision_pct}")
+
+        # Hard gate: at least one image-only PDF must route to vision under
+        # the page-routing leg. If the page router classifies them all as
+        # text (mis-classification), the optimization isn't exercised and
+        # the gate result is meaningless.
+        if img_vision_pct < 100:
+            hard_gate_failures.append(
+                f"image-only VISION-mode pct {img_vision_pct} < 100 — "
+                "page-router mis-classified an image_only_* PDF. "
+                "Verify pymupdf text-layer detection on the failing doc(s)."
+            )
+
+        # Hard gate: image-only page-routing leg must reduce tokens vs
+        # baseline. The baseline runs every doc through the document-block
+        # extractor (vision-equivalent payload size); the page-routing
+        # leg should produce identical or smaller token counts because
+        # the per-page classifier adds at most a small fixed overhead
+        # and identifies vision as the right strategy upfront. A negative
+        # delta here means the optimization is actively wasting tokens
+        # on image-only docs, which is the regression we must catch.
+        if total_new >= total_base:
+            hard_gate_failures.append(
+                f"image-only page-routing used >= baseline tokens "
+                f"(new={total_new} base={total_base}, "
+                f"delta={total_new - total_base:+d}, {img_reduction_pct}%). "
+                "Page-routing should not regress vision-only docs. "
+                "Investigate per-page classifier overhead vs whole-doc."
+            )
+    else:
+        # No image_only_* fixtures present in BOTH legs. We deliberately
+        # treat this as a HARD failure — without the mixed-modality
+        # subset the gate's vision branch is unverifiable, and silent
+        # acceptance is what got us into the soft-signal demotion in
+        # the first place. The fix is to regenerate the corpus
+        # (``python -m scripts.generate_image_only_corpus``).
+        hard_gate_failures.append(
+            "image_only_* PDFs missing from at least one leg of the run; "
+            "regenerate via `python -m scripts.generate_image_only_corpus`"
+        )
+
+    if hard_gate_failures:
+        print()
+        print("HARD GATE FAILURES:")
+        for f in hard_gate_failures:
+            print(f"  - {f}")
         if soft_signal_warnings:
             print()
-            print("SOFT SIGNAL WARNINGS (informational — gate still PASSES):")
+            print("SOFT SIGNAL WARNINGS (informational):")
             for w in soft_signal_warnings:
                 print(f"  - {w}")
+        return 1
+
+    if soft_signal_warnings:
+        print()
+        print("SOFT SIGNAL WARNINGS (informational — gate still PASSES):")
+        for w in soft_signal_warnings:
+            print(f"  - {w}")
     print()
     print("Gate: PASS")
     return 0
