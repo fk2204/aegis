@@ -7,13 +7,21 @@ Flow:
   1. scp local copies of `run_corpus_bedrock.py` and `compare_corpus_runs.py`
      into a fresh remote temp directory (so the box does not need to be at a
      specific git commit for the harness scripts themselves).
-  2. SSH in twice, running the corpus once with AEGIS_PARSER_PAGE_ROUTING=0
+  2. scp the local `tests/fixtures/corpus/synthetic/` directory into the
+     same remote temp dir. The harness then runs the corpus runner with
+     `--corpus-root <temp>/synthetic` so the gate exercises the CURRENT
+     branch's corpus — not whatever copy happens to live under
+     /opt/aegis. This matters when a branch adds new synthetic fixtures
+     (e.g. Phase 11 task #6 image_only_*) and the hard gate references
+     them: without this, the gate would silently miss them and report
+     a misleading PASS.
+  3. SSH in twice, running the corpus once with AEGIS_PARSER_PAGE_ROUTING=0
      (baseline) and once with =1 (page-routing). Output JSON files land in
      the remote temp dir.
-  3. SSH in a third time to run the diff via `compare_corpus_runs.py`. Its
+  4. SSH in a third time to run the diff via `compare_corpus_runs.py`. Its
      stdout (the PASS / GATE FAILURES block) is streamed back to the
      operator.
-  4. Remote temp dir is cleaned up on success. On failure the temp dir is
+  5. Remote temp dir is cleaned up on success. On failure the temp dir is
      left in place so the operator can inspect — the path is printed.
 
 The SSH host defaults to `aegis@aegis-ssh.commerafunding.com`, matching
@@ -39,6 +47,8 @@ import uuid
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+LOCAL_CORPUS_DIR = REPO_ROOT / "tests" / "fixtures" / "corpus" / "synthetic"
+REMOTE_CORPUS_SUBDIR = "synthetic"
 DEFAULT_HOST = "aegis@aegis-ssh.commerafunding.com"
 DEFAULT_REMOTE_REPO = "/opt/aegis"
 ENV_FILE_ON_BOX = "/etc/aegis/aegis.env"
@@ -79,6 +89,16 @@ def _scp(local: Path, host: str, remote_path: str) -> int:
     return completed.returncode
 
 
+def _scp_dir(local_dir: Path, host: str, remote_parent: str) -> int:
+    """Recursively scp `local_dir` so it appears as `remote_parent/<basename>`."""
+    print(f"[scp -r] {local_dir} -> {host}:{remote_parent}/", file=sys.stderr)
+    completed = subprocess.run(
+        ["scp", "-rq", str(local_dir), f"{host}:{remote_parent}/"],
+        check=False,
+    )
+    return completed.returncode
+
+
 def _build_corpus_invocation(
     remote_dir: str,
     page_routing: bool,
@@ -86,11 +106,14 @@ def _build_corpus_invocation(
     limit: int,
 ) -> str:
     flag = "1" if page_routing else "0"
-    # The harness scripts are scp'd into /tmp/aegis-verify-XXX/ so they live
-    # OUTSIDE the deployed repo. run_corpus_bedrock.py's default CORPUS_ROOT
-    # resolves relative to the script location, which would point at /tmp.
-    # Pass the absolute deployed corpus path explicitly via --corpus-root.
-    corpus_root = f"{DEFAULT_REMOTE_REPO}/tests/fixtures/corpus/synthetic"
+    # The harness scripts AND the corpus dir are scp'd into
+    # /tmp/aegis-verify-XXX/ so the run is fully self-contained — it does
+    # not depend on whatever commit happens to be checked out under
+    # /opt/aegis. (Pre-2026-05-19 this read the deployed corpus, which
+    # caused the image_only_* gate to silently miss new fixtures.)
+    # `uv run` still resolves dependencies from /opt/aegis/.venv so the
+    # box does NOT need to be at the branch commit for code-level deps.
+    corpus_root = f"{remote_dir}/{REMOTE_CORPUS_SUBDIR}"
     parts = [
         f"set -a && source {shlex.quote(ENV_FILE_ON_BOX)} && set +a",
         f"cd {shlex.quote(DEFAULT_REMOTE_REPO)}",
@@ -149,6 +172,17 @@ def main() -> int:
         if not p.exists():
             print(f"ERROR: missing local script {p}", file=sys.stderr)
             return 2
+    if not LOCAL_CORPUS_DIR.is_dir():
+        print(
+            f"ERROR: missing local corpus dir {LOCAL_CORPUS_DIR}. "
+            "Expected synthetic/ to exist under tests/fixtures/corpus/.",
+            file=sys.stderr,
+        )
+        return 2
+    pdf_count = sum(1 for _ in LOCAL_CORPUS_DIR.glob("*.pdf"))
+    if pdf_count == 0:
+        print(f"ERROR: no *.pdf under {LOCAL_CORPUS_DIR}", file=sys.stderr)
+        return 2
 
     remote_dir = f"/tmp/aegis-verify-{uuid.uuid4().hex[:12]}"
     host = args.host
@@ -163,9 +197,11 @@ def main() -> int:
         pagerouting = _build_corpus_invocation(remote_dir, True, "pagerouting.json", args.limit)
         compare = _build_compare_invocation(remote_dir)
         cleanup = f"rm -rf {shlex.quote(remote_dir)}"
+        scp_corpus = ["scp", "-rq", str(LOCAL_CORPUS_DIR), f"{host}:{remote_dir}/"]
         print(f"[dry-run] subprocess argv: {['ssh', host, mkdir_cmd]!r}")
         print(f"[dry-run] subprocess argv: {['scp', '-q', str(local_runner), f'{host}:{remote_dir}/run_corpus_bedrock.py']!r}")
         print(f"[dry-run] subprocess argv: {['scp', '-q', str(local_compare), f'{host}:{remote_dir}/compare_corpus_runs.py']!r}")
+        print(f"[dry-run] subprocess argv: {scp_corpus!r}  # ships {pdf_count} PDFs")
         print(f"[dry-run] subprocess argv: {['ssh', host, baseline]!r}")
         print(f"[dry-run] subprocess argv: {['ssh', host, pagerouting]!r}")
         print(f"[dry-run] subprocess argv: {['ssh', host, compare]!r}")
@@ -181,6 +217,14 @@ def main() -> int:
         return 2
     if _scp(local_compare, host, f"{remote_dir}/compare_corpus_runs.py") != 0:
         print("ERROR: scp of compare_corpus_runs.py failed", file=sys.stderr)
+        return 2
+    print(f"[scp -r] shipping {pdf_count} synthetic PDFs + manifests", file=sys.stderr)
+    if _scp_dir(LOCAL_CORPUS_DIR, host, remote_dir) != 0:
+        print(
+            f"ERROR: scp -r of {LOCAL_CORPUS_DIR} failed. Remote temp dir kept: "
+            f"{remote_dir}",
+            file=sys.stderr,
+        )
         return 2
 
     print(f"\n=== baseline run (AEGIS_PARSER_PAGE_ROUTING=0) ===", file=sys.stderr)
