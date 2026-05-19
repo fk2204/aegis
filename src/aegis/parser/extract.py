@@ -27,6 +27,38 @@ from aegis.parser.models import ExtractedStatement, Transaction
 from aegis.parser.page_router import PageStrategy, PageStrategyDecision
 from aegis.parser.prompts import EXTRACTION_PROMPT, EXTRACTION_PROMPT_VISION
 
+# Placeholder strings the LLM uses when a value isn't visible in the document.
+# Compared case-insensitively, after .strip(). Coerced to None before
+# Pydantic validation so:
+#   * StatementSummary.account_last4 (max_length=4) doesn't fail validation
+#     when the LLM emits "unknown" (7 chars) — the 2026-05-19 verify-bedrock
+#     failure that surfaced this whole class of bug.
+#   * StatementSummary.bank_name / account_holder don't get persisted as
+#     the literal string "unknown" (silent corruption of bundling queries
+#     and merchant-detail display).
+#
+# Any new Optional string field added to StatementSummary or another
+# extraction model should be added to _coerce_summary (or a sibling
+# coerce function) so it gets this protection. _coerce_optional_string
+# is the single source of truth for the placeholder set.
+_UNKNOWN_STRING_PLACEHOLDERS: Final[frozenset[str]] = frozenset(
+    {
+        "unknown",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "tbd",
+        "not available",
+        "not visible",
+        "not provided",
+        "not specified",
+        "see above",
+        "-",
+        "--",
+    }
+)
+
 
 class ExtractionError(RuntimeError):
     """Raised when the LLM response cannot be parsed into ExtractedStatement."""
@@ -214,7 +246,44 @@ def _coerce_summary(value: object) -> dict[str, Any]:
         # but the parser model carries it as a Money. Take absolute value here so
         # negative-printed totals don't confuse downstream tie-out checks.
         out["withdrawal_total"] = _abs_str(out["withdrawal_total"])
+    # Optional string fields on StatementSummary — LLMs sometimes emit
+    # "unknown"/"N/A"/empty string instead of null when a value isn't
+    # visible. account_last4 has max_length=4 so "unknown" was a hard
+    # ValidationError; bank_name and account_holder are unconstrained
+    # so "unknown" would land as a string in the database and corrupt
+    # bundling queries / merchant-detail display. See
+    # _UNKNOWN_STRING_PLACEHOLDERS at the top of this module for the
+    # full normalization rule.
+    for str_key in ("bank_name", "account_holder", "account_last4"):
+        if str_key in out:
+            out[str_key] = _coerce_optional_string(out[str_key])
     return out
+
+
+def _coerce_optional_string(value: object) -> object:
+    """Normalize LLM placeholder strings to ``None`` for Optional string fields.
+
+    Empty strings, whitespace-only strings, and known placeholder tokens
+    (case-insensitive after .strip(), see ``_UNKNOWN_STRING_PLACEHOLDERS``)
+    are all coerced to ``None``. Legitimate values pass through with their
+    surrounding whitespace stripped — Pydantic's str_strip_whitespace would
+    do that downstream anyway, but doing it here keeps the membership check
+    correct (so `" unknown "` is also normalized to None).
+
+    Non-string inputs (already None, an int, etc.) pass through unchanged
+    so this helper is idempotent and safe to apply to fields whose typing
+    in the JSON payload is permissive.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped.lower() in _UNKNOWN_STRING_PLACEHOLDERS:
+        return None
+    return stripped
 
 
 def _coerce_transaction(value: object) -> dict[str, Any]:
