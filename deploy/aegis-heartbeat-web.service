@@ -1,0 +1,52 @@
+# /etc/systemd/system/aegis-heartbeat-web.service
+#
+# One-shot pinger that hits the Healthchecks.io URL configured in
+# /etc/aegis/aegis.env (AEGIS_HEALTHCHECK_WEB_URL). Paired with
+# aegis-heartbeat-web.timer which fires it every 5 minutes.
+#
+# Why a separate unit per process (web vs worker): a wedged uvicorn
+# does NOT necessarily mean a wedged arq worker (and vice versa).
+# Healthchecks.io shows the two as independent checks so the operator
+# can tell at a glance whether the API is up but parsing is stuck —
+# the failure mode this design is built to surface.
+#
+# Failure mode:
+#   * Unconfigured AEGIS_HEALTHCHECK_WEB_URL → script logs INFO and
+#     exits 0. Healthchecks dashboard never gets a ping → its built-in
+#     dead-man's-switch fires the alert from the OTHER side. No
+#     application-side intervention required.
+#   * Unreachable Healthchecks.io → /healthz pre-check failure flips
+#     the heartbeat to a /fail post so the dashboard records the
+#     outage timestamp instead of silently letting the dead-man trip.
+
+[Unit]
+Description=AEGIS heartbeat pinger (web)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=aegis
+Group=aegis
+EnvironmentFile=/etc/aegis/aegis.env
+WorkingDirectory=/opt/aegis
+
+# Run the heartbeat pinger module. It reads AEGIS_HEALTHCHECK_WEB_URL
+# from the env file, pre-checks the local /healthz on port 5555 to
+# decide whether the ping should be a success or /fail, and POSTs.
+ExecStart=/usr/local/bin/uv run python -m aegis.ops.heartbeat_cli --component web
+
+# Same hardening as aegis-web.service. The script only needs read
+# access to its own code + write access to /tmp for httpx's TLS cache.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+PrivateTmp=true
+ReadWritePaths=/var/log/aegis /var/lib/aegis /tmp
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aegis-heartbeat-web

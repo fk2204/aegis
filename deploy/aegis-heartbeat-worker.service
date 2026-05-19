@@ -1,0 +1,36 @@
+# /etc/systemd/system/aegis-heartbeat-worker.service
+#
+# Sibling of aegis-heartbeat-web.service for the arq worker. See the
+# header comment in that file for why the web/worker heartbeats are
+# split.
+#
+# Failure mode: same as the web heartbeat — unconfigured env var ->
+# log + exit 0 -> Healthchecks dead-man fires; unreachable HC ->
+# /fail post records the outage.
+
+[Unit]
+Description=AEGIS heartbeat pinger (worker)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=aegis
+Group=aegis
+EnvironmentFile=/etc/aegis/aegis.env
+WorkingDirectory=/opt/aegis
+
+ExecStart=/usr/local/bin/uv run python -m aegis.ops.heartbeat_cli --component worker
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+PrivateTmp=true
+ReadWritePaths=/var/log/aegis /var/lib/aegis /tmp
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aegis-heartbeat-worker

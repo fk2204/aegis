@@ -1,0 +1,19 @@
+# /etc/systemd/system/aegis-heartbeat-worker.timer
+#
+# Fires aegis-heartbeat-worker.service every five minutes. Matches the
+# web timer's cadence so the Healthchecks dashboard shows the two
+# checks in lockstep — an out-of-sync ping pattern is itself a useful
+# diagnostic signal.
+
+[Unit]
+Description=AEGIS heartbeat (worker) — fires every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=aegis-heartbeat-worker.service
+
+[Install]
+WantedBy=timers.target
