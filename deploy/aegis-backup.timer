@@ -1,0 +1,21 @@
+# /etc/systemd/system/aegis-backup.timer
+#
+# Fires aegis-backup.service daily at 02:00 UTC. The hour was picked
+# to be after any US-pacific late-evening Zoho sync activity but well
+# before the operator's typical morning login (which is usually 09:00-
+# 10:00 ET).
+#
+# Persistent=true back-fills missed runs so a Hetzner outage doesn't
+# leave the backup behind.
+
+[Unit]
+Description=AEGIS daily Supabase backup — fires at 02:00 UTC
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+AccuracySec=5min
+Unit=aegis-backup.service
+
+[Install]
+WantedBy=timers.target
