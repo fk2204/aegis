@@ -59,6 +59,35 @@ MIGRATIONS_DIR = REPO_ROOT / "migrations"
 ADVISORY_LOCK_KEY = 4736294826
 PROD_PROJECT_REF = "tprpbomqcucuxnszeafo"
 
+# audit_log INSERT.
+#
+# Schema compatibility: this statement must work against BOTH
+#   - the original audit_log (migration 000: actor, action, subject_type,
+#     subject_id, details, created_at), and
+#   - the extended audit_log (migration 019 adds deal_id, state_change,
+#     aegis_version, rule_pack_version).
+#
+# Reason: migrations 015..018 land BEFORE 019 in apply order, so when the
+# runner writes the audit row for those, aegis_version does NOT exist as a
+# column. The 2026-05-18 prod attempt failed exactly here with:
+#   UndefinedColumn: column "aegis_version" of relation "audit_log" does not exist
+#
+# Fix: every field beyond the migration-000 minimum lives INSIDE the
+# `details` JSONB. Future audit_log extensions remain forward-compatible
+# without changes to this runner.
+_AUDIT_LOG_INSERT_SQL = """
+INSERT INTO audit_log (actor, action, subject_type, details)
+VALUES (%s, 'migration_applied', 'migration',
+        jsonb_build_object(
+          'filename', %s::text,
+          'sha256', %s::text,
+          'target', %s::text,
+          'started_at', %s::text,
+          'finished_at', %s::text,
+          'aegis_version', %s::text
+        ))
+"""
+
 _DSN_ENV_BY_TARGET = {
     "dev": "MIGRATIONS_DB_URL_DEV",
     "staging": "MIGRATIONS_DB_URL_STAGING",
@@ -520,23 +549,12 @@ class MigrationRunner:
                         """,
                         (mig.filename, mig.sha256, finished, self.actor),
                     )
-                    # audit_log is created by migration 000 and extended by 019.
-                    # By the time we reach this point in apply order, the table
-                    # exists (migration 000 ran first in this tx if needed).
+                    # audit_log was created by migration 000. We deliberately
+                    # write ONLY columns that exist in the migration-000 baseline
+                    # — `aegis_version` lives inside the `details` JSONB (see
+                    # _AUDIT_LOG_INSERT_SQL above for the full rationale).
                     cur.execute(
-                        """
-                        INSERT INTO audit_log
-                          (actor, action, subject_type, details, aegis_version)
-                        VALUES (%s, 'migration_applied', 'migration',
-                                jsonb_build_object(
-                                  'filename', %s::text,
-                                  'sha256', %s::text,
-                                  'target', %s::text,
-                                  'started_at', %s::text,
-                                  'finished_at', %s::text
-                                ),
-                                %s)
-                        """,
+                        _AUDIT_LOG_INSERT_SQL,
                         (
                             self.actor,
                             mig.filename,
