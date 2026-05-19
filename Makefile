@@ -1,4 +1,4 @@
-.PHONY: install install-hooks dev worker test test-fast typecheck lint format check
+.PHONY: install install-hooks dev worker test test-fast typecheck lint format check verify-bedrock verify-db verify-db-list
 
 install:
 	uv sync
@@ -38,3 +38,21 @@ format:
 # CORPUS=1 is set inside `test` so the operator can never accidentally
 # ship without corpus validation. The opt-out is `make test-fast`.
 check: typecheck lint test
+
+# Operator-zero-touch verification harnesses.
+# See scripts/verify_bedrock.py and scripts/db_verify.py.
+# The operator never SSHes into Hetzner or opens the Supabase SQL editor.
+verify-bedrock:
+	uv run python scripts/verify_bedrock.py $(ARGS)
+
+# Usage: make verify-db CHECK=block-4-triggers-exist TARGET=prod
+#        make verify-db CHECK=all TARGET=prod
+verify-db:
+	@if [ -z "$(CHECK)" ] || [ -z "$(TARGET)" ]; then \
+		echo "usage: make verify-db CHECK=<name|all> TARGET=<dev|staging|prod>"; \
+		exit 2; \
+	fi
+	uv run python scripts/db_verify.py --check $(CHECK) --target $(TARGET)
+
+verify-db-list:
+	uv run python scripts/db_verify.py --list

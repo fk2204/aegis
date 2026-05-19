@@ -45,6 +45,10 @@ dev = [
     "types-PyYAML",
     "boto3-stubs[bedrock-runtime]",
     "pytest-cov>=5.0",
+    # Operator-zero-touch DB verification (scripts/db_verify.py). Not used
+    # by the running app — the prod aegis-web + aegis-worker units use the
+    # supabase-py REST client. psycopg is operator/dev-side only.
+    "psycopg[binary]>=3.2",
 ]
 
 [tool.mypy]
