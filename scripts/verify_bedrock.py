@@ -47,8 +47,22 @@ ENV_FILE_ON_BOX = "/etc/aegis/aegis.env"
 def _ssh(host: str, remote_cmd: str, *, stream: bool = True) -> int:
     """Run `remote_cmd` on `host` via ssh. Stream output to local tty."""
     print(f"[ssh] {host}: {remote_cmd}", file=sys.stderr)
+    # NOTE on argv shape: ssh joins all post-host argv with spaces before
+    # sending to the remote shell — local-side double-quotes don't survive
+    # the transport. So `remote_cmd` MUST be a single argv element.
+    #
+    # Wrapping locally with `bash -lc` adds an extra layer
+    # (["ssh", host, "bash", "-lc", remote_cmd]) that ssh then flattens into
+    # `bash -lc <cmd>` on the wire — bash parses the FIRST word of <cmd> as
+    # -c's argument and the rest as positional args. The 2026-05-18
+    # verify-bedrock run hit exactly that with `mkdir: missing operand`.
+    #
+    # Fix: send `remote_cmd` as one ssh argv element; the remote login
+    # shell (bash for the `aegis` user) parses it normally. Same convention
+    # `scripts/deploy.sh` uses.
+    argv = ["ssh", host, remote_cmd]
     completed = subprocess.run(
-        ["ssh", host, "bash", "-lc", remote_cmd],
+        argv,
         stdout=None if stream else subprocess.PIPE,
         stderr=None if stream else subprocess.PIPE,
         check=False,
@@ -134,13 +148,22 @@ def main() -> int:
     host = args.host
 
     if args.dry_run:
-        print(f"[dry-run] mkdir {remote_dir} on {host}")
-        print(f"[dry-run] scp {local_runner} -> {host}:{remote_dir}/run_corpus_bedrock.py")
-        print(f"[dry-run] scp {local_compare} -> {host}:{remote_dir}/compare_corpus_runs.py")
-        print(f"[dry-run] ssh {host} '{_build_corpus_invocation(remote_dir, False, 'baseline.json', args.limit)}'")
-        print(f"[dry-run] ssh {host} '{_build_corpus_invocation(remote_dir, True, 'pagerouting.json', args.limit)}'")
-        print(f"[dry-run] ssh {host} '{_build_compare_invocation(remote_dir)}'")
-        print(f"[dry-run] (cleanup) ssh {host} 'rm -rf {remote_dir}'")
+        # Print the EXACT subprocess argv that would be executed. Post-2026-05-18
+        # fix: `remote_cmd` is passed as a SINGLE argv element to ssh — note
+        # the absence of any `bash -lc` wrapping that ssh would otherwise
+        # flatten and break.
+        mkdir_cmd = f"mkdir -p {shlex.quote(remote_dir)}"
+        baseline = _build_corpus_invocation(remote_dir, False, "baseline.json", args.limit)
+        pagerouting = _build_corpus_invocation(remote_dir, True, "pagerouting.json", args.limit)
+        compare = _build_compare_invocation(remote_dir)
+        cleanup = f"rm -rf {shlex.quote(remote_dir)}"
+        print(f"[dry-run] subprocess argv: {['ssh', host, mkdir_cmd]!r}")
+        print(f"[dry-run] subprocess argv: {['scp', '-q', str(local_runner), f'{host}:{remote_dir}/run_corpus_bedrock.py']!r}")
+        print(f"[dry-run] subprocess argv: {['scp', '-q', str(local_compare), f'{host}:{remote_dir}/compare_corpus_runs.py']!r}")
+        print(f"[dry-run] subprocess argv: {['ssh', host, baseline]!r}")
+        print(f"[dry-run] subprocess argv: {['ssh', host, pagerouting]!r}")
+        print(f"[dry-run] subprocess argv: {['ssh', host, compare]!r}")
+        print(f"[dry-run] subprocess argv: {['ssh', host, cleanup]!r}")
         return 0
 
     if _ssh(host, f"mkdir -p {shlex.quote(remote_dir)}") != 0:
