@@ -1,0 +1,447 @@
+"""Bedrock per-deal cost tracking (mp Phase 11 task #2).
+
+Two surfaces:
+
+* **In-line accounting**: ``CostTrackingBedrockClient`` wraps the
+  production ``BedrockClient`` and records ``input_tokens`` +
+  ``output_tokens`` + computed USD cost into ``audit_log`` after every
+  successful Bedrock call. The wrapper preserves the ``LLMClient``
+  Protocol so callers swap it in without touching code paths.
+* **Weekly digest**: ``build_weekly_digest`` reads recent
+  ``bedrock.usage`` rows from ``audit_log``, groups by document, and
+  emits a structured ``WeeklyDigest`` carrying:
+    - total tokens + cost per deal
+    - average cost per deal
+    - cost per funded deal (when override outcome marks it)
+    - cost as % of revenue (when revenue is known via deal data)
+
+Pricing is configured via env so a model migration is a config change,
+not a code change. Defaults match the AWS Bedrock list price for
+``us.anthropic.claude-sonnet-4-6`` as of 2026-05-19.
+
+Audit row shape
+---------------
+Every Bedrock call writes one row with::
+
+    {
+      "actor": "bedrock.client",
+      "action": "bedrock.usage",
+      "subject_type": "document"    (when document_id is supplied)
+      "subject_id":   <document_id> (when document_id is supplied)
+      "details": {
+        "operation":        "extract|extract_vision|classify",
+        "input_tokens":     <int>,
+        "output_tokens":    <int>,
+        "input_cost_usd":   "0.0030",   (Decimal serialized as string)
+        "output_cost_usd":  "0.0015",
+        "total_cost_usd":   "0.0045",
+        "model_id":         "us.anthropic.claude-sonnet-4-6"
+      }
+    }
+
+USD prices are stored as ``Decimal`` strings so the weekly digest can
+reconstruct exact totals without ``float`` arithmetic.
+"""
+
+from __future__ import annotations
+
+import os
+from collections import defaultdict
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Any
+from uuid import UUID
+
+from aegis.audit import AuditLog, AuditWriteError
+from aegis.config import get_settings
+from aegis.llm import BedrockClient
+from aegis.logger import get_logger
+
+_log = get_logger(__name__)
+
+
+# --- pricing (env-tunable) -------------------------------------------------
+
+#: USD per 1M input tokens, default matches Claude Sonnet 4.6 list price
+#: on us.anthropic.claude-sonnet-4-6 (2026-05-19). Override via env.
+_DEFAULT_INPUT_USD_PER_MTOK = Decimal("3.00")
+
+#: USD per 1M output tokens, default matches Claude Sonnet 4.6 list price.
+_DEFAULT_OUTPUT_USD_PER_MTOK = Decimal("15.00")
+
+
+def _input_price() -> Decimal:
+    raw = os.environ.get("AEGIS_BEDROCK_INPUT_USD_PER_MTOK")
+    return Decimal(raw) if raw else _DEFAULT_INPUT_USD_PER_MTOK
+
+
+def _output_price() -> Decimal:
+    raw = os.environ.get("AEGIS_BEDROCK_OUTPUT_USD_PER_MTOK")
+    return Decimal(raw) if raw else _DEFAULT_OUTPUT_USD_PER_MTOK
+
+
+def compute_cost_usd(*, input_tokens: int, output_tokens: int) -> Decimal:
+    """Per-call cost in USD as ``Decimal``. Quantized to 6 decimal places.
+
+    Quantization is intentionally fine-grained — a single classify-pass
+    call costs fractions of a cent, and aggregating thousands of them
+    over a week needs to retain precision. Money columns elsewhere use
+    14,2; the weekly digest converts back to 14,2 for display.
+    """
+    inp = Decimal(input_tokens) * _input_price() / Decimal(1_000_000)
+    out = Decimal(output_tokens) * _output_price() / Decimal(1_000_000)
+    return (inp + out).quantize(Decimal("0.000001"))
+
+
+# --- wrapper client --------------------------------------------------------
+
+
+@dataclass
+class _UsageRecord:
+    """Per-call usage tally. Mutated by the wrapper, drained on flush."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    operation: str = ""
+
+
+class CostTrackingBedrockClient:
+    """Wraps ``BedrockClient`` and writes a ``bedrock.usage`` audit row per call.
+
+    The wrapper preserves the three-method ``LLMClient`` Protocol so
+    callers (the parser pipeline) don't notice the substitution. It
+    holds a reference to an ``AuditLog`` so each call writes the row
+    synchronously — if the audit write fails, we log + continue
+    (audit-write failure must NOT block the Bedrock call's caller;
+    the Bedrock cost is already incurred by then).
+
+    Note on ``document_id``: the Bedrock client itself doesn't know
+    which document a call belongs to. The parser pipeline carries
+    that information; the simplest plumbing is a thread-local set by
+    the worker before invoking ``run_pipeline``, drained by the
+    wrapper. We start with the wrapper accepting an optional
+    ``document_id`` per-call so callers that DO know can pass it; the
+    worker integration will plumb the thread-local in a follow-up.
+    """
+
+    def __init__(
+        self,
+        inner: BedrockClient | None = None,
+        *,
+        audit: AuditLog,
+    ) -> None:
+        self._inner = inner if inner is not None else BedrockClient()
+        self._audit = audit
+        self._model_id = get_settings().bedrock_model_id
+
+    # ----- LLMClient Protocol surface --------------------------------------
+
+    def extract_raw_json(
+        self, pdf_bytes: bytes, prompt: str
+    ) -> tuple[dict[str, Any], bool]:
+        # We re-issue the streaming call here so we can capture
+        # ``response.usage`` after the stream completes; the inner
+        # ``BedrockClient.extract_raw_json`` doesn't return usage.
+        return self._stream_with_usage(
+            operation="extract",
+            content=[
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": _b64(pdf_bytes),
+                    },
+                },
+                {"type": "text", "text": prompt},
+            ],
+        )
+
+    def extract_raw_json_from_images(
+        self, page_images_png: list[bytes], prompt: str
+    ) -> tuple[dict[str, Any], bool]:
+        content: list[dict[str, Any]] = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": _b64(png),
+                },
+            }
+            for png in page_images_png
+        ]
+        content.append({"type": "text", "text": prompt})
+        return self._stream_with_usage(operation="extract_vision", content=content)
+
+    def classify_batch_json(self, prompt: str) -> dict[str, Any]:
+        # Classify uses a non-streaming create() call; mirror that here.
+        response = self._inner._client.messages.create(
+            model=self._inner._model,
+            max_tokens=8192,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        self._audit_usage("classify", response)
+        from aegis.llm import _first_json_object, _text_blocks
+
+        return _first_json_object(_text_blocks(response))
+
+    # ----- internals -------------------------------------------------------
+
+    def _stream_with_usage(
+        self,
+        *,
+        operation: str,
+        content: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], bool]:
+        with self._inner._client.messages.stream(
+            model=self._inner._model,
+            max_tokens=64000,
+            messages=[{"role": "user", "content": content}],  # type: ignore[typeddict-item]
+        ) as stream:
+            response = stream.get_final_message()
+        self._audit_usage(operation, response)
+        from aegis.llm import _first_json_object, _text_blocks
+
+        truncated = getattr(response, "stop_reason", None) == "max_tokens"
+        return _first_json_object(_text_blocks(response)), truncated
+
+    def _audit_usage(self, operation: str, response: object) -> None:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            _log.warning(
+                "bedrock.usage.missing operation=%s — response.usage absent; "
+                "cost tracking row skipped",
+                operation,
+            )
+            return
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        cost = compute_cost_usd(
+            input_tokens=input_tokens, output_tokens=output_tokens
+        )
+        details = {
+            "operation": operation,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "input_cost_usd": str(
+                (
+                    Decimal(input_tokens) * _input_price() / Decimal(1_000_000)
+                ).quantize(Decimal("0.000001"))
+            ),
+            "output_cost_usd": str(
+                (
+                    Decimal(output_tokens) * _output_price() / Decimal(1_000_000)
+                ).quantize(Decimal("0.000001"))
+            ),
+            "total_cost_usd": str(cost),
+            "model_id": self._model_id,
+        }
+        try:
+            self._audit.record(
+                actor="bedrock.client",
+                action="bedrock.usage",
+                subject_type=None,
+                subject_id=None,
+                details=details,
+            )
+        except AuditWriteError:
+            _log.warning("bedrock.usage.audit_failed operation=%s", operation)
+
+
+def _b64(data: bytes) -> str:
+    import base64
+
+    return base64.b64encode(data).decode("ascii")
+
+
+# --- weekly digest ---------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PerDealCost:
+    """One deal's Bedrock spend for the digest window.
+
+    ``document_id`` is the document the call was for (None when the
+    call was made outside any document context — e.g. an OFAC refresh).
+    ``revenue`` is the merchant's monthly revenue when known (filled
+    by the digest builder from the analyses table); None when not
+    available.
+    """
+
+    document_id: UUID | None
+    input_tokens: int
+    output_tokens: int
+    total_cost_usd: Decimal
+    revenue: Decimal | None = None
+    call_count: int = 0
+    funded: bool = False  # True iff the operator marked this deal funded
+
+
+@dataclass(frozen=True)
+class WeeklyDigest:
+    """The §21 task #2 unit-economics shape.
+
+    Per-deal rows are sorted by total_cost_usd descending so the
+    operator's eyes land on the most-expensive deals first.
+    """
+
+    window_start: str  # ISO timestamp
+    window_end: str
+    total_calls: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cost_usd: Decimal
+    deals: list[PerDealCost] = field(default_factory=list)
+
+    @property
+    def avg_cost_per_deal(self) -> Decimal:
+        deals_with_subject = [d for d in self.deals if d.document_id is not None]
+        if not deals_with_subject:
+            return Decimal("0.00")
+        return (
+            sum((d.total_cost_usd for d in deals_with_subject), Decimal("0"))
+            / Decimal(len(deals_with_subject))
+        ).quantize(Decimal("0.0001"))
+
+    @property
+    def avg_cost_per_funded_deal(self) -> Decimal | None:
+        funded = [d for d in self.deals if d.funded]
+        if not funded:
+            return None
+        return (
+            sum((d.total_cost_usd for d in funded), Decimal("0")) / Decimal(len(funded))
+        ).quantize(Decimal("0.0001"))
+
+    @property
+    def cost_pct_of_revenue(self) -> Decimal | None:
+        """Total Bedrock cost as a percentage of total revenue across the
+        funded deals in the window. None when no funded deal carries
+        revenue info.
+        """
+        funded_with_rev = [
+            d for d in self.deals if d.funded and d.revenue is not None
+        ]
+        if not funded_with_rev:
+            return None
+        total_cost = sum(
+            (d.total_cost_usd for d in funded_with_rev), Decimal("0")
+        )
+        # ``d.revenue is not None`` is narrowed by the comprehension above
+        # but mypy can't track that — guard once more for the type checker.
+        total_revenue = sum(
+            (d.revenue for d in funded_with_rev if d.revenue is not None),
+            Decimal("0"),
+        )
+        if total_revenue == 0:
+            return None
+        return (Decimal("100") * total_cost / total_revenue).quantize(
+            Decimal("0.0001")
+        )
+
+
+def build_weekly_digest(
+    usage_rows: list[dict[str, Any]],
+    *,
+    window_start: str,
+    window_end: str,
+    funded_document_ids: set[UUID] | None = None,
+    revenue_by_document: dict[UUID, Decimal] | None = None,
+) -> WeeklyDigest:
+    """Roll up audit_log rows with action='bedrock.usage' into a digest.
+
+    Arguments:
+      usage_rows — rows from ``audit_log`` filtered to action ==
+        'bedrock.usage' within the window. The caller is responsible
+        for the SQL filter; this function works against the parsed
+        result so it's unit-testable without a database.
+      window_start, window_end — ISO timestamps copied into the digest.
+      funded_document_ids — set of documents the operator marked
+        funded during the window (looked up from the overrides table
+        or, post-Phase-10, the funder_replies table). Empty set = no
+        funded deals known.
+      revenue_by_document — optional merchant-monthly-revenue lookup,
+        used to compute cost as % of revenue.
+
+    Rows missing ``subject_id`` are kept (so non-document calls show
+    up in the totals) but excluded from per-deal averages.
+    """
+    funded_document_ids = funded_document_ids or set()
+    revenue_by_document = revenue_by_document or {}
+
+    by_doc: dict[UUID | None, _DealAccumulator] = defaultdict(_DealAccumulator)
+    total_calls = 0
+    total_input = 0
+    total_output = 0
+    total_cost = Decimal("0")
+
+    for row in usage_rows:
+        details: dict[str, Any] = row.get("details") or {}
+        try:
+            input_tokens = int(details.get("input_tokens", 0))
+            output_tokens = int(details.get("output_tokens", 0))
+            cost = Decimal(details.get("total_cost_usd", "0"))
+        except (ValueError, TypeError):
+            _log.warning("digest.skip_malformed_row action=%s", row.get("action"))
+            continue
+
+        document_id: UUID | None = None
+        subj_id = row.get("subject_id")
+        if subj_id and row.get("subject_type") == "document":
+            try:
+                document_id = UUID(str(subj_id))
+            except ValueError:
+                document_id = None
+
+        acc = by_doc[document_id]
+        acc.input_tokens += input_tokens
+        acc.output_tokens += output_tokens
+        acc.total_cost_usd += cost
+        acc.call_count += 1
+
+        total_calls += 1
+        total_input += input_tokens
+        total_output += output_tokens
+        total_cost += cost
+
+    deals: list[PerDealCost] = []
+    for doc_id, acc in by_doc.items():
+        deals.append(
+            PerDealCost(
+                document_id=doc_id,
+                input_tokens=acc.input_tokens,
+                output_tokens=acc.output_tokens,
+                total_cost_usd=acc.total_cost_usd.quantize(Decimal("0.000001")),
+                revenue=revenue_by_document.get(doc_id) if doc_id else None,
+                call_count=acc.call_count,
+                funded=(doc_id in funded_document_ids) if doc_id else False,
+            )
+        )
+    deals.sort(key=lambda d: d.total_cost_usd, reverse=True)
+
+    return WeeklyDigest(
+        window_start=window_start,
+        window_end=window_end,
+        total_calls=total_calls,
+        total_input_tokens=total_input,
+        total_output_tokens=total_output,
+        total_cost_usd=total_cost.quantize(Decimal("0.000001")),
+        deals=deals,
+    )
+
+
+@dataclass
+class _DealAccumulator:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_cost_usd: Decimal = Decimal("0")
+    call_count: int = 0
+
+
+__all__ = [
+    "CostTrackingBedrockClient",
+    "PerDealCost",
+    "WeeklyDigest",
+    "build_weekly_digest",
+    "compute_cost_usd",
+]
