@@ -145,7 +145,7 @@ def test_audit_log_insert_uses_only_pre_019_columns() -> None:
     sql = apply_migrations._AUDIT_LOG_INSERT_SQL.lower()
 
     # Extract the INSERT column list — the parens immediately after "into audit_log".
-    head, _, rest = sql.partition("into audit_log")
+    _, _, rest = sql.partition("into audit_log")
     assert rest, "audit_log INSERT not found in _AUDIT_LOG_INSERT_SQL"
     column_list = rest.split("(", 1)[1].split(")", 1)[0]
 
@@ -427,10 +427,15 @@ def test_integration_failed_migration_rolls_back_audit_row(
         aegis_version="test",
         migrations=migrations,
     )
-    with pytest.raises(Exception):
+    import psycopg
+
+    # The bad SQL (INSERT into a non-existent table) surfaces as a
+    # psycopg.Error subclass (UndefinedTable). Asserting on the base
+    # psycopg.Error is more specific than blind Exception while staying
+    # decoupled from psycopg's specific exception hierarchy.
+    with pytest.raises(psycopg.Error):
         runner.run()
 
-    import psycopg
     with psycopg.connect(clean_db) as conn:
         with conn.cursor() as cur:
             # 000_init.sql succeeded; its audit row is present.

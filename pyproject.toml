@@ -98,7 +98,11 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "S", "ANN", "RUF"]
 # scripts/* are operator scripts, not production code:
 #   S311 — random.Random is fine for synthetic-corpus determinism.
 #   S101 — assert is fine for operator-side sanity checks.
-"scripts/**" = ["S311", "S101"]
+#   S603 — argv-form subprocess.run calls in operator scripts (ssh/scp/git)
+#          are safe by construction (no shell=True, args are not user-controlled).
+#   S607 — operator scripts invoke system tools via PATH resolution (git, ssh,
+#          scp) for portability across Linux/macOS/Windows dev boxes.
+"scripts/**" = ["S311", "S101", "S603", "S607"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

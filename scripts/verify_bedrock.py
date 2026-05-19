@@ -150,7 +150,9 @@ def main() -> int:
             print(f"ERROR: missing local script {p}", file=sys.stderr)
             return 2
 
-    remote_dir = f"/tmp/aegis-verify-{uuid.uuid4().hex[:12]}"
+    # S108: this path lives on the REMOTE box (over SSH), not on the local
+    # filesystem. Local /tmp permissions are not the failure surface here.
+    remote_dir = f"/tmp/aegis-verify-{uuid.uuid4().hex[:12]}"  # noqa: S108
     host = args.host
 
     if args.dry_run:
@@ -163,9 +165,17 @@ def main() -> int:
         pagerouting = _build_corpus_invocation(remote_dir, True, "pagerouting.json", args.limit)
         compare = _build_compare_invocation(remote_dir)
         cleanup = f"rm -rf {shlex.quote(remote_dir)}"
+        scp_runner = [
+            "scp", "-q", str(local_runner),
+            f"{host}:{remote_dir}/run_corpus_bedrock.py",
+        ]
+        scp_compare = [
+            "scp", "-q", str(local_compare),
+            f"{host}:{remote_dir}/compare_corpus_runs.py",
+        ]
         print(f"[dry-run] subprocess argv: {['ssh', host, mkdir_cmd]!r}")
-        print(f"[dry-run] subprocess argv: {['scp', '-q', str(local_runner), f'{host}:{remote_dir}/run_corpus_bedrock.py']!r}")
-        print(f"[dry-run] subprocess argv: {['scp', '-q', str(local_compare), f'{host}:{remote_dir}/compare_corpus_runs.py']!r}")
+        print(f"[dry-run] subprocess argv: {scp_runner!r}")
+        print(f"[dry-run] subprocess argv: {scp_compare!r}")
         print(f"[dry-run] subprocess argv: {['ssh', host, baseline]!r}")
         print(f"[dry-run] subprocess argv: {['ssh', host, pagerouting]!r}")
         print(f"[dry-run] subprocess argv: {['ssh', host, compare]!r}")
@@ -183,19 +193,27 @@ def main() -> int:
         print("ERROR: scp of compare_corpus_runs.py failed", file=sys.stderr)
         return 2
 
-    print(f"\n=== baseline run (AEGIS_PARSER_PAGE_ROUTING=0) ===", file=sys.stderr)
+    print("\n=== baseline run (AEGIS_PARSER_PAGE_ROUTING=0) ===", file=sys.stderr)
     rc = _ssh(host, _build_corpus_invocation(remote_dir, False, "baseline.json", args.limit))
     if rc != 0:
-        print(f"\nERROR: baseline corpus run exited {rc}. Remote dir kept: {remote_dir}", file=sys.stderr)
+        print(
+            f"\nERROR: baseline corpus run exited {rc}. "
+            f"Remote dir kept: {remote_dir}",
+            file=sys.stderr,
+        )
         return rc
 
-    print(f"\n=== page-routing run (AEGIS_PARSER_PAGE_ROUTING=1) ===", file=sys.stderr)
+    print("\n=== page-routing run (AEGIS_PARSER_PAGE_ROUTING=1) ===", file=sys.stderr)
     rc = _ssh(host, _build_corpus_invocation(remote_dir, True, "pagerouting.json", args.limit))
     if rc != 0:
-        print(f"\nERROR: page-routing corpus run exited {rc}. Remote dir kept: {remote_dir}", file=sys.stderr)
+        print(
+            f"\nERROR: page-routing corpus run exited {rc}. "
+            f"Remote dir kept: {remote_dir}",
+            file=sys.stderr,
+        )
         return rc
 
-    print(f"\n=== compare ===", file=sys.stderr)
+    print("\n=== compare ===", file=sys.stderr)
     rc = _ssh(host, _build_compare_invocation(remote_dir))
 
     if rc == 0 and not args.keep_remote:
