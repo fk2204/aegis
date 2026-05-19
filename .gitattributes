@@ -1,0 +1,6 @@
+# Shell scripts that get scp'd to the Hetzner box and executed there
+# MUST keep LF line endings — bash on Linux rejects CRLF in the
+# shebang line. Without this, Git on a Windows working tree with
+# core.autocrlf=true silently rewrites these to CRLF on checkout,
+# breaking the remote invocation.
+scripts/_verify_leg_runner.sh text eol=lf
