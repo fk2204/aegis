@@ -184,6 +184,38 @@ The `tests/test_apply_migrations.py::test_migration_probes_cover_every_real_migr
 
 ---
 
+## Verification harnesses
+
+Two operator-zero-touch scripts replace the manual checks against prod. The operator never SSHes into Hetzner for verification and never opens the Supabase SQL editor.
+
+### `make verify-db CHECK=<name|all> TARGET=<dev|staging|prod>`
+
+Runs SQL from `scripts/db_checks/<name>.sql` against the DSN in `.env.local`. Connection is opened read-only; check SQL containing write keywords is refused at load. Prod DSN requires `--target prod` explicitly. The seed checks include `block-4-triggers-exist` (verifies the decisions immutability triggers from migration 015) and `triggers-immutable` (broader sibling).
+
+Adding a new check is a one-file drop:
+1. Write `scripts/db_checks/<name>.sql` — a single SELECT.
+2. Optional header rows: `-- DESCRIPTION:`, `-- EXPECT_ROWS: <n>`, `-- EXPECT_ROWS_MIN: <n>`.
+3. Run `make verify-db CHECK=<name> TARGET=<env>`.
+
+### `make verify-bedrock`
+
+scps `scripts/run_corpus_bedrock.py` + `scripts/compare_corpus_runs.py` into a fresh `/tmp/aegis-verify-<uuid>/` on the Hetzner box, runs the full corpus through real Bedrock twice (once with `AEGIS_PARSER_PAGE_ROUTING=0`, once with `=1`), then runs `compare_corpus_runs.py` to evaluate the gate. Streams output back. Returns the gate's exit code.
+
+**Gate semantics — hard vs soft signals:**
+
+| Criterion | Type | Behavior |
+|---|---|---|
+| `failed_docs == 0` on baseline leg | HARD | Exit 1 if any doc fails extraction |
+| `failed_docs == 0` on page-routing leg | HARD | Exit 1 if any doc fails extraction |
+| clean-only TEXT-mode pct ≥ 80 on page-routing | HARD | Exit 1 if below |
+| clean-only token reduction > 0% | SOFT | Reported with WARN if negative; does NOT fail the run |
+
+**Why token reduction is currently a soft signal:** the page-routing optimization saves tokens only when a PDF has a mix of text-readable and image-only pages (text pages skip the expensive vision pass). The current synthetic corpus (`tests/fixtures/corpus/synthetic/`) is 100% text-readable, so the optimization adds the per-page classifier's fixed overhead without ever exploiting the vision-vs-text branch. Verified on 2026-05-19: 56/56 docs passed both legs at 100% TEXT-mode pages, with a -1.18% token delta (classifier overhead). The signal will become meaningful — and re-promotable to a hard gate — once the corpus includes image-only / scanned-style PDFs. Tracked under Phase 11 task #6 in `docs/AEGIS_MASTER_PLAN.md`.
+
+Cleanup: on failure, `verify_bedrock.py` keeps the remote `/tmp/aegis-verify-<uuid>/` dir for forensics and prints the path. On success it removes the dir. Pass `--keep-remote` to override.
+
+---
+
 ## Secrets + key rotation
 
 ### Rotate the API bearer token

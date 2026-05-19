@@ -927,6 +927,7 @@ When operator promotes a watchlist state to Tier 1, AEGIS triggers a checklist: 
    - File uploads to object storage (S3-compatible), not local disk
    - Document the path from 1 box → multi-worker on one box → multi-box behind a load balancer. Don't build the LB yet; just don't preclude it.
 6. **Real-statement corpus expansion:** 2–3 statements per fintech bank (Mercury, Brex, Bluevine, Novo, Relay, Lili, Found) added to real corpus. Operator-validated manifests. Corpus grows as deal mix changes.
+   - **Add mixed-modality synthetic PDFs** (image-only / scanned-style) to the existing `tests/fixtures/corpus/synthetic/` so the page-routing token-reduction signal in `scripts/compare_corpus_runs.py` becomes meaningful. The current synthetic corpus is 100% text-readable, so the optimization can't demonstrate its win — verified 2026-05-19 verify-bedrock run: 56/56 pass, 100% TEXT-mode pages, -1.18% token delta (classifier overhead). Target: ~3 image-only PDFs that would otherwise route to vision but where some pages have a recoverable text layer. Once this lands, re-promote the token-reduction criterion from soft signal to hard gate (`scripts/compare_corpus_runs.py` docstring + gate logic).
 7. **Parser-drift regression loop:** CORPUS=1 includes real corpus, not just synthetic. Every parser change re-runs.
 8. **Multi-operator readiness:**
    - Authentication via Cloudflare Access already supports multiple users; verify each AEGIS action records the actor
