@@ -46,7 +46,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -281,7 +281,8 @@ def resolve_dsn(target: str) -> str:
     if not dsn:
         raise MigrationConfigError(
             f"{env_var} is not set. Add it to .env.local. "
-            "Get the URI from Supabase dashboard -> Settings -> Database -> Connection string (URI)."
+            "Get the URI from Supabase dashboard -> Settings -> Database -> "
+            "Connection string (URI)."
         )
     if PROD_PROJECT_REF in dsn and target != "prod":
         raise MigrationConfigError(
@@ -375,9 +376,13 @@ class MigrationRunner:
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
-        except Exception:
-            # Connection close also releases session-scoped advisory locks.
-            pass
+        except Exception as exc:
+            # Connection close also releases session-scoped advisory locks,
+            # so this is safe to swallow — but surface to stderr so an
+            # operator can spot weird DB transport states (closed conn etc).
+            # Broad except: psycopg is lazy-imported inside run(); referencing
+            # psycopg.Error here would require a second local import.
+            print(f"[warn] pg_advisory_unlock failed: {exc}", file=sys.stderr)
 
     # ------ schema_migrations bootstrap ------------------------------------
 
@@ -432,10 +437,16 @@ class MigrationRunner:
                 detected.append(mig.filename)
 
         if not detected:
-            print("[bootstrap] schema_migrations empty + no pre-existing schema; nothing to backfill")
+            print(
+                "[bootstrap] schema_migrations empty + no pre-existing schema; "
+                "nothing to backfill"
+            )
             return []
 
-        print(f"[bootstrap] backfilling {len(detected)} pre-existing migrations as manual_pre_runner:")
+        print(
+            f"[bootstrap] backfilling {len(detected)} pre-existing migrations "
+            "as manual_pre_runner:"
+        )
         for filename in detected:
             print(f"  {filename}")
 
@@ -539,13 +550,13 @@ class MigrationRunner:
 
     def _apply_one(self, conn: psycopg.Connection, mig: MigrationFile) -> None:
         sql_body = mig.path.read_text(encoding="utf-8")
-        started = datetime.now(timezone.utc)
+        started = datetime.now(UTC)
         print(f"[apply] {mig.filename} ...", end="", flush=True)
         try:
             with conn.transaction():
                 with conn.cursor() as cur:
                     cur.execute(sql_body)
-                    finished = datetime.now(timezone.utc)
+                    finished = datetime.now(UTC)
                     cur.execute(
                         """
                         INSERT INTO schema_migrations (filename, sha256, applied_at, applied_by)
