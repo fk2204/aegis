@@ -1,0 +1,44 @@
+# /etc/systemd/system/aegis-backup.service
+#
+# Daily Supabase logical-dump backup (Phase 11 task #4). Triggered by
+# aegis-backup.timer at 02:00 UTC every day. One-shot; not enabled
+# directly via systemctl enable, the timer is the install unit.
+#
+# Reads env from /etc/aegis/aegis.env. Required vars:
+#   AEGIS_BACKUP_DB_URL   — full Postgres DSN (Supabase URI)
+#   AEGIS_BACKUP_DEST     — "s3" | "b2" | "local"
+#   + destination-specific vars (see scripts/backup_supabase.py)
+#
+# Failure mode: pg_dump exit non-zero is fatal (unit failure visible
+# in `systemctl status aegis-backup.service`). The local dump is kept
+# for retry; the operator can rerun the unit manually:
+#   sudo systemctl start aegis-backup.service
+
+[Unit]
+Description=AEGIS Supabase logical-dump backup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=aegis
+Group=aegis
+WorkingDirectory=/opt/aegis
+EnvironmentFile=/etc/aegis/aegis.env
+
+ExecStart=/usr/local/bin/uv run python -m scripts.backup_supabase
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+PrivateTmp=true
+# /var/lib/aegis/backups owns the local dump directory; install.sh
+# creates it during first-time setup.
+ReadWritePaths=/var/log/aegis /var/lib/aegis /tmp
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aegis-backup

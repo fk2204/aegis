@@ -1,0 +1,20 @@
+# /etc/systemd/system/aegis-heartbeat-web.timer
+#
+# Fires aegis-heartbeat-web.service every five minutes. AccuracySec is
+# kept loose (30s) so the system can batch the heartbeat with other
+# wakeups for tiny power savings; Persistent=true makes systemd
+# back-fill missed runs after a box reboot so a fresh-up Hetzner VM
+# starts pinging immediately, not at the next 5-minute boundary.
+
+[Unit]
+Description=AEGIS heartbeat (web) — fires every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=aegis-heartbeat-web.service
+
+[Install]
+WantedBy=timers.target

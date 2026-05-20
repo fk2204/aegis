@@ -199,6 +199,10 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='funder_replies'"
     ),
+    "022_operators_and_roles.sql": (
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='operators'"
+    ),
 }
 
 

@@ -31,6 +31,7 @@ from aegis.compliance.states import validate_states_table
 from aegis.config import get_settings
 from aegis.logger import configure_logging, get_logger
 from aegis.merchants.repository import MerchantRepository
+from aegis.ops.rate_limit import RateLimitMiddleware
 from aegis.storage import DocumentRepository
 
 _log = get_logger(__name__)
@@ -84,6 +85,16 @@ def create_app() -> FastAPI:
         description="MCA underwriting brain for Commera Capital.",
         lifespan=_lifespan,
     )
+
+    # Per-IP + per-bearer rate limiting (mp Phase 11 task #3). Applied
+    # BEFORE routes so 429s are returned without hitting auth or route
+    # handlers. /healthz is exempt; see aegis.ops.rate_limit.
+    # The starlette stub for add_middleware doesn't model **kwargs
+    # ergonomically; cast to Any to keep the runtime contract clear
+    # without a long Protocol shim.
+    from typing import Any, cast
+
+    app.add_middleware(cast("Any", RateLimitMiddleware))
 
     @app.get("/healthz", tags=["health"])
     async def healthz() -> dict[str, bool]:

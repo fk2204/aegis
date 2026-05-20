@@ -79,6 +79,11 @@ install -d -o aegis -g aegis -m 0750 /var/log/aegis
 install -d -o aegis -g aegis -m 0750 /var/lib/aegis
 install -d -o aegis -g aegis -m 0750 /var/lib/aegis/uploads
 install -d -o aegis -g aegis -m 0750 /var/lib/aegis/uv-cache
+# backups/ holds the daily Supabase logical dump (Phase 11 task #4).
+# The on-box copy is the durable fallback if the off-box upload (S3/B2)
+# fails. Permissions match the rest of /var/lib/aegis — aegis user
+# owns the writes; root can read for break-glass scenarios.
+install -d -o aegis -g aegis -m 0750 /var/lib/aegis/backups
 
 if [[ ! -f /etc/aegis/aegis.env ]]; then
   cat <<'EOF' >/etc/aegis/aegis.env
@@ -124,16 +129,34 @@ install -m 0644 "$REPO_ROOT/deploy/aegis-web.service"     /etc/systemd/system/ae
 install -m 0644 "$REPO_ROOT/deploy/aegis-worker.service"  /etc/systemd/system/aegis-worker.service
 install -m 0644 "$REPO_ROOT/deploy/logrotate.aegis"       /etc/logrotate.d/aegis
 
+# Phase 11 task #1 heartbeat units (web + worker) and the timers that
+# fire them every 5min. Idempotent — re-running install.sh replaces
+# the unit file content but doesn't reset the timer history.
+install -m 0644 "$REPO_ROOT/deploy/aegis-heartbeat-web.service"    /etc/systemd/system/aegis-heartbeat-web.service
+install -m 0644 "$REPO_ROOT/deploy/aegis-heartbeat-web.timer"      /etc/systemd/system/aegis-heartbeat-web.timer
+install -m 0644 "$REPO_ROOT/deploy/aegis-heartbeat-worker.service" /etc/systemd/system/aegis-heartbeat-worker.service
+install -m 0644 "$REPO_ROOT/deploy/aegis-heartbeat-worker.timer"   /etc/systemd/system/aegis-heartbeat-worker.timer
+
+# Phase 11 task #4 daily backup unit + timer.
+install -m 0644 "$REPO_ROOT/deploy/aegis-backup.service" /etc/systemd/system/aegis-backup.service
+install -m 0644 "$REPO_ROOT/deploy/aegis-backup.timer"   /etc/systemd/system/aegis-backup.timer
+
 systemctl daemon-reload
 
-# Enable all three units so they come up on reboot, but only START
-# redis-server here. aegis-web and aegis-worker would fail their
-# data-residency boot guard until the operator populates
-# /etc/aegis/aegis.env (AEGIS_DATA_RESIDENCY_CONFIRMED, AWS creds,
-# SUPABASE_*, API_BEARER_TOKEN). They start in the operator-driven
-# step below.
-systemctl enable redis-server aegis-web aegis-worker
-systemctl start redis-server
+# Enable all the units so they come up on reboot, but only START
+# redis-server + the timers here. aegis-web and aegis-worker would
+# fail their data-residency boot guard until the operator populates
+# /etc/aegis/aegis.env. The heartbeat + backup units depend on env
+# vars the operator sets in the same file (AEGIS_HEALTHCHECK_*_URL,
+# AEGIS_BACKUP_DB_URL, AEGIS_BACKUP_DEST) — when unset the units
+# log + exit 0 (Phase 11 fail-open) so leaving them enabled does no
+# harm before the operator wires them.
+systemctl enable redis-server aegis-web aegis-worker \
+  aegis-heartbeat-web.timer aegis-heartbeat-worker.timer \
+  aegis-backup.timer
+systemctl start redis-server \
+  aegis-heartbeat-web.timer aegis-heartbeat-worker.timer \
+  aegis-backup.timer
 
 echo
 echo "Install complete. Next steps:"
