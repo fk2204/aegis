@@ -203,6 +203,14 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='operators'"
     ),
+    "024_audit_log_archive.sql": (
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='audit_log_archive'"
+    ),
+    "025_audit_retention_policy.sql": (
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='audit_retention_policy'"
+    ),
 }
 
 

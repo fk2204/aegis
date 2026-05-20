@@ -1,0 +1,90 @@
+{% extends "base.html.j2" %}
+{% set active = 'Compliance' %}
+{% block title %}AEGIS — Compliance Obligations{% endblock %}
+
+{% block deck %}
+<header class="deck">
+  <h1>Compliance obligations<em> · state registrations &amp; annual reports</em></h1>
+  <div class="meta">
+    {{ summary.total }} obligation{{ '' if summary.total == 1 else 's' }} tracked
+    &nbsp;·&nbsp; {{ summary.submitted_or_active }} submitted/active
+  </div>
+</header>
+
+<section class="strip">
+  <div class="cell">
+    <div class="k">Total</div>
+    <div class="v">{{ summary.total }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">Overdue</div>
+    <div class="v {{ 'bad' if summary.overdue > 0 else '' }}">{{ summary.overdue }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">Due soon</div>
+    <div class="v {{ 'warn' if summary.due_soon > 0 else '' }}">{{ summary.due_soon }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">On track</div>
+    <div class="v {{ 'calm' if summary.on_track > 0 else '' }}">{{ summary.on_track }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">Submitted / Active</div>
+    <div class="v calm">{{ summary.submitted_or_active }}</div>
+  </div>
+</section>
+{% endblock %}
+
+{% block body %}
+<section class="body">
+  {% if obligations %}
+  <table class="data">
+    <thead>
+      <tr>
+        <th>State</th>
+        <th>Authority</th>
+        <th>Type</th>
+        <th>Description</th>
+        <th>Status</th>
+        <th>Next due</th>
+        <th>Days</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ob in obligations %}
+      <tr data-state="{{ ob.derived_state }}">
+        <td>{{ ob.state_code }}</td>
+        <td>{{ ob.authority }}</td>
+        <td>{{ ob.obligation_type }}</td>
+        <td>
+          {{ ob.description }}
+          {% if ob.notes %}<div class="muted small">{{ ob.notes }}</div>{% endif %}
+        </td>
+        <td>
+          {% if ob.derived_state == 'overdue' %}
+            <span class="pill bad">OVERDUE</span>
+          {% elif ob.derived_state == 'due_soon' %}
+            <span class="pill warn">DUE SOON</span>
+          {% elif ob.status in ('submitted', 'active') %}
+            <span class="pill calm">{{ ob.status|upper }}</span>
+          {% else %}
+            <span class="pill">{{ ob.status|upper }}</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if ob.next_due_date %}{{ ob.next_due_date }}
+          {% elif ob.deadline %}{{ ob.deadline }}
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if ob.days_until_due is not none %}{{ ob.days_until_due|days_label }}{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No obligations tracked. Run migration 018 to seed the table.</p>
+  {% endif %}
+</section>
+{% endblock %}
