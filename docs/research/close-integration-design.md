@@ -102,6 +102,36 @@ One merchant row has `zoho_deal_id` populated. Per operator rule, that's a non-z
 
 ---
 
+## Idempotency contract (binding for step 4)
+
+Close's delivery model is **at-least-once with no ordering guarantee** (72-hour exponential-backoff retry, auto-pause at 100k backlog, parallel retries can reorder events relative to source-of-truth time). The `/webhooks/close` handler MUST be safe against:
+
+- **Duplicate "Docs In — Pre-UW" events** for the same Lead (Close retries a transient failure; the handler runs twice; both must produce the same end state).
+- **Out-of-order events** (e.g., status changes back-and-forth between two states; a late-arriving "leave Underwriting" arrives after a "enter Lender Shopping"). The handler must not undo work it has already done.
+- **Late retries arriving after the operator has manually progressed the deal** (an `opportunity.updated` from yesterday's status change arrives today after the operator already moved the deal to "Lender Shopping").
+
+### Specific guarantees the handler implements
+
+1. **Merchant upsert is idempotent on `close_lead_id`.** Two events for the same Lead produce one `merchants` row. Updates touch only fields whose value changed; identical-payload re-runs are no-op writes.
+
+2. **Parse trigger is idempotent on attachment SHA256.** A parse is enqueued only if (a) no `documents` row exists yet for this `(close_lead_id, attachment_sha256)` tuple, OR (b) the attached PDF's SHA256 doesn't match any existing `documents` row for this Lead. A redelivered webhook with the same attachment → no new parse job. A new attachment with a new SHA256 → new parse job.
+
+3. **Decision push-back is idempotent and value-aware.** `push_decision_to_close(lead_id, decision)` reads the current Close Lead's Aegis-* fields BEFORE PATCHing. If all four target values (Score, Recommendation, OFAC Status, plus `Aegis Applicant ID` — `Aegis Last Synced` is informational, not part of the equality check) already match the desired values, the handler skips the PATCH AND skips the audit row. Two identical push-backs produce one audit row maximum.
+
+4. **Audit trail captures every webhook reception, regardless of outcome.** A new audit action `close.webhook.received` is written on every successful HMAC + freshness verification — before filter logic runs. Carries `{event_id, subscription_id, object_type, action, lead_id, opp_id, changed_fields, decision: "processed" | "filtered_out" | "noop_idempotent"}`. This is the durable proof-of-receipt for compliance. The decision-push and merchant-upsert audit actions remain separate (they're work-performed signals, not receipt signals).
+
+### What this implies for step 4 code
+
+- The webhook handler MUST log `close.webhook.received` immediately after HMAC verification passes, before any filter-by-status logic.
+- The merchant-upsert path MUST compare incoming fields against stored fields and write only the diff. No blind overwrites.
+- The parse-enqueue path MUST query `documents` by `(close_lead_id, sha256)` before enqueueing.
+- The decision-push path MUST GET the Close Lead first to compare current vs target Aegis-* values; PATCH only on diff; audit only on PATCH.
+- Out-of-order tolerance: events older than the latest-seen `event.date_created` for the same `(object_type, object_id)` are still audited as received, but their `data.status_id` is NOT trusted to set merchant state. Equivalently: every webhook reception that materially changes merchant state is gated on `event.date_created > merchants.close_last_event_at` (new column added in migration 026 if we need it — confirm during step 4 design).
+
+This contract is binding. Step 4 (webhook handler) is rejected at review if any of guarantees 1-4 are not demonstrably covered by a test.
+
+---
+
 ## Data mapping
 
 ### Close Lead → AEGIS `merchants`
