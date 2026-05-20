@@ -76,6 +76,17 @@ def test_non_served_state_raises_state_not_served() -> None:
         render_disclosure("TX", _deal("TX"), _score())
 
 
+# Phase 4 (mp §14): VA, CT, UT, MO are now served as Tier 3. Disclosure
+# rendering must raise ``StateNotAudited`` (template not built yet, the
+# gate that Phase 5 closes) rather than ``StateNotServed`` (intake-level
+# rejection, the gate Phase 4 opened). This codifies the shift: deals
+# enter, but the operator cannot ship a disclosure until Phase 5.
+@pytest.mark.parametrize("state", ["VA", "CT", "UT", "MO"])
+def test_phase_4_served_states_render_raises_state_not_audited(state: str) -> None:
+    with pytest.raises(StateNotAudited, match=r"compliance research"):
+        render_disclosure(state, _deal(state), _score())
+
+
 def test_state_not_audited_carries_state_attr() -> None:
     try:
         render_disclosure("WY", _deal("WY"), _score())

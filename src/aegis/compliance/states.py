@@ -30,9 +30,25 @@ data — fail-closed is the only safe behavior.
 
 Served set
 ----------
-45 states explicitly. Texas, Virginia, Connecticut, Utah, Missouri, DC,
-and U.S. territories are NOT in `STATES` — `validate_state_served`
-raises `StateNotServed` for them so the API can reject upstream.
+49 states served by AEGIS. Phase 4 (master plan §14) added VA, CT, UT,
+and MO to the served list as Tier 3 entries — they were previously
+auto-declined at intake with ``state_not_served``, but per the master
+plan's gap analysis those declines were a misclassification: each
+state has an enacted CFDL (VA HB 1027, CT SB 1032, UT HB 198, MO SB
+1359 § 427.300), and Commera should be serving them with a disclosure
+template. Phase 5 promotes each to Tier 1 with its locked Jinja
+template once counsel reviews. Until then, the disclosure endpoint
+raises ``StateNotAudited`` for these states — the operator sees the
+deal in intake but cannot ship without a template.
+
+**Texas remains in ``state_not_served`` pending counsel review** — see
+``docs/counsel/phase-4-questions.md``. The TX HB 700 first-priority-lien
+requirement (§ Ch. 398) hard-declines standard ACH-debit MCAs; the
+operator must confirm with counsel + each funder whether the hard
+decline is correct or whether one or more funder structures satisfy
+the lien requirement before TX moves to served.
+
+DC and U.S. territories continue to raise ``StateNotServed``.
 """
 
 from __future__ import annotations
@@ -398,8 +414,16 @@ StateRegulation = Annotated[
 
 
 # Served-state inventory -------------------------------------------------------
-# 45 states served. Each entry below MUST have a matching Tier3Regulation in
+# 49 states served. Each entry below MUST have a matching Tier3Regulation in
 # STATES. The list itself is the source of truth for "is this a state we serve?"
+#
+# Phase 4 (master plan §14) added VA, CT, UT, MO to this list — they were
+# previously auto-declined at intake with reason ``state_not_served``, but
+# each has an enacted Tier 1 CFDL and the master plan's gap analysis
+# classed those declines as a misclassification. They enter as Tier 3
+# served pending Phase 5 template work (disclosure endpoint raises
+# ``StateNotAudited`` until then). TX remains in ``state_not_served`` per
+# counsel review — see ``docs/counsel/phase-4-questions.md``.
 
 _SERVED_STATES: Final[tuple[tuple[str, str], ...]] = (
     ("AL", "Alabama"),
@@ -408,6 +432,9 @@ _SERVED_STATES: Final[tuple[tuple[str, str], ...]] = (
     ("AR", "Arkansas"),
     ("CA", "California"),
     ("CO", "Colorado"),
+    # Phase 4 (mp §14): CT added — SB 1032 (2023) effective 2024-07-01.
+    # Tier 1 promotion in Phase 5 once locked Jinja template lands.
+    ("CT", "Connecticut"),
     ("DE", "Delaware"),
     ("FL", "Florida"),
     ("GA", "Georgia"),
@@ -425,6 +452,9 @@ _SERVED_STATES: Final[tuple[tuple[str, str], ...]] = (
     ("MI", "Michigan"),
     ("MN", "Minnesota"),
     ("MS", "Mississippi"),
+    # Phase 4 (mp §14): MO added — SB 1359 § 427.300 effective 2025-02-28.
+    # Tier 1 promotion in Phase 5 once locked Jinja template lands.
+    ("MO", "Missouri"),
     ("MT", "Montana"),
     ("NE", "Nebraska"),
     ("NV", "Nevada"),
@@ -442,7 +472,14 @@ _SERVED_STATES: Final[tuple[tuple[str, str], ...]] = (
     ("SC", "South Carolina"),
     ("SD", "South Dakota"),
     ("TN", "Tennessee"),
+    # Phase 4 (mp §14): UT added — HB 198 (2022) effective 2023-01-01.
+    # Tier 1 promotion in Phase 5 once locked Jinja template lands.
+    ("UT", "Utah"),
     ("VT", "Vermont"),
+    # Phase 4 (mp §14): VA added — HB 1027 (2022) effective 2022-07-01.
+    # Tier 1 promotion in Phase 5 once locked Jinja template lands. Note
+    # VA's overlay: forum mandatory in-state (per master plan §8.5).
+    ("VA", "Virginia"),
     ("WA", "Washington"),
     ("WV", "West Virginia"),
     ("WI", "Wisconsin"),
@@ -943,10 +980,14 @@ def validate_states_table() -> None:
 
 
 def validate_state_served(state: str) -> None:
-    """Raise `StateNotServed` if `state` is not one of the 45 served states.
+    """Raise `StateNotServed` if `state` is not one of the 49 served states.
 
     The API uses this at deal-intake to short-circuit unsupported geographies
     with a 422 / `reason=state_not_served` rather than running the parser.
+
+    Phase 4 (master plan §14) moved VA, CT, UT, MO out of the
+    ``state_not_served`` set. TX remains gated pending counsel review —
+    see ``docs/counsel/phase-4-questions.md``.
     """
     abbr = (state or "").upper()
     if abbr not in STATES:

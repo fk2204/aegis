@@ -114,6 +114,121 @@ def test_tier3_state_routes_as_tier3(matrix: StateMatrix) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 4 (mp §14) — newly served Tier 1 states
+# ---------------------------------------------------------------------------
+#
+# Snapshot-style tests on rule routing for each state Phase 4 moved out
+# of ``state_not_served``. The legacy ``aegis.compliance.states`` table
+# still records VA/CT/UT/MO as Tier 3 (template comes in Phase 5), but
+# the new matrix-driven router already returns the Tier 1 surface for
+# in-scope deals. These tests lock the router output so a regression
+# (e.g. an accidental edit to ``states.yaml``) is caught immediately.
+
+
+def test_va_sales_based_in_threshold_is_tier1(matrix: StateMatrix) -> None:
+    """VA HB 1027: MCA-only, ≤ $500k → Tier 1 + VA template."""
+    result = router("VA", Decimal("400000"), "sales_based", matrix)
+    assert result.tier == 1
+    assert result.template_path == Path(
+        "docs/compliance/states/VA/03_disclosure_template.j2"
+    )
+    assert result.applicable_rules == ["va_tier1"]
+    assert result.hard_decline_rules == []
+
+
+def test_va_non_mca_falls_through(matrix: StateMatrix) -> None:
+    """VA HB 1027 covers MCA only — a VA closed-end loan is Tier 3 fallback."""
+    result = router("VA", Decimal("100000"), "closed_end", matrix)
+    assert result.tier == 3
+    assert "va_overlays_apply" in result.applicable_rules
+
+
+def test_ct_sales_based_in_threshold_is_tier1(matrix: StateMatrix) -> None:
+    """CT SB 1032: MCA-only, ≤ $250k → Tier 1 + CT template."""
+    result = router("CT", Decimal("200000"), "sales_based", matrix)
+    assert result.tier == 1
+    assert result.template_path == Path(
+        "docs/compliance/states/CT/03_disclosure_template.j2"
+    )
+    assert result.applicable_rules == ["ct_tier1"]
+    assert result.hard_decline_rules == []
+
+
+def test_ct_above_threshold_is_tier3_fallback(matrix: StateMatrix) -> None:
+    """CT threshold is $250k — a $400k MCA falls to Tier 3 defensive."""
+    result = router("CT", Decimal("400000"), "sales_based", matrix)
+    assert result.tier == 3
+    assert "ct_overlays_apply" in result.applicable_rules
+
+
+def test_ut_sales_based_in_threshold_is_tier1(matrix: StateMatrix) -> None:
+    """UT HB 198: broad commercial, ≤ $1M → Tier 1 + UT template."""
+    result = router("UT", Decimal("750000"), "sales_based", matrix)
+    assert result.tier == 1
+    assert result.template_path == Path(
+        "docs/compliance/states/UT/03_disclosure_template.j2"
+    )
+    assert result.applicable_rules == ["ut_tier1"]
+    assert result.hard_decline_rules == []
+
+
+def test_ut_closed_end_in_scope(matrix: StateMatrix) -> None:
+    """UT's product_scope is broad — closed-end loans are also covered."""
+    result = router("UT", Decimal("400000"), "closed_end", matrix)
+    assert result.tier == 1
+    assert result.applicable_rules == ["ut_tier1"]
+
+
+def test_mo_sales_based_in_threshold_is_tier1(matrix: StateMatrix) -> None:
+    """MO SB 1359 § 427.300: broad commercial, ≤ $500k → Tier 1 + MO template."""
+    result = router("MO", Decimal("400000"), "sales_based", matrix)
+    assert result.tier == 1
+    assert result.template_path == Path(
+        "docs/compliance/states/MO/03_disclosure_template.j2"
+    )
+    assert result.applicable_rules == ["mo_tier1"]
+    assert result.hard_decline_rules == []
+
+
+def test_mo_above_threshold_is_tier3_fallback(matrix: StateMatrix) -> None:
+    """MO threshold is $500k — a $750k MCA falls to Tier 3 defensive."""
+    result = router("MO", Decimal("750000"), "sales_based", matrix)
+    assert result.tier == 3
+    assert "mo_overlays_apply" in result.applicable_rules
+
+
+def test_tx_hard_decline_message_cites_hb_700(matrix: StateMatrix) -> None:
+    """TX HB 700 hard-decline message must explain the auto-debit rule.
+
+    Master plan §14 task 3: 'Decline message explains HB 700.' This test
+    locks the decline message contents so the operator-facing surface
+    cannot drift without an explicit ``states.yaml`` edit.
+    """
+    result = router("TX", Decimal("400000"), "sales_based", matrix)
+    matching = [
+        r for r in result.hard_decline_rules
+        if r.code == "tx_autodebit_without_first_priority_lien"
+    ]
+    assert matching, "expected the TX auto-debit hard-decline rule"
+    message = matching[0].message
+    assert "HB 700" in message
+    assert "first-priority" in message.lower()
+    assert "ucc" in message.lower()
+
+
+def test_tx_hard_decline_fires_for_all_product_types(matrix: StateMatrix) -> None:
+    """TX auto-debit prohibition is overlay-level — it fires regardless
+    of product type. Master plan §8.5: 'Effective deal-killer for
+    standard MCA in TX.'"""
+    for product in ("sales_based", "closed_end", "open_end", "factoring"):
+        result = router("TX", Decimal("400000"), product, matrix)
+        assert any(
+            r.code == "tx_autodebit_without_first_priority_lien"
+            for r in result.hard_decline_rules
+        ), f"TX product {product} should still carry the auto-debit decline"
+
+
+# ---------------------------------------------------------------------------
 # Negative paths
 # ---------------------------------------------------------------------------
 
