@@ -24,6 +24,22 @@ def test_record_appends_entry() -> None:
     assert e["details"]["file_hash"] == "h" * 64
 
 
+def test_record_actor_email_lands_on_entry() -> None:
+    """Per-row actor_email (mp Phase 11 #8) lands on the entry alongside
+    the system-actor string. None when not supplied — the column is
+    nullable on the audit_log table."""
+    log = InMemoryAuditLog()
+    log.record(
+        actor="api",
+        action="deal.score",
+        actor_email="fkozina92@gmail.com",
+    )
+    assert log.entries[0]["actor_email"] == "fkozina92@gmail.com"
+
+    log.record(actor="worker", action="document.parse.complete")
+    assert log.entries[-1]["actor_email"] is None
+
+
 def test_pii_in_details_is_masked() -> None:
     log = InMemoryAuditLog()
     log.record(

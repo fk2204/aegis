@@ -40,6 +40,7 @@ from aegis.api.deps import get_audit, get_repository
 from aegis.audit import AuditLog
 from aegis.config import get_settings
 from aegis.logger import get_logger
+from aegis.ops.operators import resolve_operator_email
 from aegis.storage import DocumentExistsError, DocumentRepository
 
 router = APIRouter(prefix="/upload", tags=["upload"], dependencies=[Depends(require_bearer)])
@@ -70,6 +71,7 @@ async def upload_pdf(
     file: Annotated[UploadFile, File(description="Bank statement PDF")],
     repository: Annotated[DocumentRepository, Depends(get_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
     merchant_id: Annotated[UUID | None, Form()] = None,
 ) -> UploadResponse:
     """Single-file bearer-protected upload.
@@ -88,6 +90,7 @@ async def upload_pdf(
         repository=repository,
         audit=audit,
         actor=actor,
+        actor_email=actor_email,
         merchant_id=merchant_id,
     )
 
@@ -100,6 +103,7 @@ async def persist_pdf_upload(
     repository: DocumentRepository,
     audit: AuditLog,
     actor: str,
+    actor_email: str | None = None,
     merchant_id: UUID | None = None,
 ) -> UploadResponse:
     """Hash, dedup, persist + audit + enqueue a single PDF.
@@ -127,6 +131,7 @@ async def persist_pdf_upload(
     if existing is not None:
         audit.record(
             actor=actor,
+            actor_email=actor_email,
             action="document.upload.duplicate",
             subject_type="document",
             subject_id=existing.id,
@@ -164,6 +169,7 @@ async def persist_pdf_upload(
 
         audit.record(
             actor=actor,
+            actor_email=actor_email,
             action="document.upload",
             subject_type="document",
             subject_id=row.id,

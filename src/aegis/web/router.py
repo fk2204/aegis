@@ -69,6 +69,7 @@ from aegis.merchants.repository import (
     MerchantNotFoundError,
     MerchantRepository,
 )
+from aegis.ops.operators import resolve_operator_email
 from aegis.parser.models import ClassifiedTransaction
 from aegis.parser.patterns import analyze_patterns
 from aegis.scoring.match_funders import match_funder
@@ -358,6 +359,7 @@ async def upload_submit(
     repository: Annotated[DocumentRepository, Depends(get_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
     merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
     files: Annotated[list[UploadFile] | None, File()] = None,
     merchant_id: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
@@ -411,6 +413,7 @@ async def upload_submit(
         repository=repository,
         audit=audit,
         actor="dashboard",
+        actor_email=actor_email,
         merchant_id=parsed_merchant_id,
         per_file_cap=settings.aegis_max_upload_bytes,
         total_cap=settings.aegis_max_intake_total_bytes,
@@ -460,6 +463,7 @@ async def intake_submit(
     business_name: Annotated[str, Form()],
     owner_name: Annotated[str, Form()],
     state: Annotated[str, Form()],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
     files: Annotated[list[UploadFile] | None, File()] = None,
     dba: Annotated[str, Form()] = "",
     industry_naics: Annotated[str, Form()] = "",
@@ -549,6 +553,7 @@ async def intake_submit(
             repository=repository,
             audit=audit,
             actor="dashboard",
+            actor_email=actor_email,
             merchant_id=merchant.id,
             per_file_cap=settings.aegis_max_upload_bytes,
             total_cap=settings.aegis_max_intake_total_bytes,
@@ -561,6 +566,7 @@ async def intake_submit(
             # individually from /ui/upload.
             audit.record(
                 actor="dashboard",
+                actor_email=actor_email,
                 action="intake.partial_failure",
                 subject_type="merchant",
                 subject_id=merchant.id,
@@ -1058,6 +1064,7 @@ async def merchant_submit_to_funders(
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     audit: Annotated[AuditLog, Depends(get_audit)],
     funder_ids: Annotated[list[str], Form()],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> Response:
     """Build per-funder submission CSVs and stream them as a ZIP.
 
@@ -1139,6 +1146,7 @@ async def merchant_submit_to_funders(
 
     audit.record(
         actor="dashboard",
+        actor_email=actor_email,
         action="deal.submit_to_funders",
         subject_type="merchant",
         subject_id=merchant.id,
@@ -1188,6 +1196,7 @@ async def merchant_submit_to_funders(
         audit=audit,
         dossier_pdf=dossier_pdf,
         dossier_filename=dossier_filename,
+        actor_email=actor_email,
     )
 
     return Response(
@@ -1210,6 +1219,7 @@ async def merchant_funder_response(
     audit: Annotated[AuditLog, Depends(get_audit)],
     funder_id: Annotated[str, Form()],
     response_status: Annotated[str, Form()],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
     offered_amount: Annotated[str, Form()] = "",
     offered_factor: Annotated[str, Form()] = "",
     offered_term_days: Annotated[str, Form()] = "",
@@ -1262,6 +1272,7 @@ async def merchant_funder_response(
 
     audit.record(
         actor="dashboard",
+        actor_email=actor_email,
         action="deal.funder_response",
         subject_type="merchant",
         subject_id=merchant.id,
@@ -1366,6 +1377,7 @@ def _record_submission_to_zoho(
     audit: AuditLog,
     dossier_pdf: bytes | None = None,
     dossier_filename: str | None = None,
+    actor_email: str | None = None,
 ) -> None:
     """Mirror the funder submission into Zoho (Deal + each Lender record).
 
@@ -1380,6 +1392,7 @@ def _record_submission_to_zoho(
     if not merchant.zoho_deal_id:
         audit.record(
             actor="dashboard",
+            actor_email=actor_email,
             action="zoho.submission.skipped_no_deal",
             subject_type="merchant",
             subject_id=merchant.id,
@@ -1403,6 +1416,7 @@ def _record_submission_to_zoho(
         )
         audit.record(
             actor="dashboard",
+            actor_email=actor_email,
             action="zoho.submission.skipped_unconfigured",
             subject_type="merchant",
             subject_id=merchant.id,
@@ -1426,6 +1440,7 @@ def _record_submission_to_zoho(
         )
         audit.record(
             actor="dashboard",
+            actor_email=actor_email,
             action="zoho.submission.record_failed",
             subject_type="merchant",
             subject_id=merchant.id,
@@ -2441,6 +2456,7 @@ async def _persist_uploads(
     repository: DocumentRepository,
     audit: AuditLog,
     actor: str,
+    actor_email: str | None = None,
     merchant_id: UUID | None,
     per_file_cap: int,
     total_cap: int,
@@ -2480,6 +2496,7 @@ async def _persist_uploads(
                 repository=repository,
                 audit=audit,
                 actor=actor,
+                actor_email=actor_email,
                 merchant_id=merchant_id,
             )
         except HTTPException as exc:

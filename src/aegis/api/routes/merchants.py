@@ -23,6 +23,7 @@ from aegis.merchants.repository import (
     MerchantNotFoundError,
     MerchantRepository,
 )
+from aegis.ops.operators import resolve_operator_email
 
 router = APIRouter(
     prefix="/merchants",
@@ -46,6 +47,7 @@ def create_merchant(
     merchant: MerchantRow,
     repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> MerchantRow:
     _enforce_state_served(merchant.state)
     try:
@@ -55,6 +57,7 @@ def create_merchant(
 
     audit.record(
         actor="api",
+        actor_email=actor_email,
         action="merchant.create",
         subject_type="merchant",
         subject_id=saved.id,
@@ -80,6 +83,7 @@ def update_merchant(
     merchant: MerchantRow,
     repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> MerchantRow:
     if merchant.id != merchant_id:
         raise HTTPException(
@@ -94,6 +98,7 @@ def update_merchant(
 
     audit.record(
         actor="api",
+        actor_email=actor_email,
         action="merchant.update",
         subject_type="merchant",
         subject_id=saved.id,
