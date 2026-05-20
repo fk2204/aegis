@@ -117,11 +117,13 @@ class CostTrackingBedrockClient:
 
     Note on ``document_id``: the Bedrock client itself doesn't know
     which document a call belongs to. The parser pipeline carries
-    that information; the simplest plumbing is a thread-local set by
-    the worker before invoking ``run_pipeline``, drained by the
-    wrapper. We start with the wrapper accepting an optional
-    ``document_id`` per-call so callers that DO know can pass it; the
-    worker integration will plumb the thread-local in a follow-up.
+    that information. Construction time is the natural plumbing point —
+    the worker creates one wrapper per ``parse_document`` job with the
+    document_id pinned, and the wrapper tags every audit row with
+    ``subject_type="document"`` / ``subject_id=document_id``. Callers
+    that lack a document context (ad-hoc scripts, OFAC refresh, etc.)
+    pass ``document_id=None``; those rows still land in the digest's
+    overall totals but are excluded from the per-deal breakdown.
     """
 
     def __init__(
@@ -129,10 +131,12 @@ class CostTrackingBedrockClient:
         inner: BedrockClient | None = None,
         *,
         audit: AuditLog,
+        document_id: UUID | None = None,
     ) -> None:
         self._inner = inner if inner is not None else BedrockClient()
         self._audit = audit
         self._model_id = get_settings().bedrock_model_id
+        self._document_id = document_id
 
     # ----- LLMClient Protocol surface --------------------------------------
 
@@ -237,12 +241,13 @@ class CostTrackingBedrockClient:
             "total_cost_usd": str(cost),
             "model_id": self._model_id,
         }
+        subject_type = "document" if self._document_id is not None else None
         try:
             self._audit.record(
                 actor="bedrock.client",
                 action="bedrock.usage",
-                subject_type=None,
-                subject_id=None,
+                subject_type=subject_type,
+                subject_id=self._document_id,
                 details=details,
             )
         except AuditWriteError:

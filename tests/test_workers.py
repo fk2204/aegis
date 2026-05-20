@@ -118,6 +118,92 @@ async def test_parse_document_unknown_id_raises_and_unlinks(
 
 
 # ---------------------------------------------------------------------------
+# Cost-tracking wrap (mp Phase 11 #2): when the worker receives a real
+# BedrockClient (production), it gets wrapped in CostTrackingBedrockClient
+# pinned to this job's document_id. Fake LLMs (other tests above) are NOT
+# wrapped — the isinstance guard skips them.
+# ---------------------------------------------------------------------------
+
+
+async def test_parse_document_wraps_bedrock_client_with_cost_tracking(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """When the injected llm is a real BedrockClient, it gets wrapped so
+    every Bedrock call inside the pipeline writes a bedrock.usage audit
+    row tagged with this job's document_id."""
+    from aegis.llm import BedrockClient
+    from aegis.ops.cost_tracking import CostTrackingBedrockClient
+
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash="j" * 64, byte_size=fake_pdf.stat().st_size, original_filename="f.pdf"
+    )
+
+    # A minimal BedrockClient stand-in — production path is `isinstance(llm,
+    # BedrockClient)`, so we sneak past it with BedrockClient.__new__ to
+    # avoid the boto3 cred chain the real __init__ touches.
+    fake_bedrock = BedrockClient.__new__(BedrockClient)
+
+    captured_llm: list[object] = []
+
+    def fake_run_pipeline(
+        _path: str, llm: object, today: date | None = None
+    ) -> PipelineResult:
+        captured_llm.append(llm)
+        return _make_pipeline_result()
+
+    monkeypatch.setattr("aegis.workers.run_pipeline", fake_run_pipeline)
+
+    await parse_document(
+        {"repository": repo, "audit": audit, "llm": fake_bedrock},
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    assert len(captured_llm) == 1
+    wrapped = captured_llm[0]
+    assert isinstance(wrapped, CostTrackingBedrockClient)
+    # The wrap pins this job's document_id so bedrock.usage rows carry it.
+    assert wrapped._document_id == row.id
+
+
+async def test_parse_document_does_not_wrap_non_bedrock_llm(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """Fake LLMClients (object(), test doubles) MUST NOT be wrapped — the
+    wrapper re-issues calls through `inner._client.messages` which fakes
+    don't expose. The isinstance check is the guard."""
+    from aegis.ops.cost_tracking import CostTrackingBedrockClient
+
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash="k" * 64, byte_size=fake_pdf.stat().st_size, original_filename="f.pdf"
+    )
+
+    captured_llm: list[object] = []
+
+    def fake_run_pipeline(
+        _path: str, llm: object, today: date | None = None
+    ) -> PipelineResult:
+        captured_llm.append(llm)
+        return _make_pipeline_result()
+
+    monkeypatch.setattr("aegis.workers.run_pipeline", fake_run_pipeline)
+
+    fake_llm = object()
+    await parse_document(
+        {"repository": repo, "audit": audit, "llm": fake_llm},
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    assert captured_llm[0] is fake_llm
+    assert not isinstance(captured_llm[0], CostTrackingBedrockClient)
+
+
+# ---------------------------------------------------------------------------
 # Processor branch (mp Phase 6.6 / Stage 2C): detection routes Stripe and
 # Square PDFs to ``run_processor_pipeline`` instead of ``run_pipeline``.
 # Worker-side dispatch is what makes upload → parse a single coherent flow.
