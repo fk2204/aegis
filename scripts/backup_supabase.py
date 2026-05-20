@@ -83,7 +83,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[bytes]:
     string-interpolated commands. Every external invocation is a
     fully-vetted argv list.
     """
-    return subprocess.run(  # noqa: S603 — argv list, no shell
+    return subprocess.run(
         cmd, check=False, capture_output=True
     )
 

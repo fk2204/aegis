@@ -415,7 +415,9 @@ def main() -> int:
         print(f"ERROR: no *.pdf under {LOCAL_CORPUS_DIR}", file=sys.stderr)
         return 2
 
-    remote_dir = f"/tmp/aegis-verify-{uuid.uuid4().hex[:12]}"
+    # S108: this path lives on the REMOTE box (over SSH), not on the local
+    # filesystem. Local /tmp permissions are not the failure surface here.
+    remote_dir = f"/tmp/aegis-verify-{uuid.uuid4().hex[:12]}"  # noqa: S108
     host = args.host
 
     if args.dry_run:
