@@ -128,6 +128,32 @@ class ScoreInput(_StrictModel):
     total_monthly_obligations: Money | None = None
     proposed_daily_payment: Money | None = None
 
+    # Counterparty signals (master plan §5.7). Populated from
+    # ``patterns.CounterpartySignals``. None when the underlying side
+    # is empty (e.g. zero deposits in the window).
+    top_counterparty_pct: int | None = Field(default=None, ge=0, le=100)
+    top_counterparty_label: str | None = None
+    top_5_revenue_share_pct: int | None = Field(default=None, ge=0, le=100)
+    top_5_expense_share_pct: int | None = Field(default=None, ge=0, le=100)
+    payroll_present: bool = False
+
+    # Phase 9 hard-decline triggers (master plan §19 tasks 3).
+    # ``acceleration_clause_triggered`` and ``unauthorized_withdrawal_dispute``
+    # each promote to a hard-decline reason when True.
+    # ``tampering_confirmed`` is the composite signal from the pipeline
+    # (metadata + math + patterns); set True when fraud_score already
+    # crossed the hard threshold via the multi-layer composite path,
+    # so we can attach the named hard-decline reason in addition.
+    acceleration_clause_triggered: bool = False
+    unauthorized_withdrawal_dispute: bool = False
+    tampering_confirmed: bool = False
+    # 0..100 composite "looks AI-generated" score. Scored softly,
+    # never auto-declined (per §6.4 — false positives kill real deals).
+    ai_generated_score: int = Field(default=0, ge=0, le=100)
+
+
+PaperGrade = Literal["A", "B", "C", "D"]
+
 
 class ScoreResult(_StrictModel):
     """Output of scoring. `recommendation` is the gate the rest of the system uses."""
@@ -150,6 +176,18 @@ class ScoreResult(_StrictModel):
     ``{"input_field": "business_name"|"owner_name", "matched_name": str,
     "sdn_uid": str}``. ``sdn_uid`` may be empty when the cached SDN feed
     pre-dates the uid plumbing or for hand-built test fixtures."""
+
+    # Phase 9: industry-standard paper grade (master plan §5.8). Distinct
+    # from ``tier`` (AEGIS internal score). Paper grade is the funder-
+    # facing classification: A = first-position prime, B = mainstream,
+    # C = sub-prime, D = last-resort. Hard-declined deals carry the
+    # last paper grade they would have received before the decline
+    # rules fired (defaults to D when a soft scoring path is not taken).
+    paper_grade: PaperGrade = "D"
+    paper_grade_reasons: list[str] = Field(default_factory=list)
+    """Codes explaining which §5.8 criteria the deal satisfied / missed
+    for each grade (e.g. ``"tib_24mo+"``, ``"adb_lt_8pct"``). Empty when
+    paper_grade was not computed (hard decline path)."""
 
 
 class FunderMatch(_StrictModel):
@@ -188,6 +226,7 @@ class DealMatchResult(_StrictModel):
 __all__ = [
     "DealMatchResult",
     "FunderMatch",
+    "PaperGrade",
     "Recommendation",
     "ScoreInput",
     "ScoreResult",

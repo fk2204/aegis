@@ -236,6 +236,16 @@
               <span class="qual">trailing window {% if score_window %}· {{ score_window.months_used }} month{{ '' if score_window.months_used == 1 else 's' }}{% endif %}</span>
             </div>
             <div class="row">
+              <span class="k">Paper grade</span>
+              <span class="v paper-grade paper-grade-{{ score_result.paper_grade|lower }}">{{ score_result.paper_grade }}</span>
+              <span class="qual">
+                {% if score_result.paper_grade == 'A' %}first-position prime &mdash; factor 1.15&ndash;1.25
+                {% elif score_result.paper_grade == 'B' %}mainstream &mdash; factor 1.25&ndash;1.35
+                {% elif score_result.paper_grade == 'C' %}sub-prime &mdash; factor 1.35&ndash;1.45
+                {% else %}last-resort / high-decline band &mdash; factor 1.45&ndash;1.55{% endif %}
+              </span>
+            </div>
+            <div class="row">
               <span class="k">Fraud score</span>
               {% set _fraud = (document.fraud_score if document else 0) or 0 %}
               <span class="v {% if _fraud >= 65 %}bad{% elif _fraud >= 35 %}warn{% endif %}">{{ _fraud }}<span class="small">/100</span></span>

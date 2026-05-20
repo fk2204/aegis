@@ -25,7 +25,7 @@ from decimal import Decimal
 from typing import Final
 
 from aegis.money import safe_divide
-from aegis.scoring.models import ScoreInput, ScoreResult
+from aegis.scoring.models import PaperGrade, ScoreInput, ScoreResult
 from aegis.scoring.ofac import OFACClient
 
 # DSCR thresholds. dscr = monthly_revenue / total_monthly_obligations,
@@ -99,6 +99,8 @@ def score_deal(
             recommended_holdback_pct=Decimal("0.00"),
             estimated_payback_days=0,
             decline_details=decline_details,
+            paper_grade="D",
+            paper_grade_reasons=["hard_decline"],
         )
 
     return _soft_score(deal)
@@ -188,6 +190,14 @@ def _check_hard_declines(
     if dscr is not None and dscr < DSCR_HARD_DECLINE:
         reasons.append(f"dscr_below_1: {dscr:.2f}")
 
+    # Phase 9 hard-decline rules (master plan §19 task 3).
+    if deal.acceleration_clause_triggered:
+        reasons.append("acceleration_clause_triggered")
+    if deal.unauthorized_withdrawal_dispute:
+        reasons.append("unauthorized_withdrawal_dispute_active")
+    if deal.tampering_confirmed:
+        reasons.append("bank_statement_tampering_confirmed")
+
     return reasons, details
 
 
@@ -212,6 +222,9 @@ def _soft_score(deal: ScoreInput) -> ScoreResult:
     _score_renewal(deal, b)
     _score_fraud_soft(deal, b)
     _score_data_quality(deal, b)
+    _score_counterparty_concentration(deal, b)
+    _score_payroll_present(deal, b)
+    _score_ai_generated(deal, b)
 
     final_score = max(0, min(100, b.score))
     tier = _tier_for(final_score)
@@ -230,6 +243,8 @@ def _soft_score(deal: ScoreInput) -> ScoreResult:
     if tier == "F":
         soft_concerns.append(f"soft_score_below_threshold: score={final_score}")
 
+    paper_grade, paper_reasons = compute_paper_grade(deal)
+
     return ScoreResult(
         score=final_score,
         tier=tier,
@@ -241,6 +256,8 @@ def _soft_score(deal: ScoreInput) -> ScoreResult:
         recommended_factor_rate=factor,
         recommended_holdback_pct=holdback,
         estimated_payback_days=payback_days,
+        paper_grade=paper_grade,
+        paper_grade_reasons=paper_reasons,
     )
 
 
@@ -389,6 +406,71 @@ def _score_data_quality(deal: ScoreInput, b: _Builder) -> None:
         b.add(-5, "low_extraction_confidence")
 
 
+def _score_counterparty_concentration(deal: ScoreInput, b: _Builder) -> None:
+    """Concentration penalties from counterparty signals.
+
+    Distinct from the legacy ``customer_concentration_pct`` field
+    (operator-entered). The new ``top_counterparty_pct`` is computed by
+    ``patterns.CounterpartySignals`` directly from the bank statement.
+    Both are scored if present — they can disagree, in which case the
+    statement-derived signal is generally more reliable than memory.
+    """
+    top = deal.top_counterparty_pct
+    if top is not None:
+        if top >= 60:
+            b.add(-12, "top_counterparty_60pct+")
+        elif top >= 40:
+            b.add(-6, "top_counterparty_40_60pct")
+        elif top >= 30:
+            b.add(-3, "top_counterparty_30_40pct")
+
+    top5 = deal.top_5_revenue_share_pct
+    if top5 is not None and top5 >= 80:
+        b.add(-4, "top_5_revenue_share_80pct+")
+    top5_exp = deal.top_5_expense_share_pct
+    if top5_exp is not None and top5_exp >= 80:
+        # Concentrated expense side is informational; a small soft note.
+        b.soft_concerns.append(
+            f"top_5_expense_concentration_{top5_exp}pct"
+        )
+
+
+def _score_payroll_present(deal: ScoreInput, b: _Builder) -> None:
+    """New payroll signal layered with the legacy ``payroll_detected``.
+
+    Both pass through the same +8 / -5 grid as ``_score_payroll`` to
+    keep the score envelope stable, but only ``payroll_present`` (the
+    detector-derived signal) is decremented for high-revenue businesses
+    with no payroll. The legacy field is kept untouched so test
+    fixtures that set ``payroll_detected`` still receive a credit.
+    """
+    if deal.payroll_present and not deal.payroll_detected:
+        # New signal credits when the detector found payroll the
+        # operator hadn't flagged on the merchant row.
+        b.add(4, "payroll_present_detector")
+    if not deal.payroll_present and not deal.payroll_detected:
+        if deal.monthly_revenue >= Decimal("50000.00"):
+            # Mark as a soft concern only — the legacy _score_payroll
+            # already adds the -5 penalty, we don't want to double-tax.
+            b.soft_concerns.append("payroll_absent_high_revenue")
+
+
+def _score_ai_generated(deal: ScoreInput, b: _Builder) -> None:
+    """Composite AI-generated-statement score.
+
+    Per master plan §6.4, AI-generated fakes should be *scored*, never
+    auto-declined. Thresholds: >=85 = strong signal (-15), >=70 = medium
+    (-8), >=55 = weak (-3). Below 55 is no signal.
+    """
+    score = deal.ai_generated_score
+    if score >= 85:
+        b.add(-15, "ai_generated_statement_strong")
+    elif score >= 70:
+        b.add(-8, "ai_generated_statement_medium")
+    elif score >= 55:
+        b.add(-3, "ai_generated_statement_weak")
+
+
 def _score_revenue_trend(deal: ScoreInput, b: _Builder) -> None:
     """Last-3-month revenue trajectory. Declining 15%+ or growing 10%+."""
     if len(deal.monthly_breakdown) < 3:
@@ -461,6 +543,147 @@ def _tier_for(score: int) -> str:
     return "F"
 
 
+# Paper-grade thresholds taken from master plan §5.8. Each grade has a
+# set of criteria that must ALL be satisfied; downgrade kicks in on the
+# first failed criterion. Returned alongside human-readable reason codes
+# so the dossier can show "graded B because: adb_in_8_15pct_band, …".
+_PAPER_GRADE_A_TIB = 24
+_PAPER_GRADE_A_REV = Decimal("25000.00")
+_PAPER_GRADE_A_ADB_PCT = Decimal("0.15")
+_PAPER_GRADE_A_NSF = 2
+_PAPER_GRADE_A_CREDIT = 650
+
+_PAPER_GRADE_B_TIB = 12
+_PAPER_GRADE_B_REV = Decimal("15000.00")
+_PAPER_GRADE_B_ADB_PCT_LOW = Decimal("0.08")
+_PAPER_GRADE_B_NSF = 5
+_PAPER_GRADE_B_MCA = 1
+
+_PAPER_GRADE_C_TIB = 6
+_PAPER_GRADE_C_REV = Decimal("10000.00")
+_PAPER_GRADE_C_NSF = 10
+_PAPER_GRADE_C_MCA = 2
+
+
+def compute_paper_grade(deal: ScoreInput) -> tuple[PaperGrade, list[str]]:
+    """Industry-standard paper grade (master plan §5.8).
+
+    Funder-facing classification distinct from AEGIS's internal tier.
+    Returns ``(grade, reasons)`` where ``reasons`` is the list of
+    criterion codes that drove the grade — paper grade is a deterministic
+    waterfall: try A; on any miss, fall through to B; etc.
+
+    Down to D for any deal that doesn't satisfy C-paper minimums. We
+    do not return F here — paper grades are funder labels, not internal
+    pass/fail. The internal ``tier`` carries that gate.
+    """
+    rev = deal.monthly_revenue
+    adb = deal.avg_daily_balance
+    adb_pct = (adb / rev) if rev > 0 else Decimal("0")
+    nsf = deal.num_nsf
+    mca = deal.mca_positions
+    tib = deal.time_in_business_months or 0
+    credit = deal.credit_score
+
+    # --- Try A ----------------------------------------------------------
+    reasons_a: list[str] = []
+    a_ok = True
+    if tib >= _PAPER_GRADE_A_TIB:
+        reasons_a.append(f"tib_{_PAPER_GRADE_A_TIB}mo+")
+    else:
+        reasons_a.append(f"tib_below_{_PAPER_GRADE_A_TIB}mo")
+        a_ok = False
+    if rev >= _PAPER_GRADE_A_REV:
+        reasons_a.append("revenue_25k+")
+    else:
+        reasons_a.append("revenue_below_25k")
+        a_ok = False
+    if adb_pct >= _PAPER_GRADE_A_ADB_PCT:
+        reasons_a.append("adb_gte_15pct_revenue")
+    else:
+        reasons_a.append("adb_below_15pct_revenue")
+        a_ok = False
+    if nsf <= _PAPER_GRADE_A_NSF:
+        reasons_a.append("nsf_0_2")
+    else:
+        reasons_a.append("nsf_above_2")
+        a_ok = False
+    if mca == 0:
+        reasons_a.append("clean_position")
+    else:
+        reasons_a.append("has_mca_position")
+        a_ok = False
+    if credit is None or credit >= _PAPER_GRADE_A_CREDIT:
+        reasons_a.append(
+            "credit_650+" if credit is not None else "credit_unknown_pass"
+        )
+    else:
+        reasons_a.append("credit_below_650")
+        a_ok = False
+    if a_ok:
+        return "A", reasons_a
+
+    # --- Try B ----------------------------------------------------------
+    reasons_b: list[str] = []
+    b_ok = True
+    if tib >= _PAPER_GRADE_B_TIB:
+        reasons_b.append(f"tib_{_PAPER_GRADE_B_TIB}mo+")
+    else:
+        reasons_b.append(f"tib_below_{_PAPER_GRADE_B_TIB}mo")
+        b_ok = False
+    if rev >= _PAPER_GRADE_B_REV:
+        reasons_b.append("revenue_15k+")
+    else:
+        reasons_b.append("revenue_below_15k")
+        b_ok = False
+    if adb_pct >= _PAPER_GRADE_B_ADB_PCT_LOW:
+        reasons_b.append("adb_gte_8pct_revenue")
+    else:
+        reasons_b.append("adb_below_8pct_revenue")
+        b_ok = False
+    if nsf <= _PAPER_GRADE_B_NSF:
+        reasons_b.append("nsf_0_5")
+    else:
+        reasons_b.append("nsf_above_5")
+        b_ok = False
+    if mca <= _PAPER_GRADE_B_MCA:
+        reasons_b.append("mca_0_1")
+    else:
+        reasons_b.append("mca_above_1")
+        b_ok = False
+    if b_ok:
+        return "B", reasons_b
+
+    # --- Try C ----------------------------------------------------------
+    reasons_c: list[str] = []
+    c_ok = True
+    if tib >= _PAPER_GRADE_C_TIB:
+        reasons_c.append(f"tib_{_PAPER_GRADE_C_TIB}mo+")
+    else:
+        reasons_c.append(f"tib_below_{_PAPER_GRADE_C_TIB}mo")
+        c_ok = False
+    if rev >= _PAPER_GRADE_C_REV:
+        reasons_c.append("revenue_10k+")
+    else:
+        reasons_c.append("revenue_below_10k")
+        c_ok = False
+    if nsf <= _PAPER_GRADE_C_NSF:
+        reasons_c.append("nsf_0_10")
+    else:
+        reasons_c.append("nsf_above_10")
+        c_ok = False
+    if mca <= _PAPER_GRADE_C_MCA:
+        reasons_c.append("mca_0_2")
+    else:
+        reasons_c.append("mca_above_2")
+        c_ok = False
+    if c_ok:
+        return "C", reasons_c
+
+    # --- Default D ------------------------------------------------------
+    return "D", reasons_c
+
+
 def _recommendation_for(tier: str) -> str:
     return "decline" if tier == "F" else "approve" if tier in {"A", "B"} else "refer"
 
@@ -516,5 +739,6 @@ __all__ = [
     "NSF_COUNT_HARD_DECLINE",
     "RETURNED_ACH_HARD_DECLINE",
     "TIB_MIN_MONTHS",
+    "compute_paper_grade",
     "score_deal",
 ]

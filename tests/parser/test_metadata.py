@@ -2,15 +2,25 @@
 
 Covers the EOF-marker regex (T5) and the synthetic-corpus tampered fixtures
 that exercise the incremental-saves signal end-to-end.
+
+Phase 9 adds forensic detectors (font_inconsistency, page_layer_anomaly)
+that are exercised below against the synthetic-corpus PDFs and against
+the clean-fixture baseline.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import pikepdf
 import pytest
 
-from aegis.parser.metadata import _EOF_PATTERN, _count_eof_markers
+from aegis.parser.metadata import (
+    _EOF_PATTERN,
+    _count_eof_markers,
+    _font_inconsistency,
+    _page_layer_anomaly,
+)
 
 _CORPUS_DIR = (
     Path(__file__).parent.parent / "fixtures" / "corpus" / "synthetic"
@@ -55,3 +65,57 @@ def test_metadata_tampered_corpus_reports_two_eof_markers(fixture: Path) -> None
     assert _count_eof_markers(raw) == 2, (
         f"{fixture.name}: expected 2 EOF markers under the new regex"
     )
+
+
+# -- Phase 9: forensic detectors --------------------------------------------
+
+
+def _clean_synthetic_pdf() -> Path:
+    """Pick any clean synthetic-corpus PDF — used as a "no anomalies" baseline."""
+    candidates = sorted(_CORPUS_DIR.glob("clean_profitable_*.pdf"))
+    if not candidates:
+        pytest.skip("no clean_profitable_*.pdf fixture present")
+    return candidates[0]
+
+
+def test_font_inconsistency_returns_none_for_single_page_pdf() -> None:
+    """Single-page PDFs cannot exhibit inter-page font inconsistency."""
+    with pikepdf.Pdf.new() as pdf:
+        pdf.add_blank_page(page_size=(612, 792))
+        flag, score = _font_inconsistency(pdf)
+    assert flag is None
+    assert score == 0
+
+
+def test_font_inconsistency_returns_none_for_synthetic_clean_pdf() -> None:
+    """Synthetic-corpus clean PDFs use one font family — must not flag.
+
+    The synthetic generator builds every page with the same reportlab
+    Helvetica fallback. Any false positive here would flag the entire
+    corpus as forensic-suspect, defeating the detector.
+    """
+    fixture = _clean_synthetic_pdf()
+    with pikepdf.open(fixture) as pdf:
+        flag, score = _font_inconsistency(pdf)
+    assert flag is None, f"unexpected font_inconsistency flag on clean corpus: {flag}"
+    assert score == 0
+
+
+def test_page_layer_anomaly_returns_none_for_single_page_pdf() -> None:
+    """No inter-page comparison possible on single-page PDFs."""
+    with pikepdf.Pdf.new() as pdf:
+        pdf.add_blank_page(page_size=(612, 792))
+        flag, score = _page_layer_anomaly(pdf)
+    assert flag is None
+    assert score == 0
+
+
+def test_page_layer_anomaly_returns_none_for_homogeneous_pages() -> None:
+    """A multi-page PDF where every page has the same /Contents shape."""
+    with pikepdf.Pdf.new() as pdf:
+        pdf.add_blank_page(page_size=(612, 792))
+        pdf.add_blank_page(page_size=(612, 792))
+        pdf.add_blank_page(page_size=(612, 792))
+        flag, score = _page_layer_anomaly(pdf)
+    assert flag is None
+    assert score == 0

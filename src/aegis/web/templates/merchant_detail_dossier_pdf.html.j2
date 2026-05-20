@@ -77,6 +77,8 @@
     <p>
       <span class="tier {{ score_result.tier }}">Tier {{ score_result.tier }}</span>
       &nbsp;
+      <span class="tier {{ score_result.paper_grade }}">Paper {{ score_result.paper_grade }}</span>
+      &nbsp;
       Recommendation: <strong>{{ score_result.recommendation }}</strong>
     </p>
     <table class="scoreboard">
@@ -85,6 +87,16 @@
         <td class="v">{{ score_result.score }}/100</td>
         <td class="q">
           {% if score_window %}window {{ score_window.period_start }} → {{ score_window.period_end }} · {{ score_window.months_used }} month{{ '' if score_window.months_used == 1 else 's' }}{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td class="k">Paper grade</td>
+        <td class="v">{{ score_result.paper_grade }}</td>
+        <td class="q">
+          {% if score_result.paper_grade == 'A' %}first-position prime — factor 1.15–1.25
+          {% elif score_result.paper_grade == 'B' %}mainstream — factor 1.25–1.35
+          {% elif score_result.paper_grade == 'C' %}sub-prime — factor 1.35–1.45
+          {% else %}last-resort / high-decline band — factor 1.45–1.55{% endif %}
         </td>
       </tr>
       <tr>
