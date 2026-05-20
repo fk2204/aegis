@@ -43,6 +43,7 @@ class AuditLog(Protocol):
         subject_type: str | None = None,
         subject_id: UUID | None = None,
         details: dict[str, Any] | None = None,
+        actor_email: str | None = None,
     ) -> None: ...
 
     def list_recent(self, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -86,11 +87,13 @@ class InMemoryAuditLog:
         subject_type: str | None = None,
         subject_id: UUID | None = None,
         details: dict[str, Any] | None = None,
+        actor_email: str | None = None,
     ) -> None:
         masked = _mask_value(details or {})
         self.entries.append(
             {
                 "actor": actor,
+                "actor_email": actor_email,
                 "action": action,
                 "subject_type": subject_type,
                 "subject_id": str(subject_id) if subject_id is not None else None,
@@ -136,6 +139,7 @@ class SupabaseAuditLog:
         subject_type: str | None = None,
         subject_id: UUID | None = None,
         details: dict[str, Any] | None = None,
+        actor_email: str | None = None,
     ) -> None:
         masked = _mask_value(details or {})
         # JSON-serialize so non-primitive details (UUIDs, dates) hit Postgres
@@ -144,6 +148,7 @@ class SupabaseAuditLog:
         try:
             payload = {
                 "actor": actor,
+                "actor_email": actor_email,
                 "action": action,
                 "subject_type": subject_type,
                 "subject_id": str(subject_id) if subject_id is not None else None,
@@ -201,6 +206,7 @@ class SupabaseAuditLog:
 def _row_to_dict(r: dict[str, Any]) -> dict[str, Any]:
     return {
         "actor": r.get("actor", "—"),
+        "actor_email": r.get("actor_email"),
         "action": r.get("action", "—"),
         "subject_type": r.get("subject_type"),
         "subject_id": r.get("subject_id"),

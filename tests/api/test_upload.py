@@ -91,6 +91,50 @@ def test_upload_happy_path_returns_202(
     assert "document.upload" in actions
 
 
+def test_upload_records_actor_email_from_cf_access_header(
+    client: TestClient,
+    repo: InMemoryDocumentRepository,
+    audit: InMemoryAuditLog,
+) -> None:
+    """CF-Access-Authenticated-User-Email -> audit_log.actor_email.
+
+    The operator identity flowing through Cloudflare Access lands on
+    every audit row from this request. Locks the wiring of
+    `resolve_operator_email` into the upload handler (mp Phase 11 #8
+    follow-up).
+    """
+    resp = client.post(
+        "/upload",
+        headers={
+            "Authorization": "Bearer test-token-not-real",
+            "CF-Access-Authenticated-User-Email": "fkozina92@gmail.com",
+        },
+        files={"file": ("stmt.pdf", PDF_HEADER + b"with-email", "application/pdf")},
+    )
+    assert resp.status_code == 202
+
+    upload_rows = [e for e in audit.entries if e["action"] == "document.upload"]
+    assert len(upload_rows) == 1
+    assert upload_rows[0]["actor_email"] == "fkozina92@gmail.com"
+
+
+def test_upload_actor_email_none_without_cf_access_header(
+    client: TestClient,
+    audit: InMemoryAuditLog,
+) -> None:
+    """Local/dev requests (no CF-Access header) -> actor_email=None.
+
+    Backward compatibility: existing bearer-only tooling that doesn't
+    traverse Access stays exactly as it was.
+    """
+    resp = _post_pdf(client, PDF_HEADER + b"no-cf-header")
+    assert resp.status_code == 202
+
+    upload_rows = [e for e in audit.entries if e["action"] == "document.upload"]
+    assert len(upload_rows) == 1
+    assert upload_rows[0]["actor_email"] is None
+
+
 def test_upload_dedupes_identical_bytes(
     client: TestClient, repo: InMemoryDocumentRepository
 ) -> None:

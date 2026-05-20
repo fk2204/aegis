@@ -18,6 +18,7 @@ from aegis.funders.extract import FunderExtractionError, extract_funder_guidelin
 from aegis.funders.models import FunderGuidelineExtraction, FunderRow
 from aegis.funders.repository import FunderNotFoundError, FunderRepository
 from aegis.llm import LLMClient
+from aegis.ops.operators import resolve_operator_email
 
 router = APIRouter(
     prefix="/funders",
@@ -38,6 +39,7 @@ def create_funder(
     funder: FunderRow,
     repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> FunderRow:
     try:
         saved = repo.upsert(funder)
@@ -46,6 +48,7 @@ def create_funder(
 
     audit.record(
         actor="api",
+        actor_email=actor_email,
         action="funder.create",
         subject_type="funder",
         subject_id=saved.id,
@@ -71,6 +74,7 @@ def update_funder(
     funder: FunderRow,
     repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> FunderRow:
     if funder.id != funder_id:
         raise HTTPException(
@@ -84,6 +88,7 @@ def update_funder(
 
     audit.record(
         actor="api",
+        actor_email=actor_email,
         action="funder.update",
         subject_type="funder",
         subject_id=saved.id,
@@ -104,6 +109,7 @@ async def extract_funder(
     pdf: Annotated[UploadFile, File(description="Funder criteria PDF")],
     llm: Annotated[LLMClient, Depends(get_llm)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> FunderGuidelineExtraction:
     """Run the LLM extraction pass and return the draft + per-field confidence.
 
@@ -130,6 +136,7 @@ async def extract_funder(
 
     audit.record(
         actor="api",
+        actor_email=actor_email,
         action="funder.extract",
         subject_type="funder",
         subject_id=extraction.draft.id,
@@ -149,10 +156,12 @@ def delete_funder(
     funder_id: UUID,
     repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> None:
     repo.delete(funder_id)
     audit.record(
         actor="api",
+        actor_email=actor_email,
         action="funder.delete",
         subject_type="funder",
         subject_id=funder_id,

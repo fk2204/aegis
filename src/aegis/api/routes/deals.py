@@ -56,6 +56,7 @@ from aegis.compliance.state_matrix import StateMatrix
 from aegis.funders.repository import FunderRepository
 from aegis.logger import get_logger
 from aegis.merchants.repository import MerchantNotFoundError, MerchantRepository
+from aegis.ops.operators import resolve_operator_email
 from aegis.scoring.match_funders import match_funder
 from aegis.scoring.models import DealMatchResult, ScoreInput, ScoreResult
 from aegis.scoring.ofac import OFACClient, OFACStaleError
@@ -208,6 +209,7 @@ def score(
     audit: Annotated[AuditLog, Depends(get_audit)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
     document_id: UUID | None = None,
 ) -> ScoreResult:
     try:
@@ -222,6 +224,7 @@ def score(
 
     audit.record(
         actor="api",
+        actor_email=actor_email,
         action="deal.score",
         subject_type="merchant",
         subject_id=deal.merchant_id,
@@ -261,6 +264,7 @@ def score_with_matches(
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
     document_id: UUID | None = None,
 ) -> DealMatchResult:
     """Phase 7B endpoint powering the dashboard's matched-funders panel.
@@ -287,6 +291,7 @@ def score_with_matches(
 
     audit.record(
         actor="api",
+        actor_email=actor_email,
         action="deal.score_with_matches",
         subject_type="merchant",
         subject_id=deal.merchant_id,
