@@ -526,37 +526,6 @@ async def process_funder_reply(
     }
 
 
-# ---------------------------------------------------------------------------
-# Phase 7 — audit retention archiver cron (mp §17).
-# ---------------------------------------------------------------------------
-#
-# The archiver entrypoint is defined in aegis.audit_archiver. The cron
-# registration lives here because arq reads ``cron_jobs`` off WorkerSettings.
-
-
-def _build_archive_cron() -> Any:
-    """Wrap arq.cron(run_archive_cron, hour=3, minute=30).
-
-    Indirect call so the import of arq.cron stays inside this function —
-    keeps the module import light when arq is unavailable (tests that
-    monkey-patch the redis surface). ``arq.cron`` returns a CronJob
-    dataclass; we forward it unchanged.
-    """
-    from arq import cron as _arq_cron
-
-    from aegis.audit_archiver import run_archive_cron
-
-    return _arq_cron(
-        run_archive_cron,
-        name="audit_archiver.daily",
-        hour=3,
-        minute=30,
-        unique=True,
-        run_at_startup=False,
-        timeout=600,
-    )
-
-
 class WorkerSettings:
     """arq config. Reads concurrency + timeout from env via Settings."""
 
@@ -568,14 +537,6 @@ class WorkerSettings:
     )
     on_startup = _on_startup
     on_shutdown = _on_shutdown
-
-    # Daily cron jobs. The audit retention archiver runs at 03:30 UTC —
-    # off-peak for both Bedrock + the operator's review window, and
-    # well clear of the Supabase daily backup window (mp Phase 11 #4).
-    # See aegis.audit_archiver.run_archive_cron for the body.
-    cron_jobs = (
-        _build_archive_cron(),
-    )
 
     @staticmethod
     def _from_settings() -> dict[str, Any]:
