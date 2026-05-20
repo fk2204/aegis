@@ -2753,4 +2753,40 @@ async def decision_override(
     )
 
 
+# ---------------------------------------------------------------------------
+# /compliance/obligations — registration deadlines dashboard (mp Phase 7).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/compliance/obligations", response_class=HTMLResponse)
+async def compliance_obligations(request: Request) -> HTMLResponse:
+    """Operator view of state registration / annual-report obligations.
+
+    Reads from `compliance_obligations` (migration 018). Rows are annotated
+    in-Python with a `derived_state` (overdue / due_soon / on_track) so
+    the template stays date-math-free.
+    """
+    from aegis.compliance.obligations import (
+        get_obligations_repository,
+        summarize,
+    )
+
+    repo = get_obligations_repository()
+    rows = repo.list_obligations()
+    summary = summarize(rows)
+
+    return cast(
+        "HTMLResponse",
+        templates.TemplateResponse(
+            request,
+            "compliance_obligations.html.j2",
+            {
+                "active": "Compliance",
+                "obligations": rows,
+                "summary": summary,
+            },
+        ),
+    )
+
+
 __all__ = ["router"]

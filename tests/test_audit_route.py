@@ -325,6 +325,228 @@ def test_sub_query_failure_degrades_to_empty_array(
 
 
 # ---------------------------------------------------------------------------
+# Phase 7 — audit_log filtering (date range / event type / actor)
+# ---------------------------------------------------------------------------
+
+
+def _seed_filterable_audit_rows(
+    fake_supabase: _FakeSupabase, deal_id: UUID
+) -> list[dict[str, Any]]:
+    """Three audit rows: one each for May 1, May 10, May 18.
+
+    Different actor + action per row so the filter combinations are
+    distinguishable without setting up a real query DSL.
+    """
+    rows: list[dict[str, Any]] = [
+        {
+            "actor": "api",
+            "actor_email": "filip@commerafunding.com",
+            "action": "deal.score",
+            "subject_type": "deal",
+            "subject_id": str(deal_id),
+            "details": {"score": 72},
+            "created_at": datetime(2026, 5, 1, 10, 0, tzinfo=UTC).isoformat(),
+        },
+        {
+            "actor": "worker",
+            "actor_email": None,
+            "action": "document.parse.complete",
+            "subject_type": "deal",
+            "subject_id": str(deal_id),
+            "details": {"parse_status": "proceed"},
+            "created_at": datetime(2026, 5, 10, 14, 30, tzinfo=UTC).isoformat(),
+        },
+        {
+            "actor": "api",
+            "actor_email": "filip@commerafunding.com",
+            "action": "decision.approve",
+            "subject_type": "deal",
+            "subject_id": str(deal_id),
+            "details": {"decision": "approve"},
+            "created_at": datetime(2026, 5, 18, 9, 15, tzinfo=UTC).isoformat(),
+        },
+    ]
+    fake_supabase._by_table["documents"] = [{"id": str(deal_id)}]
+    fake_supabase._by_table["audit_log"] = rows
+    return rows
+
+
+def test_filter_date_range_inclusive(
+    client: TestClient, fake_supabase: _FakeSupabase
+) -> None:
+    deal_id = uuid4()
+    _seed_filterable_audit_rows(fake_supabase, deal_id)
+
+    resp = client.get(
+        f"/audit/deal/{deal_id}",
+        params={
+            "from": "2026-05-05T00:00:00+00:00",
+            "to": "2026-05-15T23:59:59+00:00",
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    actions = [r["action"] for r in resp.json()["audit_log"]]
+    # Only the May 10 row falls inside [May 5, May 15].
+    assert actions == ["document.parse.complete"]
+
+
+def test_filter_event_type_multiple(
+    client: TestClient, fake_supabase: _FakeSupabase
+) -> None:
+    deal_id = uuid4()
+    _seed_filterable_audit_rows(fake_supabase, deal_id)
+
+    # Repeated query param — FastAPI binds to list[str].
+    resp = client.get(
+        f"/audit/deal/{deal_id}?event_type=deal.score&event_type=decision.approve",
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    actions = sorted(r["action"] for r in resp.json()["audit_log"])
+    assert actions == ["deal.score", "decision.approve"]
+
+
+def test_filter_actor_by_email(
+    client: TestClient, fake_supabase: _FakeSupabase
+) -> None:
+    deal_id = uuid4()
+    _seed_filterable_audit_rows(fake_supabase, deal_id)
+
+    resp = client.get(
+        f"/audit/deal/{deal_id}?actor=filip@commerafunding.com",
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+    # Two rows have actor_email==filip@... (the api-actor rows).
+    actions = sorted(r["action"] for r in resp.json()["audit_log"])
+    assert actions == ["deal.score", "decision.approve"]
+
+
+def test_filter_actor_by_system_name(
+    client: TestClient, fake_supabase: _FakeSupabase
+) -> None:
+    deal_id = uuid4()
+    _seed_filterable_audit_rows(fake_supabase, deal_id)
+
+    resp = client.get(
+        f"/audit/deal/{deal_id}?actor=worker", headers=AUTH
+    )
+    actions = [r["action"] for r in resp.json()["audit_log"]]
+    assert actions == ["document.parse.complete"]
+
+
+def test_filter_unknown_actor_returns_empty_not_error(
+    client: TestClient, fake_supabase: _FakeSupabase
+) -> None:
+    deal_id = uuid4()
+    _seed_filterable_audit_rows(fake_supabase, deal_id)
+
+    resp = client.get(
+        f"/audit/deal/{deal_id}?actor=ghost@example.com", headers=AUTH
+    )
+    assert resp.status_code == 200
+    assert resp.json()["audit_log"] == []
+
+
+def test_filter_combination_date_and_event_type(
+    client: TestClient, fake_supabase: _FakeSupabase
+) -> None:
+    deal_id = uuid4()
+    _seed_filterable_audit_rows(fake_supabase, deal_id)
+
+    resp = client.get(
+        f"/audit/deal/{deal_id}",
+        params={
+            "from": "2026-05-15T00:00:00+00:00",
+            "event_type": "decision.approve",
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+    actions = [r["action"] for r in resp.json()["audit_log"]]
+    assert actions == ["decision.approve"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — CSV + JSON export endpoints
+# ---------------------------------------------------------------------------
+
+
+def test_export_json_returns_attachment(
+    client: TestClient, fake_supabase: _FakeSupabase
+) -> None:
+    deal_id = uuid4()
+    _seed_filterable_audit_rows(fake_supabase, deal_id)
+
+    resp = client.get(f"/audit/deal/{deal_id}/export.json", headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    assert "attachment" in resp.headers["content-disposition"]
+    body = resp.json()
+    assert body["deal_id"] == str(deal_id)
+    assert body["row_count"] == 3
+    assert len(body["rows"]) == 3
+    # Every row carries the canonical column set.
+    expected = {"created_at", "actor", "actor_email", "action",
+                "subject_type", "subject_id", "details"}
+    assert set(body["rows"][0].keys()) == expected
+
+
+def test_export_csv_returns_attachment(
+    client: TestClient, fake_supabase: _FakeSupabase
+) -> None:
+    deal_id = uuid4()
+    _seed_filterable_audit_rows(fake_supabase, deal_id)
+
+    resp = client.get(f"/audit/deal/{deal_id}/export.csv", headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    assert "attachment" in resp.headers["content-disposition"]
+    lines = resp.text.strip().split("\n")
+    # Header + 3 rows.
+    assert len(lines) == 4
+    assert lines[0].split(",")[:3] == ["created_at", "actor", "actor_email"]
+
+
+def test_csv_json_parity_under_same_filter(
+    client: TestClient, fake_supabase: _FakeSupabase
+) -> None:
+    """CSV and JSON exports of the same filtered query must contain the
+    same set of rows with the same canonical column values."""
+    import csv as _csv
+    import io as _io
+    import json as _json
+
+    deal_id = uuid4()
+    _seed_filterable_audit_rows(fake_supabase, deal_id)
+    params = {"event_type": "deal.score"}
+
+    json_resp = client.get(
+        f"/audit/deal/{deal_id}/export.json", params=params, headers=AUTH
+    )
+    csv_resp = client.get(
+        f"/audit/deal/{deal_id}/export.csv", params=params, headers=AUTH
+    )
+    assert json_resp.status_code == 200
+    assert csv_resp.status_code == 200
+
+    json_rows = json_resp.json()["rows"]
+    csv_rows = list(_csv.DictReader(_io.StringIO(csv_resp.text)))
+
+    assert len(json_rows) == len(csv_rows) == 1
+
+    # Field-by-field compare. JSON keeps native types; CSV is all strings,
+    # with `details` JSON-serialized. Compare the canonical projection.
+    j = json_rows[0]
+    c = csv_rows[0]
+    assert c["actor"] == j["actor"]
+    assert c["action"] == j["action"]
+    assert c["actor_email"] == (j["actor_email"] or "")
+    assert _json.loads(c["details"]) == j["details"]
+
+
+# ---------------------------------------------------------------------------
 # Smoke: the router is actually mounted on the app
 # ---------------------------------------------------------------------------
 

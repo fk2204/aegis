@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from arq import cron
 from redis.exceptions import RedisError
 
 if TYPE_CHECKING:
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 
 from aegis.api.deps import get_audit, get_llm, get_repository
 from aegis.audit import AuditLog
+from aegis.audit_archiver import run_archive_cron
 from aegis.config import get_settings
 from aegis.llm import BedrockClient, LLMClient
 from aegis.logger import configure_logging, get_logger
@@ -305,6 +307,11 @@ class WorkerSettings:
     """arq config. Reads concurrency + timeout from env via Settings."""
 
     functions = (parse_document, process_funder_reply)
+    # Nightly at 02:00 UTC — low-traffic window. Per master plan §17,
+    # the archive cron runs daily and is the only cron registered here.
+    cron_jobs = (
+        cron(run_archive_cron, hour=2, minute=0, run_at_startup=False),
+    )
     on_startup = _on_startup
     on_shutdown = _on_shutdown
 
