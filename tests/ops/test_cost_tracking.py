@@ -162,6 +162,48 @@ def test_wrapper_classify_audits() -> None:
     assert audit.entries[-1]["details"]["operation"] == "classify"
 
 
+def test_wrapper_without_document_id_writes_null_subject() -> None:
+    """Default behaviour: no document_id -> subject_type/_id stay None.
+
+    Keeps the digest's per-deal breakdown excluded when the caller has no
+    document context (ad-hoc scripts, smoke tests, ofac refresh).
+    """
+    audit = InMemoryAuditLog()
+    inner = _FakeInner(input_tokens=10, output_tokens=10)
+    wrapper = CostTrackingBedrockClient(inner=inner, audit=audit)  # type: ignore[arg-type]
+
+    wrapper.extract_raw_json(b"%PDF-1.4 fake", "p")
+    row = audit.entries[-1]
+    assert row["subject_type"] is None
+    assert row["subject_id"] is None
+
+
+def test_wrapper_with_document_id_tags_audit_subject() -> None:
+    """Per-deal cost tracking: document_id flows to audit_log.subject_id.
+
+    This is what makes the weekly digest's per-deal cost breakdown work —
+    `build_weekly_digest` groups rows by `subject_id` for the deal rollup.
+    """
+    from uuid import uuid4
+
+    audit = InMemoryAuditLog()
+    doc_id = uuid4()
+    inner = _FakeInner(input_tokens=100, output_tokens=50)
+    wrapper = CostTrackingBedrockClient(
+        inner=inner,  # type: ignore[arg-type]
+        audit=audit,
+        document_id=doc_id,
+    )
+
+    wrapper.extract_raw_json(b"%PDF-1.4 fake", "p")
+    row = audit.entries[-1]
+    assert row["action"] == "bedrock.usage"
+    assert row["subject_type"] == "document"
+    # InMemoryAuditLog stringifies UUIDs at record time (matches the
+    # JSONB serialization the Supabase backend does for audit_log rows).
+    assert str(row["subject_id"]) == str(doc_id)
+
+
 def test_wrapper_handles_missing_usage_gracefully() -> None:
     """If the response object lacks .usage, we don't crash + skip the row."""
     audit = InMemoryAuditLog()

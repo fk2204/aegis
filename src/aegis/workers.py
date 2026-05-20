@@ -28,8 +28,9 @@ if TYPE_CHECKING:
 from aegis.api.deps import get_audit, get_llm, get_repository
 from aegis.audit import AuditLog
 from aegis.config import get_settings
-from aegis.llm import LLMClient
+from aegis.llm import BedrockClient, LLMClient
 from aegis.logger import configure_logging, get_logger
+from aegis.ops.cost_tracking import CostTrackingBedrockClient
 from aegis.parser.pipeline import PipelineResult, run_pipeline
 from aegis.parser.processor import (
     ProcessorPipelineResult,
@@ -55,6 +56,16 @@ async def parse_document(
     repository: DocumentRepository = ctx.get("repository") or get_repository()
     audit: AuditLog = ctx.get("audit") or get_audit()
     llm: LLMClient = ctx.get("llm") or get_llm()
+
+    # Wrap the production BedrockClient with cost tracking so every
+    # Bedrock call writes one bedrock.usage audit row tagged with this
+    # document_id. Wrapping is gated on isinstance because the wrapper
+    # re-issues calls through inner._client.messages — fake LLMClients
+    # used in tests don't expose that surface. (mp Phase 11 #2.)
+    if isinstance(llm, BedrockClient):
+        llm = CostTrackingBedrockClient(
+            inner=llm, audit=audit, document_id=document_id,
+        )
 
     try:
         # Verify the row exists before doing expensive parser work.
