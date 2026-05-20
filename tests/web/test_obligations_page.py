@@ -21,7 +21,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     fixture data to render every branch."""
 
     today = date.today()
-    seeded = [
+    seeded: list[dict[str, Any]] = [
         {
             "id": "00000000-0000-0000-0000-000000000001",
             "obligation_type": "registration",

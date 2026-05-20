@@ -28,9 +28,11 @@ Decimal isn't relevant here (no money math). All math is in days.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
+
+from dateutil.relativedelta import relativedelta
 
 from aegis.audit import AuditLog, AuditWriteError
 from aegis.db import get_supabase
@@ -100,18 +102,18 @@ class AuditArchiver(Protocol):
 
 
 def cutoff_for_policy(*, today: date, policy: RetentionPolicy) -> date:
-    """Cutoff date = today - retention_years.
+    """Cutoff date = today minus ``retention_years`` calendar years.
 
     Strictly LESS than this date is expired; equal is still in retention
-    (boundary case explicit, matches "4 years from disclosure" reading
-    where the 4th anniversary is the last protected day).
+    (matches "4 years from disclosure" where the 4th anniversary is the
+    last protected day).
+
+    Uses ``dateutil.relativedelta`` for true calendar arithmetic — handles
+    leap years and month-end edge cases the regulator-facing way (the Nth
+    anniversary IS the anniversary, not "Nth * 365 days ago"). No buffer:
+    a row dated more than N calendar years ago is past its retention.
     """
-    # 365-day approximation is intentional: regulators measure "4 years"
-    # as calendar anniversary; archiving exactly at the anniversary plus
-    # the 30-day buffer policy from docs/compliance/10_record_retention.md
-    # is built in via the +30 days clause below.
-    days = policy.retention_years * 365 + 30
-    return today - timedelta(days=days)
+    return today - relativedelta(years=policy.retention_years)
 
 
 def is_expired(*, created_at: datetime, today: date, policy: RetentionPolicy) -> bool:
@@ -371,14 +373,15 @@ class SupabaseAuditArchiver:
         report = ArchiveReport(batch_id=batch_id, cutoff_date=today)
 
         policies = self._load_policies()
-        # Compute the widest cutoff (longest retention) and pull
-        # candidate rows in one go. Per-row policy resolution happens
-        # below so per-state retention is still enforced.
+        # Pre-filter using the longest configured retention so the
+        # server-side query is bounded. Per-row policy resolution below
+        # still enforces the per-state window — this is just to avoid
+        # scanning rows that nothing could match.
         max_years = max(
             (p.retention_years for p in policies.values()),
             default=_DEFAULT_RETENTION_YEARS,
         )
-        widest_cutoff = today - timedelta(days=max_years * 365 + 30)
+        widest_cutoff = today - relativedelta(years=max_years)
 
         candidates = self._candidate_rows(cutoff=widest_cutoff)
         if not candidates:

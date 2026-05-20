@@ -18,25 +18,48 @@ from aegis.audit_archiver import (
     ArchiveReport,
     ArchiverError,
     InMemoryAuditArchiver,
-    RetentionPolicy,
     MemoryAuditRow,
+    RetentionPolicy,
     cutoff_for_policy,
     is_expired,
     resolve_policy,
 )
-
 
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
 
 
-def test_cutoff_uses_365d_year_plus_30d_buffer() -> None:
+def test_cutoff_uses_calendar_arithmetic() -> None:
+    """Cutoff is N calendar years before today, NOT N * 365 days.
+
+    Counsel's reading of "4 years retention" is calendar-anniversary —
+    leap years count as their actual length, the 4th anniversary IS the
+    last protected day. relativedelta handles month-end + leap-year
+    edge cases correctly.
+    """
     today = datetime(2026, 5, 19, tzinfo=UTC).date()
     policy = RetentionPolicy(state_code="CA", retention_years=4, statute_citation="x")
     cutoff = cutoff_for_policy(today=today, policy=policy)
-    # 4 * 365 + 30 = 1490 days before today.
-    assert (today - cutoff).days == 1490
+    # 4 calendar years before 2026-05-19 is 2022-05-19.
+    assert cutoff == datetime(2022, 5, 19, tzinfo=UTC).date()
+    # Spans one leap-day (2024-02-29), so the day-count is 4*365 + 1 = 1461.
+    assert (today - cutoff).days == 1461
+
+
+def test_cutoff_handles_leap_day_anniversary() -> None:
+    """A row dated 2024-02-29 has its 4-yr anniversary on 2028-02-29 (a
+    leap year). If today is 2028-02-29, it's still in retention. On
+    2028-03-01, it's just past — relativedelta picks Feb 28 in non-leap
+    years, which is the regulator-safe choice (give the operator the
+    nearest in-calendar date, never invent a 02-29 that doesn't exist).
+    """
+    today_2027 = datetime(2027, 2, 28, tzinfo=UTC).date()
+    policy = RetentionPolicy(state_code="CA", retention_years=4, statute_citation="x")
+    # today=2027-02-28, retention 4yr -> 2023-02-28 (no Feb 29 in 2023).
+    assert cutoff_for_policy(today=today_2027, policy=policy) == datetime(
+        2023, 2, 28, tzinfo=UTC
+    ).date()
 
 
 def test_is_expired_strict_inequality_at_boundary() -> None:
@@ -104,7 +127,7 @@ def _ca_ny_policies() -> dict[str, RetentionPolicy]:
 
 
 def test_archives_expired_rows_per_state() -> None:
-    archiver, audit = _make_archiver(policies=_ca_ny_policies())
+    archiver, _audit = _make_archiver(policies=_ca_ny_policies())
 
     ca_old = MemoryAuditRow(
         id=uuid4(),
@@ -113,7 +136,7 @@ def test_archives_expired_rows_per_state() -> None:
         subject_type="deal",
         subject_id=uuid4(),
         details={"score": 80},
-        created_at=_ago(5 * 365),  # 5 years old → past CA 4yr+30d
+        created_at=_ago(5 * 365),  # 5 years old → past CA 4yr cutoff
         state_code="CA",
     )
     ny_fresh = MemoryAuditRow(
@@ -162,7 +185,7 @@ def test_archive_runs_record_audit_row_with_batch_summary() -> None:
 
 def test_archiver_is_idempotent() -> None:
     """Running the cron twice over the same data archives exactly once."""
-    archiver, audit = _make_archiver()
+    archiver, _audit = _make_archiver()
     row = MemoryAuditRow(
         id=uuid4(),
         actor="api",
@@ -190,7 +213,7 @@ def test_archiver_is_idempotent() -> None:
 def test_archiver_does_not_archive_its_own_summary_rows() -> None:
     """The audit batch row must never be eligible for archiving — that
     would consume the durable evidence of the archive run itself."""
-    archiver, audit = _make_archiver()
+    archiver, _audit = _make_archiver()
     archiver.add_row(
         MemoryAuditRow(
             id=uuid4(),
@@ -277,3 +300,28 @@ async def test_run_archive_cron_returns_summary_dict() -> None:
     assert "archived_count" in result
     assert "per_state" in result
     assert result["archived_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# WorkerSettings wiring — the cron must actually be registered.
+# ---------------------------------------------------------------------------
+
+
+def test_worker_settings_registers_archive_cron() -> None:
+    """The arq daily cron must be wired into WorkerSettings.cron_jobs.
+
+    Without this, the archiver code is dead in production (the function
+    exists but nothing invokes it). This test guards the wiring.
+    """
+    from aegis.audit_archiver import run_archive_cron
+    from aegis.workers import WorkerSettings
+
+    crons = getattr(WorkerSettings, "cron_jobs", None)
+    assert crons is not None and len(crons) >= 1
+    coroutines = {c.coroutine for c in crons}
+    assert run_archive_cron in coroutines
+
+    archive_cron = next(c for c in crons if c.coroutine is run_archive_cron)
+    # Nightly 02:00 UTC.
+    assert archive_cron.hour == 2
+    assert archive_cron.minute == 0

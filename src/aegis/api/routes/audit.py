@@ -182,7 +182,7 @@ def _audit_filter_params(
             ),
         ),
     ] = None,
-) -> "AuditFilter":
+) -> AuditFilter:
     """Materialize the filter query-string into a typed object.
 
     FastAPI dependency: the audit-list and export routes inject this so the
