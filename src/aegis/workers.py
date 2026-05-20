@@ -16,6 +16,7 @@ Boot: ``make worker`` runs ``arq aegis.workers.WorkerSettings``.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -26,10 +27,28 @@ from redis.exceptions import RedisError
 if TYPE_CHECKING:
     from arq.connections import RedisSettings
 
-from aegis.api.deps import get_audit, get_llm, get_repository
+from aegis.api.deps import (
+    get_audit,
+    get_funder_reply_repository,
+    get_llm,
+    get_repository,
+)
 from aegis.audit import AuditLog
 from aegis.audit_archiver import run_archive_cron
 from aegis.config import get_settings
+from aegis.funders.replies import (
+    FunderReplyError,
+    FunderReplyPayload,
+    FunderReplyRepository,
+    IngestSource,
+    ReplyStatus,
+    ReplyTerms,
+    ingest_reply,
+)
+from aegis.funders.reply_extract import (
+    FunderReplyExtractionError,
+    extract_funder_reply,
+)
 from aegis.llm import BedrockClient, LLMClient
 from aegis.logger import configure_logging, get_logger
 from aegis.ops.cost_tracking import CostTrackingBedrockClient
@@ -276,31 +295,235 @@ async def _on_shutdown(ctx: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 10 — funder-reply ingestion task (mp §20). RESERVED by 2D-prep.
+# Phase 10 — funder-reply ingestion task (mp §20 / Stage 2D-main).
 # ---------------------------------------------------------------------------
 #
-# 2D-main fills in the body: pull the email/paste from Redis, two-pass
-# LLM extract with deterministic reconciliation (amount * factor ==
-# payback +/- $0.01), write a funder_replies row, stamp the matching
-# override per refinement (5) idempotency rules. The stub here reserves
-# the WorkerSettings.functions tuple entry so 2B (parser) and 2C
-# (processor) can edit workers.py without colliding with 2D-main.
+# Two-pass LLM extraction over the raw email body, then the existing
+# ``ingest_reply`` path (deterministic math gate + funder_replies
+# insert + override stamping, idempotent per refinement (5)).
+#
+# Payload contract: arq receives a JSON string with the inbound message
+# metadata + raw email body. See ``_decode_reply_payload``.
+
+
+_VALID_INGEST_SOURCES: frozenset[str] = frozenset({"webhook", "operator_paste"})
+
+
+def _decode_reply_payload(raw_json: str) -> dict[str, Any]:
+    """Parse + validate the worker's input payload.
+
+    Shape:
+        {
+          "deal_id":      "<uuid>",
+          "funder_id":    "<uuid>",
+          "raw_text":     "<email body>",
+          "ingested_via": "webhook" | "operator_paste"
+        }
+
+    All four fields are required. Missing/malformed input raises
+    ``ValueError`` so the arq job fails loud rather than persisting
+    an empty reply row.
+    """
+    try:
+        payload = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"reply payload is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"reply payload top-level must be an object; got {type(payload).__name__}"
+        )
+    for required in ("deal_id", "funder_id", "raw_text", "ingested_via"):
+        if required not in payload:
+            raise ValueError(f"reply payload missing required field: {required}")
+    if payload["ingested_via"] not in _VALID_INGEST_SOURCES:
+        raise ValueError(
+            f"reply payload ingested_via must be one of {sorted(_VALID_INGEST_SOURCES)};"
+            f" got {payload['ingested_via']!r}"
+        )
+    if not isinstance(payload["raw_text"], str) or not payload["raw_text"].strip():
+        raise ValueError("reply payload raw_text must be a non-empty string")
+    return payload
 
 
 async def process_funder_reply(
     ctx: dict[str, Any],
     reply_payload_json: str,
 ) -> dict[str, Any]:
-    """arq task for funder-reply ingestion. Not yet implemented.
+    """arq task — ingest one funder-reply email via the two-pass LLM extractor.
 
-    Raises ``NotImplementedError`` until 2D-main lands the LLM extractor
-    + validation gate + funder_replies persistence + override stamping.
-    Enqueueing this task on prep yields a job failure (intentional —
-    the capture surface isn't ready yet).
+    Pipeline:
+      1. Decode the JSON payload (deal_id, funder_id, raw_text, ingested_via).
+      2. Run the two-pass LLM extractor (``extract_funder_reply``).
+         Pass-1 emits candidate fields; pass-2 re-prompts iff pass-1 fails
+         Pydantic strict validation.
+      3. Map the extractor's status to a ``ReplyStatus`` understood by
+         ``ingest_reply``. An "unknown" extraction is audited and dropped
+         (no persistence) — the operator handles it via the paste UI.
+      4. Build a ``FunderReplyPayload`` and call ``ingest_reply``. That
+         function runs the deterministic math gate (amount * factor ≈
+         payback +/- $0.01), persists the reply, and stamps the matching
+         open override iff the gate passed and an override exists.
+
+    The override-stamping idempotency contract lives entirely in
+    ``ingest_reply`` + the repository layer; this worker is a thin
+    orchestrator. That keeps the operator-paste HTTP path and the
+    worker path mathematically identical.
     """
-    raise NotImplementedError(
-        "process_funder_reply is reserved by 2D-prep; 2D-main lands the body."
+    payload = _decode_reply_payload(reply_payload_json)
+    document_id = UUID(payload["deal_id"])
+    funder_id = UUID(payload["funder_id"])
+    raw_text: str = payload["raw_text"]
+    ingested_via_raw: str = payload["ingested_via"]
+    # Narrow to the IngestSource literal — _decode_reply_payload guards
+    # the value set above, but mypy can't see through that runtime check.
+    ingested_via: IngestSource = (
+        "webhook" if ingested_via_raw == "webhook" else "operator_paste"
     )
+
+    audit: AuditLog = ctx.get("audit") or get_audit()
+    llm: LLMClient = ctx.get("llm") or get_llm()
+    reply_repo: FunderReplyRepository = (
+        ctx.get("funder_reply_repository") or get_funder_reply_repository()
+    )
+
+    # Cost-tracking wrapper, mirroring parse_document. Only wraps the
+    # real BedrockClient; test stubs keep their bare interface.
+    if isinstance(llm, BedrockClient):
+        llm = CostTrackingBedrockClient(
+            inner=llm, audit=audit, document_id=document_id,
+        )
+
+    audit.record(
+        actor="worker",
+        action="funder_reply.process.start",
+        subject_type="deal",
+        subject_id=document_id,
+        details={"funder_id": str(funder_id), "ingested_via": ingested_via},
+    )
+
+    try:
+        extraction = await asyncio.to_thread(extract_funder_reply, raw_text, llm)
+    except FunderReplyExtractionError as exc:
+        # Both LLM passes failed. Audit + raise so the inbound surfaces
+        # in the operator's error queue — the reply is NOT persisted to
+        # funder_replies because we don't know what the status is, and
+        # writing a row with status='unknown' would corrupt the
+        # confusion-matrix axes.
+        _log.error(
+            "worker.funder_reply.extraction_failed deal_id=%s funder_id=%s",
+            document_id,
+            funder_id,
+        )
+        audit.record(
+            actor="worker",
+            action="funder_reply.process.error",
+            subject_type="deal",
+            subject_id=document_id,
+            details={
+                "funder_id": str(funder_id),
+                "ingested_via": ingested_via,
+                "error": "FunderReplyExtractionError",
+                "message": str(exc)[:500],
+            },
+        )
+        raise
+
+    if extraction.status == "unknown":
+        # Unknown status → don't persist. Audit so the operator sees
+        # the inbound on the dashboard and can hand-classify via the
+        # paste UI. Stamping requires a definite status.
+        audit.record(
+            actor="worker",
+            action="funder_reply.process.unknown",
+            subject_type="deal",
+            subject_id=document_id,
+            details={
+                "funder_id": str(funder_id),
+                "ingested_via": ingested_via,
+                "parsed_confidence": extraction.parsed_confidence,
+                "reprompted": extraction.reprompted,
+            },
+        )
+        return {
+            "deal_id": str(document_id),
+            "funder_id": str(funder_id),
+            "status": "unknown",
+            "persisted": False,
+            "stamped_override_id": None,
+        }
+
+    # Build the strict payload + persist via the shared ingest path.
+    # ``extract_funder_reply`` already ran the LLM-side validation gate;
+    # ``ingest_reply`` runs the deterministic math gate and lowers
+    # parsed_confidence to 0 on mismatch (the row persists for operator
+    # hand-correction; the override is NOT stamped on math failure).
+    reply_status: ReplyStatus = extraction.status
+    persistence_payload = FunderReplyPayload(
+        deal_id=document_id,
+        funder_id=funder_id,
+        status=reply_status,
+        raw_text=raw_text,
+        ingested_via=ingested_via,
+        terms=extraction.terms or ReplyTerms(),
+        parsed_confidence=extraction.parsed_confidence,
+    )
+
+    try:
+        result = ingest_reply(persistence_payload, repo=reply_repo, audit=audit)
+    except FunderReplyError as exc:
+        _log.error(
+            "worker.funder_reply.persist_failed deal_id=%s funder_id=%s",
+            document_id,
+            funder_id,
+        )
+        audit.record(
+            actor="worker",
+            action="funder_reply.process.error",
+            subject_type="deal",
+            subject_id=document_id,
+            details={
+                "funder_id": str(funder_id),
+                "ingested_via": ingested_via,
+                "error": "FunderReplyError",
+                "message": str(exc)[:500],
+            },
+        )
+        raise
+
+    audit.record(
+        actor="worker",
+        action="funder_reply.process.complete",
+        subject_type="deal",
+        subject_id=document_id,
+        details={
+            "funder_id": str(funder_id),
+            "ingested_via": ingested_via,
+            "reply_id": str(result.reply_id),
+            "status": reply_status,
+            "validation_passed": result.validation.passed,
+            "parsed_confidence": extraction.parsed_confidence,
+            "stamped_override_id": (
+                str(result.stamped_override_id)
+                if result.stamped_override_id is not None
+                else None
+            ),
+            "reprompted": extraction.reprompted,
+        },
+    )
+
+    return {
+        "deal_id": str(document_id),
+        "funder_id": str(funder_id),
+        "status": reply_status,
+        "persisted": True,
+        "reply_id": str(result.reply_id),
+        "validation_passed": result.validation.passed,
+        "stamped_override_id": (
+            str(result.stamped_override_id)
+            if result.stamped_override_id is not None
+            else None
+        ),
+    }
 
 
 class WorkerSettings:
