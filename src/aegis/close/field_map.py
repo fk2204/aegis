@@ -87,6 +87,15 @@ FICO_RANGE_LOWER_BOUND: Final[dict[str, int]] = {
 # custom_fields MCP query, 2026-05-20). Adding a new Industry choice
 # in Close without adding it here will raise FieldMapError at parse
 # time — never silently defaults.
+#
+# PLACEHOLDER NOTE — the following four mappings are pre-revenue
+# placeholders, chosen with no actual deal-flow data:
+#   "Manufacturing"                        ("339999")
+#   "Construction — General Contractor"    ("236220")
+#   "Retail — General" / "Retail — Specialty" (both "459999")
+#   "Other (Approved)"                     ("999999" — sentinel)
+# Revisit after 30 days of real Close-routed deals to align with
+# Commera's actual merchant mix.
 CLOSE_INDUSTRY_TO_NAICS: Final[dict[str, str]] = {
     "Auto Repair / Service":               "811111",  # General Automotive Repair
     "Beauty / Salon / Spa":                "812112",  # Beauty Salons
@@ -111,6 +120,26 @@ CLOSE_INDUSTRY_TO_NAICS: Final[dict[str, str]] = {
 
 # Close's "no selection" choice value. Treated as null everywhere.
 _NONE_MARKER: Final[str] = "-None-"
+
+
+# Close "Entity type" / "Entity_type" choice → AEGIS EntityType literal.
+# Source: find_lead_custom_fields MCP query on 2026-05-20. Maps every
+# Close-published choice to the matching AEGIS-side token. Unknown
+# values raise FieldMapError — never silently bucketed into "other".
+#
+# Note: AEGIS's EntityType does not currently distinguish C-Corp from
+# S-Corp; both collapse to "corp". If that distinction starts to matter
+# (it doesn't for any compliance rule today), extend MerchantRow first.
+CLOSE_ENTITY_TYPE_TO_AEGIS: Final[dict[str, str]] = {
+    "LLC":                 "llc",
+    "C-Corp":              "corp",
+    "S-Corp":              "corp",
+    "Sole Proprietorship": "sole_prop",
+    "Partnership":         "partnership",
+    "Non-Profit":          "other",
+    "Other":               "other",
+    "Option 1":            "other",  # Stale Close template choice; treat as other
+}
 
 
 # ----------------------------------------------------------------------
@@ -270,6 +299,24 @@ def _strip_none_marker(value: str | None) -> str | None:
     return value
 
 
+def normalize_entity_type(value: str | None) -> str | None:
+    """Close ``Entity type`` choice → AEGIS ``EntityType`` literal.
+
+    None / "" / "-None-" → None.
+    Unknown choice → ``FieldMapError`` (so the operator sees Close
+    drift rather than silently bucketing into "other").
+    """
+    stripped = _strip_none_marker(value)
+    if stripped is None:
+        return None
+    if stripped not in CLOSE_ENTITY_TYPE_TO_AEGIS:
+        raise FieldMapError(
+            f"unknown Close Entity type value {stripped!r}; "
+            f"add it to CLOSE_ENTITY_TYPE_TO_AEGIS in close/field_map.py"
+        )
+    return CLOSE_ENTITY_TYPE_TO_AEGIS[stripped]
+
+
 # ----------------------------------------------------------------------
 # Custom-field accessor (helper for sync.py in step 5; safe + pure)
 # ----------------------------------------------------------------------
@@ -296,12 +343,14 @@ def get_custom_field(
 
 
 __all__ = [
+    "CLOSE_ENTITY_TYPE_TO_AEGIS",
     "CLOSE_FIELD_IDS",
     "CLOSE_INDUSTRY_TO_NAICS",
     "FICO_RANGE_LOWER_BOUND",
     "FieldMapError",
     "get_custom_field",
     "industry_to_naics",
+    "normalize_entity_type",
     "parse_fico_range",
     "parse_money",
     "resolve_entity_type",

@@ -22,12 +22,14 @@ import pytest
 
 from aegis.audit import InMemoryAuditLog
 from aegis.close.field_map import (
+    CLOSE_ENTITY_TYPE_TO_AEGIS,
     CLOSE_FIELD_IDS,
     CLOSE_INDUSTRY_TO_NAICS,
     FICO_RANGE_LOWER_BOUND,
     FieldMapError,
     get_custom_field,
     industry_to_naics,
+    normalize_entity_type,
     parse_fico_range,
     parse_money,
     resolve_entity_type,
@@ -340,3 +342,51 @@ def test_get_custom_field_missing_returns_none() -> None:
 def test_get_custom_field_unknown_aegis_name_raises() -> None:
     with pytest.raises(FieldMapError, match="unknown AEGIS-side field name"):
         get_custom_field({}, "not_a_real_field")
+
+
+# ----------------------------------------------------------------------
+# Entity-type normalization (Close choice → AEGIS literal)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("close_value", "expected_aegis"),
+    [
+        ("LLC", "llc"),
+        ("C-Corp", "corp"),
+        ("S-Corp", "corp"),
+        ("Sole Proprietorship", "sole_prop"),
+        ("Partnership", "partnership"),
+        ("Non-Profit", "other"),
+        ("Other", "other"),
+        ("Option 1", "other"),
+    ],
+)
+def test_normalize_entity_type_every_close_choice(
+    close_value: str, expected_aegis: str
+) -> None:
+    assert normalize_entity_type(close_value) == expected_aegis
+
+
+def test_normalize_entity_type_covers_every_table_entry() -> None:
+    """If Close adds a new Entity type choice in the dashboard, this
+    guard fails until the parametrize list is updated."""
+    assert set(CLOSE_ENTITY_TYPE_TO_AEGIS.keys()) == {
+        "LLC", "C-Corp", "S-Corp", "Sole Proprietorship", "Partnership",
+        "Non-Profit", "Other", "Option 1",
+    }
+
+
+def test_normalize_entity_type_none_returns_none() -> None:
+    assert normalize_entity_type(None) is None
+
+
+def test_normalize_entity_type_none_marker_returns_none() -> None:
+    assert normalize_entity_type("-None-") is None
+
+
+def test_normalize_entity_type_unknown_raises() -> None:
+    """A Close choice we haven't mapped (e.g. operator added a new
+    choice in Close without updating field_map.py) must raise."""
+    with pytest.raises(FieldMapError, match="unknown Close Entity type"):
+        normalize_entity_type("B-Corp")

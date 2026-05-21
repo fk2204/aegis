@@ -53,10 +53,20 @@ class Settings(BaseSettings):
     zoho_webhook_secret: SecretStr | None = None
 
     # Close CRM (mp Close cutover). API key auth — HTTP Basic with the key
-    # as username and blank password. Webhook secret added in step 4 of
-    # the Close integration branch; not loaded here yet.
+    # as username and blank password.
     close_api_key: SecretStr | None = None
     close_api_base: str = "https://api.close.com"
+    # Webhook secret (hex-encoded). Returned in the subscription POST
+    # response as `signature_key`. Used for HMAC-SHA256 over
+    # `close-sig-timestamp + raw_body`.
+    close_webhook_secret: SecretStr | None = None
+    # Opportunity status id that triggers AEGIS underwriting. The default
+    # is the "Docs In — Pre-UW" status in the Commera Sales pipeline,
+    # verified 2026-05-20 via the Close MCP. If the operator renames or
+    # replaces that status, override via env.
+    close_docs_in_pre_uw_status_id: str = (
+        "stat_1YZuVqdPWC8HLjWWvnXqL3NBJUPSjw3upy9mdBYXRqI"
+    )
 
     # Funder-reply webhook (mp Phase 10). HMAC-SHA256 over the raw body
     # with this secret. Missing -> the webhook returns 503 so an

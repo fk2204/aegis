@@ -82,10 +82,15 @@ class MerchantRow(_StrictModel):
     submitted_to_funder_ids: list[UUID] = Field(default_factory=list)
     last_submitted_at: datetime | None = None
 
-    # Idempotency for Zoho sync.
+    # Idempotency for Zoho sync (being removed during Close cutover, step 8).
     # zoho_lead_id is populated after the first push_merchant_to_lead call.
     zoho_deal_id: str | None = None
     zoho_lead_id: str | None = None
+
+    # Idempotency for Close CRM. Populated when the Close inbound
+    # webhook (/webhooks/close) upserts a merchant for an Opportunity
+    # transitioning to "Docs In — Pre-UW".
+    close_lead_id: str | None = None
 
     created_at: datetime | None = None
     updated_at: datetime | None = None
