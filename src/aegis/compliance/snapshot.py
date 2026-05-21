@@ -98,12 +98,35 @@ class DecisionPayload(BaseModel):
     decided_at: datetime | None = None  # None = let DB default to NOW(); set for backfill
 
 
+class StoredDecision(BaseModel):
+    """Subset of a persisted decisions-row that outbound consumers
+    (currently: Close CRM write-back in step 6) need.
+
+    Kept narrow on purpose — this is the read-shape, not the write-shape.
+    Adding fields here is a deliberate read-API expansion.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: UUID
+    deal_id: UUID
+    decision: DecisionLiteral
+    score: Decimal | None = None
+    decision_reason_codes: list[str] = Field(default_factory=list)
+    ofac_cache_timestamp: datetime | None = None
+    decided_at: datetime | None = None
+
+
 class DecisionSnapshot(Protocol):
     """Append-only write interface for the decisions table.
 
-    Reads use a separate query layer (the audit route in
-    ``api/routes/audit.py``) so this Protocol stays focused on the write
-    contract regulator-defense requires.
+    Reads were originally out-of-scope for this Protocol (see
+    ``api/routes/audit.py`` for the per-deal read query). Step 6 of the
+    Close-CRM integration added one focused read: "latest decision for
+    a merchant", to drive the outbound write-back at the operator's
+    sync-to-close trigger. The read protocol stays narrow — write-back
+    needs id + decision + score + reason codes + OFAC timestamp, and
+    nothing else.
     """
 
     def write(self, payload: DecisionPayload, *, audit: AuditLog) -> UUID:
@@ -113,6 +136,21 @@ class DecisionSnapshot(Protocol):
           * ``DecisionSnapshotError`` on the decision-row write failure.
           * ``AuditWriteError`` on the audit-log write failure (after the
             decision row has landed). Callers must propagate either way.
+        """
+
+    def find_latest_for_merchant(
+        self,
+        merchant_id: UUID,
+        *,
+        deal_ids: list[UUID],
+    ) -> StoredDecision | None:
+        """Return the most-recent decision (by ``decided_at``) whose
+        ``deal_id`` is in ``deal_ids`` — i.e. one of the documents
+        belonging to this merchant. ``None`` when none of the merchant's
+        documents have a decision yet.
+
+        ``deal_ids`` is computed by the caller via the DocumentRepository
+        so this Protocol stays decoupled from document storage.
         """
 
 
@@ -159,6 +197,27 @@ class InMemoryDecisionSnapshot:
 
     def rows(self) -> list[dict[str, Any]]:
         return list(self._rows)
+
+    def find_latest_for_merchant(
+        self,
+        merchant_id: UUID,
+        *,
+        deal_ids: list[UUID],
+    ) -> StoredDecision | None:
+        if not deal_ids:
+            return None
+        deal_id_strs = {str(d) for d in deal_ids}
+        candidates = [
+            r for r in self._rows if r.get("deal_id") in deal_id_strs
+        ]
+        if not candidates:
+            return None
+        # Sort by decided_at desc; None decided_at sorts last (oldest).
+        candidates.sort(
+            key=lambda r: r.get("decided_at") or "",
+            reverse=True,
+        )
+        return _row_to_stored_decision(candidates[0])
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +271,35 @@ class SupabaseDecisionSnapshot:
             },
         )
         return UUID(row["id"])
+
+    def find_latest_for_merchant(
+        self,
+        merchant_id: UUID,
+        *,
+        deal_ids: list[UUID],
+    ) -> StoredDecision | None:
+        if not deal_ids:
+            return None
+        try:
+            result = (
+                get_supabase()
+                .table("decisions")
+                .select("*")
+                .in_("deal_id", [str(d) for d in deal_ids])
+                .order("decided_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            _log.warning(
+                "decisions.find_latest_query_failed merchant_id=%s",
+                merchant_id,
+            )
+            return None
+        data = result.data or []
+        if not data:
+            return None
+        return _row_to_stored_decision(cast(dict[str, Any], data[0]))
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +383,31 @@ def _default_serializer(value: object) -> str:
     if isinstance(value, datetime | date):
         return value.isoformat()
     raise TypeError(f"cannot serialize {type(value).__name__} for decisions row")
+
+
+def _row_to_stored_decision(row: dict[str, Any]) -> StoredDecision:
+    """decisions-table row dict -> StoredDecision. Strict-mode-friendly:
+    nulls and strings cast to the expected Python types."""
+
+    def _parse_dt(value: object) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return None
+
+    score_raw = row.get("score")
+    return StoredDecision(
+        id=UUID(str(row["id"])),
+        deal_id=UUID(str(row["deal_id"])),
+        decision=cast(DecisionLiteral, row["decision"]),
+        score=Decimal(str(score_raw)) if score_raw is not None else None,
+        decision_reason_codes=list(row.get("decision_reason_codes") or []),
+        ofac_cache_timestamp=_parse_dt(row.get("ofac_cache_timestamp")),
+        decided_at=_parse_dt(row.get("decided_at")),
+    )
 
 
 __all__ = [

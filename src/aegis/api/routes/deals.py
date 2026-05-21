@@ -4,14 +4,17 @@ POST /deals/score takes a ``ScoreInput`` and returns a ``ScoreResult``.
 The route does not own the merge from merchant + analysis to
 ScoreInput — that's ``aegis.scoring.build_score_input.build_score_input``,
 which the operator can call directly when building from Supabase rows.
-This route exists so the dashboard + Zoho sync have one canonical
+This route exists so the dashboard + Close sync have one canonical
 ``score_deal`` endpoint to hit, and so OFAC failures surface as 503
 rather than swallowing into a quietly-allowed sanctioned merchant.
 
-POST /deals/{merchant_id}/sync-to-zoho takes a ``ScoreResult`` and
-upserts the merchant into Zoho's Leads (default) or Deals module,
-selected by the ``target`` query parameter. Operator-triggered (no
-auto-push from /score) so the rep reviews the score first.
+POST /deals/{merchant_id}/sync-to-close pushes the latest stored
+decision for a merchant onto their Close Lead's Aegis-* custom fields.
+Operator-triggered (no auto-push from /score) so the operator reviews
+the score first. The merchant must already be linked to a Close Lead
+(``merchants.close_lead_id`` populated by the /webhooks/close inbound
+handler in step 4). Idempotency lives in
+``aegis.close.sync.push_decision_to_close`` — see step 5.
 
 Decision snapshot wiring (mp Phase 2): when ``document_id`` is supplied
 as a query parameter, the score endpoints also write an immutable row
@@ -20,7 +23,7 @@ approve / decline / manual_review call. The snapshot is what
 regulators and counsel read six months later; the audit_log entry
 sitting alongside is the cross-reference. ``document_id`` is optional
 so existing API callers don't break, but every production caller
-(dashboard, Zoho sync) is expected to pass it.
+(dashboard, Close sync) is expected to pass it.
 """
 
 from __future__ import annotations
@@ -36,14 +39,20 @@ import aegis
 from aegis.api.auth import require_bearer
 from aegis.api.deps import (
     get_audit,
+    get_close_client,
     get_decision_snapshot,
     get_funder_repository,
     get_merchant_repository,
     get_ofac_client,
     get_repository,
 )
-from aegis.api.routes.findings import build_merchant_findings
 from aegis.audit import AuditLog, AuditWriteError
+from aegis.close.client import CloseAuthError, CloseClient, CloseError
+from aegis.close.sync import (
+    SyncError,
+    derive_ofac_status,
+    push_decision_to_close,
+)
 from aegis.compliance.router import router as compliance_router
 from aegis.compliance.snapshot import (
     DecisionLiteral,
@@ -62,10 +71,6 @@ from aegis.scoring.models import DealMatchResult, ScoreInput, ScoreResult
 from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
 from aegis.storage import DocumentRepository
-from aegis.web._findings_csv import findings_to_csv
-from aegis.web._slug import slugify
-from aegis.zoho.client import ZohoAuthError, ZohoClient, ZohoError
-from aegis.zoho.sync import ZohoSync, ZohoSyncError
 
 _log = get_logger(__name__)
 
@@ -80,13 +85,19 @@ _RECOMMENDATION_TO_DECISION: dict[str, DecisionLiteral] = {
 }
 
 
-class ZohoSyncResponse(BaseModel):
-    """Result of pushing a scored merchant into Zoho's Leads or Deals module."""
+class CloseSyncResponse(BaseModel):
+    """Result of pushing the latest stored decision to a Close Lead.
+
+    Mirrors ``aegis.close.sync.SyncResult`` plus the merchant + Lead +
+    decision identifiers the operator needs to reconcile.
+    """
 
     merchant_id: UUID
-    target: Literal["lead", "deal"]
-    zoho_record_id: str
-    action: str  # "created" | "updated"
+    close_lead_id: str
+    decision_id: UUID
+    patched: bool
+    fields_diffed: list[str]
+    reason: Literal["patched", "no_diff", "lead_not_found"]
 
 
 def _state_matrix(request: Request) -> StateMatrix:
@@ -317,37 +328,46 @@ def score_with_matches(
 
 
 @router.post(
-    "/{merchant_id}/sync-to-zoho",
-    response_model=ZohoSyncResponse,
-    summary="Push merchant + score result to Zoho's Leads or Deals module.",
+    "/{merchant_id}/sync-to-close",
+    response_model=CloseSyncResponse,
+    summary="Push the latest stored decision for a merchant to its Close Lead.",
 )
-def sync_to_zoho(
+def sync_to_close(
     merchant_id: UUID,
-    score_result: ScoreResult,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-    audit: Annotated[AuditLog, Depends(get_audit)],
     docs: Annotated[DocumentRepository, Depends(get_repository)],
-    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
-    target: Literal["lead", "deal"] = "lead",
-    attach_findings: bool = True,
-) -> ZohoSyncResponse:
-    """Operator-triggered Zoho upsert into Leads or Deals.
+    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    close_client: Annotated[CloseClient, Depends(get_close_client)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> CloseSyncResponse:
+    """Operator-triggered write-back of a merchant's latest decision to
+    Close.
 
-    The ``target`` query parameter selects the destination module and
-    defaults to ``"lead"`` — the natural early-pipeline target (website
-    form → Lead → enriched-by-Aegis → rep converts → Deal). Pass
-    ``target=deal`` to push directly into the Deals module instead.
+    Pipeline:
 
-    Idempotent on the matching merchant id field: ``merchant.zoho_lead_id``
-    for leads, ``merchant.zoho_deal_id`` for deals. Absent ⇒ create new
-    record and persist id back to merchant; present ⇒ update in place.
-    Auth + audit are inherited from the deals router; rate limits +
-    retries are handled by ``ZohoClient`` (tenacity backoff on 429/5xx).
+    1. Load merchant. ``404`` if no row matches ``merchant_id``.
+    2. ``400`` if ``merchant.close_lead_id`` is null — the Lead hasn't
+       been linked via the inbound webhook yet (operator hasn't moved
+       the Close Opportunity to "Docs In — Pre-UW").
+    3. Look up the latest decision for this merchant via documents
+       belonging to it. ``400`` if no decision exists yet — nothing to
+       push.
+    4. Audit ``close.deal.sync_triggered`` once we have a real
+       trigger event (merchant + decision + operator email). The
+       downstream ``push_decision_to_close`` writes its own
+       ``close.lead.sync_attempted`` row — don't duplicate.
+    5. Derive OFAC status from the stored decision and call
+       ``push_decision_to_close``. The function PATCHes only when a
+       business field actually changed (idempotency guarantee #4).
+    6. Return ``CloseSyncResponse`` mirroring ``SyncResult`` so the
+       caller knows whether a PATCH fired and what changed.
 
-    Surfaces ``ZohoAuthError`` as 503 (configuration problem, not the
-    caller's fault) and ``ZohoSyncError`` as 502 (Zoho responded but
-    response was unusable). ``ZohoError`` other than auth means Zoho
-    returned a 4xx — re-raised as 502 with detail for operator triage.
+    Error map:
+      * ``CloseAuthError`` (401 from Close, or missing API key) → 503.
+      * Any other ``CloseError`` (5xx after retries, 4xx Close didn't
+        accept) → 502. The CloseClient already handles 401 fail-fast
+        and 429/5xx retries.
     """
     try:
         merchant = merchants.get(merchant_id)
@@ -357,67 +377,85 @@ def sync_to_zoho(
             detail=f"merchant {merchant_id} not found",
         ) from exc
 
-    if target == "lead":
-        was_create = merchant.zoho_lead_id is None
-    else:
-        was_create = merchant.zoho_deal_id is None
+    if not merchant.close_lead_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"merchant {merchant_id} has no close_lead_id; "
+                "Lead must be linked via /webhooks/close first (operator "
+                "moves Opportunity to 'Docs In — Pre-UW' in Close)"
+            ),
+        )
+
+    deal_ids = [doc.id for doc in docs.list_documents(merchant_id=merchant_id)]
+    decision = snapshot.find_latest_for_merchant(
+        merchant_id, deal_ids=deal_ids
+    )
+    if decision is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"merchant {merchant_id} has no recorded decision yet; "
+                "score the deal first via /deals/score before syncing"
+            ),
+        )
+
+    # Audit the trigger BEFORE pushing — captures who tried what,
+    # regardless of whether the downstream PATCH actually fires.
+    audit.record(
+        actor="api",
+        action="close.deal.sync_triggered",
+        subject_type="merchant",
+        subject_id=merchant_id,
+        actor_email=actor_email,
+        details={
+            "merchant_id": str(merchant_id),
+            "decision_id": str(decision.id),
+            "close_lead_id": merchant.close_lead_id,
+        },
+    )
+
+    ofac_status = derive_ofac_status(
+        decision_reason_codes=list(decision.decision_reason_codes),
+        ofac_cache_timestamp=decision.ofac_cache_timestamp,
+    )
 
     try:
-        with ZohoClient() as client:
-            sync = ZohoSync(client=client, merchants=merchants, audit=audit)
-            if target == "lead":
-                zoho_record_id = sync.push_merchant_to_lead(merchant_id, score_result)
-                module = "Leads"
-            else:
-                zoho_record_id = sync.push_merchant_with_score(merchant_id, score_result)
-                module = "Deals"
-
-            # U1: attach findings CSV so the rep sees it inside Zoho.
-            # Attachment failure does NOT fail the request — upsert already
-            # succeeded and is the load-bearing operation.
-            if attach_findings:
-                try:
-                    findings = build_merchant_findings(
-                        merchant=merchant, docs=docs, ofac=ofac
-                    )
-                    csv_bytes = findings_to_csv(findings).encode("utf-8")
-                    filename = f"findings_{slugify(merchant.business_name)}.csv"
-                    sync.attach_findings_csv(
-                        module=module,
-                        record_id=zoho_record_id,
-                        merchant_id=merchant_id,
-                        csv_bytes=csv_bytes,
-                        filename=filename,
-                    )
-                except Exception as exc:  # broad on purpose — see comment above
-                    _log.warning(
-                        "findings csv attach skipped",
-                        extra={
-                            "merchant_id": str(merchant_id),
-                            "error": str(exc),
-                        },
-                    )
-    except ZohoAuthError as exc:
+        result = push_decision_to_close(
+            close_lead_id=merchant.close_lead_id,
+            decision_id=decision.id,
+            score=decision.score,
+            recommendation=decision.decision,
+            ofac_status=ofac_status,
+            client=close_client,
+            audit=audit,
+        )
+    except CloseAuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"zoho_auth_unavailable: {exc}",
+            detail=f"close_auth_unavailable: {exc}",
         ) from exc
-    except ZohoSyncError as exc:
+    except CloseError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"zoho_sync_error: {exc}",
+            detail=f"close_upstream_error: {exc}",
         ) from exc
-    except ZohoError as exc:
+    except SyncError as exc:
+        # Recommendation literal that this route can't push (e.g.
+        # "redisclosure"). Surface as 400 — the caller asked for
+        # something we can't fulfill, not an upstream issue.
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"zoho_error: {exc}",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"close_sync_unsupported_decision: {exc}",
         ) from exc
 
-    return ZohoSyncResponse(
+    return CloseSyncResponse(
         merchant_id=merchant_id,
-        target=target,
-        zoho_record_id=zoho_record_id,
-        action="created" if was_create else "updated",
+        close_lead_id=merchant.close_lead_id,
+        decision_id=decision.id,
+        patched=result.patched,
+        fields_diffed=result.fields_diffed,
+        reason=result.reason,
     )
 
 
