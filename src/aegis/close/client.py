@@ -46,10 +46,12 @@ cannot leak credentials by accident.
 from __future__ import annotations
 
 import logging
+import ssl
 import time
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import truststore
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -65,6 +67,14 @@ if TYPE_CHECKING:
 
 _log = get_logger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# Use the OS-native certificate store for TLS verification instead of
+# Python's bundled certifi roots. Required on Windows dev machines where
+# layered TLS (Tailscale et al.) block OCSP/CRL access through Python's
+# default chain — every HTTPS call fails CERTIFICATE_VERIFY_FAILED. On
+# Linux this is a no-op equivalent to the default. Constructed once at
+# module load and reused across all CloseClient instances.
+_TLS_CONTEXT = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
 _DEFAULT_RATE_LIMIT_SLEEP = 2.0  # fallback when 429 carries no usable hint
@@ -134,7 +144,12 @@ class CloseClient:
         http_client: httpx.Client | None = None,
         audit: AuditLog | None = None,
     ) -> None:
-        self._http = http_client or httpx.Client(timeout=_DEFAULT_TIMEOUT)
+        # When no http_client is injected, build one that verifies against
+        # the OS-native trust store (see _TLS_CONTEXT). Tests inject their
+        # own MockTransport-backed client, which doesn't touch TLS.
+        self._http = http_client or httpx.Client(
+            timeout=_DEFAULT_TIMEOUT, verify=_TLS_CONTEXT
+        )
         self._audit = audit
 
     def close(self) -> None:

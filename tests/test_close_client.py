@@ -85,8 +85,16 @@ def test_request_sends_basic_auth_key_as_username(
 def test_request_raises_close_auth_error_when_key_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("CLOSE_API_KEY", raising=False)
-    get_settings.cache_clear()
+    # Mock get_settings directly so the test is independent of whether
+    # the dev machine's .env contains CLOSE_API_KEY. pydantic-settings
+    # loads env_file values automatically, so delenv + cache_clear is
+    # not enough on a machine where the operator's real key is present.
+    fake_settings = type(
+        "S",
+        (),
+        {"close_api_key": None, "close_api_base": "https://api.close.example"},
+    )()
+    monkeypatch.setattr("aegis.close.client.get_settings", lambda: fake_settings)
     with pytest.raises(CloseAuthError, match="CLOSE_API_KEY"):
         with CloseClient() as client:
             client.request("GET", "/api/v1/me/")
@@ -432,21 +440,20 @@ def test_context_manager_closes_underlying_http_client(
 )
 def test_live_me_endpoint_authenticates() -> None:
     """One harmless GET against the live Close org to verify end-to-end
-    auth. /api/v1/me/ returns the authenticated user — no side effects.
+    auth via the real CloseClient. /api/v1/me/ returns the authenticated
+    user — no side effects.
 
-    Reads CLOSE_API_KEY from os.environ directly (not via get_settings)
-    so this test doesn't require AEGIS_DATA_RESIDENCY_CONFIRMED.
+    Uses CloseClient (not raw httpx) so the truststore TLS context and
+    the retry/error pipeline are exercised, not just the auth header.
+    The conftest sets AEGIS_DATA_RESIDENCY_CONFIRMED=true; pytest's
+    subprocess invoker is responsible for putting CLOSE_API_KEY in
+    os.environ before this test runs (see the @skipif).
     """
-    api_key = os.environ["CLOSE_API_KEY"]
-    resp = httpx.get(
-        "https://api.close.com/api/v1/me/",
-        auth=(api_key, ""),
-        timeout=10.0,
-    )
-    assert resp.status_code == 200, (
-        f"live /me returned {resp.status_code}: {resp.text[:200]}"
-    )
-    body = resp.json()
+    # Force a fresh settings read so CLOSE_API_KEY in os.environ takes
+    # effect even if get_settings was cached during conftest setup.
+    get_settings.cache_clear()
+    with CloseClient() as client:
+        body = client.request("GET", "/api/v1/me/")
     assert "id" in body and body["id"].startswith("user_"), (
         f"unexpected /me body: {body!r}"
     )

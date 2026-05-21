@@ -32,6 +32,12 @@ dependencies = [
     "python-multipart>=0.0.12",
     "pyyaml>=6.0",
     "python-dateutil>=2.9",
+    # truststore: lets httpx use the OS-native certificate store. Required
+    # because some Windows dev machines (Tailscale + similar layered TLS)
+    # block OCSP/CRL access via Python's bundled certifi roots — every
+    # HTTPS call fails CERTIFICATE_VERIFY_FAILED. The OS store has the
+    # working CAs and revocation info. On Linux this is a no-op.
+    "truststore>=0.10",
 ]
 
 [dependency-groups]
