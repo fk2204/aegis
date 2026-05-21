@@ -11,10 +11,22 @@ from aegis.close.client import (
     CloseError,
     CloseRateLimitError,
 )
+from aegis.close.sync import (
+    OfacStatus,
+    SyncError,
+    SyncResult,
+    derive_ofac_status,
+    push_decision_to_close,
+)
 
 __all__ = [
     "CloseAuthError",
     "CloseClient",
     "CloseError",
     "CloseRateLimitError",
+    "OfacStatus",
+    "SyncError",
+    "SyncResult",
+    "derive_ofac_status",
+    "push_decision_to_close",
 ]

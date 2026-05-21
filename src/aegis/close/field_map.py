@@ -48,6 +48,7 @@ _log = get_logger(__name__)
 #    we use fico_range as the primary signal since the operator's
 #    Close ingestion fills the range bucket more reliably.
 CLOSE_FIELD_IDS: Final[dict[str, str]] = {
+    # Inbound: Lead identity + business profile (read by /webhooks/close)
     "legal_name":              "cf_Atu3WT1FlUIPEHHZ5ryMJbmgGQiHZjBCptOg2YMwXWi",
     "dba_name":                "cf_YcldmRoTpfdqpG16JTZ7Jq3is3wgNW2P6YwAIkCAwuS",
     "ein":                     "cf_ik3aCHe67NWDzn1DeE3Q2HUbR0vFJxTcTS1PhkloOAN",
@@ -60,6 +61,12 @@ CLOSE_FIELD_IDS: Final[dict[str, str]] = {
     "requested_amount":        "cf_TVx0D6Cx8qg9Dey7LgSgQqLIosZnGcYukKH0ImVuvw4",
     "entity_type_a":           "cf_FwBTNyt2ux6OnVIoRWIn0qkjXsVpAI0d4Wy1vjPoO4V",  # "Entity type"
     "entity_type_b":           "cf_sAtWGtaP7eqj5QYH8D91Vc1kX788DRVwHh6Ydufy3ca",  # "Entity_type"
+    # Outbound: Aegis-* fields written by close.sync.push_decision_to_close
+    "aegis_applicant_id":      "cf_HJbCNJ2k7X4lKOPvl2Bql1FkTHDeGfS9zJL6dDafUd8",
+    "aegis_score":             "cf_0aYBJLLYHM4isq2CxyywRf6Syw5Mwe82hJvcOx3HRVW",
+    "aegis_recommendation":    "cf_hyhD8buv0SxuKCa5JsRafCXSlVz565nilXcXKxWbFBq",
+    "ofac_status":             "cf_I8Csenfde4IdiNnSEPprhL7hzzmtiGW6HYIdDAg25PB",
+    "aegis_last_synced":       "cf_W2M1v1giWa3bzx7lxBlJstda8708Ad2RMCBb9Cbt94d",
 }
 
 
