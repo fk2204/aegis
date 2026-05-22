@@ -48,6 +48,7 @@ from __future__ import annotations
 import logging
 import ssl
 import time
+from email.message import Message
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -301,15 +302,30 @@ class CloseClient:
         """GET /api/v1/opportunity/{opportunity_id}/."""
         return self.request("GET", f"/api/v1/opportunity/{opportunity_id}/")
 
-    def download_attachment(self, attachment_id: str) -> bytes:
+    @retry(
+        retry=retry_if_exception_type(
+            (httpx.TransportError, CloseRateLimitError)
+        ),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        reraise=True,
+    )
+    def download_attachment(self, attachment_id: str) -> tuple[bytes, str]:
         """GET /api/v1/files/{attachment_id}/download/.
 
-        Returns raw bytes (not JSON). Used by the hybrid statement path
-        added in step 7 to pull bank-statement PDFs that the operator
-        attached to a Close Lead instead of uploading to AEGIS directly.
+        Returns ``(file_bytes, filename)``. ``filename`` is parsed from
+        the response's ``Content-Disposition`` header (Close's standard
+        for file downloads); falls back to ``"unknown.pdf"`` when the
+        header is missing or unparseable.
 
-        Same auth + retry as request(); raises CloseError variants on
-        the same status codes. Streams into memory bounded by the
+        Used by the hybrid statement path (step 7) to pull bank-statement
+        PDFs that the operator attached to a Close Lead instead of
+        uploading to AEGIS directly.
+
+        Same auth + retry semantics as :meth:`request`: 401 fails fast
+        (wrong key — no retry), 429 sleeps the ``RateLimit`` reset value
+        then retries within the tenacity budget, 5xx retries, other 4xx
+        propagates immediately. Streams into memory bounded by the
         operator-configured upload cap upstream — the client does not
         enforce that cap itself.
         """
@@ -325,12 +341,43 @@ class CloseClient:
         )
         auth = (settings.close_api_key.get_secret_value(), "")
         resp = self._http.request("GET", url, auth=auth)
+
         if resp.status_code == 401:
             raise CloseAuthError(
                 "close 401 on attachment download",
                 status_code=401,
                 body=self._safe_body(resp),
             )
+
+        if resp.status_code == 429:
+            reset_seconds = self._parse_reset_seconds(resp)
+            body = self._safe_body(resp)
+            _log.warning(
+                "close.rate_limit_hit reset_seconds=%s body=%s (attachment download)",
+                reset_seconds,
+                body,
+            )
+            self._audit_rate_limit(
+                method="GET",
+                path=f"/api/v1/files/{attachment_id}/download/",
+                reset_seconds=reset_seconds,
+            )
+            time.sleep(reset_seconds)
+            raise CloseRateLimitError(
+                f"close 429 on attachment download: {body}",
+                body=body,
+                reset_seconds=reset_seconds,
+            )
+
+        if 500 <= resp.status_code < 600:
+            raise CloseRateLimitError(
+                f"close {resp.status_code} transient on attachment download: "
+                f"{self._safe_body(resp)}",
+                status_code=resp.status_code,
+                body=self._safe_body(resp),
+                reset_seconds=0.0,
+            )
+
         if resp.status_code >= 400:
             raise CloseError(
                 f"close {resp.status_code} on attachment download: "
@@ -338,7 +385,14 @@ class CloseClient:
                 status_code=resp.status_code,
                 body=self._safe_body(resp),
             )
-        return resp.content
+
+        filename = (
+            _filename_from_content_disposition(
+                resp.headers.get("content-disposition", "")
+            )
+            or "unknown.pdf"
+        )
+        return resp.content, filename
 
     # ---------------------------------------------------------------
     # Helpers
@@ -412,6 +466,21 @@ class CloseClient:
             # An audit failure must not mask the rate-limit signal.
             # The standard logger warning above is the primary signal.
             _log.warning("close.rate_limit_audit_write_failed", exc_info=True)
+
+
+def _filename_from_content_disposition(header_value: str) -> str | None:
+    """Parse the ``filename`` parameter from a Content-Disposition header.
+
+    Handles the standard ``filename="x.pdf"`` form and the RFC 5987
+    ``filename*=UTF-8''x.pdf`` form. Uses ``email.message.Message`` so
+    we don't ship a hand-rolled regex parser. Returns None if no
+    filename token is present.
+    """
+    if not header_value:
+        return None
+    m = Message()
+    m["content-disposition"] = header_value
+    return m.get_filename()
 
 
 __all__ = [

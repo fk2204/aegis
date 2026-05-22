@@ -376,20 +376,74 @@ def test_get_opportunity_hits_correct_endpoint(
     assert seen["url"].endswith("/api/v1/opportunity/oppo_abc/")
 
 
-def test_download_attachment_returns_raw_bytes(
+def test_download_attachment_returns_bytes_and_filename(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_close_env(monkeypatch)
 
     def transport(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/api/v1/files/att_xyz/download/")
-        return httpx.Response(200, content=b"%PDF-1.7 fake")
+        return httpx.Response(
+            200,
+            content=b"%PDF-1.7 fake",
+            headers={
+                "content-disposition": 'attachment; filename="bank_stmt.pdf"',
+            },
+        )
 
     with CloseClient(
         http_client=httpx.Client(transport=httpx.MockTransport(transport))
     ) as client:
-        data = client.download_attachment("att_xyz")
+        data, filename = client.download_attachment("att_xyz")
     assert data == b"%PDF-1.7 fake"
+    assert filename == "bank_stmt.pdf"
+
+
+def test_download_attachment_filename_fallback_when_no_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Close sometimes omits Content-Disposition. We fall back to a
+    benign default so the caller always gets a usable filename."""
+    _set_close_env(monkeypatch)
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"%PDF")
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        data, filename = client.download_attachment("att_xyz")
+    assert data == b"%PDF"
+    assert filename == "unknown.pdf"
+
+
+def test_download_attachment_retries_on_500_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per step 7 spec: download_attachment now wraps the retry decorator
+    (it previously did not). 500 should retry."""
+    _set_close_env(monkeypatch)
+    monkeypatch.setattr("aegis.close.client.time.sleep", lambda _s: None)
+
+    calls = {"n": 0}
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return httpx.Response(500, text="server boom")
+        return httpx.Response(
+            200,
+            content=b"%PDF",
+            headers={"content-disposition": 'attachment; filename="x.pdf"'},
+        )
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        data, filename = client.download_attachment("att_xyz")
+    assert calls["n"] == 2
+    assert data == b"%PDF"
+    assert filename == "x.pdf"
 
 
 def test_download_attachment_401_raises_auth_error(

@@ -15,12 +15,14 @@ from aegis.api.routes.funders import router as funders_router
 from aegis.api.routes.merchants import router as merchants_router
 from aegis.api.routes.transactions import router as transactions_router
 from aegis.api.routes.upload import router as upload_router
+from aegis.api.routes.upload import uploads_router
 from aegis.api.routes.webhooks_close import router as webhooks_close_router
 from aegis.api.routes.webhooks_zoho import router as webhooks_zoho_router
 from aegis.web import router as web_router
 
 ALL_ROUTERS = (
     upload_router,
+    uploads_router,
     merchants_router,
     transactions_router,
     funders_router,
@@ -46,6 +48,7 @@ __all__ = [
     "merchants_router",
     "transactions_router",
     "upload_router",
+    "uploads_router",
     "web_router",
     "webhooks_close_router",
     "webhooks_zoho_router",
