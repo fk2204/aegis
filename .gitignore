@@ -1,7 +1,17 @@
-# Secrets — never commit
+# Secrets — never commit. Three layers of coverage:
+#   - .env             (literal repo-root file)
+#   - .env.*           (anything starting with .env., e.g. .env.local)
+#   - *.env            (anything ending in .env, e.g. aegis.env if the
+#                       operator copies the Hetzner /etc/aegis/aegis.env
+#                       file into the repo by mistake)
+# Example files (.env.example, deploy/aegis.env.example) end in
+# .example so the *.env rule does not match them; the explicit
+# negation below keeps .env.example committable.
 .env
 .env.*
+*.env
 !.env.example
+!*.env.example
 
 # Operator-only PowerShell helpers with hardcoded tokens (bearer, Cloudflare
 # tunnel). These live on the operator box and are never in version control.

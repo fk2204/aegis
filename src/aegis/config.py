@@ -10,13 +10,22 @@ environment routed bank statements outside the US — that must never silently b
 
 from __future__ import annotations
 
+import os
 import tempfile
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+if TYPE_CHECKING:
+    from aegis.audit import AuditLog
+
+# Module-level latch so the Zoho-residue boot warning fires exactly once
+# per process. Toggled by ``warn_if_zoho_env_lingers``; safe to call
+# multiple times.
+_zoho_residue_warning_emitted = False
 
 
 class DataResidencyError(RuntimeError):
@@ -136,3 +145,64 @@ def get_settings() -> Settings:
             "Refusing to boot until US-only data routing is acknowledged."
         )
     return settings
+
+
+def warn_if_zoho_env_lingers(audit: AuditLog | None = None) -> list[str]:
+    """One-shot detection of ``ZOHO_*`` env vars remaining after the
+    Close cutover.
+
+    Returns the sorted list of detected variable NAMES (never values —
+    a stray ``ZOHO_REFRESH_TOKEN`` is a secret and must not land in
+    logs). Emits a structured WARN at ``config.zoho_residue_detected``
+    and, when an ``AuditLog`` is injected, writes one audit row with the
+    same action. The latch above keeps the warning at-most-once per
+    process; subsequent calls return the same list silently.
+
+    This is non-fatal: AEGIS still boots. The signal tells the operator
+    to clean up ``/etc/aegis/aegis.env`` on Hetzner (see
+    ``deploy/RUNBOOK.md`` § Close Migration Cutover) so the residue
+    doesn't drift from the codebase state.
+    """
+    global _zoho_residue_warning_emitted
+
+    residue = sorted(k for k in os.environ if k.startswith("ZOHO_"))
+    if not residue:
+        return []
+
+    if _zoho_residue_warning_emitted:
+        return residue
+    _zoho_residue_warning_emitted = True
+
+    # Lazy logger import — aegis.logger imports aegis.config, so a
+    # module-level import here creates a cycle. Inside the function
+    # body it's resolved by the time we run.
+    from aegis.logger import get_logger
+
+    log = get_logger(__name__)
+    log.warning(
+        "config.zoho_residue_detected env_vars=%s",
+        residue,
+    )
+    if audit is not None:
+        try:
+            audit.record(
+                actor="config",
+                action="config.zoho_residue_detected",
+                details={"env_vars": residue},
+            )
+        except Exception:
+            # Best-effort: the logger warning above is the primary
+            # signal. An audit-write failure here must not mask that.
+            log.warning(
+                "config.zoho_residue_audit_write_failed",
+                exc_info=True,
+            )
+    return residue
+
+
+def reset_zoho_residue_latch() -> None:
+    """Reset the one-shot latch — test-only convenience so each test
+    that exercises ``warn_if_zoho_env_lingers`` starts from a clean state.
+    """
+    global _zoho_residue_warning_emitted
+    _zoho_residue_warning_emitted = False
