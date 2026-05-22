@@ -1,7 +1,7 @@
 # AEGIS
 
 MCA underwriting brain for Commera Capital. Parses bank statements,
-scores deals, generates state-compliant disclosures, syncs with Zoho.
+scores deals, generates state-compliant disclosures, syncs with Close.
 
 Solo operator, ~100 deals/month. Internal-only. Python 3.12+.
 

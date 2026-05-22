@@ -8,7 +8,7 @@ Project-specific Claude Code instructions for AEGIS. Global rules live in `~/.cl
 
 AEGIS is an MCA (Merchant Cash Advance) underwriting brain for Commera Capital — Python rewrite of an earlier TS version, built for mathematical accuracy, auditability, and regulator defensibility.
 
-- **What it does:** Parse bank statements → score deals → generate state-compliant disclosures → sync with Zoho CRM
+- **What it does:** Parse bank statements → score deals → generate state-compliant disclosures → sync with Close CRM (webhook-driven inbound on `/webhooks/close`; operator-triggered outbound on `/deals/{id}/sync-to-close`; n8n is the planned orchestrator)
 - **Scale:** Solo operator, ~100 deals/month, internal-only
 - **Status:** Live deployment on Hetzner behind Cloudflare Access. To see current state, run `git log --oneline -10` and check `CORPUS_FINDINGS.md` for recent parser fixes.
 

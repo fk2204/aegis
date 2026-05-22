@@ -21,15 +21,15 @@
 
 ## 1. What AEGIS is and isn't
 
-AEGIS is the underwriting and compliance brain for Commera Capital, an MCA brokerage. It lives behind Zoho CRM and produces three things per deal:
+AEGIS is the underwriting and compliance brain for Commera Capital, an MCA brokerage. It lives behind Close CRM and produces three things per deal:
 
 1. A **defensible analysis** of the merchant (parsed bank statements, scored, with patterns and source-IDs)
 2. A **compliant disclosure** (where required by state law) with snapshot-tested templates
 3. An **immutable decision snapshot** that a regulator or counsel can reproduce months later
 
-AEGIS is **not** a CRM, not a servicing platform, not a syndication manager, not a collections tool. Zoho handles workflow. AEGIS handles the brain.
+AEGIS is **not** a CRM, not a servicing platform, not a syndication manager, not a collections tool. Close handles workflow. AEGIS handles the brain.
 
-This boundary matters: every time a feature is proposed that drags AEGIS into CRM/servicing territory ("submission pipeline UI," "syndicate payout tracking"), push back — that's Zoho's job, or it's outside scope.
+This boundary matters: every time a feature is proposed that drags AEGIS into CRM/servicing territory ("submission pipeline UI," "syndicate payout tracking"), push back — that's Close's job, or it's outside scope.
 
 **AEGIS is built to scale with the business.** Commera Capital is growing, and AEGIS must grow with it — in deal volume, in number of operators using the system, in geographic reach, and in product complexity. No design decision in this document assumes a single-operator deployment or a fixed deal volume. Concretely:
 
@@ -85,7 +85,7 @@ Two corollaries:
 - No machine-readable state matrix
 - No broker advance-fee guard (FL/GA prohibit it)
 - No TX auto-debit guard (HB 700 effectively kills standard MCA in TX)
-- No alerting on Bedrock / Zoho failures
+- No alerting on Bedrock / Close failures
 - No operator-override capture for the decision flywheel
 - No funder-reply ingestion
 - No Bedrock per-deal cost tracking
@@ -913,7 +913,7 @@ When operator promotes a watchlist state to Tier 1, AEGIS triggers a checklist: 
 **Tasks:**
 1. **Alerting (Healthchecks.io + ntfy/Pushover, or migrate to Grafana Cloud at higher volume):**
    - Heartbeats: `aegis-web` and `aegis-worker` ping every 5min via systemd timer
-   - Event alerts (10min eval): Bedrock 5xx/throttle >3/10min; Zoho 401/403 immediate; Zoho HMAC fails >0/hr; `parse_status='manual_review'` >25% over last 20 deals; OFAC cache >6 days; arq queue depth >20; disk >80%
+   - Event alerts (10min eval): Bedrock 5xx/throttle >3/10min; Close 401/403 immediate; Close webhook HMAC fails >0/hr; `parse_status='manual_review'` >25% over last 20 deals; OFAC cache >6 days; arq queue depth >20; disk >80%
 2. **Bedrock per-deal cost tracking:** log token counts + computed cost per analysis; weekly digest; unit-economics view (cost per deal, cost per funded deal, cost as % of revenue).
 3. **Rate limiting verification:** confirm `CLAUDE.md` claim that "all endpoints rate limited" is actually true on every endpoint. Add tests. Per-user and per-IP buckets so multi-operator growth doesn't break the limits.
 4. **Backup/DR plan (current → growth-ready):**
@@ -1025,7 +1025,7 @@ When operator promotes a watchlist state to Tier 1, AEGIS triggers a checklist: 
 | NAICS data | | ✅ Build (small lookup) | | Static data. |
 | State disclosure templates | | ✅ Build | | The work IS the templates. Buying generic is more dangerous than not having. |
 | Funder appetite DB | | ✅ Build (Phase 7B) | | Bespoke per broker. No vendor knows your funder list. |
-| CRM / Servicing | ✅ Zoho | | | Done. Keep AEGIS out of this layer. |
+| CRM / Servicing | ✅ Close | | | Done. Keep AEGIS out of this layer. Migrated from Zoho 2026-05-22 (see `docs/research/close-integration-design.md`). |
 
 ---
 
