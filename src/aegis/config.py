@@ -44,16 +44,9 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_service_key: SecretStr | None = None
 
-    # Zoho (legacy — being removed during the Close cutover, step 8)
-    zoho_client_id: str = ""
-    zoho_client_secret: SecretStr | None = None
-    zoho_refresh_token: SecretStr | None = None
-    zoho_accounts_base: str = "https://accounts.zoho.com"
-    zoho_api_base: str = "https://www.zohoapis.com"
-    zoho_webhook_secret: SecretStr | None = None
-
-    # Close CRM (mp Close cutover). API key auth — HTTP Basic with the key
-    # as username and blank password.
+    # Close CRM. API key auth — HTTP Basic with the key as username
+    # and blank password. Replaced the legacy Zoho integration in the
+    # close-integration branch (steps 1-12).
     close_api_key: SecretStr | None = None
     close_api_base: str = "https://api.close.com"
     # Webhook secret (hex-encoded). Returned in the subscription POST

@@ -66,7 +66,7 @@ class RateLimit:
 
 #: Default per-IP limit for any authenticated route. Tuned to leave the
 #: dashboard's read traffic well under the cap while making it expensive
-#: for a misconfigured Zoho automation to runaway-loop the API.
+#: for a misconfigured external integration to runaway-loop the API.
 DEFAULT_PER_IP_LIMIT: Final[RateLimit] = RateLimit(window_seconds=60, max_requests=120)
 
 #: Default per-bearer (per-operator) limit. Aggregates across IPs so a
@@ -79,7 +79,7 @@ DEFAULT_PER_BEARER_LIMIT: Final[RateLimit] = RateLimit(
 #: Heavy-path overrides. Path-prefix → limit. Order matters — the
 #: longest matching prefix wins (we sort by length descending at lookup
 #: time). Heavy paths get tighter caps because they cost real money
-#: (Bedrock, Zoho writes) or PII-sensitive disk I/O.
+#: (Bedrock, Close writes) or PII-sensitive disk I/O.
 PATH_LIMITS_PER_IP: Final[dict[str, RateLimit]] = {
     # Upload + multi-statement intake — bound the rate of new PDFs to
     # what the parser can chew through without queue backup.
@@ -87,12 +87,12 @@ PATH_LIMITS_PER_IP: Final[dict[str, RateLimit]] = {
     # Score endpoints touch Bedrock indirectly + OFAC; tighter cap.
     "/deals/score": RateLimit(window_seconds=60, max_requests=30),
     "/deals/score-with-matches": RateLimit(window_seconds=60, max_requests=30),
-    # Zoho push is operator-triggered; tighter cap protects against a
+    # Close sync is operator-triggered; tighter cap protects against a
     # double-click loop.
     "/deals": RateLimit(window_seconds=60, max_requests=60),
     # Webhook surface is HMAC-verified upstream of this; cap protects
-    # against a flood from a misconfigured Zoho workflow.
-    "/webhooks/zoho": RateLimit(window_seconds=60, max_requests=30),
+    # against a flood from a misconfigured Close subscription.
+    "/webhooks/close": RateLimit(window_seconds=60, max_requests=30),
 }
 
 #: Path that must NEVER be rate-limited. Cloudflare Tunnel uses this

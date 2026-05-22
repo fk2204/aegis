@@ -4,8 +4,9 @@ Mirrors the funder pattern: ``MerchantRepository`` Protocol +
 ``InMemoryMerchantRepository`` for tests + ``SupabaseMerchantRepository``
 for production. Uniqueness invariants enforced at this layer:
 
-  * ``zoho_deal_id`` (when set) is unique — the Zoho-sync idempotency
-    key. The DB also enforces this via UNIQUE; this layer raises early.
+  * ``close_lead_id`` (when set) is unique — the Close-sync idempotency
+    key. The DB also enforces this via a partial UNIQUE index (migration
+    026); this layer raises early.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from aegis.merchants.models import MerchantRow
 
 
 class MerchantNotFoundError(KeyError):
-    """Raised when a merchant id (or zoho_deal_id) has no row."""
+    """Raised when a merchant id (or close_lead_id) has no row."""
 
 
 class MerchantConflictError(ValueError):
@@ -28,8 +29,6 @@ class MerchantConflictError(ValueError):
 
 class MerchantRepository(Protocol):
     def get(self, merchant_id: UUID) -> MerchantRow: ...
-    def find_by_zoho_deal_id(self, zoho_deal_id: str) -> MerchantRow | None: ...
-    def find_by_zoho_lead_id(self, zoho_lead_id: str) -> MerchantRow | None: ...
     def find_by_close_lead_id(
         self, close_lead_id: str
     ) -> MerchantRow | None: ...
@@ -51,18 +50,6 @@ class InMemoryMerchantRepository:
             return self._by_id[merchant_id]
         except KeyError as exc:
             raise MerchantNotFoundError(str(merchant_id)) from exc
-
-    def find_by_zoho_deal_id(self, zoho_deal_id: str) -> MerchantRow | None:
-        for m in self._by_id.values():
-            if m.zoho_deal_id == zoho_deal_id:
-                return m
-        return None
-
-    def find_by_zoho_lead_id(self, zoho_lead_id: str) -> MerchantRow | None:
-        for m in self._by_id.values():
-            if m.zoho_lead_id == zoho_lead_id:
-                return m
-        return None
 
     def find_by_close_lead_id(self, close_lead_id: str) -> MerchantRow | None:
         for m in self._by_id.values():
@@ -90,18 +77,7 @@ class InMemoryMerchantRepository:
         return len(self._by_id)
 
     def upsert(self, merchant: MerchantRow) -> MerchantRow:
-        # Enforce uniqueness on zoho_deal_id across other ids.
-        if merchant.zoho_deal_id is not None:
-            for existing in self._by_id.values():
-                if (
-                    existing.id != merchant.id
-                    and existing.zoho_deal_id == merchant.zoho_deal_id
-                ):
-                    raise MerchantConflictError(
-                        f"zoho_deal_id {merchant.zoho_deal_id!r} already on merchant "
-                        f"{existing.id}"
-                    )
-        # Same uniqueness rule for close_lead_id (DB partial-UNIQUE index
+        # Enforce uniqueness on close_lead_id (DB partial-UNIQUE index
         # enforces this at the storage layer; raise early in-memory too).
         if merchant.close_lead_id is not None:
             for existing in self._by_id.values():
@@ -139,32 +115,6 @@ class SupabaseMerchantRepository:
         )
         if not result.data:
             raise MerchantNotFoundError(str(merchant_id))
-        return _row_to_merchant(cast(dict[str, Any], result.data[0]))
-
-    def find_by_zoho_deal_id(self, zoho_deal_id: str) -> MerchantRow | None:
-        result = (
-            get_supabase()
-            .table("merchants")
-            .select("*")
-            .eq("zoho_deal_id", zoho_deal_id)
-            .limit(1)
-            .execute()
-        )
-        if not result.data:
-            return None
-        return _row_to_merchant(cast(dict[str, Any], result.data[0]))
-
-    def find_by_zoho_lead_id(self, zoho_lead_id: str) -> MerchantRow | None:
-        result = (
-            get_supabase()
-            .table("merchants")
-            .select("*")
-            .eq("zoho_lead_id", zoho_lead_id)
-            .limit(1)
-            .execute()
-        )
-        if not result.data:
-            return None
         return _row_to_merchant(cast(dict[str, Any], result.data[0]))
 
     def find_by_close_lead_id(self, close_lead_id: str) -> MerchantRow | None:
@@ -271,8 +221,6 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
             if row.get("preferred_funder_id")
             else None
         ),
-        zoho_deal_id=row.get("zoho_deal_id"),
-        zoho_lead_id=row.get("zoho_lead_id"),
         close_lead_id=row.get("close_lead_id"),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
@@ -327,8 +275,6 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "preferred_funder_id": (
             str(m.preferred_funder_id) if m.preferred_funder_id else None
         ),
-        "zoho_deal_id": m.zoho_deal_id,
-        "zoho_lead_id": m.zoho_lead_id,
         "close_lead_id": m.close_lead_id,
     }
     return payload

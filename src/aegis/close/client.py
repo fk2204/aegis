@@ -38,7 +38,7 @@ injected) also written to ``audit_log`` as ``close.rate_limit_hit``.
 
 httpx INFO log silenced
 -----------------------
-Mirrors the precaution in ``aegis.zoho.client``: httpx logs request
+Mirrors the precaution used in older AEGIS HTTP clients: httpx logs request
 URLs at INFO. We push it to WARNING so any future query-string drift
 cannot leak credentials by accident.
 """

@@ -23,8 +23,6 @@ Event-alert thresholds (Phase 11 task #1)
 | Signal | Threshold | Notes |
 |---|---|---|
 | Bedrock 5xx / throttle | >3 per 10min eval window | alert_bedrock_failure_burst |
-| Zoho 401/403 | immediate | alert_zoho_auth_failure |
-| Zoho HMAC mismatch | >0 per hour | alert_zoho_hmac_failure |
 | parse_status='manual_review' | >25% over last 20 deals | alert_manual_review_rate |
 | OFAC cache age | >6 days | alert_ofac_cache_stale |
 | arq queue depth | >20 | alert_arq_queue_depth |
@@ -58,11 +56,6 @@ _log = get_logger(__name__)
 #: constant here is just the threshold the alerting condition checks.
 BEDROCK_FAILURE_THRESHOLD: Final[int] = 3
 BEDROCK_FAILURE_WINDOW_MIN: Final[int] = 10
-
-#: Zoho HMAC failures per hour above which we alert. Per master plan
-#: §21 the threshold is "> 0/hr" — any HMAC failure on the inbound
-#: webhook surface is suspicious and the operator should see it.
-ZOHO_HMAC_FAILURE_THRESHOLD: Final[int] = 0
 
 #: Fraction of recent deals routed to manual_review above which we
 #: alert. Threshold is 0.25 (25%) over the last 20 deals.
@@ -339,54 +332,6 @@ def alert_bedrock_failure_burst(
     )
 
 
-def alert_zoho_auth_failure(
-    config: AlertConfig,
-    audit: AuditLog | None,
-    *,
-    status_code: int,
-    endpoint: str,
-) -> bool:
-    """Alert on a Zoho 401/403 immediately — refresh token likely dead."""
-    if status_code not in (401, 403):
-        return False
-    return notify_event(
-        config,
-        audit=audit,
-        title="Zoho auth failure",
-        body=(
-            f"Zoho returned {status_code} on {endpoint}. The refresh "
-            f"token may need rotation — see deploy/RUNBOOK.md "
-            f"'Rotate Zoho refresh token'."
-        ),
-        severity=AlertSeverity.CRITICAL,
-        tags=("zoho", "auth"),
-    )
-
-
-def alert_zoho_hmac_failure(
-    config: AlertConfig,
-    audit: AuditLog | None,
-    *,
-    source: str,
-    failure_count_in_hour: int,
-) -> bool:
-    """Alert on any Zoho HMAC mismatch within the rolling hour."""
-    if failure_count_in_hour <= ZOHO_HMAC_FAILURE_THRESHOLD:
-        return False
-    return notify_event(
-        config,
-        audit=audit,
-        title="Zoho HMAC mismatch",
-        body=(
-            f"{failure_count_in_hour} Zoho HMAC mismatch(es) observed "
-            f"in the last hour from source={source}. Possible webhook "
-            f"signing-secret drift or a forged-payload attempt."
-        ),
-        severity=AlertSeverity.CRITICAL,
-        tags=("zoho", "hmac", "security"),
-    )
-
-
 def alert_manual_review_rate(
     config: AlertConfig,
     audit: AuditLog | None,
@@ -508,7 +453,6 @@ __all__ = [
     "MANUAL_REVIEW_RATE_THRESHOLD",
     "MANUAL_REVIEW_WINDOW",
     "OFAC_CACHE_AGE_DAYS",
-    "ZOHO_HMAC_FAILURE_THRESHOLD",
     "AlertConfig",
     "AlertSeverity",
     "alert_arq_queue_depth",
@@ -516,8 +460,6 @@ __all__ = [
     "alert_disk_usage",
     "alert_manual_review_rate",
     "alert_ofac_cache_stale",
-    "alert_zoho_auth_failure",
-    "alert_zoho_hmac_failure",
     "load_alert_config",
     "notify_event",
     "ping_healthcheck",

@@ -118,10 +118,12 @@ def create_app() -> FastAPI:
         ],
         documents: Annotated[DocumentRepository, Depends(get_repository)],
     ) -> RedirectResponse:
-        # Entry point for the Zoho CRM "View in Aegis" Lead button
-        # (id 7365508000001462009). Routes the operator to the right
-        # surface: merchant detail if statements exist, dashboard
-        # otherwise (including unknown email).
+        # Entry point for the CRM "View in Aegis" Lead button. The
+        # button was originally configured in Zoho and is being
+        # reconfigured in Close (same email-based lookup pattern).
+        # Routes the operator to the right surface: merchant detail
+        # if statements exist, dashboard otherwise (including unknown
+        # email).
         merchant = merchants.find_by_email(email)
         if merchant is None:
             return RedirectResponse(url="/ui/", status_code=302)

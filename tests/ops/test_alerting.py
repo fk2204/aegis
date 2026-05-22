@@ -26,8 +26,6 @@ from aegis.ops.alerting import (
     alert_disk_usage,
     alert_manual_review_rate,
     alert_ofac_cache_stale,
-    alert_zoho_auth_failure,
-    alert_zoho_hmac_failure,
     load_alert_config,
     notify_event,
     ping_healthcheck,
@@ -195,14 +193,14 @@ def test_notify_event_posts_title_priority_tags(
         title="incident",
         body="body",
         severity=AlertSeverity.CRITICAL,
-        tags=("zoho", "auth"),
+        tags=("bedrock", "throttle"),
     )
     assert len(transport.requests) == 1
     req = transport.requests[0]
     assert str(req.url) == "https://ntfy.sh/aegis-test"
     assert req.headers["Title"] == "incident"
     assert req.headers["Priority"] == "5"
-    assert req.headers["Tags"] == "zoho,auth"
+    assert req.headers["Tags"] == "bedrock,throttle"
     assert req.content == b"body"
 
 
@@ -249,46 +247,6 @@ def test_alert_bedrock_failure_above_threshold_fires(
     )
     assert len(audit.entries) == 1
     assert "bedrock" in audit.entries[0]["details"]["tags"]
-
-
-@pytest.mark.parametrize("status", [401, 403])
-def test_alert_zoho_auth_fires_on_401_403(
-    configured: AlertConfig, monkeypatch: pytest.MonkeyPatch, status: int
-) -> None:
-    _install_transport(monkeypatch, _CapturingTransport(status_code=200))
-    audit = InMemoryAuditLog()
-    assert (
-        alert_zoho_auth_failure(
-            configured, audit, status_code=status, endpoint="/crm/v3/Leads"
-        )
-        is True
-    )
-    assert audit.entries[0]["details"]["severity"] == "critical"
-
-
-def test_alert_zoho_auth_ignores_other_status(configured: AlertConfig) -> None:
-    """A 500 is not an auth failure — different alert path."""
-    audit = InMemoryAuditLog()
-    assert (
-        alert_zoho_auth_failure(
-            configured, audit, status_code=500, endpoint="/crm/v3/Leads"
-        )
-        is False
-    )
-    assert audit.entries == []
-
-
-def test_alert_zoho_hmac_fires_on_any_failure(
-    configured: AlertConfig, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _install_transport(monkeypatch, _CapturingTransport(status_code=200))
-    audit = InMemoryAuditLog()
-    assert (
-        alert_zoho_hmac_failure(
-            configured, audit, source="zoho-webhook", failure_count_in_hour=1
-        )
-        is True
-    )
 
 
 def test_alert_manual_review_below_window_no_op(configured: AlertConfig) -> None:

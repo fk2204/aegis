@@ -42,7 +42,7 @@ subclass with the state's citation. Non-covered states pass through.
 Communications without a pricing trigger pass through unchanged
 (status updates, doc requests, non-pricing operator notes).
 
-Hook this into any outbound merchant communication generator (Zoho
+Hook this into any outbound merchant communication generator (CRM
 sync templates, dashboard quote previews, submission-package email
 builder) before transmission.
 """

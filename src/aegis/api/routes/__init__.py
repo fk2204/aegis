@@ -17,7 +17,6 @@ from aegis.api.routes.transactions import router as transactions_router
 from aegis.api.routes.upload import router as upload_router
 from aegis.api.routes.upload import uploads_router
 from aegis.api.routes.webhooks_close import router as webhooks_close_router
-from aegis.api.routes.webhooks_zoho import router as webhooks_zoho_router
 from aegis.web import router as web_router
 
 ALL_ROUTERS = (
@@ -31,7 +30,6 @@ ALL_ROUTERS = (
     deals_router,
     findings_router,
     audit_router,
-    webhooks_zoho_router,
     webhooks_close_router,
     web_router,
 )
@@ -51,5 +49,4 @@ __all__ = [
     "uploads_router",
     "web_router",
     "webhooks_close_router",
-    "webhooks_zoho_router",
 ]

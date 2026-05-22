@@ -1,7 +1,6 @@
 """POST /webhooks/close — receive Close ``opportunity.updated`` events.
 
-Two security layers (matches the pattern in ``webhooks_zoho`` and
-``funder_replies``):
+Two security layers (matches the pattern in ``funder_replies``):
 
 * **HMAC-SHA256 signature** in the ``close-sig-hash`` header, computed
   over ``close-sig-timestamp + raw_body`` (concatenated, no separator)

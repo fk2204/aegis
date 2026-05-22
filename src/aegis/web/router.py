@@ -1136,10 +1136,11 @@ async def merchant_submit_to_funders(
         download_filename = f"submission_{merchant_slug}.zip"
         download_media = "application/zip"
 
-    # Render the PDF dossier for Zoho attachment. WeasyPrint native libs
-    # ship on the Hetzner box; on Windows dev they're absent and we log
-    # the OSError + continue without a PDF. The submission flow MUST
-    # complete even if PDF rendering fails.
+    # Render the PDF dossier (operator review + audit trail; historically
+    # this was attached to a Zoho Deal, which the Close cutover removed).
+    # WeasyPrint native libs ship on the Hetzner box; on Windows dev
+    # they're absent and we log the OSError + continue without a PDF.
+    # The submission flow MUST complete even if PDF rendering fails.
     dossier_pdf, dossier_filename = _maybe_render_dossier_pdf(
         merchant=merchant, docs=docs, ofac=ofac
     )
@@ -1187,17 +1188,11 @@ async def merchant_submit_to_funders(
             exc,
         )
 
-    _record_submission_to_zoho(
-        merchant=merchant,
-        files=files,
-        zip_bytes=download_bytes,
-        zip_filename=download_filename,
-        merchants=merchants,
-        audit=audit,
-        dossier_pdf=dossier_pdf,
-        dossier_filename=dossier_filename,
-        actor_email=actor_email,
-    )
+    # Submission CRM-side sync removed during the Close cutover. The
+    # audit row written above is the durable record of the submission.
+    # If/when the Close-side submission custom-activity gets built (see
+    # docs/research/close-integration-design.md "Out of scope"), the
+    # call site lands here.
 
     return Response(
         content=download_bytes,
@@ -1338,7 +1333,7 @@ def _maybe_render_dossier_pdf(
     docs: DocumentRepository,
     ofac: OFACClient | None,
 ) -> tuple[bytes | None, str | None]:
-    """Render the merchant's PDF dossier for Zoho attachment, or fail soft.
+    """Render the merchant's PDF dossier (operator review + audit), or fail soft.
 
     Returns ``(pdf_bytes, filename)`` on success; ``(None, None)`` if the
     Hetzner box / WSL2 native libs are unavailable. The submission flow
@@ -1364,88 +1359,6 @@ def _maybe_render_dossier_pdf(
             exc,
         )
         return None, None
-
-
-def _record_submission_to_zoho(
-    *,
-    merchant: MerchantRow,
-    # list[FunderSubmissionFile] — looser annotation keeps helper import-light
-    files: list[Any],
-    zip_bytes: bytes,
-    zip_filename: str,
-    merchants: MerchantRepository,
-    audit: AuditLog,
-    dossier_pdf: bytes | None = None,
-    dossier_filename: str | None = None,
-    actor_email: str | None = None,
-) -> None:
-    """Mirror the funder submission into Zoho (Deal + each Lender record).
-
-    Best-effort: failures are audited but never raised — the CSV/ZIP
-    download must complete even if Zoho is down. Skips silently when
-    Zoho env isn't configured (e.g. tests, in-memory mode).
-    """
-    from aegis.logger import get_logger
-
-    log = get_logger(__name__)
-
-    if not merchant.zoho_deal_id:
-        audit.record(
-            actor="dashboard",
-            actor_email=actor_email,
-            action="zoho.submission.skipped_no_deal",
-            subject_type="merchant",
-            subject_id=merchant.id,
-            details={
-                "funder_names": [sub.funder_name for sub in files],
-                "reason": "merchant has no zoho_deal_id; push to Zoho first",
-            },
-        )
-        return
-
-    try:
-        from aegis.zoho.client import ZohoClient
-        from aegis.zoho.sync import ZohoSync
-
-        zoho_client = ZohoClient()
-        zoho_sync = ZohoSync(client=zoho_client, merchants=merchants, audit=audit)
-    except Exception as exc:
-        log.warning(
-            "zoho client init failed during submission; skipping CRM update",
-            extra={"merchant_id": str(merchant.id), "error": str(exc)},
-        )
-        audit.record(
-            actor="dashboard",
-            actor_email=actor_email,
-            action="zoho.submission.skipped_unconfigured",
-            subject_type="merchant",
-            subject_id=merchant.id,
-            details={"error": str(exc)},
-        )
-        return
-
-    try:
-        zoho_sync.record_funder_submission(
-            merchant_id=merchant.id,
-            funder_names=[sub.funder_name for sub in files],
-            zip_bytes=zip_bytes,
-            zip_filename=zip_filename,
-            dossier_pdf=dossier_pdf,
-            dossier_filename=dossier_filename,
-        )
-    except Exception as exc:
-        log.warning(
-            "zoho submission record failed",
-            extra={"merchant_id": str(merchant.id), "error": str(exc)},
-        )
-        audit.record(
-            actor="dashboard",
-            actor_email=actor_email,
-            action="zoho.submission.record_failed",
-            subject_type="merchant",
-            subject_id=merchant.id,
-            details={"error": str(exc)},
-        )
 
 
 def _parse_funder_ids(values: list[str]) -> list[UUID]:

@@ -5,7 +5,7 @@ $85K MRR, 680 FICO, 24 mo TIB, 1 stacked position), runs the matcher
 against every active funder in the prod repo, and prints the match
 result + submission-package preview for any non-red card.
 
-Read-only: no DB writes, no Zoho calls. Safe to run any time with the
+Read-only: no DB writes, no CRM calls. Safe to run any time with the
 funder repository bound to either backend.
 
 Run on the box:

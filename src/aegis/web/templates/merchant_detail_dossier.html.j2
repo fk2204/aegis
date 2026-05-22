@@ -161,7 +161,7 @@
         <a href="/ui/merchants/{{ merchant.id }}/findings.csv">↗ Findings (audit CSV)</a>
         <a href="/ui/merchants/{{ merchant.id }}/match">↗ Funder match panel</a>
         <a href="/ui/merchants/{{ merchant.id }}/edit">↗ Edit merchant</a>
-        {% if merchant.zoho_deal_id %}<a href="#">↗ Zoho deal {{ merchant.zoho_deal_id }}</a>{% endif %}
+        {% if merchant.close_lead_id %}<a href="#">↗ Close lead {{ merchant.close_lead_id }}</a>{% endif %}
       </div>
     </div>
   </aside>
@@ -691,8 +691,7 @@
           <tr><td class="when">Source / broker</td><td class="details">{{ merchant.broker_source or '—' }}</td></tr>
           <tr><td class="when">Intake date</td><td class="details"><span class="mono">{{ merchant.intake_date or '—' }}</span></td></tr>
           <tr><td class="when">Renewal</td><td class="details">{% if merchant.is_renewal %}<span class="pill warn">renewal</span>{% else %}<span style="color:var(--ink-3)">no</span>{% endif %}</td></tr>
-          <tr><td class="when">Zoho deal</td><td class="details"><span class="mono">{{ merchant.zoho_deal_id or '—' }}</span></td></tr>
-          <tr><td class="when">Zoho lead</td><td class="details"><span class="mono">{{ merchant.zoho_lead_id or '—' }}</span></td></tr>
+          <tr><td class="when">Close lead</td><td class="details"><span class="mono">{{ merchant.close_lead_id or '—' }}</span></td></tr>
           <tr><td class="when">Created</td><td class="details"><span class="mono" style="font-size:11px">{% if merchant.created_at %}{{ merchant.created_at.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}—{% endif %}</span></td></tr>
           <tr><td class="when">Updated</td><td class="details"><span class="mono" style="font-size:11px">{% if merchant.updated_at %}{{ merchant.updated_at.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}—{% endif %}</span></td></tr>
           <tr><td class="when">Merchant ID</td><td class="details"><span class="mono" style="font-size:10.5px">{{ merchant.id }}</span></td></tr>
