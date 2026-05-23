@@ -36,7 +36,7 @@
             <th>Industry</th>
             <th class="num">FICO</th>
             <th class="num">TIB · mo</th>
-            <th>Zoho</th>
+            <th>Close</th>
           </tr>
         </thead>
         <tbody>
@@ -52,8 +52,8 @@
               <td class="mono-cell" style="text-align:right">{{ m.credit_score or '—' }}</td>
               <td class="mono-cell" style="text-align:right">{{ m.time_in_business_months or '—' }}</td>
               <td>
-                {% if m.zoho_lead_id or m.zoho_deal_id %}
-                  <span class="chip info">{{ 'lead' if m.zoho_lead_id else 'deal' }}</span>
+                {% if m.close_lead_id %}
+                  <span class="chip info">lead</span>
                 {% else %}
                   <span class="mono-cell">—</span>
                 {% endif %}

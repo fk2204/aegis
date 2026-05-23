@@ -155,7 +155,7 @@ def test_audit_log_captures_ofac_match_details(
     clean_deal: ScoreInput,
     ofac_with_fictional_entry: OFACClient,
 ) -> None:
-    """The dashboard / Zoho sync path reads decline_details out of audit_log.
+    """The dashboard / Close sync path reads decline_details out of audit_log.
 
     Mirrors the ``/deals/score`` handler — score then record. Locked in
     here so a future refactor of the endpoint can't silently drop the

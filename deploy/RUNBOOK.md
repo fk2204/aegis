@@ -260,14 +260,138 @@ Cleanup: on failure, `verify_bedrock.py` keeps the remote `/tmp/aegis-verify-<uu
 4. Delete the old key in IAM **after** verifying parse + classify
    work end-to-end on a synthetic statement.
 
-### Rotate Zoho refresh token
-1. Re-authorize the app in Zoho's developer console; grab the new
-   `refresh_token`.
-2. Update `ZOHO_REFRESH_TOKEN` in `/etc/aegis/aegis.env`.
+### Rotate the Close API key
+1. In Close: Settings → Developer → API Keys → "Create new key" with
+   the same role as the existing key. Note the new value (visible only
+   on creation).
+2. Update `CLOSE_API_KEY` in `/etc/aegis/aegis.env`.
 3. `sudo systemctl restart aegis-web aegis-worker`.
+4. Delete the old key in Close **after** verifying inbound webhook
+   processing + outbound `/deals/{id}/sync-to-close` work end-to-end.
+
+### Rotate the Close webhook secret
+The webhook signature_key is set when the subscription is created via
+`POST /api/v1/webhook/`. Rotation = delete the subscription + create
+a new one (Close does not support in-place key regeneration).
+1. In Close API: `DELETE /api/v1/webhook/<old_subscription_id>/`.
+2. `POST /api/v1/webhook/` with the same URL + events; capture the new
+   `signature_key` from the response.
+3. Update `CLOSE_WEBHOOK_SECRET` in `/etc/aegis/aegis.env`.
+4. `sudo systemctl restart aegis-web aegis-worker`.
+5. From Close UI: move a test Opportunity to "Docs In — Pre-UW" and
+   confirm the new subscription delivers (Close shows delivery
+   attempts under the subscription detail page).
 
 ### Credential rotation log
 - 2026-05-11: Cloudflare API token cfut_wKgXNs... rotated after plaintext exposure in Claude Code session. Operator deleted token in Cloudflare dashboard.
+
+---
+
+## Close Migration Cutover
+
+One-time procedure for switching `/etc/aegis/aegis.env` on the Hetzner
+box from the legacy Zoho integration to Close. Run when the
+`feature/close-integration` branch (or its successor merge to main)
+hits prod. Idempotent — re-running it is a no-op.
+
+### Pre-cutover checklist
+- [ ] Branch deploy is in flight (`git log -1` on the box shows the
+      Close-integration merge commit).
+- [ ] A Close API key is in hand (operator pre-generated in Close UI
+      → Settings → Developer → API Keys).
+- [ ] **Close webhook subscription has NOT been created yet.** The
+      subscription is created AFTER `CLOSE_API_KEY` is on the box so
+      the subscription POST can be issued from a working environment.
+      That POST returns the `signature_key` that becomes
+      `CLOSE_WEBHOOK_SECRET`. Order: deploy key → create subscription
+      → drop secret → restart.
+
+### Cutover steps
+
+1. **Edit `/etc/aegis/aegis.env`** (root SSH or a Cloudflare-Access
+   SSH session — your call):
+   ```bash
+   sudo $EDITOR /etc/aegis/aegis.env
+   ```
+   - **Drop in** `CLOSE_API_KEY=<your-key>`.
+   - **Leave blank** `CLOSE_WEBHOOK_SECRET=` for now (Close gives this
+     to you in the next step).
+   - **Confirm** `CLOSE_DOCS_IN_PRE_UW_STATUS_ID=stat_1YZuVqdPWC8HLjWWvnXqL3NBJUPSjw3upy9mdBYXRqI`
+     is present (the default in `config.py` is the verified live
+     status id; only override if Close was renamed). Or leave the line
+     out — the code default applies.
+   - **Remove ALL** `ZOHO_*` lines. Every one. The boot-time residue
+     warning (step 9) will yell at you in `journalctl` if any
+     `ZOHO_*` survives.
+
+2. **Restart**:
+   ```bash
+   sudo systemctl restart aegis-web aegis-worker
+   ```
+
+3. **Confirm no residue warning**:
+   ```bash
+   sudo journalctl -u aegis-web --since "1 minute ago" \
+     | grep -i 'zoho_residue_detected' || echo "clean"
+   ```
+   If you see `config.zoho_residue_detected env_vars=[...]`, re-edit
+   the env file and remove the named variables.
+
+4. **Create the Close webhook subscription**. From any machine with
+   `CLOSE_API_KEY` available (your laptop is fine — the call doesn't
+   need to come from the box):
+   ```bash
+   curl -X POST https://api.close.com/api/v1/webhook/ \
+     -u "$CLOSE_API_KEY:" \
+     -H "content-type: application/json" \
+     -d '{
+       "url": "https://aegis.commerafunding.com/webhooks/close",
+       "events": [
+         {"object_type": "opportunity", "action": "updated"}
+       ]
+     }'
+   ```
+   The response includes:
+   - `"id": "whsub_..."` — the subscription id (save for later
+     rotation / deletion)
+   - `"signature_key": "<hex>"` — this is the `CLOSE_WEBHOOK_SECRET`
+     value
+
+5. **Drop the secret**:
+   ```bash
+   sudo $EDITOR /etc/aegis/aegis.env
+   # Set CLOSE_WEBHOOK_SECRET=<hex-from-step-4>
+   sudo systemctl restart aegis-web aegis-worker
+   ```
+
+6. **Smoke test the webhook**. In Close UI: move a test Opportunity
+   to "Docs In — Pre-UW". Then on the box:
+   ```bash
+   sudo journalctl -u aegis-web --since "30 seconds ago" \
+     | grep -E 'close.webhook|close.merchant'
+   ```
+   Expect: one `close.webhook.received` audit row, one
+   `close.merchant.created` or `close.merchant.updated` audit row.
+
+7. **Smoke test the outbound sync** (optional but recommended). Once
+   a merchant has a stored decision:
+   ```bash
+   curl -X POST https://aegis.commerafunding.com/deals/<merchant_uuid>/sync-to-close \
+     -H "Authorization: Bearer $AEGIS_BEARER" \
+     -H "Cf-Access-Authenticated-User-Email: operator@commerafunding.com"
+   ```
+   200 + `patched=true` on first call; 200 + `patched=false,
+   reason="no_diff"` on the second.
+
+### Post-cutover hygiene
+- Delete the old Zoho refresh token + OAuth app in Zoho's developer
+  console.
+- Update `deploy/RUNBOOK.md` § Credential rotation log with the
+  cutover date.
+- The `merchants.zoho_deal_id_archived` / `zoho_lead_id_archived` DB
+  columns remain (migration 026 preserved data). A future migration
+  drops them when the operator certifies no audit query needs the
+  archived values.
 
 ---
 

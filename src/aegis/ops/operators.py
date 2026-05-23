@@ -4,7 +4,7 @@ The schema in migration 022 introduces an ``operators`` table that
 binds an email (the Cloudflare Access SSO identity) to one of three
 roles:
 
-  * ``underwriter``         — default; can score deals, push to Zoho.
+  * ``underwriter``         — default; can score deals, push to Close.
   * ``compliance_reviewer`` — can approve overrides + read audit_log.
   * ``admin``               — full surface, the operator-owner role.
 

@@ -668,8 +668,9 @@ def test_dossier_omits_audit_section_when_history_empty(
     assert "§ 6" not in resp.text
 
 
-# /applicants — Zoho CRM "View in Aegis" Lead button (button id 7365508000001462009)
-# routes the operator to the right surface based on whether the merchant has
+# /applicants — CRM "View in Aegis" Lead button (originally Zoho button
+# id 7365508000001462009, being reconfigured in Close). Routes the
+# operator to the right surface based on whether the merchant has
 # documents uploaded.
 
 

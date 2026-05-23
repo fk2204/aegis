@@ -6,7 +6,7 @@ Two entry paths share one persistence layer:
      HMAC-SHA256 over the raw body with
      ``FUNDER_REPLY_WEBHOOK_SECRET``, plus a body ``timestamp`` field
      within 5 minutes of now (replay protection — same shape as the
-     Zoho webhook).
+     Close webhook).
 
   2. Operator-paste (POST /funder-replies):
      Bearer-protected JSON endpoint. The operator pastes the email
@@ -214,7 +214,7 @@ def _ingest_via(
 def _enforce_timestamp_fresh(payload: dict[str, Any]) -> None:
     """Reject webhook payloads older than ``WEBHOOK_FRESHNESS_SECONDS``.
 
-    Same logic as ``webhooks_zoho._enforce_timestamp_fresh`` — replay
+    Same logic as the freshness check in ``webhooks_close`` — replay
     protection. Missing timestamp → 401 so a misconfigured sender can't
     silently bypass.
     """

@@ -56,6 +56,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     run_boot_checks()
     warn_if_bearer_unconfigured()  # once-per-process operator visibility
 
+    # Detect lingering ZOHO_* env vars after the Close cutover (step 9).
+    # Non-fatal: AEGIS still boots, but the operator gets a structured
+    # WARN + audit row so /etc/aegis/aegis.env on Hetzner can be cleaned
+    # up to match the codebase state.
+    from aegis.api.deps import get_audit
+    from aegis.config import warn_if_zoho_env_lingers
+
+    warn_if_zoho_env_lingers(audit=get_audit())
+
     app.state.arq_pool = None
     if settings.aegis_storage_backend == "supabase":
         try:
@@ -118,10 +127,12 @@ def create_app() -> FastAPI:
         ],
         documents: Annotated[DocumentRepository, Depends(get_repository)],
     ) -> RedirectResponse:
-        # Entry point for the Zoho CRM "View in Aegis" Lead button
-        # (id 7365508000001462009). Routes the operator to the right
-        # surface: merchant detail if statements exist, dashboard
-        # otherwise (including unknown email).
+        # Entry point for the CRM "View in Aegis" Lead button. The
+        # button was originally configured in Zoho and is being
+        # reconfigured in Close (same email-based lookup pattern).
+        # Routes the operator to the right surface: merchant detail
+        # if statements exist, dashboard otherwise (including unknown
+        # email).
         merchant = merchants.find_by_email(email)
         if merchant is None:
             return RedirectResponse(url="/ui/", status_code=302)

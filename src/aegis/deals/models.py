@@ -19,7 +19,7 @@ v5 is a one-way hash — recovering the inputs from the v5 would require
 either storing a (deal_id → merchant_id, document_id) lookup table (the
 exact thing F1 forbids) or carrying the inputs alongside the v5 (which
 defeats having a single id at all). The composite is reversible, stable,
-and human-readable in URLs / log lines / Zoho fields.
+and human-readable in URLs / log lines / CRM fields.
 
 The trade-off: ``deal_id`` is therefore typed ``str``, not ``UUID``. The
 ``audit_log.subject_id`` column is typed ``UUID``, so audit rows for

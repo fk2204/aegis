@@ -211,6 +211,11 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='audit_retention_policy'"
     ),
+    "026_close_lead_id.sql": (
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='close_lead_id'"
+    ),
 }
 
 

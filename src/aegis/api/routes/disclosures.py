@@ -9,7 +9,7 @@ Routes a deal's state to the disclosure renderer:
   * Non-served state → 422 ``state_not_served``.
 
 Returns ``Content-Type: text/html`` so the operator can preview directly,
-plus a JSON wrapper endpoint for programmatic callers (Zoho sync,
+plus a JSON wrapper endpoint for programmatic callers (Close sync,
 dashboard).
 """
 

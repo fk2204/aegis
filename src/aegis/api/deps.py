@@ -14,6 +14,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from aegis.audit import AuditLog, InMemoryAuditLog, SupabaseAuditLog
+from aegis.close.client import CloseClient
 from aegis.compliance.overrides import (
     InMemoryOverrideRepository,
     OverrideRepository,
@@ -132,6 +133,14 @@ def get_ofac_client() -> OFACClient | None:
     return OFACClient(cache_path=settings.aegis_ofac_cache_path)
 
 
+@lru_cache(maxsize=1)
+def get_close_client() -> CloseClient:
+    """Process-wide CloseClient. Audit log is injected so 429 rate-limit
+    hits land in audit_log. Tests override via dependency_overrides to
+    supply a MockTransport-backed client."""
+    return CloseClient(audit=get_audit())
+
+
 def reset_dependency_caches() -> None:
     """Drop the lru_cache singletons. For tests that swap settings."""
     get_repository.cache_clear()
@@ -143,10 +152,12 @@ def reset_dependency_caches() -> None:
     get_decision_snapshot.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
+    get_close_client.cache_clear()
 
 
 __all__ = [
     "get_audit",
+    "get_close_client",
     "get_decision_snapshot",
     "get_funder_reply_repository",
     "get_funder_repository",

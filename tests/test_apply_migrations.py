@@ -513,3 +513,146 @@ def test_integration_concurrent_runner_hits_lock_error(
     assert any(
         isinstance(e, apply_migrations.MigrationLockHeldError) for e in errors
     ), f"runner B did not raise MigrationLockHeldError; saw {errors!r}"
+
+
+def test_integration_026_renames_zoho_columns_preserving_data(
+    clean_db: str,
+) -> None:
+    """Migration 026 adds close_lead_id and RENAMES the two zoho_* columns
+    to *_archived. Data already in the zoho_* columns must survive.
+
+    The operator-rule check at branch creation confirmed prod has 1 merchant
+    row with zoho_deal_id set; this test guards the migration against a
+    DROP-instead-of-RENAME regression that would silently destroy that data.
+    """
+    import psycopg
+
+    # Pre-026 schema: minimal merchants table with the columns 026 acts on.
+    # gen_random_uuid() needs pgcrypto.
+    with psycopg.connect(clean_db, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+            cur.execute(
+                """
+                CREATE TABLE merchants (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    business_name TEXT NOT NULL,
+                    zoho_deal_id TEXT,
+                    zoho_lead_id TEXT
+                )
+                """
+            )
+            cur.execute(
+                "INSERT INTO merchants (business_name, zoho_deal_id) "
+                "VALUES ('Acme', 'deal_preserved_xyz')"
+            )
+
+    # Apply the real migration 026 SQL.
+    sql_026 = (
+        apply_migrations.MIGRATIONS_DIR / "026_close_lead_id.sql"
+    ).read_text()
+    with psycopg.connect(clean_db, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql_026)
+
+    # Post-026 assertions.
+    with psycopg.connect(clean_db) as conn:
+        with conn.cursor() as cur:
+            # 1. close_lead_id column exists.
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='merchants' "
+                "AND column_name='close_lead_id'"
+            )
+            assert cur.fetchone() is not None, "close_lead_id was not added"
+
+            # 2. The two zoho_* columns are renamed, not dropped — data
+            #    in zoho_deal_id_archived must equal what we inserted.
+            cur.execute(
+                "SELECT zoho_deal_id_archived FROM merchants "
+                "WHERE business_name='Acme'"
+            )
+            row = cur.fetchone()
+            assert row is not None, "Acme merchant row is missing"
+            assert row[0] == "deal_preserved_xyz", (
+                f"zoho_deal_id data was not preserved on rename; "
+                f"got {row[0]!r}"
+            )
+
+            # 3. zoho_lead_id_archived column exists even though it was
+            #    null pre-rename.
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='merchants' "
+                "AND column_name='zoho_lead_id_archived'"
+            )
+            assert cur.fetchone() is not None, (
+                "zoho_lead_id_archived column is missing"
+            )
+
+            # 4. The original column names are gone (rename happened).
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='merchants' "
+                "AND column_name IN ('zoho_deal_id', 'zoho_lead_id')"
+            )
+            assert cur.fetchall() == [], (
+                "original zoho_deal_id / zoho_lead_id columns still exist "
+                "after migration 026 — rename did not run"
+            )
+
+            # 5. The unique partial index on close_lead_id exists.
+            cur.execute(
+                "SELECT 1 FROM pg_indexes "
+                "WHERE schemaname='public' AND tablename='merchants' "
+                "AND indexname='idx_merchants_close_lead_id'"
+            )
+            assert cur.fetchone() is not None, (
+                "idx_merchants_close_lead_id index is missing"
+            )
+
+
+def test_integration_026_close_lead_id_index_is_unique(
+    clean_db: str,
+) -> None:
+    """close_lead_id is partially UNIQUE — two merchants with the same
+    non-null close_lead_id must error. NULL close_lead_id values are
+    allowed in any quantity (legacy operator-uploaded merchants without
+    a Close linkage yet).
+    """
+    import psycopg
+
+    with psycopg.connect(clean_db, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+            cur.execute(
+                """
+                CREATE TABLE merchants (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    business_name TEXT NOT NULL,
+                    zoho_deal_id TEXT,
+                    zoho_lead_id TEXT
+                )
+                """
+            )
+
+    sql_026 = (
+        apply_migrations.MIGRATIONS_DIR / "026_close_lead_id.sql"
+    ).read_text()
+    with psycopg.connect(clean_db, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql_026)
+            # Two merchants with NULL close_lead_id — fine.
+            cur.execute(
+                "INSERT INTO merchants (business_name) VALUES ('A'), ('B')"
+            )
+            # Two merchants with the SAME non-null close_lead_id — error.
+            cur.execute(
+                "INSERT INTO merchants (business_name, close_lead_id) "
+                "VALUES ('C', 'lead_dupe_id')"
+            )
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                cur.execute(
+                    "INSERT INTO merchants (business_name, close_lead_id) "
+                    "VALUES ('D', 'lead_dupe_id')"
+                )

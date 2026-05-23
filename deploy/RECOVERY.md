@@ -136,7 +136,9 @@ gone):
 curl -i https://aegis.commerafunding.com/healthz  # should be 200 ok
 # Upload one synthetic statement (NOT a real one — per RUNBOOK §smoke test)
 # Verify the parser produces output
-# Verify Zoho sync completes (if configured)
+# Verify Close webhook reception works: from Close UI, move a test
+# Opportunity to "Docs In — Pre-UW" and confirm one
+# close.webhook.received audit row lands in journalctl.
 ```
 
 ### Step 7 — Document the recovery

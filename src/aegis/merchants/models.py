@@ -82,10 +82,16 @@ class MerchantRow(_StrictModel):
     submitted_to_funder_ids: list[UUID] = Field(default_factory=list)
     last_submitted_at: datetime | None = None
 
-    # Idempotency for Zoho sync.
-    # zoho_lead_id is populated after the first push_merchant_to_lead call.
-    zoho_deal_id: str | None = None
-    zoho_lead_id: str | None = None
+    # Idempotency for Close CRM sync. Populated when the Close inbound
+    # webhook (/webhooks/close) upserts a merchant for an Opportunity
+    # transitioning to "Docs In — Pre-UW".
+    #
+    # The legacy zoho_deal_id / zoho_lead_id columns still exist on the
+    # DB as zoho_deal_id_archived / zoho_lead_id_archived (renamed by
+    # migration 026 to preserve historical linkage). No AEGIS code reads
+    # them; the operator queries SQL directly when an audit needs to
+    # cross-reference a Zoho-era deal.
+    close_lead_id: str | None = None
 
     created_at: datetime | None = None
     updated_at: datetime | None = None
