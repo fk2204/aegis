@@ -142,146 +142,27 @@ curl -fsSL https://aegis.commerafunding.com/healthz
 
 ---
 
-## Step 2 — Zoho refresh token
+## Step 2 — Zoho refresh token (RETIRED — Zoho integration removed)
 
-### What failure looks like during rotation
+The Zoho integration was retired during the 2026-05-22 Close-CRM
+cutover. The original Step 2 procedure (revoke + re-grant + exchange
+for refresh token, then update `ZOHO_REFRESH_TOKEN` in
+`/etc/aegis/aegis.env`) no longer applies — AEGIS no longer talks to
+Zoho.
 
-`client.py` calls `ZohoTokenCache.get()`, which POSTs to
-`/oauth/v2/token` with the refresh token. On HTTP 4xx from Zoho (bad
-token, revoked), it raises `ZohoAuthError: token refresh failed: ...`.
+For the Close-side equivalents, see `deploy/RUNBOOK.md`:
 
-The `ZohoClient.request()` method retries once on a 401 by calling
-`_auth_headers(force_refresh=True)`. If the force-refresh also returns a
-bad token (because `ZOHO_REFRESH_TOKEN` in env is already wrong), a second
-`ZohoAuthError` is raised and `tenacity` re-raises after 3 attempts
-(~5 s total). The sync route returns HTTP 500 to the dashboard; the
-operator sees a red sync-failed banner. No data is lost — the deal
-record in AEGIS is unchanged; only the Zoho push failed.
+  * **§ Rotate the Close API key** — create new key in Close →
+    update `CLOSE_API_KEY` → restart → delete old key.
+  * **§ Rotate the Close webhook secret** — `DELETE` + recreate the
+    webhook subscription via the Close API (Close doesn't support
+    in-place `signature_key` regeneration); capture the new
+    `signature_key` from the POST response → update
+    `CLOSE_WEBHOOK_SECRET` → restart.
 
-Verdict: failure is **loud and recoverable**, not silent.
-
-### Determine current scopes
-
-Open Zoho Developer Console at `https://api-console.zoho.com`.
-Click **Self Client** → find the existing AEGIS client (identified by
-`ZOHO_CLIENT_ID`). Note the scopes that were granted. The minimum
-required scopes for AEGIS to function are:
-
-| Scope | Used for |
-|---|---|
-| `ZohoCRM.modules.Deals.ALL` | Upsert deals, read deal descriptions |
-| `ZohoCRM.modules.Leads.ALL` | Upsert leads, email matchback |
-| `ZohoCRM.modules.Lenders.READ` | Lender counter lookups |
-| `ZohoCRM.modules.Lenders.WRITE` | Bump Total_Submissions |
-| `ZohoCRM.modules.Attachments.CREATE` | Upload findings CSV + submission ZIP |
-| `ZohoCRM.modules.Leads.SEARCH` | Email matchback search |
-
-> If your existing token was granted broader scopes (e.g.
-> `ZohoCRM.modules.ALL`), that also covers the above. Re-grant whatever
-> you had. Do not narrow scope during this rotation.
-
-WorkDrive scopes (`WorkDrive.files.CREATE`, `WorkDrive.files.READ`, etc.)
-were referenced in earlier planning notes but are **not used** by current
-code (`sync.py` only calls CRM APIs + `upload_attachment` on CRM records).
-Do not add WorkDrive scopes unless a future phase explicitly requires them.
-
-### Revoke the existing token
-
-1. Go to `https://api-console.zoho.com` → **Self Client**
-2. Find the AEGIS self-client entry.
-3. Click **Revoke Token** (or navigate to the token list and revoke
-   the current refresh token). This immediately invalidates the old
-   `ZOHO_REFRESH_TOKEN`.
-
-> After this point, CRM syncs will fail until Step 2 is complete.
-> Keep the maintenance window short.
-
-### Generate a new grant code
-
-Still in **Self Client**:
-
-1. Click **Generate Code**.
-2. Enter the scopes listed in the table above (comma-separated).
-3. Set **Time Duration** to whatever the console offers (typically 1 minute
-   — you must exchange it within that window).
-4. Click **Create** and copy the **Grant Token** (one-time use code).
-
-### Exchange for a refresh token
-
-On your local machine — do this immediately after copying the grant code:
-
-```bash
-curl -X POST "https://accounts.zoho.com/oauth/v2/token" \
-  -d "code=<GRANT_CODE>" \
-  -d "client_id=<ZOHO_CLIENT_ID>" \
-  -d "client_secret=<ZOHO_CLIENT_SECRET>" \
-  -d "redirect_uri=https://www.zoho.com" \
-  -d "grant_type=authorization_code"
-# Response includes:  "refresh_token": "<NEW_REFRESH_TOKEN>"
-# Save <NEW_REFRESH_TOKEN> to your password manager.
-# Do not paste it into chat.
-```
-
-Note: `redirect_uri=https://www.zoho.com` is the standard Self Client
-redirect URI; if you used a custom URI when the client was originally
-created, use that instead.
-
-### Update env and restart
-
-```bash
-ssh aegis@aegis-ssh.commerafunding.com
-
-sudo nano /etc/aegis/aegis.env
-# Find:   ZOHO_REFRESH_TOKEN=<OLD_REFRESH_TOKEN>
-# Replace with:   ZOHO_REFRESH_TOKEN=<NEW_REFRESH_TOKEN>
-# Write and close.
-
-sudo systemctl restart aegis-web aegis-worker
-```
-
-### Verify
-
-Use the smoke-test script from your local machine. It requires a valid
-Zoho access token (exchange via the new refresh token first) and a real
-merchant UUID that already exists in Supabase:
-
-```bash
-AEGIS_BASE_URL=https://aegis.commerafunding.com \
-API_BEARER_TOKEN=<NEW_API_BEARER_TOKEN> \
-ZOHO_ACCESS_TOKEN=<SHORT_LIVED_ACCESS_TOKEN> \
-python scripts/test_zoho_push.py <MERCHANT_UUID>
-# Expect: "Smoke test passed." with all three steps green
-```
-
-To get a short-lived access token for the script's Step 3 Zoho GET:
-
-```bash
-curl -X POST "https://accounts.zoho.com/oauth/v2/token" \
-  -d "refresh_token=<NEW_REFRESH_TOKEN>" \
-  -d "client_id=<ZOHO_CLIENT_ID>" \
-  -d "client_secret=<ZOHO_CLIENT_SECRET>" \
-  -d "grant_type=refresh_token"
-# "access_token" in the response is valid for ~1 hour
-```
-
-Alternatively, trigger a real sync from the AEGIS dashboard for any
-existing merchant. Watch `journalctl -u aegis-web -f` on the box; a
-successful sync logs `zoho.deal.upsert` or `zoho.lead.upsert` at INFO with
-no `ZohoAuthError` lines.
-
-### Rollback
-
-If the service is in a `ZohoAuthError` loop:
-
-```bash
-ssh aegis@aegis-ssh.commerafunding.com
-sudo cp /etc/aegis/aegis.env.bak-<TIMESTAMP> /etc/aegis/aegis.env
-sudo systemctl restart aegis-web aegis-worker
-```
-
-The old refresh token was revoked in Zoho, so restoring the backup will
-not make CRM syncs work again — but it will restore the service to a
-stable state. You then need to re-generate a new grant code and try again.
+The full Close migration cutover procedure (`/etc/aegis/aegis.env`
+edit, subscription creation, smoke tests) lives in
+`deploy/RUNBOOK.md` § Close Migration Cutover.
 
 ---
 

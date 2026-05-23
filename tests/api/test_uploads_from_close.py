@@ -253,6 +253,11 @@ def test_upload_with_close_lead_id_404_when_merchant_missing(
 # ----------------------------------------------------------------------
 
 
+# KNOWN FLAKE: passes in isolation, fails ~1 in N in full-suite runs.
+# Suspected cause: prior test's AEGIS_MAX_UPLOAD_BYTES monkeypatch +
+# get_settings.cache_clear() cleanup races with this test's fixture setup.
+# See step 11 sweep notes. Not blocking; behavior covered by other tests
+# in this file.
 def test_from_close_happy_path_persists_and_enqueues(
     client: TestClient,
     merchants: InMemoryMerchantRepository,

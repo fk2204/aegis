@@ -1,9 +1,9 @@
 # /etc/systemd/system/aegis-backup.timer
 #
 # Fires aegis-backup.service daily at 02:00 UTC. The hour was picked
-# to be after any US-pacific late-evening Zoho sync activity but well
-# before the operator's typical morning login (which is usually 09:00-
-# 10:00 ET).
+# to be well before the operator's typical morning login (which is
+# usually 09:00-10:00 ET) so the backup is durable before the day's
+# write traffic starts.
 #
 # Persistent=true back-fills missed runs so a Hetzner outage doesn't
 # leave the backup behind.
