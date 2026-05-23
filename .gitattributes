@@ -4,3 +4,25 @@
 # core.autocrlf=true silently rewrites these to CRLF on checkout,
 # breaking the remote invocation.
 scripts/_verify_leg_runner.sh text eol=lf
+
+# SQL files MUST keep LF endings. The migration runner
+# (scripts/apply_migrations.py) hashes each file's on-disk bytes and
+# stores the hash in schema_migrations.file_sha256 at apply time. Any
+# future apply_migrations run that sees a different hash for the same
+# filename raises MigrationDriftError (by design — never silently
+# re-execute applied SQL). On a Windows working tree with
+# core.autocrlf=true, *.sql files would normalize to CRLF on checkout
+# → hash drifts vs the LF apply done from Linux (or vice versa) →
+# the runner is permanently stuck. eol=lf forces stable hashes across
+# every dev / CI / box checkout.
+*.sql text eol=lf
+
+# Python source — normalize for consistency across operator dev
+# machines (Windows + WSL), CI, and the Hetzner box. Python itself
+# is tolerant of CRLF, but pre-commit hooks and some linters are
+# not, and divergent endings produce noisy "whitespace-only" diffs.
+*.py text eol=lf
+
+# TOML config (pyproject.toml, ruff config, uv lockfile). Same
+# rationale: keep hashes/diffs stable across platforms.
+*.toml text eol=lf
