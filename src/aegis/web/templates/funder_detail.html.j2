@@ -77,7 +77,7 @@
     </header>
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px">
       {% if funder.requires_coj %}<span class="chip warn">Requires CoJ</span>{% else %}<span class="chip">No CoJ</span>{% endif %}
-      {% if funder.charges_merchant_advance_fees %}<span class="chip bad">Charges advance fees · FL/GA hard-fail</span>{% else %}<span class="chip pos">No advance fees</span>{% endif %}
+      {% if funder.charges_merchant_advance_fees %}<span class="chip bad">Charges advance fees</span>{% else %}<span class="chip pos">No advance fees</span>{% endif %}
     </div>
     {% if funder.aegis_compensation_disclosure_text %}
       <div class="feed" style="margin-top:14px">
