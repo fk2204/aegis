@@ -44,12 +44,6 @@ os.environ["API_BEARER_TOKEN"] = "test-token"
 
 ---
 
-## Snapshot tests
-
-State disclosure snapshots under `tests/snapshots/` lock the prescribed-form HTML. Updating a snapshot is a deliberate decision — include a comment in the commit explaining why the prescribed form's output changed (regulator update? bug fix? template correction?). Never update a snapshot to "make the test pass" without that reason.
-
----
-
 ## What to run
 
 - `make test-fast` — quick iteration, skips corpus

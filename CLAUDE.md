@@ -6,9 +6,9 @@ Project-specific Claude Code instructions for AEGIS. Global rules live in `~/.cl
 
 ## Mission
 
-AEGIS is an MCA (Merchant Cash Advance) underwriting brain for Commera Capital — Python rewrite of an earlier TS version, built for mathematical accuracy, auditability, and regulator defensibility.
+AEGIS is an internal pre-screening tool for **Commera Capital, a pure ISO broker**. AEGIS parses merchant bank statements + processor statements, scores deal quality, captures operator override decisions, ingests funder replies, and syncs deal data with Close CRM. AEGIS **never extends financing, never generates merchant-facing disclosures, never charges merchant fees.** Funder partners own all regulator-facing compliance (CFDL disclosures, renewals, COJ / auto-debit / forum rules, §1071 reporting). AEGIS is built for mathematical accuracy and internal auditability.
 
-- **What it does:** Parse bank statements → score deals → generate state-compliant disclosures → sync with Close CRM (webhook-driven inbound on `/webhooks/close`; operator-triggered outbound on `/deals/{id}/sync-to-close`; n8n is the planned orchestrator)
+- **What it does:** Parse bank statements → score deals → capture operator overrides → ingest funder replies → sync with Close CRM (webhook-driven inbound on `/webhooks/close`; operator-triggered outbound on `/deals/{id}/sync-to-close`; n8n is the planned orchestrator)
 - **Scale:** Solo operator, ~100 deals/month, internal-only
 - **Status:** Live deployment on Hetzner behind Cloudflare Access. To see current state, run `git log --oneline -10` and check `CORPUS_FINDINGS.md` for recent parser fixes.
 
@@ -26,7 +26,7 @@ AEGIS is an MCA (Merchant Cash Advance) underwriting brain for Commera Capital �
 | Database | Supabase (Postgres) via supabase-py |
 | LLM | Claude Sonnet 4.6 via AWS Bedrock (`AnthropicBedrock` client) |
 | PDF metadata | `pikepdf` |
-| Disclosure templates | Jinja2 HTML (state-prescribed) |
+| HTML templating | Jinja2 (dossier rendering + internal UI surfaces) |
 | PDF generation (corpus) | `reportlab` (pure Python) |
 | Dashboard | Jinja2 + HTMX (no React) |
 | Job queue | `arq` (Redis-backed) |
@@ -112,7 +112,7 @@ At the end of any multi-step task, stop and summarize before moving to the next 
 
 1. Is this money math? → Decimal.
 2. Does this touch APR / IRR / amortization? → scipy.
-3. Does this touch a state regulation? → cite the statute (see `rules/compliance.md`).
+3. Does this touch a state regulation dossier? → cite the statute in the dossier (see `rules/compliance.md`). Note: state regulations no longer drive runtime broker behavior; the cite is for dossier hygiene.
 4. Does this log merchant data or transaction descriptions? → mask in logger.
 5. Does this read a filename from input? → discard it, use UUID.
 6. Does this produce an aggregate metric? → store its source transaction IDs.
@@ -123,7 +123,7 @@ At the end of any multi-step task, stop and summarize before moving to the next 
 ## Where to find the rest
 
 - **Parser architecture (two-pass flow, validation gate, aggregation rules):** `.claude/rules/architecture.md` — auto-loads when editing `src/aegis/parser/**`
-- **State compliance (tier system, dossier rules, disclosure templates):** `.claude/rules/compliance.md` — auto-loads when editing `src/aegis/compliance/**` or `docs/compliance/**`
+- **Internal compliance code (dossier discipline, audit-log rules, decision immutability):** `.claude/rules/compliance.md` — auto-loads when editing `src/aegis/compliance/**` or `docs/compliance/**`. Note: state CFDL disclosure / tier-routing framing is obsolete — funders own regulator-facing compliance.
 - **Deployment procedure:** `.claude/rules/deploy.md` — auto-loads when editing `deploy/**` or `scripts/deploy.sh`. Full ops procedures in `deploy/RUNBOOK.md`.
 - **Testing rules:** `.claude/rules/testing.md` — auto-loads when editing `tests/**`
 - **Operating principles (always-on):** `.claude/rules/operating-principles.md`
@@ -132,4 +132,4 @@ At the end of any multi-step task, stop and summarize before moving to the next 
 
 ---
 
-**Last updated:** 2026-05-16
+**Last updated:** 2026-05-25 (scope correction; original 2026-05-16)

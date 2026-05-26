@@ -2,20 +2,14 @@
 
   Inputs:
     - merchant: MerchantRow
-    - state_tier: 1 | 2 | 3 | "unserved"
+    - state_tier: 1 | 2 | 3 | "unserved"  (legacy input — no longer rendered;
+      Commera is a pure ISO broker, so state CFDL tier badging is not shown
+      to the operator. Callers may still pass this; it is ignored.)
     - ofac_status: "checked" | "stale" | "unavailable" | "not_consulted"
     - ofac_match: bool | None
 #}
 <div style="display:flex;flex-wrap:wrap;gap:6px">
-  {% if state_tier == 1 %}
-    <span class="tag pos"><span class="dot"></span>State: {{ merchant.state }} · Tier 1</span>
-  {% elif state_tier == 2 %}
-    <span class="tag accent"><span class="dot"></span>State: {{ merchant.state }} · Tier 2</span>
-  {% elif state_tier == 3 %}
-    <span class="tag warn"><span class="dot"></span>State: {{ merchant.state }} · Tier 3 unaudited</span>
-  {% else %}
-    <span class="tag neg"><span class="dot"></span>State: {{ merchant.state }} · NOT SERVED</span>
-  {% endif %}
+  <span class="tag"><span class="dot"></span>State: {{ merchant.state }}</span>
 
   {% if ofac_status == 'checked' and ofac_match %}
     <span class="tag neg"><span class="dot"></span>OFAC: MATCH (decline)</span>
