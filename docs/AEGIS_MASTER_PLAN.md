@@ -815,24 +815,15 @@ When operator promotes a watchlist state to Tier 1, AEGIS triggers a checklist: 
 
 ## 17. Phase 7 — Audit-log query + retention enforcement
 
-**Goal:** Make audit trail queryable, enforce retention policy.
+Internal operational log hygiene (not regulatory). Daily arq cron archives `audit_log` rows older than the retention horizon to cold storage; **never auto-deletes.** Single retention default: **5 years from row creation.** `/audit/deal/{id}` surface for operator review. CSV / JSON export for any internal review need. Every archive action logged to `audit_log`.
 
-**Tasks:**
-1. Extend `/audit/deal/{id}` (from Phase 2): filtering by date, event type, actor.
-2. Export: CSV + JSON for regulator submissions.
-3. Retention enforcement: arq daily cron:
-   - Per Tier 1 state, retain per state's requirement (NY=4yr from disclosure, CA=4yr, etc.)
-   - Tier 3 default: 5 years (defensive)
-   - **Archive** older records to cold storage. **Do not delete by default.** Deletion is manual after operator review.
-   - Log every archive to `audit_log`
-4. Compliance obligations UI `/compliance/obligations` showing registration deadlines, what's submitted, what's due.
+The original Phase 7 scope tied retention math to per-state CFDL requirements (NY 4yr from disclosure, CA 4yr, etc.). That framing assumed AEGIS as regulatory primary actor and is obsolete per the SCOPE NOTE at the top of this document. Funders handle their own retention obligations; AEGIS retention is internal log hygiene only.
 
 **Acceptance:**
 - Audit-log query UI returns full event log
-- Retention job runs nightly, logs every archive
-- Obligations page shows registration status
-
-**Watch out:** Do not auto-delete. Always archive first. A regulator asking for a record we already deleted is worse than having the record.
+- Retention job runs nightly, logs every archive to `audit_log`
+- Single 5-year retention default applied across all rows (no per-state math)
+- Archive-first, never auto-delete
 
 **Effort:** 2 days. No counsel gate.
 

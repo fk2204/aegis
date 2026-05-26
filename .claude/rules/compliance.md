@@ -7,52 +7,38 @@ paths:
 
 # AEGIS Compliance Rules
 
-Auto-loads when editing compliance code, dossiers, or compliance tests. Legally load-bearing — incorrect state regulation data creates regulatory exposure.
+> **SCOPE NOTE (2026-05-25).** Commera Capital is a pure ISO broker. AEGIS is an internal pre-screening tool — it does not generate merchant-facing disclosures, does not enforce per-state CFDL gates at the broker layer, and is not the regulatory primary actor. State CFDL disclosures, renewal disclosures, COJ / auto-debit / forum overlays, and prescribed-form template management are funder concerns. This rule file governs internal-use-only compliance code: dossier hygiene, audit-log discipline, and historical state metadata. The Tier 1 / Tier 2 / Tier 3 framework in `docs/compliance/states.yaml` is preserved as informational metadata only — it does not drive runtime broker behavior. See the SCOPE NOTE at the top of `docs/AEGIS_MASTER_PLAN.md` for the full framing.
+
+Auto-loads when editing internal compliance code, dossiers, or related tests.
 
 ---
 
 ## Non-negotiable rules
 
-- **NEVER add or modify a state in `compliance/states.py` without citing the actual statute** in a comment with: link, bill number, effective date, verification date.
-- **The disclosure HTML for each state MUST match the template prescribed by that state's regulator** (CA DFPI, NY DFS, VA SCC, etc.). Generic templates are not acceptable.
-- **If a state's prescribed template hasn't been added**, the disclosure endpoint MUST raise `DisclosureTemplateMissing`. NEVER fall back to a generic disclosure.
-- A snapshot test exists for each state's disclosure output, locking the format. Updating a snapshot is a deliberate decision with a comment explaining why.
-
----
-
-## The TS predecessor's mistake — don't repeat it
-
-The TS version invented Tier 1 entries from prior knowledge, producing fictional bill numbers. We do not repeat that. Code is NEVER allowed to fill state regulation fields from prior knowledge.
+- **Don't fill state regulation fields from prior knowledge.** Every statute reference in code or dossiers cites a verifiable source: bill number, link, effective date, verification date. The TS predecessor invented Tier 1 entries from training data and produced fictional bill numbers; do not repeat that mistake even though state regulations no longer drive runtime behavior.
+- **Audit-log writes are required for every state change.** Any mutation of compliance-adjacent data (dossier update, state-metadata edit, override capture, decision snapshot) records to `audit_log` via `record()`. **Audit-write failures FAIL the operation** — never silently log-and-continue.
+- **Decisions are immutable once captured.** Decision snapshots are operational-quality and internal-review artifacts; never edit a row in-place. Corrections are appended as new rows referencing the prior decision; the prior row stays.
 
 ---
 
 ## Authoritative compliance research
 
-Lives in `docs/compliance/`.
+Lives in `docs/compliance/`. Used as informational reference, not runtime gating.
 
 - **Read first:** `docs/compliance/CORRECTIONS_2026-05-08.md` — audit log of verification corrections
-- **Master matrix:** `docs/compliance/15_aegis_compliance_posture.md` — obligation matrix across all states + federal
+- **Master matrix:** `docs/compliance/15_aegis_compliance_posture.md` — obligation matrix (read as funder-side context, not broker-side enforcement)
 - **Per-state dossiers:** `docs/compliance/NN_<state>.md`
 
-When a dossier conflicts with older state research notes elsewhere in the repo, **the dossier wins.** Dossiers dated 2026-05-07 with verification pass 2026-05-08; older notes predate this research and may contain superseded information.
+When a dossier conflicts with older state research notes elsewhere in the repo, **the dossier wins.** Older notes may contain superseded information.
 
 ---
 
-## Promotion workflow (Tier 3 → Tier 1 or Tier 2)
+## States.yaml access patterns
 
-This sequence is non-negotiable for Tier 1 promotions because the prescribed form is regulator-mandated.
-
-1. Operator supplies source material: bill text, citation URL, verbatim excerpt (≤500 words), effective date, prescribed form (Tier 1), CoJ rule with sub-citation.
-2. Write a dossier under `docs/compliance/NN_<state>.md` with a confidence assessment.
-3. Operator reviews the dossier against the source material.
-4. Update `src/aegis/compliance/states.py` with the new `Tier1Regulation` or `Tier2Regulation`. For Tier 1, add the Jinja template at `compliance/templates/{state}_{bill}.html.j2` matching the regulator's prescribed form line-by-line.
-5. Add a snapshot test under `tests/snapshots/` locking the rendered HTML.
-6. Boot validator (`validate_states_table()`) must still pass.
-7. Operator reviews template against the regulator's prescribed form.
-8. Commit message cites the dossier, e.g. `feat(compliance): promote CA from Tier 3 to Tier 1 per docs/compliance/01_california.md`.
+`docs/compliance/states.yaml` is loaded at boot by `aegis.compliance.state_matrix` and is preserved as informational metadata. Reading from it is fine; documentation refresh is fine. **Do not add runtime branches that gate broker behavior on tier values.** Per-state compliance gating belongs to the funder.
 
 ---
 
 ## Commit messages for compliance work
 
-Always cite the specific dossier and section. This makes the audit trail searchable. Without the citation, future Claude (or a regulator's counsel) can't trace where the rule came from.
+When updating dossiers or compliance metadata, cite the specific dossier and section in the commit body. Future Claude (or an internal reviewer) should be able to trace where a fact came from. The cite is for internal traceability, not for a regulator-facing audit trail.
