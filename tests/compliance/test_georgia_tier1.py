@@ -9,9 +9,6 @@ GA-specific behavior covered:
   * compliance/states.py     — schema additions for GA (signed_by,
     signed_date, coj_venue_restriction, enforcement_framework,
     receivable_purchase_statutorily_protected)
-  * scoring/match_funders.py — coj_allowed='allowed' branch logs
-    funder_requires_coj_allowed_in_state for audit completeness;
-    state-prefixed broker_advance_fee reason
   * ga_sb90.html.j2 template — content-based with APR row (7 items)
 
 Citation precision per CORRECTIONS Correction 1: cite § 10-1-393.18
@@ -20,10 +17,8 @@ as a single section, NOT "et seq.".
 
 from __future__ import annotations
 
-import logging
 from datetime import date
 from decimal import Decimal
-from uuid import uuid4
 
 import pytest
 from jinja2 import (
@@ -35,9 +30,6 @@ from jinja2 import (
 )
 
 from aegis.compliance.states import STATES, TEMPLATES_DIR, Tier1Regulation
-from aegis.funders.models import FunderRow
-from aegis.scoring.match_funders import match_funder
-from aegis.scoring.models import ScoreInput, ScoreResult
 
 # --- States table -----------------------------------------------------------
 
@@ -292,112 +284,3 @@ def test_ga_template_strict_undefined_rejects_missing_var() -> None:
         template.render()
 
 
-# --- Match-funder integration ----------------------------------------------
-
-
-def _ga_score_input() -> ScoreInput:
-    return ScoreInput(
-        merchant_id=uuid4(),
-        business_name="Acme GA",
-        owner_name="Jane Doe",
-        state="GA",
-        avg_daily_balance=Decimal("12500.00"),
-        true_revenue=Decimal("100000.00"),
-        monthly_revenue=Decimal("100000.00"),
-        lowest_balance=Decimal("3000.00"),
-        num_nsf=0,
-        days_negative=0,
-        mca_positions=0,
-        mca_daily_total=Decimal("0.00"),
-        debt_to_revenue=Decimal("0.00"),
-        fraud_score=10,
-        statement_period_start=date(2026, 4, 1),
-        statement_period_end=date(2026, 4, 30),
-        statement_days=30,
-        requested_amount=Decimal("50000.00"),
-        requested_factor=Decimal("1.30"),
-        requested_term_days=120,
-    )
-
-
-def _baseline_score_result() -> ScoreResult:
-    return ScoreResult(
-        score=72,
-        tier="B",
-        recommendation="approve",
-        suggested_max_advance=Decimal("100000.00"),
-        recommended_factor_rate=Decimal("1.29"),
-        recommended_holdback_pct=Decimal("0.12"),
-        estimated_payback_days=180,
-    )
-
-
-def test_ga_merchant_plus_coj_funder_match_proceeds(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """GA permits CoJ — match proceeds with no hard fail and no soft concern.
-
-    Audit log records ``funder_requires_coj_allowed_in_state`` for trail
-    completeness so the dashboard can surface "AEGIS knew GA permits CoJ
-    and deliberately did not block".
-    """
-    funder = FunderRow(name="Coj Funder LLC", requires_coj=True, max_positions=1)
-    with caplog.at_level(logging.INFO, logger="aegis.scoring.match_funders"):
-        match = match_funder(funder, _ga_score_input(), _baseline_score_result())
-    assert match is not None
-    joined = " | ".join(match.soft_concerns)
-    # No CoJ-related blocks or warnings on the deal.
-    assert "coj_invalid_in_state" not in joined
-    assert "coj_ny_resident_only" not in joined
-    # Match still qualifies (no hard fail).
-    assert match.match_score > 0
-    # Audit log line emitted.
-    assert any(
-        "funder_requires_coj_allowed_in_state" in r.getMessage()
-        for r in caplog.records
-    )
-    assert any(
-        "O.C.G.A. § 9-12-18" in r.getMessage() for r in caplog.records
-    )
-
-
-def test_ga_merchant_plus_advance_fee_funder_hard_declines(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Per § 10-1-393.18 broker rules — advance-fee funder can't ship to GA.
-
-    Same hard-fail mechanism as FL, but the reason is GA-prefixed
-    (``ga_broker_advance_fee_prohibited``) so the dashboard attributes
-    the block to the right statute.
-    """
-    funder = FunderRow(
-        name="Advance Fee Funder",
-        charges_merchant_advance_fees=True,
-        max_positions=1,
-    )
-    with caplog.at_level(logging.WARNING, logger="aegis.scoring.match_funders"):
-        match = match_funder(funder, _ga_score_input(), _baseline_score_result())
-    assert match is not None
-    assert match.match_score == 0
-    joined = " | ".join(match.soft_concerns)
-    assert "ga_broker_advance_fee_prohibited" in joined
-    assert "O.C.G.A. § 10-1-393.18" in joined
-    assert any(
-        "funder_charges_merchant_advance_fees_blocked_by_state" in r.getMessage()
-        for r in caplog.records
-    )
-
-
-def test_ga_merchant_plus_clean_funder_passes_both_checks() -> None:
-    """No CoJ, no advance fees → no GA-specific hard fails."""
-    funder = FunderRow(
-        name="Clean Funder",
-        requires_coj=False,
-        charges_merchant_advance_fees=False,
-        max_positions=1,
-    )
-    match = match_funder(funder, _ga_score_input(), _baseline_score_result())
-    assert match is not None
-    joined = " | ".join(match.soft_concerns)
-    assert "coj_invalid_in_state" not in joined
-    assert "ga_broker_advance_fee_prohibited" not in joined

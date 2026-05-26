@@ -26,8 +26,6 @@ from aegis.compliance.states import (
     PendingLegislation,
     Tier2Regulation,
 )
-from aegis.funders.models import FunderRow
-from aegis.scoring.match_funders import match_funder
 from aegis.scoring.models import ScoreInput, ScoreResult
 
 # --- States table -----------------------------------------------------------
@@ -172,45 +170,6 @@ def test_il_disclosure_does_not_pretend_to_be_state_prescribed() -> None:
     """Generic template explicitly disclaims being a prescribed form."""
     rendered = render_disclosure("IL", _il_score_input(), _baseline_score_result())
     assert "not a state-prescribed" in rendered.html
-
-
-# --- Match-funder integration: IL as Tier 2 -------------------------------
-
-
-def test_il_merchant_plus_coj_funder_match_proceeds_no_log() -> None:
-    """IL is Tier 2 — matcher's CoJ logic only fires for Tier 1 states.
-
-    Per 735 ILCS 5/2-1301(c), CoJs are valid in IL commercial MCA
-    transactions, so the right behavior is to pass through without a
-    state-level block. Matcher should not raise, hard-fail, or soft-warn.
-    """
-    funder = FunderRow(name="Coj Funder LLC", requires_coj=True, max_positions=1)
-    match = match_funder(funder, _il_score_input(), _baseline_score_result())
-    assert match is not None
-    joined = " | ".join(match.soft_concerns)
-    assert "coj_invalid_in_state" not in joined
-    assert "coj_ny_resident_only" not in joined
-    assert "coj_il" not in joined  # no IL-specific entry either
-    # Match qualifies on the merits.
-    assert match.match_score > 0
-
-
-def test_il_merchant_plus_advance_fee_funder_does_not_block() -> None:
-    """Tier 2 IL has no broker_advance_fees_prohibited flag — no hard fail.
-
-    (If the IL Loan Brokers Act registration determination concludes
-    AEGIS qualifies, the operator addresses it operationally, not via
-    this matcher rule.)
-    """
-    funder = FunderRow(
-        name="Advance Fee Funder",
-        charges_merchant_advance_fees=True,
-        max_positions=1,
-    )
-    match = match_funder(funder, _il_score_input(), _baseline_score_result())
-    assert match is not None
-    joined = " | ".join(match.soft_concerns)
-    assert "broker_advance_fee_prohibited" not in joined
 
 
 # --- PendingLegislation model -----------------------------------------------

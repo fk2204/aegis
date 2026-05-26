@@ -9,8 +9,6 @@ behavior covered:
     broker_advance_fees_prohibited, broker_advertisement_address_disclosure_required,
     private_right_of_action, enforcement_authority; optional regulation_*
     + coj_effective_date + prescribed_form_section)
-  * scoring/match_funders.py    — broker advance fee hard-fail (parallel
-    to CoJ); FL CoJ banned via existing tristate
   * funders/models.py           — charges_merchant_advance_fees field
   * fl_fcfdl.html.j2 template   — content-based, no APR, no prescribed
     table format, six required content items
@@ -18,10 +16,8 @@ behavior covered:
 
 from __future__ import annotations
 
-import logging
 from datetime import date
 from decimal import Decimal
-from uuid import uuid4
 
 import pytest
 from jinja2 import (
@@ -34,8 +30,6 @@ from jinja2 import (
 
 from aegis.compliance.states import STATES, TEMPLATES_DIR, Tier1Regulation
 from aegis.funders.models import FunderRow
-from aegis.scoring.match_funders import match_funder
-from aegis.scoring.models import ScoreInput, ScoreResult
 
 # --- States table -----------------------------------------------------------
 
@@ -320,114 +314,3 @@ def test_funder_row_accepts_charges_merchant_advance_fees_true() -> None:
     assert funder.charges_merchant_advance_fees is True
 
 
-# --- Match-funder integration: FL CoJ ban + FL broker advance fee block ----
-
-
-def _fl_score_input() -> ScoreInput:
-    return ScoreInput(
-        merchant_id=uuid4(),
-        business_name="Acme FL",
-        owner_name="Jane Doe",
-        state="FL",
-        avg_daily_balance=Decimal("12500.00"),
-        true_revenue=Decimal("100000.00"),
-        monthly_revenue=Decimal("100000.00"),
-        lowest_balance=Decimal("3000.00"),
-        num_nsf=0,
-        days_negative=0,
-        mca_positions=0,
-        mca_daily_total=Decimal("0.00"),
-        debt_to_revenue=Decimal("0.00"),
-        fraud_score=10,
-        statement_period_start=date(2026, 4, 1),
-        statement_period_end=date(2026, 4, 30),
-        statement_days=30,
-        requested_amount=Decimal("50000.00"),
-        requested_factor=Decimal("1.30"),
-        requested_term_days=120,
-    )
-
-
-def _baseline_score_result() -> ScoreResult:
-    return ScoreResult(
-        score=72,
-        tier="B",
-        recommendation="approve",
-        suggested_max_advance=Decimal("100000.00"),
-        recommended_factor_rate=Decimal("1.29"),
-        recommended_holdback_pct=Decimal("0.12"),
-        estimated_payback_days=180,
-    )
-
-
-def test_fl_merchant_plus_coj_funder_hard_declines() -> None:
-    """FL coj_allowed='banned' routes through the existing CoJ tristate path.
-
-    Same hard-fail mechanism as CA — driven off STATES["FL"].coj_allowed.
-    """
-    funder = FunderRow(name="Coj Funder LLC", requires_coj=True, max_positions=1)
-    match = match_funder(funder, _fl_score_input(), _baseline_score_result())
-    assert match is not None
-    assert match.match_score == 0
-    joined = " | ".join(match.soft_concerns)
-    assert "coj_invalid_in_state" in joined
-    assert "Fla. Stat. § 55.05" in joined
-
-
-def test_fl_merchant_plus_advance_fee_funder_hard_declines(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Per § 559.9614(1)(a) — funder charging merchant advance fees can't ship."""
-    funder = FunderRow(
-        name="Advance Fee Funder",
-        charges_merchant_advance_fees=True,
-        max_positions=1,
-    )
-    with caplog.at_level(logging.WARNING, logger="aegis.scoring.match_funders"):
-        match = match_funder(funder, _fl_score_input(), _baseline_score_result())
-    assert match is not None
-    assert match.match_score == 0
-    joined = " | ".join(match.soft_concerns)
-    assert "fl_broker_advance_fee_prohibited" in joined
-    assert "Fla. Stat. § 559.9614(1)(a)" in joined
-    assert any(
-        "funder_charges_merchant_advance_fees_blocked_by_state" in r.getMessage()
-        for r in caplog.records
-    )
-
-
-def test_fl_merchant_plus_clean_funder_passes_both_checks() -> None:
-    """No CoJ, no advance fees → no FL-specific hard fails."""
-    funder = FunderRow(
-        name="Clean Funder",
-        requires_coj=False,
-        charges_merchant_advance_fees=False,
-        max_positions=1,
-    )
-    match = match_funder(funder, _fl_score_input(), _baseline_score_result())
-    assert match is not None
-    joined = " | ".join(match.soft_concerns)
-    assert "coj_invalid_in_state" not in joined
-    assert "fl_broker_advance_fee_prohibited" not in joined
-
-
-def test_advance_fee_block_skips_non_fl_states() -> None:
-    """Currently FL is the only state with broker_advance_fees_prohibited=True.
-
-    A non-FL deal with an advance-fee-charging funder should NOT hard-fail
-    on this rule. (The funder might still hard-fail on other criteria, but
-    not on fl_broker_advance_fee_prohibited.)
-    """
-    funder = FunderRow(
-        name="Advance Fee Funder",
-        charges_merchant_advance_fees=True,
-        max_positions=1,
-    )
-    for state in ("WY", "AZ", "OH"):
-        deal = _fl_score_input().model_copy(update={"state": state})
-        match = match_funder(funder, deal, _baseline_score_result())
-        assert match is not None
-        joined = " | ".join(match.soft_concerns)
-        assert "fl_broker_advance_fee_prohibited" not in joined, (
-            f"{state} should not trigger the FL-only advance-fee block"
-        )
