@@ -1,5 +1,24 @@
 # AEGIS state compliance matrix (machine-readable).
 #
+# ============================================================================
+# SCOPE NOTE (2026-05-25) — HISTORICAL FRAMEWORK, NOT A COMPLIANCE GATE
+# ============================================================================
+# Commera Capital is a pure ISO broker. State CFDL disclosure obligations,
+# COJ/auto-debit/forum overlays, renewal disclosure rules, and prescribed-form
+# templates all sit with the FUNDER (the financing provider), not with AEGIS.
+#
+# The Tier 1 / Tier 2 / Tier 3 classification below was designed for "which
+# states AEGIS refuses to serve due to broker-side compliance constraints."
+# That framing is wrong for a broker — Commera submits deals to funders who
+# handle their own state compliance.
+#
+# This file is preserved for historical reference and as informational
+# metadata. The existing loader (aegis.compliance.state_matrix) is harmless
+# and remains; do not rely on it to drive runtime compliance gates. Any
+# state-routing behavior keyed on these tiers should be treated as advisory
+# only, pending removal in a later cleanup pass.
+# ============================================================================
+#
 # This file is the single source of truth for the per-state regulatory
 # surface AEGIS enforces. Loaded at boot by aegis.compliance.state_matrix.
 # Strict Pydantic validation — typo here = boot fails closed.
