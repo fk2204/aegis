@@ -2273,29 +2273,6 @@ def _criteria_comparison(
     return rows
 
 
-def _state_compliance_card(state: str) -> dict[str, Any] | None:
-    """Pull CoJ + broker-fee citations from compliance.states for the card."""
-    try:
-        reg = STATES.get(state)
-    except (AttributeError, KeyError):
-        return None
-    if reg is None:
-        return None
-    out: dict[str, Any] = {"state": state, "tier": getattr(reg, "tier", None)}
-    coj = getattr(reg, "coj_allowed", None)
-    out["coj_allowed"] = coj
-    out["coj_citation"] = getattr(reg, "coj_citation", None) or getattr(
-        reg, "citation_url", None
-    )
-    out["broker_fees_prohibited"] = getattr(
-        reg, "broker_advance_fees_prohibited", False
-    )
-    out["broker_fees_citation"] = getattr(reg, "broker_fees_citation", None) or getattr(
-        reg, "statute_citation", None
-    )
-    return out
-
-
 def _match_card(
     funder: FunderRow,
     match: FunderMatch,
@@ -2316,8 +2293,8 @@ def _match_card(
       * green  — match_score > 0 and zero soft concerns
 
     When ``score_input`` is supplied, the card also carries a side-by-side
-    criteria comparison and the state regulatory context — both rendered
-    as an expandable details block inside the funder card.
+    criteria comparison rendered as an expandable details block inside the
+    funder card.
     """
     if match.match_score == 0:
         color = "red"
@@ -2333,10 +2310,8 @@ def _match_card(
         soft_concerns = []
 
     criteria: list[dict[str, Any]] = []
-    state_ctx: dict[str, Any] | None = None
     if score_input is not None:
         criteria = _criteria_comparison(funder, score_input)
-        state_ctx = _state_compliance_card(score_input.state)
 
     return {
         "funder_id": str(funder.id),
@@ -2346,7 +2321,6 @@ def _match_card(
         "hard_reasons": hard_reasons,
         "soft_concerns": soft_concerns,
         "criteria_comparison": criteria,
-        "state_compliance": state_ctx,
         "funder_requires_coj": funder.requires_coj,
         "funder_charges_merchant_advance_fees": funder.charges_merchant_advance_fees,
     }
