@@ -18,6 +18,23 @@
 <section class="body cols-1">
   <div>
 
+    {# Preselect banner — operator arrived from a funder detail page's
+       "Submit a deal" picker but the chosen funder hard-fails this
+       merchant (or isn't active). We surface the reasons and leave
+       the matching checkbox unchecked rather than silently selecting
+       a non-eligible funder. #}
+    {% if preselect_banner %}
+      <div class="preselect-banner">
+        <div class="preselect-banner-title">
+          <span class="chip warn">Not eligible</span>
+          {{ preselect_banner.name }} cannot fund this merchant
+        </div>
+        <ul class="preselect-banner-reasons">
+          {% for r in preselect_banner.reasons %}<li>{{ r }}</li>{% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
     {% if missing == "no_document" %}
       <div class="empty">No analyzed document yet<span class="copy"><a href="/ui/upload">Upload a statement →</a></span></div>
     {% else %}
@@ -107,7 +124,7 @@
               <label style="display:block;cursor:{% if _disabled %}not-allowed{% else %}pointer{% endif %};border:1px solid var(--rule);border-left:3px solid {{ _color_var }};background:var(--paper);padding:14px 14px 12px;{% if c.color == 'green' %}box-shadow:0 0 0 1px color-mix(in oklch, var(--approve) 30%, transparent);{% endif %}">
                 <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:8px">
                   <span style="display:flex;align-items:center;gap:8px;font-family:var(--serif);font-weight:500;font-size:15px;letter-spacing:-0.005em;color:var(--ink)">
-                    <input type="checkbox" name="funder_ids" value="{{ c.funder_id }}" data-color="{{ c.color }}" {% if _disabled %}disabled{% endif %} style="width:auto">
+                    <input type="checkbox" name="funder_ids" value="{{ c.funder_id }}" data-color="{{ c.color }}" {% if _disabled %}disabled{% endif %} {% if preselect_funder_id and c.funder_id == preselect_funder_id %}checked{% endif %} style="width:auto">
                     <a href="/ui/funders/{{ c.funder_id }}" onclick="event.stopPropagation()" style="color:inherit;border-bottom:0">{{ c.funder_name }}</a>
                   </span>
                   <span style="font-family:var(--serif);font-size:24px;font-weight:600;letter-spacing:-0.022em;color:{{ _color_var }};font-variant-numeric:tabular-nums">{{ c.match_score }}<span style="font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-left:2px">/100</span></span>

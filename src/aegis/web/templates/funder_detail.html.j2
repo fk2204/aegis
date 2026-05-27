@@ -27,7 +27,10 @@
   <div class="actions">
     <a class="btn ghost" href="/ui/funders">← All funders</a>
     <button class="btn" type="button" onclick="alert('Coming in step F')">Re-extract from PDF</button>
-    <button class="btn primary" type="button" onclick="alert('Coming in step E')">+ Submit a deal</button>
+    <button class="btn primary" type="button"
+            hx-get="/ui/funders/{{ funder.id }}/submit-modal"
+            hx-target="#submit-modal-host"
+            hx-swap="innerHTML">+ Submit a deal</button>
   </div>
 </header>
 {% endblock %}
@@ -279,6 +282,9 @@
 
   </div>
 </section>
+
+{# Modal mount point — submit-a-deal modal swaps its HTML in here via HTMX. #}
+<div id="submit-modal-host"></div>
 
 <script>
 // Copy-to-clipboard helper for contact card. Reads from data-copy

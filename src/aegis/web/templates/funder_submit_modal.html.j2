@@ -1,0 +1,58 @@
+{# Submit-a-deal modal — HTMX fragment served by
+   /ui/funders/{funder_id}/submit-modal, swapped into the
+   #submit-modal-host div on the funder detail page.
+
+   Backdrop captures click-outside-to-close; X button closes via the
+   same inline clear. Each merchant row navigates to the match panel
+   with this funder pre-selected. #}
+<div class="modal-backdrop" onclick="if(event.target===this) document.getElementById('submit-modal-host').innerHTML=''">
+  <div class="modal-dialog">
+    <header class="modal-head">
+      <h2>Submit a deal to {{ funder.name }}</h2>
+      <button class="modal-close" type="button"
+              onclick="document.getElementById('submit-modal-host').innerHTML=''"
+              title="Close" aria-label="Close">×</button>
+    </header>
+    <div class="modal-body">
+      {% if not deals %}
+        <div class="empty">No analyzed merchants<span class="copy">Upload a statement to begin.</span></div>
+      {% else %}
+        <div class="modal-hint">
+          Pick a merchant — you'll land on the match panel with {{ funder.name }}
+          pre-selected. Sorted by AEGIS score (best first).
+        </div>
+        <table class="queue modal-merchant-list">
+          <thead>
+            <tr>
+              <th>Merchant</th>
+              <th>Status</th>
+              <th>State</th>
+              <th class="num">Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in deals %}
+              <tr onclick="window.location.href='/ui/merchants/{{ d.merchant_id }}/match?preselect_funder={{ funder.id }}'">
+                <td class="merchant">
+                  <a href="/ui/merchants/{{ d.merchant_id }}/match?preselect_funder={{ funder.id }}"
+                     onclick="event.stopPropagation()">{{ d.business_name }}</a>
+                </td>
+                <td>
+                  {% if d.parse_status == 'review' %}
+                    <span class="chip warn">REVIEW</span>
+                  {% else %}
+                    <span class="chip pos">PROCEED</span>
+                  {% endif %}
+                </td>
+                <td class="mono-cell">{{ d.state }}</td>
+                <td class="score {% if d.fraud_score is number and d.fraud_score >= 65 %}bad{% elif d.fraud_score is number and d.fraud_score >= 35 %}warn{% elif d.fraud_score is number %}calm{% endif %}">
+                  {% if d.fraud_score is number %}{{ d.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </div>
+  </div>
+</div>

@@ -37,6 +37,7 @@ from pydantic import ValidationError
 
 from aegis.api.deps import (
     get_audit,
+    get_deal_repository,
     get_funder_reply_repository,
     get_funder_repository,
     get_llm,
@@ -55,6 +56,7 @@ from aegis.compliance.overrides import (
 )
 from aegis.compliance.states import STATES, StateNotServed, validate_state_served
 from aegis.config import get_settings
+from aegis.deals.repository import DealRepository
 from aegis.funders.extract import FunderExtractionError, extract_funder_guidelines
 from aegis.funders.models import FunderRow
 from aegis.funders.replies import FunderReplyRepository
@@ -978,6 +980,54 @@ async def funder_detail(
     )
 
 
+@router.get(
+    "/funders/{funder_id}/submit-modal", response_class=HTMLResponse
+)
+async def funder_submit_modal(
+    request: Request,
+    funder_id: UUID,
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    deal_repo: Annotated[DealRepository, Depends(get_deal_repository)],
+) -> HTMLResponse:
+    """HTMX fragment — merchant picker for 'Submit a deal to this funder'.
+
+    Lists up to 50 most-recent analyzed deals (parse_status in
+    {proceed, review}), sorted by fraud_score ascending (best AEGIS
+    deals first). Each row links to the merchant's match panel with
+    this funder pre-selected via ``?preselect_funder=<funder_id>``.
+    """
+    try:
+        funder = funder_repo.get(funder_id)
+    except FunderNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    # Two queries — DealRepository.list_deals takes a single parse_status.
+    # Operators submit from both clean ("proceed") and lower-confidence
+    # ("review") parses, so we union the two and re-sort in Python.
+    deals = [
+        *deal_repo.list_deals(parse_status="proceed", limit=50),
+        *deal_repo.list_deals(parse_status="review", limit=50),
+    ]
+    # Primary: fraud_score ascending (lower = better AEGIS deal).
+    # Tiebreaker: created_at descending (newer wins).
+    # Sentinel 999 keeps unparsed rows last.
+    deals.sort(
+        key=lambda d: (
+            d.fraud_score if d.fraud_score is not None else 999,
+            -d.created_at.timestamp(),
+        )
+    )
+    deals = deals[:50]
+
+    return templates.TemplateResponse(
+        request,
+        "funder_submit_modal.html.j2",
+        {"funder": funder, "deals": deals},
+    )
+
+
 @router.get("/merchants/{merchant_id}/match", response_class=HTMLResponse)
 async def merchant_match(
     request: Request,
@@ -987,12 +1037,22 @@ async def merchant_match(
     funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    preselect_funder: UUID | None = None,
 ) -> HTMLResponse:
     """Phase 7B matched-funders panel.
 
     Builds a ScoreInput from the merchant + latest analysis, scores it,
     iterates over active funders, and renders Centrex-style cards
     (eligible / soft-concerns / hard-fails). Operator picks via the API.
+
+    ``preselect_funder`` (optional query param) is set when the operator
+    arrived from a funder detail page's "+ Submit a deal" picker — that
+    funder's checkbox pre-checks UNLESS the funder is hard-failing for
+    this merchant. In the hard-fail case a banner renders at top of the
+    page explaining why, and the checkbox stays unchecked. Unknown
+    funder UUID is rendered as the same "not eligible" banner with a
+    generic reason; ``preselect_funder=None`` (default) renders the
+    page exactly as before.
     """
     try:
         merchant = merchants.get(merchant_id)
@@ -1010,6 +1070,8 @@ async def merchant_match(
                 "score_result": None,
                 "matches": [],
                 "score_window": None,
+                "preselect_funder_id": None,
+                "preselect_banner": None,
             },
         )
 
@@ -1029,6 +1091,44 @@ async def merchant_match(
             continue
         cards.append(_match_card(funder, m, score_input))
     cards.sort(key=lambda c: c["match_score"], reverse=True)
+
+    # Preselect: pre-check the matching funder's checkbox unless the
+    # funder is hard-failing this merchant (color=red), in which case we
+    # surface a banner with the reasons and leave the checkbox unchecked.
+    preselect_id_str: str | None = None
+    preselect_banner: dict[str, Any] | None = None
+    if preselect_funder is not None:
+        target_id = str(preselect_funder)
+        matched_card = next(
+            (c for c in cards if c["funder_id"] == target_id), None
+        )
+        if matched_card is None:
+            try:
+                f = funder_repo.get(preselect_funder)
+                preselect_banner = {
+                    "name": f.name,
+                    "reasons": [
+                        "This funder is not active or has no matchable "
+                        "criteria for this merchant."
+                    ],
+                }
+            except FunderNotFoundError:
+                # Unknown UUID — silently ignore, render page normally.
+                preselect_banner = None
+        elif matched_card["color"] == "red" and matched_card["hard_reasons"]:
+            # Real hard fail (revenue floor, excluded state, etc.) — banner
+            # the reasons so the operator sees WHY this funder can't fund it.
+            preselect_banner = {
+                "name": matched_card["funder_name"],
+                "reasons": matched_card["hard_reasons"],
+            }
+        else:
+            # Either the card is green/yellow (qualifies), OR it's red
+            # solely because the merchant's overall score tier is F
+            # (qualifies for criteria but underwriting tier is too low).
+            # In the tier-F edge case the template's disabled-checkbox
+            # treatment already prevents accidental submit; no banner.
+            preselect_id_str = target_id
 
     score_window = {
         "months_used": len(items),
@@ -1051,6 +1151,8 @@ async def merchant_match(
             "matches": cards,
             "score_window": score_window,
             "funder_responses": funder_responses,
+            "preselect_funder_id": preselect_id_str,
+            "preselect_banner": preselect_banner,
         },
     )
 
