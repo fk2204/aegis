@@ -26,7 +26,10 @@
   </div>
   <div class="actions">
     <a class="btn ghost" href="/ui/funders">← All funders</a>
-    <button class="btn" type="button" onclick="alert('Coming in step F')">Re-extract from PDF</button>
+    <button class="btn" type="button"
+            hx-get="/ui/funders/{{ funder.id }}/reextract-modal"
+            hx-target="#submit-modal-host"
+            hx-swap="innerHTML">Re-extract from PDF</button>
     <button class="btn primary" type="button"
             hx-get="/ui/funders/{{ funder.id }}/submit-modal"
             hx-target="#submit-modal-host"
@@ -38,6 +41,20 @@
 {% block body %}
 <section class="body cols-1">
   <div>
+
+    {# Flash banners — set by the re-extract redirect via query params. #}
+    {% if reextract_flash %}
+      <div class="flash flash-success" role="status">
+        <span class="chip pos">Re-extracted</span>
+        Funder criteria re-extracted from the uploaded PDF.
+      </div>
+    {% endif %}
+    {% if reextract_error %}
+      <div class="flash flash-error" role="alert">
+        <span class="chip bad">Re-extract failed</span>
+        {{ reextract_error }}
+      </div>
+    {% endif %}
 
     {# === Top row: contact card (left) + baseline card (right) === #}
     <div class="funder-top-row">

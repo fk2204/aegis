@@ -908,6 +908,28 @@
   color: var(--ink-2);
 }
 
+/* Flash banners on funder detail — set by the re-extract route's
+ * redirect-with-query-param flow. Success = sage tint, error = amber. */
+.dossier-page .flash {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px;
+  border-radius: 4px;
+  margin-bottom: 18px;
+  font: 13px/1.4 var(--serif);
+}
+.dossier-page .flash-success {
+  background: var(--approve-soft);
+  border: 1px solid color-mix(in oklch, var(--approve) 30%, var(--rule));
+  border-left: 3px solid var(--approve);
+  color: var(--ink);
+}
+.dossier-page .flash-error {
+  background: var(--decline-soft);
+  border: 1px solid color-mix(in oklch, var(--decline) 30%, var(--rule));
+  border-left: 3px solid var(--decline);
+  color: var(--ink);
+}
+
 /* ===================== RESPONSIVE FIXES ===================== */
 
 /* Mid desktop — tighten side padding so content uses more of the viewport. */

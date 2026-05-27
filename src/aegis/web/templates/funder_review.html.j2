@@ -80,7 +80,81 @@
         {{ field("Excluded industries · comma-separated", "excluded_industries", d.excluded_industries|join(", ")) }}
       </div>
       {{ field("Excluded states · comma-separated 2-letter codes", "excluded_states", d.excluded_states|join(", ")) }}
-      {{ field("Notes", "notes", d.notes, "textarea") }}
+
+      {# Step C structured fields. Contact / auto-decline / conditional /
+         notes_residual are editable here. Tiers are read-only (rich
+         tier editing is a future "edit funder" feature) — extracted
+         tiers ride through save in a hidden JSON input. #}
+      <header class="sect-head" style="margin-top:24px">
+        <h2>Contact</h2>
+        <div class="rule"></div>
+      </header>
+      <div class="row two">
+        {{ field("Contact name", "contact_name", d.contact_name) }}
+        {{ field("Contact phone", "contact_phone", d.contact_phone) }}
+      </div>
+      <div class="row two">
+        {{ field("Contact email", "contact_email", d.contact_email) }}
+        {{ field("Submission email · used for sending deals", "submission_email", d.submission_email) }}
+      </div>
+
+      {% if d.tiers %}
+        <header class="sect-head" style="margin-top:24px">
+          <h2>Tiers · read-only</h2>
+          <div class="rule"></div>
+          <div class="meta">{{ d.tiers|length }} tier{{ '' if d.tiers|length == 1 else 's' }} · re-extract to change</div>
+        </header>
+        <table class="queue tier-table" style="margin-top:8px">
+          <thead>
+            <tr>
+              <th>Tier</th>
+              <th class="num">Buy rate</th>
+              <th class="num">Min TIB</th>
+              <th class="num">Min FICO</th>
+              <th class="num">Min MRR</th>
+              <th class="num">Max pos</th>
+              <th class="num">Max advance</th>
+              <th class="num">Max holdback</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in d.tiers %}
+              <tr class="no-click">
+                <td class="tier-name">{{ t.name }}</td>
+                <td class="mono-cell num">{% if t.buy_rate_low and t.buy_rate_high %}{% if t.buy_rate_low == t.buy_rate_high %}{{ t.buy_rate_low }}{% else %}{{ t.buy_rate_low }}–{{ t.buy_rate_high }}{% endif %}{% else %}<span class="dash">—</span>{% endif %}</td>
+                <td class="mono-cell num">{% if t.min_months_in_business is not none %}{{ t.min_months_in_business }}{% else %}<span class="dash">—</span>{% endif %}</td>
+                <td class="mono-cell num">{% if t.min_credit_score is not none %}{{ t.min_credit_score }}{% else %}<span class="dash">—</span>{% endif %}</td>
+                <td class="mono-cell num">{% if t.min_monthly_revenue %}${{ "{:,.0f}".format(t.min_monthly_revenue) }}{% else %}<span class="dash">—</span>{% endif %}</td>
+                <td class="mono-cell num">{% if t.max_positions is not none %}{{ t.max_positions }}{% else %}<span class="dash">—</span>{% endif %}</td>
+                <td class="mono-cell num">{% if t.max_advance %}${{ "{:,.0f}".format(t.max_advance) }}{% else %}<span class="dash">—</span>{% endif %}</td>
+                <td class="mono-cell num">{% if t.max_holdback %}{{ "{:.0%}".format(t.max_holdback) }}{% else %}<span class="dash">—</span>{% endif %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+      {# Hidden tier JSON — serialised route-side via Pydantic's
+         model_dump(mode='json') so Decimal precision survives the
+         round-trip. The save route's _parse_tiers_json reconstructs
+         FunderTier instances. Empty list when no tiers extracted. #}
+      <input type="hidden" name="tiers_json" value="{{ tiers_json }}">
+
+      <header class="sect-head" style="margin-top:24px">
+        <h2>Conditions</h2>
+        <div class="rule"></div>
+        <div class="meta">one bullet per line</div>
+      </header>
+      <div class="row two">
+        {{ field("Auto-decline · absolute disqualifiers", "auto_decline_conditions", d.auto_decline_conditions|join("\n"), "textarea") }}
+        {{ field("Conditional · gated allowances", "conditional_requirements", d.conditional_requirements|join("\n"), "textarea") }}
+      </div>
+
+      <header class="sect-head" style="margin-top:24px">
+        <h2>Notes</h2>
+        <div class="rule"></div>
+      </header>
+      {{ field("Operator notes · added by you, not the extractor", "notes", d.notes, "textarea") }}
+      {{ field("Notes residual · prose the extractor couldn't categorise", "notes_residual", d.notes_residual, "textarea") }}
 
       {% if extraction.unparseable_fragments %}
         <header class="sect-head" style="margin-top:6px">
