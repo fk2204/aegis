@@ -7,7 +7,7 @@
      - title    : <title> contents
      - deck     : page title + actions row (.deck wrapper)
      - body     : main content area (no default wrapper — pages choose)
-     - ribbon   : bottom strip (defaults to compliance posture line)
+     - ribbon   : bottom strip (no default content; pages may inject one)
 
    Variables provided by the route's index handler (Today):
      - now, queue_count, parser_version, operator_handle/initials —
@@ -49,13 +49,7 @@
 
 {% block body %}{% endblock %}
 
-{% block ribbon %}
-<section class="compliance-ribbon">
-  <div class="k">Compliance posture</div>
-  <div class="v"><span class="tier">Tier I · prescribed</span>CA &nbsp;·&nbsp; NY &nbsp;·&nbsp; FL &nbsp;·&nbsp; GA</div>
-  <div class="v"><span class="tier">Tier II · federal</span>IL &nbsp;·&nbsp; TX &nbsp;·&nbsp; VA &nbsp;·&nbsp; MD &nbsp;·&nbsp; NJ</div>
-</section>
-{% endblock %}
+{% block ribbon %}{% endblock %}
 
 <div class="statusbar">
   <span class="live">LIVE</span>
