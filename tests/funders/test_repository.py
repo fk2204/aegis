@@ -96,6 +96,20 @@ def test_default_empty_contact_and_tiers() -> None:
     assert f.tiers == ()
     assert f.auto_decline_conditions == ()
     assert f.conditional_requirements == ()
+    assert f.notes == ""
+    assert f.notes_residual == ""
+
+
+def test_notes_and_notes_residual_round_trip_independently() -> None:
+    repo = InMemoryFunderRepository()
+    f = _funder().model_copy(update={
+        "notes": "Operator: called Jim, prioritising trucking next month.",
+        "notes_residual": "Renewals: case-by-case after 50% paid down.",
+    })
+    repo.upsert(f)
+    got = repo.get(f.id)
+    assert got.notes == "Operator: called Jim, prioritising trucking next month."
+    assert got.notes_residual == "Renewals: case-by-case after 50% paid down."
 
 
 def test_contact_fields_round_trip() -> None:

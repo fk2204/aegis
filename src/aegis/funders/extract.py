@@ -86,12 +86,24 @@ def extract_funder_guidelines(
 # -- coercion helpers --------------------------------------------------------
 
 
+# Decimal-bearing fields inside each tier dict that need string coercion
+# before Pydantic validation (same float-avoidance rule as top-level money).
+_TIER_DECIMAL_KEYS: Final[tuple[str, ...]] = (
+    "buy_rate_low",
+    "buy_rate_high",
+    "min_monthly_revenue",
+    "max_advance",
+    "max_holdback",
+)
+
+
 def _coerce_draft(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise FunderExtractionError(f"draft must be an object, got {type(value).__name__}")
     out: dict[str, Any] = dict(value)
 
-    # Money fields: convert numbers to strings so Pydantic Decimal stays float-free.
+    # Top-level money / Decimal fields: convert numbers to strings so
+    # Pydantic Decimal stays float-free.
     for key in (
         "min_monthly_revenue",
         "min_avg_daily_balance",
@@ -105,19 +117,61 @@ def _coerce_draft(value: object) -> dict[str, Any]:
         if key in out and out[key] is not None:
             out[key] = _num_to_str(out[key])
 
-    # Tuple-shaped fields
-    for key in ("excluded_industries", "excluded_states"):
+    # Tuple-shaped string-list fields.
+    for key in (
+        "excluded_industries",
+        "excluded_states",
+        "auto_decline_conditions",
+        "conditional_requirements",
+    ):
         seq = out.get(key)
         if seq is None:
             out[key] = ()
         elif isinstance(seq, list):
             out[key] = tuple(str(v) for v in seq)
 
+    # Tiers: list of dicts. Each tier's Decimal-bearing fields get the
+    # same str-coercion treatment; the list becomes a tuple. Malformed
+    # tier entries pass through and surface as Pydantic ValidationError
+    # when FunderRow.tiers is validated downstream.
+    tiers_raw = out.get("tiers")
+    if tiers_raw is None:
+        out["tiers"] = ()
+    elif isinstance(tiers_raw, list):
+        out["tiers"] = tuple(_coerce_tier(t) for t in tiers_raw)
+
+    # Contact string fields default to empty string if missing.
+    for key in (
+        "contact_name",
+        "contact_phone",
+        "contact_email",
+        "submission_email",
+        "notes_residual",
+    ):
+        if out.get(key) is None:
+            out[key] = ""
+
     # `name` falls back to "Unknown Funder" if missing — operator must
     # rename before saving, but extraction shouldn't fail validation here.
     if not out.get("name"):
         out["name"] = "Unknown Funder"
 
+    return out
+
+
+def _coerce_tier(value: object) -> dict[str, Any]:
+    """Coerce one tier dict: stringify Decimal fields, leave the rest alone.
+
+    Non-dict entries pass through unchanged; Pydantic surfaces the type
+    error at FunderTier validation, where the operator sees which tier
+    row was malformed.
+    """
+    if not isinstance(value, dict):
+        return value  # type: ignore[return-value]
+    out: dict[str, Any] = dict(value)
+    for key in _TIER_DECIMAL_KEYS:
+        if key in out and out[key] is not None:
+            out[key] = _num_to_str(out[key])
     return out
 
 

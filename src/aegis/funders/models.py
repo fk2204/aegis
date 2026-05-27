@@ -155,8 +155,14 @@ class FunderRow(_StrictModel):
     auto_decline_conditions:  tuple[str, ...] = ()
     conditional_requirements: tuple[str, ...] = ()
 
-    # Free-form notes (not used by the matcher).
+    # Operator-authored commentary. Empty after a fresh extraction;
+    # populated only when an operator adds context via the review UI.
     notes: str = ""
+
+    # Extraction residual — prose the LLM recognised as relevant but
+    # could not slot into a structured field. Written by extract.py;
+    # the operator decides whether to promote it to a schema field.
+    notes_residual: str = ""
 
 
 _FIELD_CONFIDENCE_KEYS: tuple[str, ...] = (
@@ -175,6 +181,16 @@ _FIELD_CONFIDENCE_KEYS: tuple[str, ...] = (
     "typical_holdback_high",
     "excluded_industries",
     "excluded_states",
+    # Added in step C — extraction targets for the redesigned detail page.
+    # Tiers is array-level (not per-tier or per-tier-field) for prompt
+    # simplicity; operator drills into individual tiers in the review UI.
+    "contact_name",
+    "contact_phone",
+    "contact_email",
+    "submission_email",
+    "tiers",
+    "auto_decline_conditions",
+    "conditional_requirements",
 )
 
 

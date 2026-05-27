@@ -76,7 +76,8 @@ def _fully_populated_funder() -> FunderRow:
         conditional_requirements=(
             "Trucking: 2 yr MVR clean",
         ),
-        notes="residual prose that did not parse into structured fields",
+        notes="Operator: prefer for Tier-A trucking deals.",
+        notes_residual="residual prose that did not parse into structured fields",
     )
 
 
@@ -152,6 +153,8 @@ def test_missing_new_columns_default_cleanly() -> None:
     assert restored.conditional_requirements == ()
     assert restored.aegis_compensation_disclosure_text == ""
     assert restored.charges_merchant_advance_fees is False
+    assert restored.notes == ""
+    assert restored.notes_residual == ""
 
 
 def test_empty_tiers_payload_is_empty_list() -> None:

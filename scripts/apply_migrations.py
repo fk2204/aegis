@@ -221,6 +221,11 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='funders' "
         "AND column_name='submission_email'"
     ),
+    "028_funders_notes_residual.sql": (
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='funders' "
+        "AND column_name='notes_residual'"
+    ),
 }
 
 

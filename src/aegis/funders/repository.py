@@ -172,6 +172,7 @@ def _row_to_funder(row: dict[str, Any]) -> FunderRow:
         auto_decline_conditions=tuple(row.get("auto_decline_conditions") or ()),
         conditional_requirements=tuple(row.get("conditional_requirements") or ()),
         notes=row.get("notes") or "",
+        notes_residual=row.get("notes_residual") or "",
     )
 
 
@@ -215,6 +216,7 @@ def _funder_to_payload(f: FunderRow) -> dict[str, Any]:
         "auto_decline_conditions":  list(f.auto_decline_conditions),
         "conditional_requirements": list(f.conditional_requirements),
         "notes": f.notes,
+        "notes_residual": f.notes_residual,
         "updated_at": datetime.now(UTC).isoformat(),
     }
 
