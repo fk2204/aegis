@@ -1,0 +1,44 @@
+{# Re-extract modal — HTMX fragment served by
+   /ui/funders/{funder_id}/reextract-modal, swapped into
+   #submit-modal-host on the funder detail page.
+
+   Plain HTTP form submission (no HTMX on the form itself). On success
+   the route 303-redirects to /ui/funders/{id}?reextracted=1 → browser
+   navigates → funder detail page renders the green success banner.
+   On error: 303-redirect with ?reextract_error=<msg> → red banner. #}
+<div class="modal-backdrop" onclick="if(event.target===this) document.getElementById('submit-modal-host').innerHTML=''">
+  <div class="modal-dialog">
+    <header class="modal-head">
+      <h2>Re-extract {{ funder.name }}</h2>
+      <button class="modal-close" type="button"
+              onclick="document.getElementById('submit-modal-host').innerHTML=''"
+              title="Close" aria-label="Close">×</button>
+    </header>
+    <div class="modal-body">
+      <div class="modal-hint">
+        Upload an updated criteria PDF. AEGIS re-runs the extraction
+        prompt and replaces the structured fields (tiers, hard gates,
+        exclusions, etc.) on this funder. Contact fields are preserved
+        per-field when the new PDF doesn't include them. Any legacy
+        free-form notes are atomically moved into "Uncategorised from
+        extraction" before the new fields land.
+      </div>
+      <form class="form" method="post" enctype="multipart/form-data"
+            action="/ui/funders/{{ funder.id }}/reextract">
+        <div class="field">
+          <label>Criteria PDF</label>
+          <div class="dropzone">
+            <div class="big">Drop the updated PDF</div>
+            <div class="small">or pick a file below · max 25 MB · ~10–30 s extraction</div>
+            <input type="file" name="pdf" accept="application/pdf" required>
+          </div>
+        </div>
+        <div class="form-actions" style="margin-top:14px">
+          <button class="btn primary" type="submit">Run re-extraction</button>
+          <button class="btn ghost" type="button"
+                  onclick="document.getElementById('submit-modal-host').innerHTML=''">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

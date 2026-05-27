@@ -417,37 +417,6 @@
 .dossier-page .feed .event a strong { color: var(--accent); }
 .dossier-page .feed .event a:hover strong { color: var(--ink); }
 
-/* ===================== COMPLIANCE RIBBON ===================== */
-
-.dossier-page .compliance-ribbon {
-  max-width: 1320px;
-  margin: 24px auto 0;
-  padding: 14px 56px 0;
-  border-top: 1px solid var(--ink);
-  display: grid;
-  grid-template-columns: 220px 1fr 1fr;
-  gap: 24px;
-  align-items: baseline;
-}
-.dossier-page .compliance-ribbon .k {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--ink);
-}
-.dossier-page .compliance-ribbon .v {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  color: var(--ink-2);
-}
-.dossier-page .compliance-ribbon .v .tier {
-  color: var(--ink-3);
-  letter-spacing: 0.12em;
-  margin-right: 6px;
-}
-
 /* ===================== STATUS BAR (foot) ===================== */
 
 .dossier-page .statusbar {
@@ -705,6 +674,262 @@
 }
 .dossier-page a.subtle:hover { color: var(--ink); border-bottom-color: var(--ink); }
 
+/* ===================== FUNDER DETAIL ===================== */
+
+/* Top row: contact card (left) + baseline card (right). 1fr:2fr keeps the
+ * baseline strip wide enough for 4 cells without crowding. */
+.dossier-page .funder-top-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) 2fr;
+  gap: 32px;
+  margin-top: 14px;
+}
+
+/* Contact card */
+.dossier-page .contact-card .contact-rows {
+  margin-top: 14px;
+}
+.dossier-page .contact-row {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 14px;
+  align-items: baseline;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.dossier-page .contact-row:last-child { border-bottom: 0; }
+.dossier-page .contact-row .contact-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.dossier-page .contact-row .contact-value {
+  font-family: var(--serif);
+  font-size: 15px;
+  color: var(--ink);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  word-break: break-word;
+}
+.dossier-page .contact-row.is-primary {
+  background: var(--paper-2);
+  padding-left: 12px;
+  padding-right: 12px;
+  margin: 0 -12px;
+  border-radius: 4px;
+  border-bottom-color: transparent;
+}
+.dossier-page .contact-row.is-primary .contact-label {
+  color: var(--accent);
+}
+.dossier-page .contact-row .star {
+  display: inline-block;
+  color: var(--gild);
+  font-size: 13px;
+  margin-right: 2px;
+}
+
+/* Copy-to-clipboard icon button — inline with contact value. */
+.dossier-page .copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper);
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+  padding: 0;
+}
+.dossier-page .copy-btn:hover {
+  background: var(--paper-2);
+  color: var(--ink);
+  border-color: var(--ink-3);
+}
+.dossier-page .copy-btn.copied {
+  background: var(--approve-soft);
+  border-color: var(--approve);
+  color: var(--approve);
+}
+
+/* Baseline card — italic hint line under the section header. */
+.dossier-page .baseline-card .hint {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-top: 6px;
+}
+
+/* Tier table — tighter rows than the default queue, all-numeric columns
+ * right-aligned, first column (tier name) styled like a row label. */
+.dossier-page table.queue.tier-table { margin-top: 6px; }
+.dossier-page table.queue.tier-table thead th,
+.dossier-page table.queue.tier-table tbody td {
+  padding: 10px 10px 10px 0;
+  font-size: 13px;
+}
+.dossier-page table.queue.tier-table tbody td.tier-name {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ink);
+}
+.dossier-page table.queue.tier-table tbody td .dash { color: var(--ink-3); }
+
+/* Two-column conditions row: auto-decline | conditional. */
+.dossier-page .conditions-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+}
+.dossier-page .condition-list {
+  list-style: none;
+  margin: 14px 0 0 0;
+  padding: 0;
+}
+.dossier-page .condition-list li {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink);
+  padding: 8px 0 8px 22px;
+  border-bottom: 1px solid var(--rule-soft);
+  position: relative;
+  line-height: 1.4;
+}
+.dossier-page .condition-list li:last-child { border-bottom: 0; }
+.dossier-page .condition-list li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 14px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dossier-page .condition-list.decline li::before { background: var(--decline); }
+.dossier-page .condition-list.conditional li::before { background: var(--review); }
+
+/* Notes blocks — paired residual/operator. Currently both render with
+ * .is-residual styling per step D agreement (legacy notes are pre-step-C
+ * extraction residual, not operator-authored). When step F lands and
+ * an Operator notes UI exists, .is-operator gets distinct styling. */
+.dossier-page .notes-block {
+  margin-top: 14px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 14px 16px;
+}
+.dossier-page .notes-block .notes-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 8px;
+}
+.dossier-page .notes-block .notes-body {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.dossier-page .notes-block.is-residual { background: var(--paper-2); }
+
+/* Submit-a-deal modal (HTMX-loaded fragment) — backdrop captures
+ * click-outside-to-close, dialog is centered, max 720px wide, scrolls
+ * internally on tall merchant lists. */
+.dossier-page .modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(45, 90, 71, 0.55);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 80px 24px 24px;
+  z-index: 100;
+}
+.dossier-page .modal-dialog {
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  border-bottom-width: 3px;
+  max-width: 720px;
+  width: 100%;
+  max-height: calc(100vh - 120px);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.dossier-page .modal-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 20px; border-bottom: 1px solid var(--rule);
+}
+.dossier-page .modal-head h2 {
+  font: 500 16px/1 var(--serif); margin: 0; color: var(--ink);
+}
+.dossier-page .modal-close {
+  background: transparent; border: 0; font-size: 24px;
+  color: var(--ink-3); cursor: pointer; line-height: 1;
+  padding: 0 4px;
+}
+.dossier-page .modal-close:hover { color: var(--ink); }
+.dossier-page .modal-body { padding: 16px 20px; overflow-y: auto; }
+.dossier-page .modal-hint {
+  font: italic 12px/1.4 var(--serif);
+  color: var(--ink-3); margin-bottom: 12px;
+}
+.dossier-page .modal-merchant-list { margin-top: 8px; }
+
+/* Preselect banner on /merchants/{id}/match — surfaces when an
+ * operator arrives from a funder picker but the chosen funder
+ * hard-fails the merchant. Visually de-emphasised vs. a hard error
+ * (no red treatment); explains, doesn't alarm. */
+.dossier-page .preselect-banner {
+  background: var(--review-soft);
+  border: 1px solid color-mix(in oklch, var(--review) 30%, var(--rule));
+  border-left: 3px solid var(--review);
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin-bottom: 18px;
+}
+.dossier-page .preselect-banner-title {
+  display: flex; align-items: center; gap: 10px;
+  font: 500 14px/1.3 var(--serif);
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+.dossier-page .preselect-banner-reasons {
+  margin: 0; padding-left: 24px;
+  font: 13px/1.5 var(--serif);
+  color: var(--ink-2);
+}
+
+/* Flash banners on funder detail — set by the re-extract route's
+ * redirect-with-query-param flow. Success = sage tint, error = amber. */
+.dossier-page .flash {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px;
+  border-radius: 4px;
+  margin-bottom: 18px;
+  font: 13px/1.4 var(--serif);
+}
+.dossier-page .flash-success {
+  background: var(--approve-soft);
+  border: 1px solid color-mix(in oklch, var(--approve) 30%, var(--rule));
+  border-left: 3px solid var(--approve);
+  color: var(--ink);
+}
+.dossier-page .flash-error {
+  background: var(--decline-soft);
+  border: 1px solid color-mix(in oklch, var(--decline) 30%, var(--rule));
+  border-left: 3px solid var(--decline);
+  color: var(--ink);
+}
+
 /* ===================== RESPONSIVE FIXES ===================== */
 
 /* Mid desktop — tighten side padding so content uses more of the viewport. */
@@ -712,7 +937,6 @@
   .dossier-page .deck,
   .dossier-page .strip,
   .dossier-page .body,
-  .dossier-page .compliance-ribbon,
   .dossier-page .statusbar { padding-left: 28px; padding-right: 28px; }
 }
 
@@ -724,7 +948,9 @@
   .dossier-page .deck { flex-wrap: wrap; }
   .dossier-page .deck h1 { font-size: 32px; }
   .dossier-page .form .row.three { grid-template-columns: 1fr 1fr; }
-  .dossier-page .compliance-ribbon { grid-template-columns: 1fr; gap: 8px; }
+  /* Funder detail two-col rows stack at this breakpoint. */
+  .dossier-page .funder-top-row,
+  .dossier-page .conditions-row { grid-template-columns: 1fr; gap: 24px; }
 }
 
 /* Mobile — single column everywhere, scrollable tables. */
@@ -732,7 +958,6 @@
   .dossier-page .deck,
   .dossier-page .strip,
   .dossier-page .body,
-  .dossier-page .compliance-ribbon,
   .dossier-page .statusbar { padding-left: 18px; padding-right: 18px; }
   .dossier-page .strip { grid-template-columns: repeat(2, 1fr) !important; }
   .dossier-page .strip .v { font-size: 26px; }

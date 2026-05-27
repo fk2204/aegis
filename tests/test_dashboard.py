@@ -487,6 +487,73 @@ def test_funder_import_save_creates_funder(
     assert "adult" in saved.excluded_industries
 
 
+def test_funder_import_save_persists_step_c_fields(
+    client: TestClient, funder_repo: InMemoryFunderRepository
+) -> None:
+    """Finding 1 fix: contact / tiers / conditions / notes_residual
+    posted via the import-save form must land on the persisted
+    FunderRow (pre-step-F they were silently dropped because the
+    form signature didn't accept them)."""
+    tiers_payload = (
+        '[{"name":"Elite","buy_rate_low":"1.25","buy_rate_high":"1.30",'
+        '"min_credit_score":700,"min_monthly_revenue":"100000",'
+        '"max_advance":"1500000","max_holdback":"0.15"}]'
+    )
+    resp = client.post(
+        "/ui/funders/import/save",
+        data={
+            "name": "Step C Saved Capital",
+            "accepts_stacking": "false",
+            "contact_name": "James Doe",
+            "contact_phone": "555-123-4567",
+            "contact_email": "james@stepc.com",
+            "submission_email": "iso@stepc.com",
+            "auto_decline_conditions": (
+                "Active tax liens > $25K\nOpen bankruptcy"
+            ),
+            "conditional_requirements": "Trucking: 2 yr MVR clean",
+            "notes_residual": "Renewals: case-by-case after 50% paid down.",
+            "tiers_json": tiers_payload,
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303, resp.text
+    saved = next(
+        (f for f in funder_repo.list_active() if f.name == "Step C Saved Capital"),
+        None,
+    )
+    assert saved is not None
+    assert saved.contact_name == "James Doe"
+    assert saved.submission_email == "iso@stepc.com"
+    assert len(saved.tiers) == 1
+    assert saved.tiers[0].name == "Elite"
+    from decimal import Decimal as _D
+    assert saved.tiers[0].buy_rate_low == _D("1.25")
+    assert saved.auto_decline_conditions == (
+        "Active tax liens > $25K",
+        "Open bankruptcy",
+    )
+    assert saved.conditional_requirements == ("Trucking: 2 yr MVR clean",)
+    assert "Renewals" in saved.notes_residual
+
+
+def test_funder_import_save_rejects_invalid_tiers_json(
+    client: TestClient,
+) -> None:
+    """Malformed tier JSON → 400 with a helpful error."""
+    resp = client.post(
+        "/ui/funders/import/save",
+        data={
+            "name": "Bad Tier Capital",
+            "accepts_stacking": "false",
+            "tiers_json": "not-json",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "tier" in resp.text.lower()
+
+
 def test_funder_import_save_rejects_invalid_decimal(client: TestClient) -> None:
     resp = client.post(
         "/ui/funders/import/save",

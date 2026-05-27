@@ -73,7 +73,6 @@
 .dossier-page .deck,
 .dossier-page .strip,
 .dossier-page .body,
-.dossier-page .compliance-ribbon,
 .dossier-page .statusbar { box-sizing: border-box; }
 
 .dossier-page ::selection { background: var(--ink); color: var(--paper); }
@@ -1047,7 +1046,6 @@
   .dossier-page .deck,
   .dossier-page .strip,
   .dossier-page .body,
-  .dossier-page .compliance-ribbon,
   .dossier-page .statusbar { padding-left: 28px; padding-right: 28px; }
   .dossier-page .topstrip { padding-left: 28px; padding-right: 28px; }
 }
@@ -1072,7 +1070,6 @@
   .dossier-page .body.cols-form { grid-template-columns: 1fr; }
   .dossier-page .deck { flex-wrap: wrap; }
   .dossier-page .strip { grid-template-columns: repeat(3, 1fr) !important; }
-  .dossier-page .compliance-ribbon { grid-template-columns: 1fr; gap: 8px; }
 }
 
 /* Mobile — relax strip + stack everything. */

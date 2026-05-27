@@ -399,6 +399,105 @@ def test_match_page_shows_submit_button(
     assert "Download submission package" in resp.text
 
 
+def test_match_preselect_funder_checks_correct_card(
+    client: TestClient,
+    merchant: MerchantRow,
+    funder_repo: InMemoryFunderRepository,
+) -> None:
+    """When ?preselect_funder=<id> points at a funder that does NOT
+    hard-fail this merchant on any criterion, the matching card's
+    checkbox renders with the `checked` attribute and no eligibility
+    banner appears.
+
+    Note: the fixture merchant has very lean data (true_revenue ~$3K)
+    so score_deal returns tier F, which makes every card render with
+    data-color="red" via _match_card. That's a separate matter — what
+    we verify here is that the preselect logic does not banner a card
+    whose `hard_reasons` list is empty (qualifies on criteria; only
+    the global tier is low).
+    """
+    permissive = FunderRow(
+        name="Permissive Capital",
+        min_monthly_revenue=Decimal("1000"),
+        accepts_stacking=False,
+    )
+    funder_repo.upsert(permissive)
+
+    resp = client.get(
+        f"/ui/merchants/{merchant.id}/match?preselect_funder={permissive.id}"
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    # Find the Permissive card's checkbox line; assert `checked` present.
+    permissive_lines = [
+        line for line in text.splitlines()
+        if 'type="checkbox"' in line and f'value="{permissive.id}"' in line
+    ]
+    assert permissive_lines, f"no checkbox row found for {permissive.id}"
+    assert "checked" in permissive_lines[0], (
+        f"expected `checked` on Permissive Capital row — got:\n{permissive_lines[0]}"
+    )
+    # No "Not eligible" banner — the funder qualifies on its criteria.
+    assert "Not eligible" not in text
+
+
+def test_match_preselect_funder_disabled_shows_reason(
+    client: TestClient,
+    merchant: MerchantRow,
+    funder_repo: InMemoryFunderRepository,
+) -> None:
+    """When the preselected funder hard-fails this merchant, the page
+    renders a banner with the fail reasons and the matching checkbox
+    stays unchecked."""
+    # Alpha Capital has min_monthly_revenue=$25K; merchant fixture has
+    # $3K monthly revenue, so Alpha hard-fails on revenue → color=red.
+    alpha = funder_repo.list_active()[0]
+    assert alpha.name == "Alpha Capital"
+
+    resp = client.get(
+        f"/ui/merchants/{merchant.id}/match?preselect_funder={alpha.id}"
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    # Banner present, naming the funder + revenue-floor reason.
+    assert "Not eligible" in text
+    assert "Alpha Capital" in text
+    assert "revenue" in text.lower()
+    # Checkbox for Alpha is NOT pre-checked.
+    needle_checked = f'value="{alpha.id}" data-color="red" disabled checked'
+    assert needle_checked not in text
+
+
+def test_match_preselect_funder_unknown_uuid_ignored(
+    client: TestClient,
+    merchant: MerchantRow,
+    funder_repo: InMemoryFunderRepository,
+) -> None:
+    """An unknown preselect_funder UUID renders the page normally — no
+    crash, no banner, no checkbox pre-checked. Funder picker links can
+    safely outlive funder deletions."""
+    _ = funder_repo
+    bogus_id = uuid4()
+    resp = client.get(
+        f"/ui/merchants/{merchant.id}/match?preselect_funder={bogus_id}"
+    )
+    assert resp.status_code == 200
+    assert "Not eligible" not in resp.text
+
+
+def test_match_preselect_funder_malformed_param_returns_422(
+    client: TestClient,
+    merchant: MerchantRow,
+    funder_repo: InMemoryFunderRepository,
+) -> None:
+    """A non-UUID preselect_funder value is rejected by FastAPI validation."""
+    _ = funder_repo
+    resp = client.get(
+        f"/ui/merchants/{merchant.id}/match?preselect_funder=not-a-uuid"
+    )
+    assert resp.status_code == 422
+
+
 def test_match_page_renders_funder_response_form(
     client: TestClient, merchant: MerchantRow, funder_repo: InMemoryFunderRepository
 ) -> None:

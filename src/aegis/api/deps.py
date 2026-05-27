@@ -26,6 +26,11 @@ from aegis.compliance.snapshot import (
     SupabaseDecisionSnapshot,
 )
 from aegis.config import get_settings
+from aegis.deals.repository import (
+    DealRepository,
+    InMemoryDealRepository,
+    SupabaseDealRepository,
+)
 from aegis.funders.replies import (
     FunderReplyRepository,
     InMemoryFunderReplyRepository,
@@ -80,6 +85,22 @@ def get_funder_repository() -> FunderRepository:
     if get_settings().aegis_storage_backend == "memory":
         return InMemoryFunderRepository()
     return SupabaseFunderRepository()
+
+
+@lru_cache(maxsize=1)
+def get_deal_repository() -> DealRepository:
+    """Process-wide DealRepository (deals are a merchants x documents projection).
+
+    In-memory backend composes from the in-memory merchant + document
+    repos so a deal added via either flows through immediately. Supabase
+    backend issues nested-select joins against the documents table.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryDealRepository(
+            merchants=get_merchant_repository(),
+            documents=get_repository(),
+        )
+    return SupabaseDealRepository()
 
 
 @lru_cache(maxsize=1)
@@ -146,6 +167,7 @@ def reset_dependency_caches() -> None:
     get_repository.cache_clear()
     get_merchant_repository.cache_clear()
     get_funder_repository.cache_clear()
+    get_deal_repository.cache_clear()
     get_funder_reply_repository.cache_clear()
     get_override_repository.cache_clear()
     get_audit.cache_clear()
@@ -158,6 +180,7 @@ def reset_dependency_caches() -> None:
 __all__ = [
     "get_audit",
     "get_close_client",
+    "get_deal_repository",
     "get_decision_snapshot",
     "get_funder_reply_repository",
     "get_funder_repository",

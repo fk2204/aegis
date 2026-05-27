@@ -18,7 +18,7 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from aegis.db import get_supabase
-from aegis.funders.models import FunderRow
+from aegis.funders.models import FunderRow, FunderTier
 
 
 class FunderNotFoundError(KeyError):
@@ -148,6 +148,12 @@ def _row_to_funder(row: dict[str, Any]) -> FunderRow:
         max_advance=_money("max_advance"),
         max_nsf_tolerance=row.get("max_nsf_tolerance"),
         requires_coj=row.get("requires_coj", False),
+        aegis_compensation_disclosure_text=(
+            row.get("aegis_compensation_disclosure_text") or ""
+        ),
+        charges_merchant_advance_fees=row.get(
+            "charges_merchant_advance_fees", False
+        ),
         typical_factor_low=_money("typical_factor_low"),
         typical_factor_high=_money("typical_factor_high"),
         typical_holdback_low=_money("typical_holdback_low"),
@@ -156,7 +162,17 @@ def _row_to_funder(row: dict[str, Any]) -> FunderRow:
         excluded_states=tuple(row.get("excluded_states") or ()),
         guidelines_extracted_at=_dt("guidelines_extracted_at"),
         guidelines_source_pdf_hash=row.get("guidelines_source_pdf_hash"),
+        contact_name=row.get("contact_name") or "",
+        contact_phone=row.get("contact_phone") or "",
+        contact_email=row.get("contact_email") or "",
+        submission_email=row.get("submission_email") or "",
+        tiers=tuple(
+            FunderTier.model_validate(t) for t in (row.get("tiers") or [])
+        ),
+        auto_decline_conditions=tuple(row.get("auto_decline_conditions") or ()),
+        conditional_requirements=tuple(row.get("conditional_requirements") or ()),
         notes=row.get("notes") or "",
+        notes_residual=row.get("notes_residual") or "",
     )
 
 
@@ -178,6 +194,8 @@ def _funder_to_payload(f: FunderRow) -> dict[str, Any]:
         "max_advance": _str_or_none(f.max_advance),
         "max_nsf_tolerance": f.max_nsf_tolerance,
         "requires_coj": f.requires_coj,
+        "aegis_compensation_disclosure_text": f.aegis_compensation_disclosure_text,
+        "charges_merchant_advance_fees": f.charges_merchant_advance_fees,
         "typical_factor_low": _str_or_none(f.typical_factor_low),
         "typical_factor_high": _str_or_none(f.typical_factor_high),
         "typical_holdback_low": _str_or_none(f.typical_holdback_low),
@@ -188,7 +206,17 @@ def _funder_to_payload(f: FunderRow) -> dict[str, Any]:
             f.guidelines_extracted_at.isoformat() if f.guidelines_extracted_at else None
         ),
         "guidelines_source_pdf_hash": f.guidelines_source_pdf_hash,
+        "contact_name":     f.contact_name,
+        "contact_phone":    f.contact_phone,
+        "contact_email":    f.contact_email,
+        "submission_email": f.submission_email,
+        # JSONB tiers — model_dump(mode="json") serializes Decimal as
+        # strings so JSON round-trips preserve precision.
+        "tiers": [t.model_dump(mode="json") for t in f.tiers],
+        "auto_decline_conditions":  list(f.auto_decline_conditions),
+        "conditional_requirements": list(f.conditional_requirements),
         "notes": f.notes,
+        "notes_residual": f.notes_residual,
         "updated_at": datetime.now(UTC).isoformat(),
     }
 
