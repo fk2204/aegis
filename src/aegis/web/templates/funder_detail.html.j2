@@ -2,6 +2,20 @@
 {% set active = 'Funders' %}
 {% block title %}{{ funder.name }} — Funder · AEGIS{% endblock %}
 
+{# Compact money formatter for the baseline Advance cell (range needs
+   to fit in the 36px strip value width). "$25k" / "$1.5M" style. #}
+{% macro money_short(v) -%}
+{%- if v is none -%}—
+{%- elif v >= 1000000 -%}
+  {%- set m = (v / 1000000)|float -%}
+  {%- if m == m|int -%}${{ m|int }}M{%- else -%}${{ "%.1f"|format(m) }}M{%- endif -%}
+{%- elif v >= 1000 -%}
+  ${{ (v / 1000)|int }}k
+{%- else -%}
+  ${{ "{:,.0f}".format(v) }}
+{%- endif -%}
+{%- endmacro %}
+
 {% block deck %}
 <header class="deck">
   <h1>{{ funder.name }}<em> · funder</em></h1>
@@ -12,6 +26,8 @@
   </div>
   <div class="actions">
     <a class="btn ghost" href="/ui/funders">← All funders</a>
+    <button class="btn" type="button" onclick="alert('Coming in step F')">Re-extract from PDF</button>
+    <button class="btn primary" type="button" onclick="alert('Coming in step E')">+ Submit a deal</button>
   </div>
 </header>
 {% endblock %}
@@ -20,64 +36,200 @@
 <section class="body cols-1">
   <div>
 
-    <header class="sect-head">
-      <h2>Hard gates</h2>
-      <div class="rule"></div>
-      <div class="meta">automatic decline if any fails</div>
-    </header>
-    <section class="strip" style="--strip-cols:4;padding-left:0;padding-right:0">
-      <div class="cell" style="padding-left:0">
-        <div class="k">Min monthly revenue</div>
-        <div class="v">{{ "${:,.0f}".format(funder.min_monthly_revenue) if funder.min_monthly_revenue else "—" }}</div>
-      </div>
-      <div class="cell">
-        <div class="k">Min ADB</div>
-        <div class="v">{{ "${:,.0f}".format(funder.min_avg_daily_balance) if funder.min_avg_daily_balance else "—" }}</div>
-      </div>
-      <div class="cell">
-        <div class="k">Min FICO</div>
-        <div class="v">{{ funder.min_credit_score or "—" }}</div>
-      </div>
-      <div class="cell">
-        <div class="k">Min TIB · mo</div>
-        <div class="v">{{ funder.min_months_in_business or "—" }}</div>
-      </div>
-    </section>
+    {# === Top row: contact card (left) + baseline card (right) === #}
+    <div class="funder-top-row">
 
-    <section class="strip" style="--strip-cols:3;border-bottom:0;padding-left:0;padding-right:0;margin-top:14px">
-      <div class="cell" style="padding-left:0">
-        <div class="k">Max positions</div>
-        <div class="v">{{ funder.max_positions if funder.max_positions is not none else "—" }}</div>
+      <div class="contact-card">
+        <header class="sect-head">
+          <h2>Contact</h2>
+          <div class="rule"></div>
+        </header>
+        {% set has_contact = funder.submission_email or funder.contact_name or funder.contact_phone or funder.contact_email %}
+        {% if has_contact %}
+          <div class="contact-rows">
+            {% if funder.submission_email %}
+              <div class="contact-row is-primary">
+                <div class="contact-label">Submission</div>
+                <div class="contact-value">
+                  <span class="star" title="Primary action address">★</span>
+                  <span>{{ funder.submission_email }}</span>
+                  <button class="copy-btn" type="button" data-copy="{{ funder.submission_email }}" onclick="aegisCopy(this)" title="Copy address">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5.5" y="5.5" width="8" height="8" rx="1"/><path d="M3 10.5V3.5a1 1 0 0 1 1-1h7"/></svg>
+                  </button>
+                </div>
+              </div>
+            {% endif %}
+            <div class="contact-row">
+              <div class="contact-label">Name</div>
+              <div class="contact-value">{{ funder.contact_name or '—' }}</div>
+            </div>
+            <div class="contact-row">
+              <div class="contact-label">Phone</div>
+              <div class="contact-value">
+                {% if funder.contact_phone %}
+                  <span>{{ funder.contact_phone }}</span>
+                  <button class="copy-btn" type="button" data-copy="{{ funder.contact_phone }}" onclick="aegisCopy(this)" title="Copy phone">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5.5" y="5.5" width="8" height="8" rx="1"/><path d="M3 10.5V3.5a1 1 0 0 1 1-1h7"/></svg>
+                  </button>
+                {% else %}—{% endif %}
+              </div>
+            </div>
+            <div class="contact-row">
+              <div class="contact-label">Email</div>
+              <div class="contact-value">
+                {% if funder.contact_email %}
+                  <span>{{ funder.contact_email }}</span>
+                  <button class="copy-btn" type="button" data-copy="{{ funder.contact_email }}" onclick="aegisCopy(this)" title="Copy email">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5.5" y="5.5" width="8" height="8" rx="1"/><path d="M3 10.5V3.5a1 1 0 0 1 1-1h7"/></svg>
+                  </button>
+                {% else %}—{% endif %}
+              </div>
+            </div>
+          </div>
+        {% else %}
+          <div class="empty" style="margin-top:14px">No contact extracted<span class="copy">Re-extract from PDF to populate this card.</span></div>
+        {% endif %}
       </div>
-      <div class="cell">
-        <div class="k">Stacking</div>
-        <div class="v" style="font-size:22px">
-          {% if funder.accepts_stacking %}<span class="chip pos">yes</span>{% else %}<span class="chip bad">no</span>{% endif %}
-        </div>
-      </div>
-      <div class="cell" style="border-right:0;padding-right:0">
-        <div class="k">Max NSF</div>
-        <div class="v">{{ funder.max_nsf_tolerance if funder.max_nsf_tolerance is not none else "—" }}</div>
-      </div>
-    </section>
 
-    <header class="sect-head" style="margin-top:32px">
-      <h2>Pricing envelope</h2>
-      <div class="rule"></div>
-    </header>
-    <div class="feed">
-      <div class="event"><div class="t">$</div><div class="txt"><strong>Advance range</strong>&nbsp;&nbsp;{% if funder.min_advance and funder.max_advance %}${{ "{:,.0f}".format(funder.min_advance) }} – ${{ "{:,.0f}".format(funder.max_advance) }}{% else %}—{% endif %}</div></div>
-      <div class="event"><div class="t">×</div><div class="txt"><strong>Factor range</strong>&nbsp;&nbsp;{% if funder.typical_factor_low and funder.typical_factor_high %}{{ funder.typical_factor_low }} – {{ funder.typical_factor_high }}{% else %}—{% endif %}</div></div>
-      <div class="event"><div class="t">%</div><div class="txt"><strong>Holdback range</strong>&nbsp;&nbsp;{% if funder.typical_holdback_low and funder.typical_holdback_high %}{{ "{:.0%}".format(funder.typical_holdback_low) }} – {{ "{:.0%}".format(funder.typical_holdback_high) }}{% else %}—{% endif %}</div></div>
+      <div class="baseline-card">
+        <header class="sect-head">
+          <h2>Baseline</h2>
+          <div class="rule"></div>
+        </header>
+        <div class="hint">most permissive values across all tiers</div>
+        <section class="strip" style="--strip-cols:4;padding-left:0;padding-right:0;margin-top:8px">
+          <div class="cell" style="padding-left:0">
+            <div class="k">Min MRR</div>
+            <div class="v">{{ "${:,.0f}".format(funder.min_monthly_revenue) if funder.min_monthly_revenue else "—" }}</div>
+          </div>
+          <div class="cell">
+            <div class="k">Min FICO</div>
+            <div class="v">{{ funder.min_credit_score or "—" }}</div>
+          </div>
+          <div class="cell">
+            <div class="k">Min TIB · mo</div>
+            <div class="v">{{ funder.min_months_in_business or "—" }}</div>
+          </div>
+          <div class="cell" style="border-right:0;padding-right:0">
+            <div class="k">Max positions</div>
+            <div class="v">{{ funder.max_positions if funder.max_positions is not none else "—" }}</div>
+          </div>
+        </section>
+        <section class="strip" style="--strip-cols:3;border-bottom:0;padding-left:0;padding-right:0;margin-top:14px">
+          <div class="cell" style="padding-left:0">
+            <div class="k">Advance</div>
+            <div class="v">
+              {% if funder.min_advance and funder.max_advance %}{{ money_short(funder.min_advance) }}–{{ money_short(funder.max_advance) }}
+              {%- elif funder.max_advance %}up to {{ money_short(funder.max_advance) }}
+              {%- elif funder.min_advance %}from {{ money_short(funder.min_advance) }}
+              {%- else %}—{% endif %}
+            </div>
+          </div>
+          <div class="cell">
+            <div class="k">Factor</div>
+            <div class="v">
+              {% if funder.typical_factor_low and funder.typical_factor_high %}
+                {{ funder.typical_factor_low }}–{{ funder.typical_factor_high }}
+              {% else %}—{% endif %}
+            </div>
+          </div>
+          <div class="cell" style="border-right:0;padding-right:0">
+            <div class="k">Holdback</div>
+            <div class="v">
+              {% if funder.typical_holdback_low and funder.typical_holdback_high %}
+                {{ "{:.0%}".format(funder.typical_holdback_low) }}–{{ "{:.0%}".format(funder.typical_holdback_high) }}
+              {% else %}—{% endif %}
+            </div>
+          </div>
+        </section>
+      </div>
+
     </div>
 
+    {# === Tier table (only when funder.tiers is populated) === #}
+    {% if funder.tiers %}
+      <header class="sect-head" style="margin-top:32px">
+        <h2>Tiers</h2>
+        <div class="rule"></div>
+        <div class="meta">{{ funder.tiers|length }} tier{{ '' if funder.tiers|length == 1 else 's' }}</div>
+      </header>
+      <table class="queue tier-table">
+        <thead>
+          <tr>
+            <th>Tier</th>
+            <th class="num">Buy rate</th>
+            <th class="num">Min TIB</th>
+            <th class="num">Min FICO</th>
+            <th class="num">Min MRR</th>
+            <th class="num">Max pos</th>
+            <th class="num">Max advance</th>
+            <th class="num">Max holdback</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for tier in funder.tiers %}
+            <tr class="no-click">
+              <td class="tier-name">{{ tier.name }}</td>
+              <td class="mono-cell num">
+                {% if tier.buy_rate_low and tier.buy_rate_high %}
+                  {% if tier.buy_rate_low == tier.buy_rate_high %}{{ tier.buy_rate_low }}{% else %}{{ tier.buy_rate_low }}–{{ tier.buy_rate_high }}{% endif %}
+                {% else %}<span class="dash">—</span>{% endif %}
+              </td>
+              <td class="mono-cell num">{% if tier.min_months_in_business is not none %}{{ tier.min_months_in_business }}{% else %}<span class="dash">—</span>{% endif %}</td>
+              <td class="mono-cell num">{% if tier.min_credit_score is not none %}{{ tier.min_credit_score }}{% else %}<span class="dash">—</span>{% endif %}</td>
+              <td class="mono-cell num">{% if tier.min_monthly_revenue %}{{ "${:,.0f}".format(tier.min_monthly_revenue) }}{% else %}<span class="dash">—</span>{% endif %}</td>
+              <td class="mono-cell num">{% if tier.max_positions is not none %}{{ tier.max_positions }}{% else %}<span class="dash">—</span>{% endif %}</td>
+              <td class="mono-cell num">{% if tier.max_advance %}{{ "${:,.0f}".format(tier.max_advance) }}{% else %}<span class="dash">—</span>{% endif %}</td>
+              <td class="mono-cell num">{% if tier.max_holdback %}{{ "{:.0%}".format(tier.max_holdback) }}{% else %}<span class="dash">—</span>{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    {# === Two-column conditions row (only when at least one list is non-empty) === #}
+    {% if funder.auto_decline_conditions or funder.conditional_requirements %}
+      <div class="conditions-row" style="margin-top:32px">
+        <div>
+          <header class="sect-head">
+            <h2>Auto-decline</h2>
+            <div class="rule"></div>
+            {% if funder.auto_decline_conditions %}<div class="meta">{{ funder.auto_decline_conditions|length }}</div>{% endif %}
+          </header>
+          {% if funder.auto_decline_conditions %}
+            <ul class="condition-list decline">
+              {% for c in funder.auto_decline_conditions %}<li>{{ c }}</li>{% endfor %}
+            </ul>
+          {% else %}
+            <div class="empty" style="margin-top:14px">None recorded<span class="copy">No absolute disqualifiers extracted.</span></div>
+          {% endif %}
+        </div>
+        <div>
+          <header class="sect-head">
+            <h2>Conditional</h2>
+            <div class="rule"></div>
+            {% if funder.conditional_requirements %}<div class="meta">{{ funder.conditional_requirements|length }}</div>{% endif %}
+          </header>
+          {% if funder.conditional_requirements %}
+            <ul class="condition-list conditional">
+              {% for c in funder.conditional_requirements %}<li>{{ c }}</li>{% endfor %}
+            </ul>
+          {% else %}
+            <div class="empty" style="margin-top:14px">None recorded<span class="copy">No gated allowances extracted.</span></div>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
+
+    {# === Requirements & practices (renamed from Compliance) === #}
     <header class="sect-head" style="margin-top:32px">
-      <h2>Compliance</h2>
+      <h2>Requirements &amp; practices</h2>
       <div class="rule"></div>
     </header>
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px">
       {% if funder.requires_coj %}<span class="chip warn">Requires CoJ</span>{% else %}<span class="chip">No CoJ</span>{% endif %}
       {% if funder.charges_merchant_advance_fees %}<span class="chip bad">Charges advance fees</span>{% else %}<span class="chip pos">No advance fees</span>{% endif %}
+      {% if funder.accepts_stacking %}<span class="chip pos">Accepts stacking: yes</span>{% else %}<span class="chip bad">Accepts stacking: no</span>{% endif %}
     </div>
     {% if funder.aegis_compensation_disclosure_text %}
       <div class="feed" style="margin-top:14px">
@@ -85,6 +237,7 @@
       </div>
     {% endif %}
 
+    {# === Exclusions (unchanged from prior layout) === #}
     {% if funder.excluded_states or funder.excluded_industries %}
       <header class="sect-head" style="margin-top:32px">
         <h2>Exclusions</h2>
@@ -100,14 +253,43 @@
       </div>
     {% endif %}
 
-    {% if funder.notes %}
+    {# === Notes ===
+       Per step D agreement: legacy `notes` prose for funders not yet
+       re-extracted renders alongside `notes_residual` in the same block,
+       both under "Uncategorised from extraction" label. Step F's
+       re-extract atomically migrates legacy notes -> notes_residual. #}
+    {% if funder.notes or funder.notes_residual %}
       <header class="sect-head" style="margin-top:32px">
         <h2>Notes</h2>
         <div class="rule"></div>
       </header>
-      <div style="font-family:var(--serif);font-size:14px;color:var(--ink-2);white-space:pre-wrap;line-height:1.5;padding-top:14px">{{ funder.notes }}</div>
+      {% if funder.notes_residual %}
+        <div class="notes-block is-residual">
+          <div class="notes-label">Uncategorised from extraction</div>
+          <div class="notes-body">{{ funder.notes_residual }}</div>
+        </div>
+      {% endif %}
+      {% if funder.notes %}
+        <div class="notes-block is-residual">
+          <div class="notes-label">Uncategorised from extraction (legacy)</div>
+          <div class="notes-body">{{ funder.notes }}</div>
+        </div>
+      {% endif %}
     {% endif %}
 
   </div>
 </section>
+
+<script>
+// Copy-to-clipboard helper for contact card. Reads from data-copy
+// attribute (Jinja-escaped) so apostrophes/quotes in addresses are safe.
+function aegisCopy(btn) {
+  const text = btn.dataset.copy || '';
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.classList.add('copied');
+    setTimeout(() => btn.classList.remove('copied'), 1200);
+  }).catch(() => {});
+}
+</script>
 {% endblock %}

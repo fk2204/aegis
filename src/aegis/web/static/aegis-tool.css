@@ -674,6 +674,176 @@
 }
 .dossier-page a.subtle:hover { color: var(--ink); border-bottom-color: var(--ink); }
 
+/* ===================== FUNDER DETAIL ===================== */
+
+/* Top row: contact card (left) + baseline card (right). 1fr:2fr keeps the
+ * baseline strip wide enough for 4 cells without crowding. */
+.dossier-page .funder-top-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) 2fr;
+  gap: 32px;
+  margin-top: 14px;
+}
+
+/* Contact card */
+.dossier-page .contact-card .contact-rows {
+  margin-top: 14px;
+}
+.dossier-page .contact-row {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 14px;
+  align-items: baseline;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.dossier-page .contact-row:last-child { border-bottom: 0; }
+.dossier-page .contact-row .contact-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.dossier-page .contact-row .contact-value {
+  font-family: var(--serif);
+  font-size: 15px;
+  color: var(--ink);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  word-break: break-word;
+}
+.dossier-page .contact-row.is-primary {
+  background: var(--paper-2);
+  padding-left: 12px;
+  padding-right: 12px;
+  margin: 0 -12px;
+  border-radius: 4px;
+  border-bottom-color: transparent;
+}
+.dossier-page .contact-row.is-primary .contact-label {
+  color: var(--accent);
+}
+.dossier-page .contact-row .star {
+  display: inline-block;
+  color: var(--gild);
+  font-size: 13px;
+  margin-right: 2px;
+}
+
+/* Copy-to-clipboard icon button — inline with contact value. */
+.dossier-page .copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper);
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+  padding: 0;
+}
+.dossier-page .copy-btn:hover {
+  background: var(--paper-2);
+  color: var(--ink);
+  border-color: var(--ink-3);
+}
+.dossier-page .copy-btn.copied {
+  background: var(--approve-soft);
+  border-color: var(--approve);
+  color: var(--approve);
+}
+
+/* Baseline card — italic hint line under the section header. */
+.dossier-page .baseline-card .hint {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-top: 6px;
+}
+
+/* Tier table — tighter rows than the default queue, all-numeric columns
+ * right-aligned, first column (tier name) styled like a row label. */
+.dossier-page table.queue.tier-table { margin-top: 6px; }
+.dossier-page table.queue.tier-table thead th,
+.dossier-page table.queue.tier-table tbody td {
+  padding: 10px 10px 10px 0;
+  font-size: 13px;
+}
+.dossier-page table.queue.tier-table tbody td.tier-name {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ink);
+}
+.dossier-page table.queue.tier-table tbody td .dash { color: var(--ink-3); }
+
+/* Two-column conditions row: auto-decline | conditional. */
+.dossier-page .conditions-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+}
+.dossier-page .condition-list {
+  list-style: none;
+  margin: 14px 0 0 0;
+  padding: 0;
+}
+.dossier-page .condition-list li {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink);
+  padding: 8px 0 8px 22px;
+  border-bottom: 1px solid var(--rule-soft);
+  position: relative;
+  line-height: 1.4;
+}
+.dossier-page .condition-list li:last-child { border-bottom: 0; }
+.dossier-page .condition-list li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 14px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dossier-page .condition-list.decline li::before { background: var(--decline); }
+.dossier-page .condition-list.conditional li::before { background: var(--review); }
+
+/* Notes blocks — paired residual/operator. Currently both render with
+ * .is-residual styling per step D agreement (legacy notes are pre-step-C
+ * extraction residual, not operator-authored). When step F lands and
+ * an Operator notes UI exists, .is-operator gets distinct styling. */
+.dossier-page .notes-block {
+  margin-top: 14px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 14px 16px;
+}
+.dossier-page .notes-block .notes-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 8px;
+}
+.dossier-page .notes-block .notes-body {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.dossier-page .notes-block.is-residual { background: var(--paper-2); }
+
 /* ===================== RESPONSIVE FIXES ===================== */
 
 /* Mid desktop — tighten side padding so content uses more of the viewport. */
@@ -692,6 +862,9 @@
   .dossier-page .deck { flex-wrap: wrap; }
   .dossier-page .deck h1 { font-size: 32px; }
   .dossier-page .form .row.three { grid-template-columns: 1fr 1fr; }
+  /* Funder detail two-col rows stack at this breakpoint. */
+  .dossier-page .funder-top-row,
+  .dossier-page .conditions-row { grid-template-columns: 1fr; gap: 24px; }
 }
 
 /* Mobile — single column everywhere, scrollable tables. */
