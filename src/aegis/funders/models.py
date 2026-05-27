@@ -13,10 +13,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aegis.money import Money
 
@@ -27,6 +27,44 @@ class _StrictModel(BaseModel):
         validate_assignment=True,
         str_strip_whitespace=True,
     )
+
+
+class FunderTier(_StrictModel):
+    """One tier in a funder's underwriting matrix (Elite / A / B / C-style).
+
+    A funder's `tiers` is an ordered tuple. Convention is most-permissive-
+    first → most-restrictive-last (Elite before A before B before C), but
+    this is not enforced — some funders publish tiers that don't fit a
+    strict ordering.
+
+    Numeric fields are `None` when the tier does NOT constrain on that
+    axis. Missing is not the same as zero or unlimited.
+    """
+
+    name: str = Field(min_length=1)
+    buy_rate_low:  Decimal | None = None
+    buy_rate_high: Decimal | None = None
+    min_months_in_business: Annotated[int, Field(ge=0)] | None = None
+    min_credit_score:       Annotated[int, Field(ge=300, le=850)] | None = None
+    min_monthly_revenue:    Money | None = None
+    max_positions:          Annotated[int, Field(ge=0)] | None = None
+    max_advance:            Money | None = None
+    # Decimal value as fraction, e.g. Decimal("0.15") for 15%.
+    # Not Decimal("15") (which would be 1500%).
+    max_holdback:           Decimal | None = None
+
+    @model_validator(mode="after")
+    def _buy_rate_low_le_high(self) -> Self:
+        if (
+            self.buy_rate_low is not None
+            and self.buy_rate_high is not None
+            and self.buy_rate_low > self.buy_rate_high
+        ):
+            raise ValueError(
+                f"tier {self.name!r}: buy_rate_low ({self.buy_rate_low}) "
+                f"must be <= buy_rate_high ({self.buy_rate_high})"
+            )
+        return self
 
 
 class FunderRow(_StrictModel):
@@ -98,6 +136,25 @@ class FunderRow(_StrictModel):
     guidelines_extracted_at: datetime | None = None
     guidelines_source_pdf_hash: str | None = None
 
+    # Contact info — surfaced as a card at the top of the funder detail
+    # page. Submission_email is the address used for sending deals;
+    # contact_email is the relationship address (may be the same person).
+    contact_name:     str = ""
+    contact_phone:    str = ""
+    contact_email:    str = ""
+    submission_email: str = ""
+
+    # Underwriting tiers. Empty tuple means this funder has not yet been
+    # re-extracted into the structured format — notes prose remains the
+    # source of truth until backfilled via per-funder re-extraction.
+    tiers: tuple[FunderTier, ...] = ()
+
+    # Bullet-list fields extracted alongside tiers.
+    #   auto_decline_conditions: absolute disqualifiers.
+    #   conditional_requirements: "OK if these documents/conditions are met".
+    auto_decline_conditions:  tuple[str, ...] = ()
+    conditional_requirements: tuple[str, ...] = ()
+
     # Free-form notes (not used by the matcher).
     notes: str = ""
 
@@ -141,4 +198,4 @@ class FunderGuidelineExtraction(_StrictModel):
         return _FIELD_CONFIDENCE_KEYS
 
 
-__all__ = ["FunderGuidelineExtraction", "FunderRow"]
+__all__ = ["FunderGuidelineExtraction", "FunderRow", "FunderTier"]
