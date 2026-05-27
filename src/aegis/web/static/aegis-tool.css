@@ -417,37 +417,6 @@
 .dossier-page .feed .event a strong { color: var(--accent); }
 .dossier-page .feed .event a:hover strong { color: var(--ink); }
 
-/* ===================== COMPLIANCE RIBBON ===================== */
-
-.dossier-page .compliance-ribbon {
-  max-width: 1320px;
-  margin: 24px auto 0;
-  padding: 14px 56px 0;
-  border-top: 1px solid var(--ink);
-  display: grid;
-  grid-template-columns: 220px 1fr 1fr;
-  gap: 24px;
-  align-items: baseline;
-}
-.dossier-page .compliance-ribbon .k {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--ink);
-}
-.dossier-page .compliance-ribbon .v {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  color: var(--ink-2);
-}
-.dossier-page .compliance-ribbon .v .tier {
-  color: var(--ink-3);
-  letter-spacing: 0.12em;
-  margin-right: 6px;
-}
-
 /* ===================== STATUS BAR (foot) ===================== */
 
 .dossier-page .statusbar {
@@ -712,7 +681,6 @@
   .dossier-page .deck,
   .dossier-page .strip,
   .dossier-page .body,
-  .dossier-page .compliance-ribbon,
   .dossier-page .statusbar { padding-left: 28px; padding-right: 28px; }
 }
 
@@ -724,7 +692,6 @@
   .dossier-page .deck { flex-wrap: wrap; }
   .dossier-page .deck h1 { font-size: 32px; }
   .dossier-page .form .row.three { grid-template-columns: 1fr 1fr; }
-  .dossier-page .compliance-ribbon { grid-template-columns: 1fr; gap: 8px; }
 }
 
 /* Mobile — single column everywhere, scrollable tables. */
@@ -732,7 +699,6 @@
   .dossier-page .deck,
   .dossier-page .strip,
   .dossier-page .body,
-  .dossier-page .compliance-ribbon,
   .dossier-page .statusbar { padding-left: 18px; padding-right: 18px; }
   .dossier-page .strip { grid-template-columns: repeat(2, 1fr) !important; }
   .dossier-page .strip .v { font-size: 26px; }
