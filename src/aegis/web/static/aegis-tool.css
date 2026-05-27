@@ -844,6 +844,35 @@
 }
 .dossier-page .notes-block.is-residual { background: var(--paper-2); }
 
+/* Issue 3 (2026-05-27): residual notes render as a bulleted list rather
+ * than a prose block. Each <li> is one sentence/clause split from the
+ * extracted text — sees through the LLM's '. ' / '; ' separators so
+ * tier-by-tier facts that were jammed into prose become individually
+ * scannable rows. */
+.dossier-page .notes-bullets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dossier-page .notes-bullets li {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink-2);
+  padding: 6px 0 6px 18px;
+  border-bottom: 1px solid var(--rule-soft);
+  position: relative;
+  line-height: 1.4;
+}
+.dossier-page .notes-bullets li:last-child { border-bottom: 0; }
+.dossier-page .notes-bullets li::before {
+  content: "·";
+  position: absolute;
+  left: 4px;
+  top: 6px;
+  color: var(--ink-3);
+  font-weight: bold;
+}
+
 /* Submit-a-deal modal (HTMX-loaded fragment) — backdrop captures
  * click-outside-to-close, dialog is centered, max 720px wide, scrolls
  * internally on tall merchant lists. */

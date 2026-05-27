@@ -21,6 +21,7 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import Response
 
 from aegis.api.app import create_app
 from aegis.api.deps import (
@@ -144,7 +145,11 @@ def client(
     reset_dependency_caches()
 
 
-def _post_pdf(client: TestClient, funder_id: object, content: bytes = b"%PDF-1.4\n%%EOF\n") -> object:
+def _post_pdf(
+    client: TestClient,
+    funder_id: object,
+    content: bytes = b"%PDF-1.4\n%%EOF\n",
+) -> Response:
     return client.post(
         f"/ui/funders/{funder_id}/reextract",
         files={"pdf": ("guidelines.pdf", content, "application/pdf")},

@@ -277,7 +277,13 @@
        Per step D agreement: legacy `notes` prose for funders not yet
        re-extracted renders alongside `notes_residual` in the same block,
        both under "Uncategorised from extraction" label. Step F's
-       re-extract atomically migrates legacy notes -> notes_residual. #}
+       re-extract atomically migrates legacy notes -> notes_residual.
+
+       Issue 3 (2026-05-27): each residual block renders as a bulleted
+       list rather than a wall of prose. The LLM uses ';' to separate
+       per-tier values and '.' to separate topics — we split on both
+       to surface each statement as its own scannable bullet. Pure
+       template change; extraction output is unchanged. #}
     {% if funder.notes or funder.notes_residual %}
       <header class="sect-head" style="margin-top:32px">
         <h2>Notes</h2>
@@ -286,13 +292,23 @@
       {% if funder.notes_residual %}
         <div class="notes-block is-residual">
           <div class="notes-label">Uncategorised from extraction</div>
-          <div class="notes-body">{{ funder.notes_residual }}</div>
+          {% set _residual_clean = funder.notes_residual.replace('; ', '. ') %}
+          <ul class="notes-bullets">
+            {% for piece in _residual_clean.split('. ') if piece.strip() %}
+              <li>{{ piece.strip().rstrip('.').strip() }}</li>
+            {% endfor %}
+          </ul>
         </div>
       {% endif %}
       {% if funder.notes %}
         <div class="notes-block is-residual">
           <div class="notes-label">Uncategorised from extraction (legacy)</div>
-          <div class="notes-body">{{ funder.notes }}</div>
+          {% set _legacy_clean = funder.notes.replace('; ', '. ') %}
+          <ul class="notes-bullets">
+            {% for piece in _legacy_clean.split('. ') if piece.strip() %}
+              <li>{{ piece.strip().rstrip('.').strip() }}</li>
+            {% endfor %}
+          </ul>
         </div>
       {% endif %}
     {% endif %}
