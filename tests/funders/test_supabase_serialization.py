@@ -78,6 +78,7 @@ def _fully_populated_funder() -> FunderRow:
         ),
         notes="Operator: prefer for Tier-A trucking deals.",
         notes_residual="residual prose that did not parse into structured fields",
+        operator_notes="Rep prefers WhatsApp; ping before sending stacked deals.",
     )
 
 
@@ -155,6 +156,7 @@ def test_missing_new_columns_default_cleanly() -> None:
     assert restored.charges_merchant_advance_fees is False
     assert restored.notes == ""
     assert restored.notes_residual == ""
+    assert restored.operator_notes == ""
 
 
 def test_empty_tiers_payload_is_empty_list() -> None:

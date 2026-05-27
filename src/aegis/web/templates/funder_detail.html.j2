@@ -300,12 +300,17 @@
        list rather than a wall of prose. The LLM uses ';' to separate
        per-tier values and '.' to separate topics — we split on both
        to surface each statement as its own scannable bullet. Pure
-       template change; extraction output is unchanged. #}
+       template change; extraction output is unchanged.
+
+       Issue 5 (2026-05-27): operator notes always show first (above
+       residual / legacy blocks). The block is its own editable form
+       backed by POST /ui/funders/{id}/operator-notes via HTMX. #}
+    <header class="sect-head" style="margin-top:32px">
+      <h2>Notes</h2>
+      <div class="rule"></div>
+    </header>
+    {% include "_operator_notes_block.html.j2" %}
     {% if funder.notes or funder.notes_residual %}
-      <header class="sect-head" style="margin-top:32px">
-        <h2>Notes</h2>
-        <div class="rule"></div>
-      </header>
       {% if funder.notes_residual %}
         <div class="notes-block is-residual">
           <div class="notes-label">Uncategorised from extraction</div>

@@ -920,6 +920,77 @@
   letter-spacing: 0.06em;
 }
 
+/* Issue 5 (2026-05-27): Operator notes editable block. Renders at the
+ * top of the Notes section, above any extractor-authored residual /
+ * legacy blocks. Distinct sage-tint left border + lighter background
+ * so operator can tell at a glance that THIS is editable while the
+ * blocks below are extracted (read-only). */
+.dossier-page .operator-notes-form {
+  margin-top: 14px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--sage-deep);
+  border-radius: 4px;
+  padding: 14px 16px;
+  background: var(--paper);
+}
+.dossier-page .operator-notes-form .operator-notes-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.dossier-page .operator-notes-form .operator-notes-hint {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 11.5px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-3);
+}
+.dossier-page .operator-notes-form .operator-notes-textarea {
+  width: 100%;
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 80px;
+  box-sizing: border-box;
+}
+.dossier-page .operator-notes-form .operator-notes-textarea:focus {
+  outline: none;
+  border-color: var(--ink-3);
+  background: var(--paper);
+}
+.dossier-page .operator-notes-form .operator-notes-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.dossier-page .operator-notes-form .operator-notes-saved {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--approve);
+  /* CSS-only fadeout: starts opaque, fades by 3s, removed at end. */
+  animation: operator-notes-saved-fade 3s ease-out forwards;
+}
+@keyframes operator-notes-saved-fade {
+  0%, 30% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 /* Submit-a-deal modal (HTMX-loaded fragment) — backdrop captures
  * click-outside-to-close, dialog is centered, max 720px wide, scrolls
  * internally on tall merchant lists. */
