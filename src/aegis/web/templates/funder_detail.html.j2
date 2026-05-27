@@ -241,12 +241,15 @@
       </div>
     {% endif %}
 
-    {# === Requirements & practices (renamed from Compliance) === #}
+    {# === Requirements & practices (renamed from Compliance) ===
+       Issue 4: chips wrapped in .requirements-list so they get the
+       larger 12px font + extra padding without affecting chip styling
+       in tables / match panel. #}
     <header class="sect-head" style="margin-top:32px">
       <h2>Requirements &amp; practices</h2>
       <div class="rule"></div>
     </header>
-    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px">
+    <div class="requirements-list">
       {% if funder.requires_coj %}<span class="chip warn">Requires CoJ</span>{% else %}<span class="chip">No CoJ</span>{% endif %}
       {% if funder.charges_merchant_advance_fees %}<span class="chip bad">Charges advance fees</span>{% else %}<span class="chip pos">No advance fees</span>{% endif %}
       {% if funder.accepts_stacking %}<span class="chip pos">Accepts stacking: yes</span>{% else %}<span class="chip bad">Accepts stacking: no</span>{% endif %}
@@ -257,18 +260,32 @@
       </div>
     {% endif %}
 
-    {# === Exclusions (unchanged from prior layout) === #}
+    {# === Exclusions ===
+       Issue 4: restructured from feed/event paragraph (which jammed
+       17 industries into one comma-separated line for VCG) to a chip
+       grid — each industry / state gets its own scannable chip at
+       13px. Each group has its own count label. #}
     {% if funder.excluded_states or funder.excluded_industries %}
       <header class="sect-head" style="margin-top:32px">
         <h2>Exclusions</h2>
         <div class="rule"></div>
       </header>
-      <div class="feed">
+      <div class="exclusions-block">
         {% if funder.excluded_states %}
-          <div class="event"><div class="t">St</div><div class="txt"><strong>States · {{ funder.excluded_states|length }}</strong>&nbsp;&nbsp;<span class="mono-inline">{{ funder.excluded_states|join(", ") }}</span></div></div>
+          <div class="exclusions-group">
+            <div class="exclusions-label">States · {{ funder.excluded_states|length }}</div>
+            <div class="exclusions-chips">
+              {% for s in funder.excluded_states %}<span class="chip">{{ s }}</span>{% endfor %}
+            </div>
+          </div>
         {% endif %}
         {% if funder.excluded_industries %}
-          <div class="event"><div class="t">In</div><div class="txt"><strong>Industries · {{ funder.excluded_industries|length }}</strong>&nbsp;&nbsp;<span class="mono-inline">{{ funder.excluded_industries|join(", ") }}</span></div></div>
+          <div class="exclusions-group">
+            <div class="exclusions-label">Industries · {{ funder.excluded_industries|length }}</div>
+            <div class="exclusions-chips">
+              {% for i in funder.excluded_industries %}<span class="chip">{{ i }}</span>{% endfor %}
+            </div>
+          </div>
         {% endif %}
       </div>
     {% endif %}

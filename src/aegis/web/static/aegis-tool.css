@@ -873,6 +873,53 @@
   font-weight: bold;
 }
 
+/* Issue 4 (2026-05-27): Requirements & Practices chips bumped to 12px
+ * with extra padding. Scoped to .requirements-list so global .chip
+ * styling (used in tables, match panel funder cards, etc.) stays at
+ * its 10px table-context size. */
+.dossier-page .requirements-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+.dossier-page .requirements-list .chip {
+  font-size: 12px;
+  padding: 6px 12px;
+  letter-spacing: 0.10em;
+}
+.dossier-page .requirements-list .chip::before {
+  width: 7px;
+  height: 7px;
+}
+
+/* Issue 4: Exclusions restructured from feed/event paragraph to a
+ * chip grid — each excluded state / industry gets its own 13px chip.
+ * Groups stack vertically; chips inside each group wrap. */
+.dossier-page .exclusions-block {
+  margin-top: 14px;
+  display: grid;
+  gap: 18px;
+}
+.dossier-page .exclusions-group .exclusions-label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 8px;
+}
+.dossier-page .exclusions-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dossier-page .exclusions-chips .chip {
+  font-size: 13px;
+  padding: 6px 12px;
+  letter-spacing: 0.06em;
+}
+
 /* Submit-a-deal modal (HTMX-loaded fragment) — backdrop captures
  * click-outside-to-close, dialog is centered, max 720px wide, scrolls
  * internally on tall merchant lists. */
