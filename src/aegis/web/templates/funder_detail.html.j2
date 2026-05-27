@@ -241,12 +241,15 @@
       </div>
     {% endif %}
 
-    {# === Requirements & practices (renamed from Compliance) === #}
+    {# === Requirements & practices (renamed from Compliance) ===
+       Issue 4: chips wrapped in .requirements-list so they get the
+       larger 12px font + extra padding without affecting chip styling
+       in tables / match panel. #}
     <header class="sect-head" style="margin-top:32px">
       <h2>Requirements &amp; practices</h2>
       <div class="rule"></div>
     </header>
-    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px">
+    <div class="requirements-list">
       {% if funder.requires_coj %}<span class="chip warn">Requires CoJ</span>{% else %}<span class="chip">No CoJ</span>{% endif %}
       {% if funder.charges_merchant_advance_fees %}<span class="chip bad">Charges advance fees</span>{% else %}<span class="chip pos">No advance fees</span>{% endif %}
       {% if funder.accepts_stacking %}<span class="chip pos">Accepts stacking: yes</span>{% else %}<span class="chip bad">Accepts stacking: no</span>{% endif %}
@@ -257,18 +260,32 @@
       </div>
     {% endif %}
 
-    {# === Exclusions (unchanged from prior layout) === #}
+    {# === Exclusions ===
+       Issue 4: restructured from feed/event paragraph (which jammed
+       17 industries into one comma-separated line for VCG) to a chip
+       grid — each industry / state gets its own scannable chip at
+       13px. Each group has its own count label. #}
     {% if funder.excluded_states or funder.excluded_industries %}
       <header class="sect-head" style="margin-top:32px">
         <h2>Exclusions</h2>
         <div class="rule"></div>
       </header>
-      <div class="feed">
+      <div class="exclusions-block">
         {% if funder.excluded_states %}
-          <div class="event"><div class="t">St</div><div class="txt"><strong>States · {{ funder.excluded_states|length }}</strong>&nbsp;&nbsp;<span class="mono-inline">{{ funder.excluded_states|join(", ") }}</span></div></div>
+          <div class="exclusions-group">
+            <div class="exclusions-label">States · {{ funder.excluded_states|length }}</div>
+            <div class="exclusions-chips">
+              {% for s in funder.excluded_states %}<span class="chip">{{ s }}</span>{% endfor %}
+            </div>
+          </div>
         {% endif %}
         {% if funder.excluded_industries %}
-          <div class="event"><div class="t">In</div><div class="txt"><strong>Industries · {{ funder.excluded_industries|length }}</strong>&nbsp;&nbsp;<span class="mono-inline">{{ funder.excluded_industries|join(", ") }}</span></div></div>
+          <div class="exclusions-group">
+            <div class="exclusions-label">Industries · {{ funder.excluded_industries|length }}</div>
+            <div class="exclusions-chips">
+              {% for i in funder.excluded_industries %}<span class="chip">{{ i }}</span>{% endfor %}
+            </div>
+          </div>
         {% endif %}
       </div>
     {% endif %}
@@ -277,22 +294,43 @@
        Per step D agreement: legacy `notes` prose for funders not yet
        re-extracted renders alongside `notes_residual` in the same block,
        both under "Uncategorised from extraction" label. Step F's
-       re-extract atomically migrates legacy notes -> notes_residual. #}
+       re-extract atomically migrates legacy notes -> notes_residual.
+
+       Issue 3 (2026-05-27): each residual block renders as a bulleted
+       list rather than a wall of prose. The LLM uses ';' to separate
+       per-tier values and '.' to separate topics — we split on both
+       to surface each statement as its own scannable bullet. Pure
+       template change; extraction output is unchanged.
+
+       Issue 5 (2026-05-27): operator notes always show first (above
+       residual / legacy blocks). The block is its own editable form
+       backed by POST /ui/funders/{id}/operator-notes via HTMX. #}
+    <header class="sect-head" style="margin-top:32px">
+      <h2>Notes</h2>
+      <div class="rule"></div>
+    </header>
+    {% include "_operator_notes_block.html.j2" %}
     {% if funder.notes or funder.notes_residual %}
-      <header class="sect-head" style="margin-top:32px">
-        <h2>Notes</h2>
-        <div class="rule"></div>
-      </header>
       {% if funder.notes_residual %}
         <div class="notes-block is-residual">
           <div class="notes-label">Uncategorised from extraction</div>
-          <div class="notes-body">{{ funder.notes_residual }}</div>
+          {% set _residual_clean = funder.notes_residual.replace('; ', '. ') %}
+          <ul class="notes-bullets">
+            {% for piece in _residual_clean.split('. ') if piece.strip() %}
+              <li>{{ piece.strip().rstrip('.').strip() }}</li>
+            {% endfor %}
+          </ul>
         </div>
       {% endif %}
       {% if funder.notes %}
         <div class="notes-block is-residual">
           <div class="notes-label">Uncategorised from extraction (legacy)</div>
-          <div class="notes-body">{{ funder.notes }}</div>
+          {% set _legacy_clean = funder.notes.replace('; ', '. ') %}
+          <ul class="notes-bullets">
+            {% for piece in _legacy_clean.split('. ') if piece.strip() %}
+              <li>{{ piece.strip().rstrip('.').strip() }}</li>
+            {% endfor %}
+          </ul>
         </div>
       {% endif %}
     {% endif %}

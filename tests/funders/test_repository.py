@@ -98,6 +98,17 @@ def test_default_empty_contact_and_tiers() -> None:
     assert f.conditional_requirements == ()
     assert f.notes == ""
     assert f.notes_residual == ""
+    assert f.operator_notes == ""
+
+
+def test_operator_notes_round_trip() -> None:
+    repo = InMemoryFunderRepository()
+    f = _funder().model_copy(update={
+        "operator_notes": "Rep prefers WhatsApp; ping before sending stacked deals.",
+    })
+    repo.upsert(f)
+    got = repo.get(f.id)
+    assert got.operator_notes == "Rep prefers WhatsApp; ping before sending stacked deals."
 
 
 def test_notes_and_notes_residual_round_trip_independently() -> None:

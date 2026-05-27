@@ -1,0 +1,28 @@
+{# Operator notes block — rendered inline on the funder detail page
+   AND returned by POST /ui/funders/{id}/operator-notes for the HTMX
+   swap. Form posts to itself (hx-target="this", hx-swap="outerHTML"),
+   so saving doesn't full-reload the page.
+
+   Visually distinct from the residual notes blocks below:
+     * placed at the TOP of the Notes section (operator content first)
+     * sage-tint left border (vs paper-2 fill on residual)
+     * label says "Operator notes" with explanatory subtext
+#}
+<form class="operator-notes-form"
+      hx-post="/ui/funders/{{ funder.id }}/operator-notes"
+      hx-target="this"
+      hx-swap="outerHTML">
+  <div class="operator-notes-label">
+    Operator notes
+    <span class="operator-notes-hint">your own commentary — survives re-extraction</span>
+  </div>
+  <textarea name="operator_notes" rows="4" class="operator-notes-textarea"
+            placeholder="Add internal notes about this funder — phone calls, deal preferences, reminders, anything that should outlast a PDF re-extract."
+            maxlength="10000">{{ funder.operator_notes }}</textarea>
+  <div class="operator-notes-actions">
+    <button class="btn primary" type="submit">Save notes</button>
+    {% if just_saved %}
+      <span class="operator-notes-saved" role="status">✓ Saved</span>
+    {% endif %}
+  </div>
+</form>

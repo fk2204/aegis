@@ -7,6 +7,7 @@ drill-down HTMX partial returns the contributing transactions only.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from decimal import Decimal
 from typing import cast
 
 import pytest
@@ -363,7 +364,9 @@ def test_funder_detail_renders_full_row(
     resp = client.get(f"/ui/funders/{detail_funder.id}")
     assert resp.status_code == 200
     assert "Detail Capital" in resp.text
-    assert "Operator-curated note." in resp.text
+    # Issue 3 (2026-05-27): notes_residual renders as bullet list; bullets
+    # have trailing periods stripped, so assert without the period.
+    assert "Operator-curated note" in resp.text
     assert "TX" in resp.text
 
 
@@ -527,8 +530,7 @@ def test_funder_import_save_persists_step_c_fields(
     assert saved.submission_email == "iso@stepc.com"
     assert len(saved.tiers) == 1
     assert saved.tiers[0].name == "Elite"
-    from decimal import Decimal as _D
-    assert saved.tiers[0].buy_rate_low == _D("1.25")
+    assert saved.tiers[0].buy_rate_low == Decimal("1.25")
     assert saved.auto_decline_conditions == (
         "Active tax liens > $25K",
         "Open bankruptcy",

@@ -1239,6 +1239,11 @@ async def funder_reextract(
         # Notes: atomic migration
         notes=new_notes,
         notes_residual=new_notes_residual,
+        # Issue 5 (2026-05-27): operator_notes is operator-authored
+        # commentary that must survive re-extractions. Always preserve
+        # the existing value — the extraction prompt does not produce
+        # this field and even if it did we would ignore it.
+        operator_notes=existing.operator_notes,
     )
 
     funder_repo.upsert(merged)
@@ -1282,6 +1287,75 @@ def _reextract_redirect(
     return RedirectResponse(
         f"/ui/funders/{funder_id}?reextracted=1",
         status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+# Soft cap for operator notes so a stray paste doesn't dump a megabyte
+# into the funder row. 10K chars = ~5 long paragraphs; tighten or
+# loosen later if real usage shows we need it.
+_OPERATOR_NOTES_MAX_CHARS = 10_000
+
+
+@router.post(
+    "/funders/{funder_id}/operator-notes",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+async def funder_operator_notes_save(
+    request: Request,
+    funder_id: UUID,
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+    # Default to "" so submitting an empty textarea counts as a clear,
+    # not a 422 (Form() with no default rejects empty/missing values).
+    operator_notes: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Save operator-authored notes on a funder. HTMX swap target.
+
+    Returns the operator-notes block partial so the page doesn't full-
+    reload — the form swaps itself with a refreshed copy that shows
+    the new value plus a "Saved" indicator.
+    """
+    try:
+        existing = funder_repo.get(funder_id)
+    except FunderNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    # Trim + soft-cap. Truncation is silent — if operators routinely
+    # bump the cap we'll surface a warning, not yet.
+    new_value = operator_notes.strip()[:_OPERATOR_NOTES_MAX_CHARS]
+    old_value = existing.operator_notes
+
+    if new_value == old_value:
+        # No-op save (operator clicked Save without editing). Don't
+        # write an audit row for no change.
+        funder = existing
+        just_saved = True
+    else:
+        funder = existing.model_copy(update={"operator_notes": new_value})
+        funder_repo.upsert(funder)
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="funder.operator_notes_updated",
+            subject_type="funder",
+            subject_id=existing.id,
+            details={
+                "funder_name": existing.name,
+                "before_length": len(old_value),
+                "after_length": len(new_value),
+                "cleared": new_value == "" and old_value != "",
+            },
+        )
+        just_saved = True
+
+    return templates.TemplateResponse(
+        request,
+        "_operator_notes_block.html.j2",
+        {"funder": funder, "just_saved": just_saved},
     )
 
 

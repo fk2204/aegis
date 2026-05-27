@@ -164,6 +164,12 @@ class FunderRow(_StrictModel):
     # the operator decides whether to promote it to a schema field.
     notes_residual: str = ""
 
+    # Operator-authored commentary. Survives re-extraction (the
+    # /ui/funders/{id}/reextract route never touches this field).
+    # Distinct from `notes` (legacy field being phased out) and
+    # `notes_residual` (extractor-authored prose).
+    operator_notes: str = ""
+
 
 _FIELD_CONFIDENCE_KEYS: tuple[str, ...] = (
     "min_monthly_revenue",

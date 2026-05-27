@@ -173,6 +173,7 @@ def _row_to_funder(row: dict[str, Any]) -> FunderRow:
         conditional_requirements=tuple(row.get("conditional_requirements") or ()),
         notes=row.get("notes") or "",
         notes_residual=row.get("notes_residual") or "",
+        operator_notes=row.get("operator_notes") or "",
     )
 
 
@@ -217,6 +218,7 @@ def _funder_to_payload(f: FunderRow) -> dict[str, Any]:
         "conditional_requirements": list(f.conditional_requirements),
         "notes": f.notes,
         "notes_residual": f.notes_residual,
+        "operator_notes": f.operator_notes,
         "updated_at": datetime.now(UTC).isoformat(),
     }
 
