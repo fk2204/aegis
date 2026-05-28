@@ -1,0 +1,30 @@
+{# Evidence drill-down for a pattern card.
+
+  Dispatched by ``card.code`` to a per-flag renderer. Most flags fall
+  through to the flat chronological table (``_evidence/_flat_transactions``).
+  Custom shapes — wash-deposit pairs, preloan_spike vs baseline, the
+  acceleration normal-vs-spike layout, and the no-evidence explanation
+  panels for recent_account_opening / payroll_absent — are dispatched
+  by ``card.code`` and ship in a follow-up chunk on the same branch.
+
+  Renders nothing when the card has no source_transactions AND no custom
+  no-evidence renderer is registered for the code. That preserves the
+  existing behavior for ``payroll_absent`` (empty source_ids hides the
+  drill-down) until the explanation panel lands.
+
+  Inputs:
+    - card: PatternCard (from aegis.web._pattern_cards)
+    - all_transactions: list[ClassifiedTransaction]  (optional; reserved
+      for renderers that need full-doc context — preloan_spike baseline,
+      etc. Not used by the flat fallback.)
+#}
+{% if card.source_transactions %}
+  <details>
+    <summary>{{ card.source_transactions|length }} contributing transaction row(s) — click to expand</summary>
+    {# Custom dispatch lands here in a follow-up chunk. For now every
+       flag falls through to the flat chronological table — the same
+       shape that was previously inlined in the dossier pattern_cards
+       loop, so this refactor is a no-op visually. #}
+    {% include "_evidence/_flat_transactions.html.j2" %}
+  </details>
+{% endif %}
