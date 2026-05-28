@@ -198,12 +198,13 @@ Several flags below reference this baseline. Most importantly, read `recent_acco
 
 These come from `pikepdf` inspection of the PDF binary, before transaction extraction. They contribute to a separate `metadata.fraud_score`.
 
-### `incremental_saves: N EOF markers` — score +40 [PENDING DETECTOR REVIEW — see appendix]
+### `incremental_saves: N EOF markers` — score +40
 
-- **Detects:** More than 1 `%%EOF` trailer marker (regex-anchored to genuine trailer ends).
-- **Why it matters:** Multiple EOFs *can* mean the PDF was saved incrementally — content added after the original was produced. Almost never legitimate on a bank-printed statement.
-- **How serious:** *Treated as strong tampering signal in code.* **But: legitimate digitally-signed PDFs always have ≥2 EOFs by design** — digital signatures are implemented as incremental updates. Many real bank and KYC documents are digitally signed by the issuer. The detector currently does not check for the presence of a signature object, so signed legitimate documents are flagged as tampered. See the EOF false-positive appendix at the bottom of this doc.
-- **Do:** Until the detector is signature-aware, treat `incremental_saves` as a *prompt to inspect manually*, not as a reject signal. Open the PDF and check: (a) does it contain a digital signature (Acrobat shows a signature panel), (b) does the signature validate, (c) are there other tampering flags also firing? If (a) + (b) and no other flags, it's almost certainly a legitimate signed export.
+- **Detects:** More than 1 `%%EOF` trailer marker (regex-anchored to genuine trailer ends), **on PDFs without a digital signature**. Digitally-signed PDFs are suppressed by the detector — it walks the PDF's `AcroForm.Fields` (with `/Kids` descent) for a `/FT == /Sig` field; presence of any signature means the additional EOFs are explained by the signature's incremental update and the flag does not fire.
+- **Why it matters:** Multiple EOFs on an *unsigned* PDF mean the document was saved incrementally — content added after the original was produced. Almost never legitimate on a bank-printed statement.
+- **How serious:** Material — strong tampering signal when it fires. The false-positive class on signed bank exports / KYC documents is eliminated by the signature-aware check, so when this flag does fire, take it seriously.
+- **Do:** Reject the PDF. Request the original from the bank portal directly (not a re-saved copy).
+- **Limitation (v1):** Signature detection is *presence-based*, not cryptographic. A malicious actor could forge a `/Sig` object to bypass the check. Cryptographic signature validation is v2 work (would need a new dep — pyhanko or equivalent). The realistic-threat-model tradeoff is the right one for now: legitimate signed exports stop dominating the manual_review queue, real tampering still surfaces on the (unsigned) cases that matter.
 
 ### `modified_Nmin_after_creation` — score +15 (5–120 min) or +30 (> 120 min)
 
@@ -310,7 +311,7 @@ These appear in `all_flags` as strings, surfaced on the merchant detail soft-sig
 
 This is the suggested order for reviewing a deal. *Order is operator synthesis* — needs pressure-testing against the operator's real workflow before treated as authoritative.
 
-1. **Metadata flags first.** Any single hard-list editor / `personal_author` / `page_size_inconsistency` / `xref_offset_mismatch` → reject before reading further. The transactions could be fabricated. (Note: `incremental_saves` alone is *not* a reject signal until the detector becomes signature-aware — see appendix.)
+1. **Metadata flags first.** Any single hard-list editor / `personal_author` / `page_size_inconsistency` / `xref_offset_mismatch` / `incremental_saves` → reject before reading further. The transactions could be fabricated. The detector is signature-aware as of 2026-05-28, so `incremental_saves` no longer false-positives on legitimately-signed bank exports — when it fires, it's a real tampering signal.
 2. **Then `acceleration_clause_triggered` and `unauthorized_withdrawal_dispute`.** Either alone is near-decline territory.
 3. **Then `mca_stacking` count and `processor_holdback_detected`.** Tells you how many funders are in the deal and whether there's a hidden holdback.
 4. **Then the revenue-fabrication trio** (`wash_deposit_suspected`, `duplicate_deposits_detected`, `synthetic_low_variance`). Any two firing together = decline-leaning.
@@ -318,11 +319,15 @@ This is the suggested order for reviewing a deal. *Order is operator synthesis* 
 
 ---
 
-## Appendix: EOF marker false-positive concern
+## Appendix: EOF marker detector — history and current behavior
 
-**Status: detector likely needs a fix; pending real-PDF inspection of live KYC docs.**
+**Status: signature-aware detector shipped 2026-05-28.**
 
-Live Review Queue is showing `incremental_saves` flags on documents that look like real deals (Know Your Collectibles, per operator observation 2026-05-28). The detector treats `eof_markers > 1` as +40 score, treating it as strong tampering signal.
+This section records the false-positive class that was eliminated and the v1 → v2 path for the EOF detector. The flag's user-facing semantics live in section 7 above; this appendix is here so future operators and engineers can read why the detector looks the way it does today.
+
+**The original problem (pre-fix):**
+
+Live Review Queue surfaced `incremental_saves` flags on documents that looked like real deals (Know Your Collectibles, per operator observation 2026-05-28). The detector treated any `eof_markers > 1` as +40 score, which trains operators to ignore a reject-class flag.
 
 **The technical reality of EOF markers in PDFs:**
 
@@ -331,25 +336,30 @@ Live Review Queue is showing `incremental_saves` flags on documents that look li
 - Many KYC and corporate-records documents (state filings, certified business records) are digitally signed by the issuing authority.
 - Re-saving in some PDF viewers (older Preview, certain Acrobat versions) creates incremental updates even without intentional modification.
 
-**Current detector code** (`src/aegis/parser/metadata.py`):
+**The v1 fix (shipped):**
+
+`src/aegis/parser/metadata.py` now calls `_has_pdf_signature(pdf)` before emitting the flag. The helper walks the PDF's `AcroForm.Fields` (with `/Kids` descent) looking for a `/FT == /Sig` field. The flag now only fires when `eof_markers > 1` AND no signature object is present:
 
 ```python
 eof_markers = _count_eof_markers(raw)
-if eof_markers > 1:
+if eof_markers > 1 and not _has_pdf_signature(pdf):
     flags.append(f"incremental_saves: {eof_markers} EOF markers")
     score += 40
 ```
 
-No check for the presence of a `/Sig` object or `/ByteRange` entry, which would indicate a digital signature is the explanation for the additional EOF marker(s).
+**v1 scope and tradeoffs:**
 
-**Proposed fix (not yet built):**
+- Detection is *presence-based*, not cryptographic. We check for the existence of a `/Sig` object; we do not verify the signature's cryptographic validity.
+- The realistic threat model favors this tradeoff: real signed bank exports stop being false-positively flagged, real tampering on unsigned PDFs still fires the flag at the original severity.
+- A malicious actor could forge a `/Sig` object to bypass detection. This is the trade we make for v1 — without it, every signed bank export would continue to dominate the manual_review queue.
 
-1. When `eof_markers > 1`, check whether the PDF contains a `/Type /Sig` object (look for `/ByteRange` in any indirect object, or iterate `pikepdf.Pdf.root` for an AcroForm signature field).
-2. If signed AND `eof_markers` equals the expected count for that signature scheme (typically 1 extra EOF per signature), do NOT flag, or flag at much lower severity.
-3. If signed AND the signature is *invalid* (`pikepdf` can validate this), THAT's the real tampering signal — flag at high severity.
-4. If unsigned with `eof_markers > 1`, keep the current behavior — that genuinely suggests incremental edits without a legitimate signing reason.
+**v2 (deferred):**
 
-**Operator action until the fix lands:** Treat `incremental_saves` as a "look closer manually" signal, not a reject. Open the PDF in Acrobat or Preview, check whether it shows a digital signature, and verify whether other tampering flags are also firing. A single `incremental_saves` flag on a digitally-signed bank export is almost certainly a false positive.
+Cryptographic signature validation. Would require adding a new dependency (pyhanko or equivalent) and a small amount of validation code. When v2 lands, the right shape is:
+
+1. Signed + signature valid → no flag.
+2. Signed + signature invalid → flag at *higher* severity than the current `incremental_saves` (genuine tampering attempt; the actor signed it and then modified it).
+3. Unsigned + multi-EOF → flag at current severity (unchanged from v1).
 
 ---
 
