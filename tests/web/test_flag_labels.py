@@ -6,8 +6,6 @@ fallback is the load-bearing piece — a future detector landing without
 operator copy must not crash the chip renderer.
 """
 
-from __future__ import annotations
-
 import pytest
 
 from aegis.web._flag_labels import (
