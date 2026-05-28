@@ -55,6 +55,7 @@ from aegis.close.field_map import (
     parse_money,
     resolve_entity_type,
 )
+from aegis.close.orchestration import enqueue_close_orchestration
 from aegis.config import get_settings
 from aegis.logger import get_logger
 from aegis.merchants.models import MerchantRow
@@ -144,6 +145,21 @@ async def close_webhook(
         close_lead_id=lead_id,
         merchants=merchants,
         audit=audit,
+    )
+
+    # Stage 5 — fire-and-forget the attachment-orchestration arq job.
+    # Failure to enqueue (Redis blip etc.) audits but does NOT 5xx the
+    # webhook: Close will retry within 72 hours and the merchant
+    # upsert is already idempotent, so a self-healing re-run is cheap.
+    # Converting transient enqueue failures to 5xx would just generate
+    # noise without adding any safety.
+    merchant_for_audit = merchants.find_by_close_lead_id(lead_id)
+    await enqueue_close_orchestration(
+        request=request,
+        close_lead_id=lead_id,
+        merchant_id=merchant_for_audit.id if merchant_for_audit is not None else None,
+        audit=audit,
+        trigger="webhook",
     )
     return None
 
