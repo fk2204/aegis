@@ -9,8 +9,8 @@ operator copy must not crash the chip renderer.
 from __future__ import annotations
 
 import pytest
-from aegis.web._flag_labels import HumanFlag, humanize_audit_action, humanize_flag
 
+from aegis.web._flag_labels import HumanFlag, humanize_audit_action, humanize_flag
 
 # ---------------------------------------------------------------------------
 # Pattern flags ([PATTERN] prefix, "code: detail" body)
