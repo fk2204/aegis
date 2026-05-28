@@ -736,6 +736,122 @@
 .dossier-page .finding .ledger td.amt { text-align: right; font-variant-numeric: tabular-nums; }
 .dossier-page .finding .ledger td.cite { color: var(--ink-3); font-size: 10px; }
 
+/* ============ evidence panels (flag-specific drill-down) ============ */
+.dossier-page .finding .evidence {
+  padding: 6px 0 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.dossier-page .finding .evidence-header {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--rule);
+}
+.dossier-page .finding .evidence-subheader {
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 14px 0 4px;
+}
+.dossier-page .finding .evidence-pair {
+  margin: 10px 0;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--rule-soft);
+}
+.dossier-page .finding .evidence-pair:last-child { border-bottom: 0; }
+.dossier-page .finding .evidence-pair-label {
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 2px;
+}
+.dossier-page .finding .evidence-pair-delta {
+  font-size: 10px;
+  color: var(--ink-3);
+  margin-top: 4px;
+  letter-spacing: 0.04em;
+}
+.dossier-page .finding .evidence-metrics {
+  display: flex;
+  gap: 24px;
+  margin: 10px 0 6px;
+  flex-wrap: wrap;
+}
+.dossier-page .finding .evidence-metrics > div {
+  display: flex;
+  flex-direction: column;
+}
+.dossier-page .finding .evidence-metrics .k {
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 4px;
+}
+.dossier-page .finding .evidence-metrics .v {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--ink);
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.dossier-page .finding .evidence-metrics .qual {
+  font-size: 10px;
+  color: var(--ink-3);
+  margin-top: 4px;
+}
+.dossier-page .finding .evidence-note {
+  font-size: 10px;
+  color: var(--ink-3);
+  font-style: italic;
+  margin-top: 8px;
+}
+.dossier-page .finding .evidence-spike-label {
+  color: var(--decline);
+}
+.dossier-page .finding .ledger-spike .spike-row td {
+  color: var(--decline);
+  font-weight: 600;
+}
+.dossier-page .finding .ledger-baseline th,
+.dossier-page .finding .ledger-baseline td {
+  opacity: 0.75;
+}
+.dossier-page .finding .evidence-explanation p {
+  font-family: var(--serif);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  line-height: 1.5;
+  margin: 0 0 8px;
+}
+.dossier-page .finding .evidence-explanation p:last-child { margin-bottom: 0; }
+
+/* ============ lender-group nested details (mca_stacking) ============ */
+.dossier-page .finding .lender-group {
+  margin: 6px 0 10px 14px;
+}
+.dossier-page .finding .lender-group summary {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  padding: 3px 0;
+  border-top: 0;
+  cursor: pointer;
+  list-style: none;
+}
+.dossier-page .finding .lender-group[open] summary { color: var(--ink); }
+.dossier-page .finding .lender-group summary::after { content: " ↓"; opacity: 0.6; }
+.dossier-page .finding .lender-group[open] summary::after { content: " ↑"; }
+
 /* ============ stacking card (a finding with extra KPIs) ============ */
 .dossier-page .stack-card {
   display: grid;

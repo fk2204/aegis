@@ -1,0 +1,28 @@
+{# Fallback evidence renderer: flat chronological table of the card's
+  source_transactions. Used when a flag has no custom shape registered
+  in ``_evidence_panel.html.j2``.
+
+  Matches the shape previously inlined in merchant_detail_dossier's
+  pattern_cards loop (4 columns, ``.ledger`` styling) so the chunk-1
+  refactor is visually a no-op. Custom renderers (chunk 2) sit alongside
+  this file in ``_evidence/`` and are selected by the dispatch in
+  ``_evidence_panel.html.j2``.
+
+  Inputs:
+    - card: PatternCard (from aegis.web._pattern_cards)
+#}
+<table class="ledger">
+  <thead>
+    <tr><th>Date</th><th>Description</th><th>Amount</th><th>Source</th></tr>
+  </thead>
+  <tbody>
+    {% for t in card.source_transactions|sort(attribute='posted_date') %}
+      <tr>
+        <td>{{ t.posted_date }}</td>
+        <td>{{ t.description }}</td>
+        <td class="amt">{{ t.amount | money }}</td>
+        <td class="cite">p{{ t.source_page }} L{{ t.source_line }}</td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>

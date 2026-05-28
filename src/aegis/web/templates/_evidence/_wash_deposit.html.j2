@@ -1,0 +1,47 @@
+{# Wash-deposit evidence — pairs the alternating deposit/withdrawal rows.
+
+  Convention: ``card.source_transactions`` preserves the source_ids
+  ordering. The detector
+  (``src/aegis/parser/patterns.py::_wash_deposit_kiting``) emits IDs as
+  ``[dep1, withdrawal1, dep2, withdrawal2, ...]``. Slicing ``[0::2]``
+  gives the deposit leg of each pair; ``[1::2]`` gives the matching
+  withdrawal.
+
+  IF THE DETECTOR EVER CHANGES THIS ORDER, this template will silently
+  mis-pair. The detector docstring pins the convention — any change
+  there should also update this template.
+
+  Inputs:
+    - card: PatternCard
+#}
+{% set deps = card.source_transactions[0::2] %}
+{% set withdrawals = card.source_transactions[1::2] %}
+{% set pair_count = [deps|length, withdrawals|length]|min %}
+<div class="evidence evidence-wash">
+  <div class="evidence-header">{{ pair_count }} pair{{ '' if pair_count == 1 else 's' }} — 5-day window · ≤2% tolerance</div>
+  {% for i in range(pair_count) %}
+    {% set d = deps[i] %}
+    {% set w = withdrawals[i] %}
+    <div class="evidence-pair">
+      <div class="evidence-pair-label">Pair {{ i + 1 }}</div>
+      <table class="ledger">
+        <tr class="pair-deposit">
+          <td>↓ {{ d.posted_date }}</td>
+          <td>{{ d.description }}</td>
+          <td class="amt">{{ d.amount | money }}</td>
+          <td class="cite">p{{ d.source_page }} L{{ d.source_line }}</td>
+        </tr>
+        <tr class="pair-withdrawal">
+          <td>↑ {{ w.posted_date }}</td>
+          <td>{{ w.description }}</td>
+          <td class="amt">{{ w.amount | money }}</td>
+          <td class="cite">p{{ w.source_page }} L{{ w.source_line }}</td>
+        </tr>
+      </table>
+      <div class="evidence-pair-delta">
+        Δ {{ (d.amount + w.amount) | abs | money }} ·
+        {{ (w.posted_date - d.posted_date).days }} day{{ '' if (w.posted_date - d.posted_date).days == 1 else 's' }} apart
+      </div>
+    </div>
+  {% endfor %}
+</div>

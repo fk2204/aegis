@@ -133,6 +133,35 @@ PATTERN_COPY: Final[dict[str, PatternCardCopy]] = {
             "existing MCA obligations."
         ),
     ),
+    "acceleration_clause_triggered": PatternCardCopy(
+        title="MCA Acceleration",
+        description=(
+            "A recurring MCA position broke and a single debit 5-10x larger "
+            "than the prior median posted to the same payee - the funder "
+            "called the loan after default. Decline class flag: the merchant "
+            "defaulted on a prior funder, outside our risk appetite."
+        ),
+    ),
+    "recent_account_opening": PatternCardCopy(
+        title="Recent Account Opening",
+        description=(
+            "Bank account opened less than 60 days before today. Doesn't "
+            "satisfy our 6-month intake baseline on its face. If the "
+            "BUSINESS itself is also under 6 months, decline; if it's an "
+            "established business that recently switched banks, request "
+            "prior bank statements before declining."
+        ),
+    ),
+    "payroll_absent": PatternCardCopy(
+        title="Payroll Absent",
+        description=(
+            "No payroll-processor activity (ADP / Gusto / Paychex / etc.) "
+            "across a ≥21 day period with ≥$50k revenue. Real operating "
+            "businesses at this scale almost always have payroll — ask how "
+            "the merchant pays employees and contractors. 1099-only is "
+            "plausible; W-2 claims without a payroll trace is a red flag."
+        ),
+    ),
 }
 
 
@@ -152,9 +181,14 @@ def _severity_band(severity: int) -> str:
 
 
 # Patterns rendered elsewhere — skip them in the card list.
+# ``mca_stacking`` has its own richer card driven by ``StackingCard``.
+# ``recent_account_opening`` used to be excluded because there was nothing
+# to drill into; with the explanation panel landing in chunk 2 of the
+# evidence drill-down work, it now renders as a pattern card so the
+# operator playbook sits next to the flag instead of hiding inside the
+# score-breakdown panel only.
 _RENDERED_ELSEWHERE: Final[frozenset[str]] = frozenset({
     "mca_stacking",
-    "recent_account_opening",
 })
 
 

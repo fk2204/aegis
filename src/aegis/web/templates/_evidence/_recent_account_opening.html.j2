@@ -1,0 +1,28 @@
+{# Recent-account-opening explanation panel — no source_ids to drill into.
+
+  The detector fires when the statement period starts < 60 days before
+  today. The card's description already explains the rule; this panel
+  surfaces the concrete date and the operator playbook so a worker can
+  decide in a glance whether the BUSINESS or just the bank account is
+  new.
+
+  Inputs:
+    - card: PatternCard
+    - analysis: AnalysisRow (optional; statement_period_start used in copy)
+#}
+<div class="evidence evidence-explanation">
+  {% if analysis is defined and analysis and analysis.statement_period_start %}
+    <p>
+      Statement period starts <strong>{{ analysis.statement_period_start.strftime('%b %d, %Y') }}</strong> — under 60 days old, fails our 6-month intake baseline on its face.
+    </p>
+  {% else %}
+    <p>
+      Sub-60-day bank account — fails our 6-month intake baseline on its face.
+    </p>
+  {% endif %}
+  <p>
+    Today's review:
+    <strong>(a)</strong> if the BUSINESS itself is also under 6 months → <em>decline</em>;
+    <strong>(b)</strong> if the business is established (≥ 6 months) and merely switched banks → <em>request the prior bank's 3–4 statements</em> before declining.
+  </p>
+</div>
