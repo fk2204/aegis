@@ -19,7 +19,9 @@ from aegis.parser.metadata import (
     _EOF_PATTERN,
     _count_eof_markers,
     _font_inconsistency,
+    _has_pdf_signature,
     _page_layer_anomaly,
+    analyze_metadata,
 )
 
 _CORPUS_DIR = (
@@ -119,3 +121,115 @@ def test_page_layer_anomaly_returns_none_for_homogeneous_pages() -> None:
         flag, score = _page_layer_anomaly(pdf)
     assert flag is None
     assert score == 0
+
+
+# -- EOF false-positive fix: signature-aware incremental_saves --------------
+
+
+def _build_test_pdf(
+    tmp_path: Path,
+    *,
+    name: str,
+    with_signature: bool,
+    extra_eof: bool,
+) -> Path:
+    """Build a minimal PDF for EOF false-positive detector testing.
+
+    ``with_signature`` adds an /AcroForm with a /Sig field structurally
+    valid for presence-detection (no cryptographic content — v1 of the
+    fix is presence-based). ``extra_eof`` appends a second %%EOF trailer
+    to simulate the kind of incremental save that historically fired the
+    incremental_saves flag on every digitally-signed bank export.
+    """
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(612, 792))
+    if with_signature:
+        sig_value = pdf.make_indirect(
+            pikepdf.Dictionary(
+                {
+                    "/Type": pikepdf.Name("/Sig"),
+                    "/Filter": pikepdf.Name("/Adobe.PPKLite"),
+                    "/SubFilter": pikepdf.Name("/adbe.pkcs7.detached"),
+                    "/ByteRange": pikepdf.Array([0, 0, 0, 0]),
+                    "/Contents": pikepdf.String(""),
+                }
+            )
+        )
+        sig_field = pdf.make_indirect(
+            pikepdf.Dictionary(
+                {
+                    "/FT": pikepdf.Name("/Sig"),
+                    "/T": pikepdf.String("Signature1"),
+                    "/V": sig_value,
+                }
+            )
+        )
+        pdf.Root["/AcroForm"] = pikepdf.Dictionary(
+            {"/Fields": pikepdf.Array([sig_field])}
+        )
+    p = tmp_path / name
+    pdf.save(str(p))
+    if extra_eof:
+        raw = p.read_bytes()
+        if not raw.endswith(b"\n"):
+            raw += b"\n"
+        raw += b"%%EOF\n"
+        p.write_bytes(raw)
+    return p
+
+
+def test_has_pdf_signature_returns_false_for_unsigned_pdf(tmp_path: Path) -> None:
+    p = _build_test_pdf(
+        tmp_path, name="unsigned.pdf", with_signature=False, extra_eof=False
+    )
+    with pikepdf.open(p) as pdf:
+        assert _has_pdf_signature(pdf) is False
+
+
+def test_has_pdf_signature_returns_true_for_signed_pdf(tmp_path: Path) -> None:
+    p = _build_test_pdf(
+        tmp_path, name="signed.pdf", with_signature=True, extra_eof=False
+    )
+    with pikepdf.open(p) as pdf:
+        assert _has_pdf_signature(pdf) is True
+
+
+def test_incremental_saves_flag_suppressed_when_signed(tmp_path: Path) -> None:
+    """Signed PDFs naturally carry ≥2 EOFs (each signature is an
+    incremental update). The fix suppresses incremental_saves on them so
+    legitimate signed bank exports stop dominating the manual_review queue.
+    """
+    p = _build_test_pdf(
+        tmp_path,
+        name="signed_multi_eof.pdf",
+        with_signature=True,
+        extra_eof=True,
+    )
+    raw = p.read_bytes()
+    assert _count_eof_markers(raw) >= 2, "test fixture must carry ≥2 EOF markers"
+    result = analyze_metadata(p)
+    assert not any(
+        f.startswith("incremental_saves") for f in result.flags
+    ), f"signed multi-EOF PDF should not flag incremental_saves; got {result.flags}"
+
+
+def test_incremental_saves_flag_fires_when_unsigned(tmp_path: Path) -> None:
+    """Unsigned PDFs with multi-EOF still trigger the tampering flag.
+
+    Confirms the fix didn't over-correct — without a /Sig object, the
+    multi-EOF signal is still suspicious and contributes the original +40
+    to the metadata fraud score.
+    """
+    p = _build_test_pdf(
+        tmp_path,
+        name="unsigned_multi_eof.pdf",
+        with_signature=False,
+        extra_eof=True,
+    )
+    raw = p.read_bytes()
+    assert _count_eof_markers(raw) >= 2, "test fixture must carry ≥2 EOF markers"
+    result = analyze_metadata(p)
+    matching = [f for f in result.flags if f.startswith("incremental_saves")]
+    assert matching, (
+        f"unsigned multi-EOF PDF should flag incremental_saves; got {result.flags}"
+    )

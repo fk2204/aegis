@@ -157,6 +157,67 @@ def _count_eof_markers(raw: bytes) -> int:
     return len(_EOF_PATTERN.findall(raw))
 
 
+def _has_pdf_signature(pdf: pikepdf.Pdf) -> bool:
+    """Return True iff the PDF contains a digital-signature field.
+
+    Walks AcroForm.Fields (and any nested Kids) looking for /FT == /Sig.
+    Detection is presence-based — we do NOT validate the signature
+    cryptographically. The EOF false-positive fix accepts this tradeoff:
+    every digitally-signed PDF carries ≥2 EOF markers by design (each
+    signature appends a %%EOF trailer as an incremental update), and major
+    bank exports / KYC issuers commonly sign their outputs. Treating
+    "signed + multi-EOF" as legitimate and "unsigned + multi-EOF" as
+    suspicious matches the realistic threat model. Cryptographic
+    validation is left for v2 (requires a signing library / new
+    dependency); presence detection cuts the false-positive class on
+    legitimate signed exports.
+    """
+    try:
+        root: Any = pdf.Root
+    except (pikepdf.PdfError, AttributeError, KeyError):
+        return False
+    if root is None or not hasattr(root, "__contains__"):
+        return False
+    try:
+        if "/AcroForm" not in root:
+            return False
+        acroform: Any = root["/AcroForm"]
+    except (pikepdf.PdfError, KeyError, ValueError, TypeError):
+        return False
+    if acroform is None or not hasattr(acroform, "get"):
+        return False
+    try:
+        fields: Any = acroform.get("/Fields")
+    except (pikepdf.PdfError, KeyError, ValueError):
+        return False
+    if not fields:
+        return False
+
+    # BFS over fields (with /Kids descent) looking for /FT == /Sig.
+    try:
+        queue: list[Any] = list(fields)
+    except (pikepdf.PdfError, TypeError):
+        return False
+    while queue:
+        field = queue.pop()
+        try:
+            ft = field.get("/FT")
+        except (pikepdf.PdfError, KeyError, ValueError, AttributeError):
+            ft = None
+        if ft is not None and str(ft) == "/Sig":
+            return True
+        try:
+            kids = field.get("/Kids")
+        except (pikepdf.PdfError, KeyError, ValueError, AttributeError):
+            kids = None
+        if kids:
+            try:
+                queue.extend(list(kids))
+            except (pikepdf.PdfError, TypeError):
+                continue
+    return False
+
+
 def _xref_offset_aligned(raw: bytes) -> bool:
     """The last `startxref N` should point at b"xref" or an object header.
 
@@ -254,7 +315,12 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
     author = str(docinfo["/Author"]) if "/Author" in docinfo else None
 
     eof_markers = _count_eof_markers(raw)
-    if eof_markers > 1:
+    if eof_markers > 1 and not _has_pdf_signature(pdf):
+        # Digitally-signed PDFs use incremental updates by design — every
+        # signature appends a %%EOF trailer. Suppressing the flag when a
+        # signature is present cuts the false-positive class on legitimate
+        # signed bank exports and KYC documents. Unsigned multi-EOF PDFs
+        # still flag at the original severity.
         flags.append(f"incremental_saves: {eof_markers} EOF markers")
         score += 40
 
