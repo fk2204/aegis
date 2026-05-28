@@ -238,6 +238,12 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE schemaname='public' AND tablename='operators' "
         "AND rowsecurity=true"
     ),
+    "031_seed_operators.sql": (
+        # filip@commerafunding.com is the canonical seeded admin row.
+        # Its presence implies the INSERT body of 031 ran.
+        "SELECT 1 FROM operators "
+        "WHERE email='filip@commerafunding.com'"
+    ),
 }
 
 
