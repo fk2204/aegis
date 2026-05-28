@@ -231,6 +231,13 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='funders' "
         "AND column_name='operator_notes'"
     ),
+    "030_security_advisor_fixes.sql": (
+        # operators is the most reliable signal: 011 missed it, and 030 is
+        # the migration that turns RLS on there.
+        "SELECT 1 FROM pg_tables "
+        "WHERE schemaname='public' AND tablename='operators' "
+        "AND rowsecurity=true"
+    ),
 }
 
 
