@@ -159,10 +159,15 @@ def _fmt_acceleration_clause(raw: str) -> str:
 
 def _fmt_unauthorized_withdrawal_dispute(raw: str) -> str:
     # "2 reversal credit(s) paired with prior MCA debit(s)"
+    # _plural() pluralizes the LAST word, which would turn this into
+    # "2 reversal vs prior MCA debits" — wrong end of the phrase. Spell
+    # the pluralization out so "reversal" pluralizes, "debit" stays
+    # singular.
     m = re.match(r"(\d+) reversal credit", raw)
     if m:
         n = int(m.group(1))
-        return _plural(n, "reversal vs prior MCA debit")
+        word = "reversal" if n == 1 else "reversals"
+        return f"{n} {word} vs prior MCA debit"
     return raw
 
 
