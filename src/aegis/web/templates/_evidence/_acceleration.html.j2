@@ -1,0 +1,51 @@
+{# Acceleration-clause evidence — shows the recurring debit cadence
+  then the single 5–10× spike that called the loan, so the decline
+  reasoning is self-evident at a glance.
+
+  The detector
+  (``src/aegis/parser/patterns.py::_acceleration_clause_triggered``)
+  emits source_ids as ALL position debits, date-ordered. The trailing
+  debit IS the acceleration; everything before it is the normal
+  recurring cadence. We re-sort defensively in case ordering changes
+  upstream.
+
+  Inputs:
+    - card: PatternCard
+#}
+{% set sorted_debits = card.source_transactions|sort(attribute='posted_date') %}
+{% set normal = sorted_debits[:-1] %}
+{% set spike = sorted_debits|last %}
+{% set normal_sum = (normal|sum(attribute='amount'))|abs %}
+{% set normal_mean = (normal_sum / (normal|length)) if normal|length else 0 %}
+<div class="evidence evidence-acceleration">
+  <div class="evidence-header">Normal cadence → single 5–10× debit (funder called the loan)</div>
+
+  <div class="evidence-subheader">Normal recurring debits — {{ normal|length }} event{{ '' if normal|length == 1 else 's' }}, mean {{ normal_mean | money }}</div>
+  <table class="ledger">
+    <thead>
+      <tr><th>Date</th><th>Description</th><th>Amount</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      {% for t in normal %}
+        <tr>
+          <td>{{ t.posted_date }}</td>
+          <td>{{ t.description }}</td>
+          <td class="amt">{{ t.amount | money }}</td>
+          <td class="cite">p{{ t.source_page }} L{{ t.source_line }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="evidence-subheader evidence-spike-label">Acceleration debit · {{ ((spike.amount|abs) / normal_mean) | round(1) }}× the recurring mean</div>
+  <table class="ledger ledger-spike">
+    <tbody>
+      <tr class="spike-row">
+        <td>{{ spike.posted_date }}</td>
+        <td>{{ spike.description }}</td>
+        <td class="amt">{{ spike.amount | money }}</td>
+        <td class="cite">p{{ spike.source_page }} L{{ spike.source_line }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>

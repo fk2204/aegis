@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Poppins:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=7">
+  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=10">
   <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=10">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
 </head>
@@ -480,22 +480,30 @@
             </div>
             {% if stacking.debits %}
               <details>
-                <summary>{{ stacking.debits|length }} contributing debit row(s) — click to expand</summary>
-                <table class="ledger">
-                  <thead>
-                    <tr><th>Date</th><th>Lender (best-effort)</th><th>Amount</th><th>Source</th></tr>
-                  </thead>
-                  <tbody>
-                    {% for d in stacking.debits %}
-                      <tr>
-                        <td>{{ d.posted_date }}</td>
-                        <td>{{ d.lender_label }}</td>
-                        <td class="amt">${{ d.amount }}</td>
-                        <td class="cite">p{{ d.source_page }} L{{ d.source_line }}</td>
-                      </tr>
-                    {% endfor %}
-                  </tbody>
-                </table>
+                <summary>{{ stacking.debits|length }} debit{{ '' if stacking.debits|length == 1 else 's' }} across {{ stacking.position_count }} position{{ '' if stacking.position_count == 1 else 's' }} — click to expand</summary>
+                {# Group by lender_label so the worker sees the per-funder
+                   cadence rather than a flat date-sorted list. groupby
+                   requires its input to be pre-sorted by the group
+                   attribute. #}
+                {% for lender, lender_debits in (stacking.debits|sort(attribute='lender_label'))|groupby('lender_label') %}
+                  <details class="lender-group" open>
+                    <summary>{{ lender }} &mdash; {{ lender_debits|length }} debit{{ '' if lender_debits|length == 1 else 's' }}</summary>
+                    <table class="ledger">
+                      <thead>
+                        <tr><th>Date</th><th>Amount</th><th>Source</th></tr>
+                      </thead>
+                      <tbody>
+                        {% for d in lender_debits|sort(attribute='posted_date') %}
+                          <tr>
+                            <td>{{ d.posted_date }}</td>
+                            <td class="amt">${{ d.amount }}</td>
+                            <td class="cite">p{{ d.source_page }} L{{ d.source_line }}</td>
+                          </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </details>
+                {% endfor %}
               </details>
             {% endif %}
           </article>

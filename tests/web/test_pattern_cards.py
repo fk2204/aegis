@@ -3,8 +3,10 @@
 Covers:
 - Every code in ``PATTERN_COPY`` produces a valid card.
 - Cards are sorted by severity descending.
-- ``mca_stacking`` and ``recent_account_opening`` are skipped (rendered
-  elsewhere on the page).
+- ``mca_stacking`` is skipped (rendered as the dedicated StackingCard).
+- ``recent_account_opening`` and ``payroll_absent`` appear as cards
+  with empty source_transactions — their drill-down renders an
+  explanation panel (the evidence partial dispatches to one).
 - Unknown pattern codes are silently skipped (don't crash the page if a
   new detector lands without operator copy yet).
 - ``None`` pattern_analysis returns an empty list.
@@ -100,15 +102,32 @@ def test_mca_stacking_is_skipped() -> None:
     assert [c.code for c in cards] == ["round_number_deposits"]
 
 
-def test_recent_account_opening_is_skipped() -> None:
-    """recent_account_opening is already a hard-decline reason elsewhere."""
+def test_recent_account_opening_appears_with_empty_source_transactions() -> None:
+    """recent_account_opening now renders as a pattern card so the
+    explanation panel sits next to the flag. source_transactions is
+    empty because the detector emits no source_ids (the flag fires off
+    the period start vs today, not a specific transaction)."""
     txn = _txn()
     patterns = [
-        Pattern(code="recent_account_opening", severity=40, detail="opened 30d ago", source_ids=[]),
+        Pattern(code="recent_account_opening", severity=15, detail="opened 30d ago", source_ids=[]),
     ]
     cards = build_pattern_cards(_empty_analysis(patterns), [txn])
 
-    assert cards == []
+    assert [c.code for c in cards] == ["recent_account_opening"]
+    assert cards[0].source_transactions == []
+
+
+def test_payroll_absent_appears_with_empty_source_transactions() -> None:
+    """payroll_absent is a presence-of-absence flag — the explanation
+    panel summarizes the period and revenue context that triggered it."""
+    txn = _txn()
+    patterns = [
+        Pattern(code="payroll_absent", severity=10, detail="no payroll across period", source_ids=[]),
+    ]
+    cards = build_pattern_cards(_empty_analysis(patterns), [txn])
+
+    assert [c.code for c in cards] == ["payroll_absent"]
+    assert cards[0].source_transactions == []
 
 
 def test_unknown_pattern_codes_are_silently_skipped() -> None:

@@ -1,0 +1,30 @@
+{# Payroll-absent explanation panel — no source_ids to drill into.
+
+  The detector fires when the statement covers ≥21 days with revenue
+  ≥$50k AND no payroll-processor activity is found. The card's
+  description states the rule; this panel surfaces the concrete period
+  and revenue figure plus the operator playbook (1099-only is plausible;
+  W-2 claims without payroll trace is a red flag).
+
+  Inputs:
+    - card: PatternCard
+    - analysis: AnalysisRow (optional; period dates + true_revenue used in copy)
+#}
+<div class="evidence evidence-explanation">
+  {% if analysis is defined and analysis and analysis.statement_period_start and analysis.statement_period_end %}
+    <p>
+      No payroll-processor activity found across
+      <strong>{{ analysis.statement_period_start.strftime('%b %d') }} – {{ analysis.statement_period_end.strftime('%b %d, %Y') }}</strong>
+      ({{ (analysis.statement_period_end - analysis.statement_period_start).days + 1 }} days).
+      {% if analysis.true_revenue %}
+        Revenue total <strong>{{ analysis.true_revenue | money }}</strong> qualifies for the payroll expectation (≥ $50k floor).
+      {% endif %}
+    </p>
+  {% else %}
+    <p>No payroll-processor activity found over the statement period.</p>
+  {% endif %}
+  <p>
+    Today's review: ask the merchant how they pay employees / contractors.
+    1099-only is a plausible explanation; <em>W-2 claims without payroll trace is a red flag</em>.
+  </p>
+</div>

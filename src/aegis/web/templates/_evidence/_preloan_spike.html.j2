@@ -1,0 +1,85 @@
+{# Pre-loan spike evidence — shows the spike transactions alongside a
+  baseline panel so the contrast is visible at a glance.
+
+  ``card.source_transactions`` holds the spike (last-7d or last-14d
+  deposits that triggered the detector). The baseline is computed from
+  ``latest_transactions`` in template scope — deposits before the spike
+  window. We show the 6 most-recent baseline deposits ordered date-asc
+  so the contrast in scale is obvious.
+
+  Metric panel uses the spike + baseline sums to display weekly
+  comparison numbers. Decimals are summed by the Jinja ``sum`` filter
+  with ``attribute='amount'``; the math is intentionally simple — the
+  detector already gated the trigger, so this panel just summarizes
+  for the worker.
+
+  Inputs:
+    - card: PatternCard
+    - latest_transactions: list[ClassifiedTransaction]  (optional;
+      baseline panel collapses when absent.)
+#}
+{% set spike_rows = card.source_transactions|sort(attribute='posted_date') %}
+{% set spike_total = spike_rows|sum(attribute='amount') %}
+{% set spike_start = spike_rows|first %}
+{% set spike_end = spike_rows|last %}
+<div class="evidence evidence-preloan">
+  <div class="evidence-header">Spike vs prior-period baseline</div>
+
+  <div class="evidence-metrics">
+    <div>
+      <span class="k">Spike window</span>
+      <span class="v">{{ spike_total | money }}</span>
+      <span class="qual">{{ spike_rows|length }} deposit{{ '' if spike_rows|length == 1 else 's' }} · {{ spike_start.posted_date }} → {{ spike_end.posted_date }}</span>
+    </div>
+  </div>
+
+  <div class="evidence-subheader">Spike transactions</div>
+  <table class="ledger">
+    <thead>
+      <tr><th>Date</th><th>Description</th><th>Amount</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      {% for t in spike_rows %}
+        <tr>
+          <td>↓ {{ t.posted_date }}</td>
+          <td>{{ t.description }}</td>
+          <td class="amt">{{ t.amount | money }}</td>
+          <td class="cite">p{{ t.source_page }} L{{ t.source_line }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% set baseline_rows = [] %}
+  {% if latest_transactions is defined and latest_transactions %}
+    {% set spike_ids = card.source_transactions|map(attribute='id')|list %}
+    {% set _baseline_candidates = [] %}
+    {% for t in latest_transactions %}
+      {% if t.amount > 0 and t.category in ('deposit', 'ach_credit', 'wire_in', 'refund') and t.id not in spike_ids and t.posted_date < spike_start.posted_date %}
+        {% set _ = _baseline_candidates.append(t) %}
+      {% endif %}
+    {% endfor %}
+    {% set baseline_rows = (_baseline_candidates|sort(attribute='posted_date', reverse=True))[:6]|sort(attribute='posted_date') %}
+  {% endif %}
+
+  {% if baseline_rows %}
+    <div class="evidence-subheader">Baseline · most recent {{ baseline_rows|length }} pre-spike deposit{{ '' if baseline_rows|length == 1 else 's' }}</div>
+    <table class="ledger ledger-baseline">
+      <thead>
+        <tr><th>Date</th><th>Description</th><th>Amount</th><th>Source</th></tr>
+      </thead>
+      <tbody>
+        {% for t in baseline_rows %}
+          <tr>
+            <td>{{ t.posted_date }}</td>
+            <td>{{ t.description }}</td>
+            <td class="amt">{{ t.amount | money }}</td>
+            <td class="cite">p{{ t.source_page }} L{{ t.source_line }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="evidence-note">Baseline panel hidden — full transaction context not supplied to template.</div>
+  {% endif %}
+</div>

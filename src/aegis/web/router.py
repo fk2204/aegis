@@ -2030,6 +2030,10 @@ async def merchant_detail(
     bundle_summaries: list[dict[str, Any]] = []
     statement_coverage: dict[str, Any] | None = None
     pattern_cards: list[Any] = []
+    # Surfaced to the dossier template so the evidence drill-down's
+    # preloan_spike baseline panel can look beyond ``card.source_transactions``
+    # and pull pre-spike deposits for the comparison reference.
+    latest_transactions: list[Any] = []
     soft_signals = (
         parse_soft_signal_flags(list(latest_doc.all_flags))
         if latest_doc is not None
@@ -2156,6 +2160,7 @@ async def merchant_detail(
             "aggregate_labels": _AGGREGATE_LABELS,
             "aggregate_unit_kind": _AGGREGATE_UNIT_KIND,
             "pattern_cards": pattern_cards,
+            "latest_transactions": latest_transactions,
             "soft_signals": soft_signals,
             "from_intake": from_intake,
             "intake_docs_uploaded": intake_docs_uploaded,

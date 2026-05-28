@@ -1,30 +1,55 @@
 {# Evidence drill-down for a pattern card.
 
   Dispatched by ``card.code`` to a per-flag renderer. Most flags fall
-  through to the flat chronological table (``_evidence/_flat_transactions``).
-  Custom shapes — wash-deposit pairs, preloan_spike vs baseline, the
-  acceleration normal-vs-spike layout, and the no-evidence explanation
-  panels for recent_account_opening / payroll_absent — are dispatched
-  by ``card.code`` and ship in a follow-up chunk on the same branch.
+  through to the flat chronological table
+  (``_evidence/_flat_transactions``). Four codes get custom shapes that
+  match how the underlying flag should be read:
 
-  Renders nothing when the card has no source_transactions AND no custom
-  no-evidence renderer is registered for the code. That preserves the
-  existing behavior for ``payroll_absent`` (empty source_ids hides the
-  drill-down) until the explanation panel lands.
+    - wash_deposit_suspected → paired deposit/withdrawal layout.
+    - preloan_spike → metric panel + spike rows + pre-spike baseline.
+    - acceleration_clause_triggered → normal cadence then 5–10× debit.
+
+  Two codes have no source_transactions to drill into and render an
+  explanation panel instead of nothing:
+
+    - recent_account_opening → period date + 6-month baseline playbook.
+    - payroll_absent → period + revenue context + 1099-vs-W2 playbook.
+
+  Renders nothing when the card has no source_transactions AND no
+  no-evidence renderer is registered for the code.
 
   Inputs:
     - card: PatternCard (from aegis.web._pattern_cards)
-    - all_transactions: list[ClassifiedTransaction]  (optional; reserved
-      for renderers that need full-doc context — preloan_spike baseline,
-      etc. Not used by the flat fallback.)
+    - latest_transactions: list[ClassifiedTransaction]  (optional;
+      used by ``preloan_spike`` for the baseline panel — without it the
+      panel renders the spike rows only and notes the missing context.)
+    - analysis: AnalysisRow  (optional; used by the explanation panels
+      for period dates and revenue figures.)
 #}
-{% if card.source_transactions %}
+{% set _custom_evidence_codes = (
+  'wash_deposit_suspected',
+  'preloan_spike',
+  'acceleration_clause_triggered',
+) %}
+{% set _explanation_codes = (
+  'recent_account_opening',
+  'payroll_absent',
+) %}
+{% if card.source_transactions or card.code in _explanation_codes %}
   <details>
-    <summary>{{ card.source_transactions|length }} contributing transaction row(s) — click to expand</summary>
-    {# Custom dispatch lands here in a follow-up chunk. For now every
-       flag falls through to the flat chronological table — the same
-       shape that was previously inlined in the dossier pattern_cards
-       loop, so this refactor is a no-op visually. #}
-    {% include "_evidence/_flat_transactions.html.j2" %}
+    <summary>{% if card.code in _explanation_codes %}Why this flag fired — click to expand{% else %}{{ card.source_transactions|length }} contributing transaction row(s) — click to expand{% endif %}</summary>
+    {% if card.code == 'wash_deposit_suspected' %}
+      {% include "_evidence/_wash_deposit.html.j2" %}
+    {% elif card.code == 'preloan_spike' %}
+      {% include "_evidence/_preloan_spike.html.j2" %}
+    {% elif card.code == 'acceleration_clause_triggered' %}
+      {% include "_evidence/_acceleration.html.j2" %}
+    {% elif card.code == 'recent_account_opening' %}
+      {% include "_evidence/_recent_account_opening.html.j2" %}
+    {% elif card.code == 'payroll_absent' %}
+      {% include "_evidence/_payroll_absent.html.j2" %}
+    {% else %}
+      {% include "_evidence/_flat_transactions.html.j2" %}
+    {% endif %}
   </details>
 {% endif %}
