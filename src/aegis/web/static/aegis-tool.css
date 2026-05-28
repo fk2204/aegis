@@ -15,7 +15,7 @@
 /* ===================== DECK (page title bar) ===================== */
 
 .dossier-page .deck {
-  max-width: 1320px;
+  max-width: 1800px;
   margin: 0 auto;
   padding: 18px 56px 14px;
   display: flex;
@@ -57,7 +57,7 @@
 /* ===================== KPI STRIP ===================== */
 
 .dossier-page .strip {
-  max-width: 1320px;
+  max-width: 1800px;
   margin: 0 auto;
   padding: 0 56px;
   display: grid;
@@ -103,7 +103,7 @@
 /* ===================== PAGE BODY ===================== */
 
 .dossier-page .body {
-  max-width: 1320px;
+  max-width: 1800px;
   margin: 0 auto;
   padding: 24px 56px;
   display: grid;
@@ -111,10 +111,10 @@
   align-items: start;
 }
 .dossier-page .body.cols-1 { grid-template-columns: 1fr; }
-.dossier-page .body.cols-2 { grid-template-columns: 1fr 420px; }
+.dossier-page .body.cols-2 { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
 .dossier-page .body.cols-form {
   grid-template-columns: minmax(0, 880px) 1fr;
-  max-width: 1320px;
+  max-width: 1800px;
 }
 
 /* ===================== SECTION HEADERS ===================== */
@@ -153,18 +153,7 @@
 /* ===================== DATA TABLES (queue / list) ===================== */
 
 .dossier-page table.queue {
-  /* Shrink to content, but fill up to ~900px when content is sparse.
-     width: 100% on a 1208px cols-1 shell over-allocates every column,
-     scattering right-aligned numeric values across wide gaps — the
-     visual "columns are messy" complaint from 2026-05-28. The
-     min(900px, 100%) clamp leaves Today (cols-2, parent 752px)
-     untouched (resolves to 752px there) while constraining the
-     cols-1 tables (Deals / Merchants / Funders / Review) to a
-     readable 900px instead of stretching to fill 1208px. Defaults
-     to left-align so the table's left edge matches the section
-     header above it. */
-  width: auto;
-  min-width: min(900px, 100%);
+  width: 100%;
   border-collapse: collapse;
   margin-top: 10px;
   font-family: var(--serif);
@@ -255,18 +244,10 @@
   font-size: 10.5px;
   color: var(--ink-2);
   letter-spacing: 0.04em;
-  /* Cap the cell width and let content wrap inside. Without these the
-     flags cell expands to fit a `; `-joined or many-chip string,
-     squeezing adjacent columns and floating the next column's data
-     off the right edge under its header. Chip-rendered flags inside
-     wrap naturally; long unbroken tokens break instead of pushing. */
-  max-width: 280px;
   white-space: normal;
   word-break: break-word;
   vertical-align: top;
 }
-/* Chips inside .flags get a small bottom margin so they stack into
-   visually distinct rows when the cell wraps onto multiple lines. */
 .dossier-page table.queue tbody td.flags .chip {
   margin: 2px 4px 2px 0;
 }
@@ -445,7 +426,7 @@
 /* ===================== STATUS BAR (foot) ===================== */
 
 .dossier-page .statusbar {
-  max-width: 1320px;
+  max-width: 1800px;
   margin: 32px auto 0;
   padding: 12px 56px;
   border-top: 1px solid var(--rule);
@@ -1102,70 +1083,3 @@
   color: var(--ink);
 }
 
-/* ===================== RESPONSIVE FIXES ===================== */
-
-/* Mid desktop — tighten side padding so content uses more of the viewport. */
-@media (max-width: 1320px) {
-  .dossier-page .deck,
-  .dossier-page .strip,
-  .dossier-page .body,
-  .dossier-page .statusbar { padding-left: 28px; padding-right: 28px; }
-}
-
-/* Tablet / small laptop — collapse two-col body, soften strip. */
-@media (max-width: 1100px) {
-  .dossier-page .body.cols-2 { grid-template-columns: 1fr; }
-  .dossier-page .body.cols-form { grid-template-columns: 1fr; }
-  .dossier-page .strip { grid-template-columns: repeat(3, 1fr) !important; }
-  .dossier-page .deck { flex-wrap: wrap; }
-  .dossier-page .deck h1 { font-size: 32px; }
-  .dossier-page .form .row.three { grid-template-columns: 1fr 1fr; }
-  /* Funder detail two-col rows stack at this breakpoint. */
-  .dossier-page .funder-top-row,
-  .dossier-page .conditions-row { grid-template-columns: 1fr; gap: 24px; }
-}
-
-/* Mobile — single column everywhere, scrollable tables. */
-@media (max-width: 720px) {
-  .dossier-page .deck,
-  .dossier-page .strip,
-  .dossier-page .body,
-  .dossier-page .statusbar { padding-left: 18px; padding-right: 18px; }
-  .dossier-page .strip { grid-template-columns: repeat(2, 1fr) !important; }
-  .dossier-page .strip .v { font-size: 26px; }
-  .dossier-page .deck h1 { font-size: 26px; }
-  .dossier-page .form .row.two,
-  .dossier-page .form .row.three { grid-template-columns: 1fr; }
-  .dossier-page .form-actions { width: 100%; }
-  .dossier-page .form-actions .btn { flex: 1; justify-content: center; }
-}
-
-/* Table overflow safety — MOBILE ONLY.
- *
- * The display:block on the table + display:table on thead AND tbody
- * splits a single <table> into two independent display:table contexts.
- * Each one runs its own auto-layout algorithm — thead sizes columns
- * from header text widths, tbody sizes columns from cell content
- * widths. Result: header columns and data columns land at different
- * X positions ("headers don't sit over their data") — the visible
- * defect on Deals / Merchants / Funders / Review reported 2026-05-28.
- *
- * Restoring normal display:table on the <table> at desktop lets the
- * browser compute column widths once for the whole table and share
- * them across thead + tbody, which is how <table> is supposed to work.
- *
- * The override is only needed at narrow viewports where a wide table
- * would actually push the page past the screen edge. At desktop the
- * line-155 rule (width: auto; min-width: min(900px, 100%)) caps the
- * table at 900px so there's no overflow to scroll-protect against.
- */
-@media (max-width: 720px) {
-  .dossier-page table.queue { display: block; overflow-x: auto; width: 100%; }
-  .dossier-page table.queue thead,
-  .dossier-page table.queue tbody {
-    display: table;
-    width: 100%;
-    table-layout: auto;
-    min-width: 640px;
-  }
-}

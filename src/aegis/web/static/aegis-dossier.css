@@ -132,7 +132,7 @@
 
 /* ============ masthead ============ */
 .dossier-page .masthead {
-  max-width: 1320px;
+  max-width: 1800px;
   margin: 0 auto;
   padding: 28px 56px 0;
   border-bottom: 1px solid var(--ink);
@@ -217,7 +217,7 @@
 
 /* ============ banner (from intake / upload flash) ============ */
 .dossier-page .flash {
-  max-width: 1320px;
+  max-width: 1800px;
   margin: 14px auto 0;
   padding: 14px 56px 0;
 }
@@ -242,7 +242,7 @@
 
 /* ============ sheet (two-column body) ============ */
 .dossier-page .sheet {
-  max-width: 1320px;
+  max-width: 1800px;
   margin: 0 auto;
   padding: 0 56px;
   display: grid;
@@ -1037,49 +1037,3 @@
   vertical-align: middle;
 }
 
-/* ============ degrade on narrow viewports ============ */
-/* Mid desktop — keep two-column dossier but tighten side padding. */
-@media (max-width: 1320px) {
-  .dossier-page .masthead,
-  .dossier-page .flash,
-  .dossier-page .sheet,
-  .dossier-page .deck,
-  .dossier-page .strip,
-  .dossier-page .body,
-  .dossier-page .statusbar { padding-left: 28px; padding-right: 28px; }
-  .dossier-page .topstrip { padding-left: 28px; padding-right: 28px; }
-}
-
-/* Narrow viewports — collapse to single column. */
-@media (max-width: 1100px) {
-  .dossier-page .sheet { grid-template-columns: 1fr; }
-  .dossier-page aside.rail {
-    position: relative;
-    max-height: none;
-    border-right: 0;
-    border-bottom: 1px solid var(--rule);
-    padding-right: 0;
-    padding-bottom: 24px;
-  }
-  .dossier-page main.main { padding-left: 0; padding-top: 16px; }
-  .dossier-page .verdict { grid-template-columns: 1fr; }
-  .dossier-page .findings { grid-template-columns: 1fr; }
-  .dossier-page .spread { grid-template-columns: repeat(2, 1fr); }
-  .dossier-page .masthead .title { font-size: 56px; }
-  .dossier-page .body.cols-2 { grid-template-columns: 1fr; }
-  .dossier-page .body.cols-form { grid-template-columns: 1fr; }
-  .dossier-page .deck { flex-wrap: wrap; }
-  .dossier-page .strip { grid-template-columns: repeat(3, 1fr) !important; }
-}
-
-/* Mobile — relax strip + stack everything. */
-@media (max-width: 720px) {
-  .dossier-page .topstrip { flex-wrap: wrap; gap: 8px; }
-  .dossier-page .topstrip .links { flex-wrap: wrap; gap: 12px; }
-  .dossier-page .masthead .title { font-size: 40px; }
-  .dossier-page .strip { grid-template-columns: repeat(2, 1fr) !important; }
-  .dossier-page .masthead .meta-row { grid-template-columns: repeat(2, 1fr); }
-  .dossier-page table.queue { font-size: 12px; }
-  .dossier-page table.queue thead th,
-  .dossier-page table.queue tbody td { padding: 8px 6px 8px 0; }
-}
