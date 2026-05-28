@@ -169,6 +169,86 @@ def test_index_manual_review_doc_surfaces_in_attention_panel(
     assert "suspicious_metadata" in resp.text
 
 
+def test_index_attention_flags_rendered_as_chips_not_joined_string(
+    client: TestClient,
+    doc_repo: InMemoryDocumentRepository,
+) -> None:
+    """Flags column on Today renders one chip per flag (the pattern
+    review.html.j2 uses), not a ;-joined string. The joined-string
+    form forced the flags column to expand and blow out the table
+    layout — see fix/dashboard-table-alignment."""
+    target = next(iter(doc_repo._docs.values()))
+    flagged = target.model_copy(
+        update={
+            "parse_status": "manual_review",
+            "fraud_score": 70,
+            "all_flags": ["[META] foo_marker", "[PATTERN] bar_pattern"],
+        }
+    )
+    doc_repo._docs[target.id] = flagged
+
+    resp = client.get("/ui/")
+    assert resp.status_code == 200
+    # Each flag wrapped in a chip span (same shape review.html.j2 uses).
+    assert '<span class="chip warn">[META] foo_marker</span>' in resp.text
+    assert '<span class="chip warn">[PATTERN] bar_pattern</span>' in resp.text
+    # No "; "-joined form (the bug we're fixing).
+    assert "foo_marker; [PATTERN]" not in resp.text
+
+
+def test_index_attention_flags_truncates_to_three_with_more_indicator(
+    client: TestClient,
+    doc_repo: InMemoryDocumentRepository,
+) -> None:
+    """When >3 flags, render the first 3 + a "+N more" hint. Matches
+    the review queue's overflow pattern so the table stays compact."""
+    target = next(iter(doc_repo._docs.values()))
+    flagged = target.model_copy(
+        update={
+            "parse_status": "manual_review",
+            "fraud_score": 90,
+            "all_flags": [
+                "[META] one",
+                "[META] two",
+                "[META] three",
+                "[META] four",
+                "[META] five",
+            ],
+        }
+    )
+    doc_repo._docs[target.id] = flagged
+
+    resp = client.get("/ui/")
+    assert resp.status_code == 200
+    assert "[META] one" in resp.text
+    assert "[META] two" in resp.text
+    assert "[META] three" in resp.text
+    # The 4th and 5th do NOT appear as chips (truncated)
+    assert '<span class="chip warn">[META] four</span>' not in resp.text
+    assert '<span class="chip warn">[META] five</span>' not in resp.text
+    # "+2 more" indicator instead
+    assert "+2 more" in resp.text
+
+
+def test_index_uploaded_header_right_aligned(
+    client: TestClient,
+    doc_repo: InMemoryDocumentRepository,
+) -> None:
+    """The Uploaded header now uses class="num" so its text-align
+    matches the right-aligned uploaded cell. Fixes the "date floats
+    off" misalignment from fix/dashboard-table-alignment."""
+    # The attention table is empty-state when zero manual_review docs;
+    # seed one so the table renders.
+    target = next(iter(doc_repo._docs.values()))
+    doc_repo._docs[target.id] = target.model_copy(
+        update={"parse_status": "manual_review", "fraud_score": 50}
+    )
+    resp = client.get("/ui/")
+    assert resp.status_code == 200
+    # th carries the num class so .queue thead th.num applies text-align:right
+    assert '<th class="num">Uploaded</th>' in resp.text
+
+
 def test_dashboard_upload_page_has_form(client: TestClient) -> None:
     resp = client.get("/ui/upload")
     assert resp.status_code == 200

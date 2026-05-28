@@ -65,7 +65,7 @@
             <th>Merchant</th>
             <th class="num">Fraud</th>
             <th>Flags</th>
-            <th>Uploaded</th>
+            <th class="num">Uploaded</th>
             <th class="act"></th>
           </tr>
         </thead>
@@ -79,7 +79,14 @@
               <td class="score {% if a.fraud_score is number and a.fraud_score >= 65 %}bad{% elif a.fraud_score is number and a.fraud_score >= 35 %}warn{% else %}calm{% endif %}">
                 {% if a.fraud_score is number %}{{ a.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
               </td>
-              <td class="flags">{{ a.flags or '—' }}</td>
+              <td class="flags">
+                {% if a.flags %}
+                  {% for f in a.flags[:3] %}<span class="chip warn">{{ f }}</span>{% endfor %}
+                  {% if a.flags|length > 3 %}<span class="mono-cell" style="margin-left:6px">+{{ a.flags|length - 3 }} more</span>{% endif %}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
               <td class="uploaded">{{ a.uploaded_at }}</td>
               <td class="act"><a href="/ui/review">review ↗</a></td>
             </tr>

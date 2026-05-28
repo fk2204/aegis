@@ -264,7 +264,11 @@ async def index(
                 "merchant_label": merchant_label,
                 "fraud_score": d.fraud_score if d.fraud_score is not None else "—",
                 "uploaded_at": d.uploaded_at.strftime("%Y-%m-%d %H:%M"),
-                "flags": "; ".join(d.all_flags) if d.all_flags else "",
+                # Flags as a list (chip-rendered in the template). Was a
+                # "; "-joined string which forced the column to expand
+                # with content, blowing out the table layout on rows with
+                # many flags. Same chip pattern review.html.j2 uses.
+                "flags": list(d.all_flags) if d.all_flags else [],
             }
         )
 
