@@ -44,9 +44,11 @@ def test_mca_stacking_humanizes_position_count() -> None:
 
 
 def test_acceleration_humanizes_lender_and_ratio() -> None:
-    hf = humanize_flag(
-        "[PATTERN] acceleration_clause_triggered: OnDeck: latest debit $4500.00 is 7.4x median prior $612.00 — possible funder acceleration"
+    raw = (
+        "[PATTERN] acceleration_clause_triggered: OnDeck: latest debit "
+        "$4500.00 is 7.4x median prior $612.00 - possible funder acceleration"
     )
+    hf = humanize_flag(raw)
     assert hf.code == "acceleration_clause_triggered"
     assert hf.title == "MCA acceleration"
     assert "OnDeck" in hf.detail
@@ -94,9 +96,11 @@ def test_duplicate_deposits_humanizes_pair_count() -> None:
 
 
 def test_unauthorized_withdrawal_dispute_humanizes_count() -> None:
-    hf = humanize_flag(
-        "[PATTERN] unauthorized_withdrawal_dispute: 2 reversal credit(s) paired with prior MCA debit(s)"
+    raw = (
+        "[PATTERN] unauthorized_withdrawal_dispute: 2 reversal credit(s) "
+        "paired with prior MCA debit(s)"
     )
+    hf = humanize_flag(raw)
     assert hf.title == "Unauthorized withdrawal dispute"
     assert hf.detail == "2 reversals vs prior MCA debit"
     assert hf.severity_band == "decline"
