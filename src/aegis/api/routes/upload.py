@@ -28,6 +28,7 @@ historical path) is never re-parsed.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
@@ -70,6 +71,15 @@ uploads_router = APIRouter(
 _log = get_logger(__name__)
 
 _PDF_MAGIC = b"%PDF-"
+
+# Callable that enqueues the ``parse_document`` arq job for one new
+# document. Callers compose one of these from their context (FastAPI
+# request → app.state.arq_pool, or an arq worker's ctx["redis"]) and
+# hand it to :func:`persist_pdf_upload`. Decoupling persist_pdf_upload
+# from FastAPI's Request lets the close-attachment orchestration job
+# (``aegis.workers.process_close_attachments``) reuse the same persist
+# path without smuggling a fake Request.
+EnqueueParse = Callable[[UUID, str], Awaitable[None]]
 
 
 class UploadResponse(BaseModel):
@@ -128,7 +138,7 @@ async def upload_pdf(
         merchants=merchants,
     )
     return await persist_pdf_upload(
-        request=request,
+        enqueue_parse=_make_request_enqueue(request),
         body=body,
         original_filename=file.filename or "unknown.pdf",
         repository=repository,
@@ -142,7 +152,7 @@ async def upload_pdf(
 
 async def persist_pdf_upload(
     *,
-    request: Request,
+    enqueue_parse: EnqueueParse,
     body: bytes,
     original_filename: str,
     repository: DocumentRepository,
@@ -241,7 +251,7 @@ async def persist_pdf_upload(
             },
         )
 
-        await _enqueue_parse_job(request, document_id=row.id, pdf_path=str(temp_path))
+        await enqueue_parse(row.id, str(temp_path))
 
         return UploadResponse(
             document_id=row.id,
@@ -370,7 +380,7 @@ async def upload_from_close(
     duplicate = existing is not None
 
     upload_response = await persist_pdf_upload(
-        request=request,
+        enqueue_parse=_make_request_enqueue(request),
         body=file_bytes,
         original_filename=filename,
         repository=repository,
@@ -501,7 +511,21 @@ async def _enqueue_parse_job(
     pending.append({"document_id": str(document_id), "pdf_path": pdf_path})
 
 
+def _make_request_enqueue(request: Request) -> EnqueueParse:
+    """Bind a FastAPI ``Request`` into an :data:`EnqueueParse` callable.
+
+    Decouples :func:`persist_pdf_upload` from FastAPI's Request: route
+    handlers compose the callable from their request context, while the
+    arq orchestration worker composes a different callable that talks
+    to ``ctx['redis']`` directly. Both reach the same persist path.
+    """
+    async def _enqueue(document_id: UUID, pdf_path: str) -> None:
+        await _enqueue_parse_job(request, document_id=document_id, pdf_path=pdf_path)
+    return _enqueue
+
+
 __all__ = [
+    "EnqueueParse",
     "FromCloseRequest",
     "FromCloseResponse",
     "UploadResponse",

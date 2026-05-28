@@ -478,3 +478,93 @@ def test_matching_event_missing_lead_id_returns_400(client: TestClient) -> None:
     event["event"]["lead_id"] = None
     resp = _post_signed(client, event)
     assert resp.status_code == 400
+
+
+# ----------------------------------------------------------------------
+# Attachment orchestration enqueue (Feature 2, chunk 3)
+# ----------------------------------------------------------------------
+
+
+def test_webhook_enqueues_orchestration_after_merchant_upsert(
+    client: TestClient,
+    audit: InMemoryAuditLog,
+) -> None:
+    """After the merchant upsert lands, the route fires-and-forgets the
+    ``process_close_attachments`` arq job. With no arq pool wired (test
+    harness), the job is captured in ``pending_close_orchestration_jobs``.
+    """
+    resp = _post_signed(client, _opportunity_event(lead_id="lead_xyz"))
+    assert resp.status_code == 204, resp.text
+
+    pending = getattr(
+        client.app.state, "pending_close_orchestration_jobs", []  # type: ignore[attr-defined]
+    )
+    assert pending == [{
+        "close_lead_id": "lead_xyz",
+        "trigger": "webhook",
+        "actor_email": None,
+        "override_cap": False,
+    }]
+
+    actions = [e["action"] for e in audit.entries]
+    assert "close.orchestration.enqueued" in actions
+    enq = next(
+        e for e in audit.entries
+        if e["action"] == "close.orchestration.enqueued"
+    )
+    assert enq["details"]["close_lead_id"] == "lead_xyz"
+    assert enq["details"]["trigger"] == "webhook"
+    # subject_id must be the merchant uuid that was just upserted
+    assert enq["subject_id"] is not None
+
+
+def test_webhook_enqueue_failure_does_not_5xx(
+    client: TestClient,
+    audit: InMemoryAuditLog,
+) -> None:
+    """A Redis blip (or any other enqueue raise) audits
+    close.orchestration.enqueue_failed and returns 204 — the webhook
+    must not 5xx because Close's 72h retry + idempotent merchant
+    upsert make self-healing the right policy."""
+
+    class _BoomPool:
+        async def enqueue_job(self, *_a: object, **_kw: object) -> None:
+            raise RuntimeError("redis_blip")
+
+    client.app.state.arq_pool = _BoomPool()  # type: ignore[attr-defined]
+    try:
+        resp = _post_signed(client, _opportunity_event(lead_id="lead_xyz"))
+        assert resp.status_code == 204, resp.text
+    finally:
+        client.app.state.arq_pool = None  # type: ignore[attr-defined]
+
+    actions = [e["action"] for e in audit.entries]
+    assert "close.orchestration.enqueue_failed" in actions
+    assert "close.orchestration.enqueued" not in actions
+    fail = next(
+        e for e in audit.entries
+        if e["action"] == "close.orchestration.enqueue_failed"
+    )
+    assert fail["details"]["error"] == "RuntimeError"
+    assert fail["details"]["close_lead_id"] == "lead_xyz"
+
+
+def test_webhook_filtered_event_does_not_enqueue(
+    client: TestClient,
+    audit: InMemoryAuditLog,
+) -> None:
+    """If the status_id didn't change (event filtered out), we must
+    NOT enqueue the orchestrator — there's no merchant upsert and
+    nothing to follow up on."""
+    event = _opportunity_event(lead_id="lead_filtered")
+    event["event"]["data"]["status_id"] = _OTHER_STATUS_ID
+    resp = _post_signed(client, event)
+    assert resp.status_code == 204
+
+    pending = getattr(
+        client.app.state, "pending_close_orchestration_jobs", []  # type: ignore[attr-defined]
+    )
+    assert pending == []
+    actions = [e["action"] for e in audit.entries]
+    assert "close.orchestration.enqueued" not in actions
+    assert "close.orchestration.enqueue_failed" not in actions

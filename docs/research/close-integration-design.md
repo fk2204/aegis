@@ -18,7 +18,7 @@ The Close org is already partially configured by the operator:
 - ~85 Lead-level custom fields covering identity, business profile, bank profile, MCA exposure, credit, history, and lead workflow
 - **5 Aegis-specific Lead fields already provisioned**: `Aegis Applicant ID`, `Aegis Score`, `Aegis Recommendation` (Approve/Decline/Refer), `OFAC Status` (Clear/Flagged/Pending), `Aegis Last Synced`
 - 3 Custom Activity Types ready for funder activity: `Submission`, `Offer`, `Decline` (NOT used in this branch; deferred)
-- 3 users: filip@, edward@, dima@ commerafunding.com
+- 3 users: filip@, david@, dima@ commerafunding.com
 - No active workflows, no forms yet
 
 ## Decisions (operator-confirmed)

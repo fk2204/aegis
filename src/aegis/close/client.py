@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import truststore
+from pydantic import BaseModel, ConfigDict, Field
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -109,6 +110,30 @@ class CloseAuthError(CloseError):
     revoked, or scoped out; retrying just wastes the rate budget and
     Close-side metering.
     """
+
+
+class CloseAttachment(BaseModel):
+    """One file attached to a Close Lead, as returned by the Files API.
+
+    Returned by :meth:`CloseClient.list_lead_attachments`. Used by the
+    attachment-orchestration arq job (``process_close_attachments``)
+    to decide which attachments to pull through the parser and which
+    to skip (filename-prefix filter).
+
+    Lenient on extra fields — Close's Files API returns more keys than
+    AEGIS cares about (``object_type``, ``object_id``, organization
+    metadata, etc.). ``extra="ignore"`` keeps the model robust to
+    upstream additions without forcing a schema change here.
+    """
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    content_type: str | None = None
+    size: int | None = None
+    created_by_name: str | None = None
+    date_created: str | None = None
 
 
 class CloseRateLimitError(CloseError):
@@ -302,6 +327,58 @@ class CloseClient:
         """GET /api/v1/opportunity/{opportunity_id}/."""
         return self.request("GET", f"/api/v1/opportunity/{opportunity_id}/")
 
+    def list_lead_attachments(self, lead_id: str) -> list[CloseAttachment]:
+        """GET /api/v1/files/?lead_id={lead_id} — list all files on a Lead.
+
+        Used by the attachment-orchestration arq job to enumerate every
+        PDF the operator has attached to a Close Lead so the orchestrator
+        can filename-filter + auto-pull statements through the parser
+        pipeline.
+
+        Pagination: Close returns ``{"has_more": bool, "data": [...]}``
+        envelopes with a default ``_limit=100``. This method follows
+        ``has_more`` via ``_skip`` until the cursor exhausts. A Lead
+        with hundreds of attachments is not a realistic shape today,
+        but the loop is cheap and keeps the contract honest.
+
+        Same auth + retry semantics as the other methods — each page
+        call goes through :meth:`request`, which has its own tenacity
+        decorator. 401 → CloseAuthError (no retry); 429 → CloseRateLimitError
+        (sleeps + retried inside ``request``); 5xx → retried; other 4xx
+        → CloseError raised.
+
+        Returns an empty list if the Lead has no attachments.
+        """
+        items: list[CloseAttachment] = []
+        skip = 0
+        page_size = 100
+        while True:
+            page = self.request(
+                "GET",
+                "/api/v1/files/",
+                params={
+                    "lead_id": lead_id,
+                    "_limit": page_size,
+                    "_skip": skip,
+                },
+            )
+            raw_items = page.get("data", [])
+            if not isinstance(raw_items, list):
+                raise CloseError(
+                    "close /api/v1/files/ returned non-list data: "
+                    f"{type(raw_items).__name__}"
+                )
+            for raw in raw_items:
+                if not isinstance(raw, dict):
+                    raise CloseError(
+                        "close /api/v1/files/ returned non-object item: "
+                        f"{type(raw).__name__}"
+                    )
+                items.append(CloseAttachment.model_validate(raw))
+            if not page.get("has_more"):
+                return items
+            skip += page_size
+
     @retry(
         retry=retry_if_exception_type(
             (httpx.TransportError, CloseRateLimitError)
@@ -484,6 +561,7 @@ def _filename_from_content_disposition(header_value: str) -> str | None:
 
 
 __all__ = [
+    "CloseAttachment",
     "CloseAuthError",
     "CloseClient",
     "CloseError",

@@ -1,4 +1,4 @@
-"""Worker job tests — parse_document.
+"""Worker job tests — parse_document + process_close_attachments.
 
 The worker delegates the heavy lifting to ``run_pipeline`` and to the
 repository / audit. We inject all three so the test exercises the
@@ -10,14 +10,18 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 
 from aegis.audit import InMemoryAuditLog
+from aegis.close.client import CloseAttachment, CloseError
+from aegis.merchants.models import MerchantRow
+from aegis.merchants.repository import InMemoryMerchantRepository
 from aegis.parser.pipeline import PipelineResult
 from aegis.storage import InMemoryDocumentRepository
-from aegis.workers import parse_document
+from aegis.workers import parse_document, process_close_attachments
 from tests.test_storage import _make_pipeline_result
 
 
@@ -345,3 +349,343 @@ async def test_parse_document_ambiguous_processor_routes_to_manual_review(
         e for e in audit.entries if e["action"] == "document.parse.error"
     )
     assert err_event["details"]["error"] == "AmbiguousProcessor"
+
+
+# =====================================================================
+# process_close_attachments — Close attachment auto-flow orchestrator.
+# =====================================================================
+
+
+_MIN_PDF = b"%PDF-1.4\nfake-statement"
+
+
+class _FakeCloseClient:
+    """Records calls; returns canned attachments + per-attachment bytes."""
+
+    def __init__(
+        self,
+        *,
+        attachments: list[CloseAttachment] | None = None,
+        list_error: Exception | None = None,
+        per_attachment_bytes: dict[str, bytes] | None = None,
+        per_attachment_filename: dict[str, str] | None = None,
+        per_attachment_error: dict[str, Exception] | None = None,
+    ) -> None:
+        self._attachments = attachments or []
+        self._list_error = list_error
+        self._bytes = per_attachment_bytes or {}
+        self._names = per_attachment_filename or {}
+        self._errors = per_attachment_error or {}
+        self.list_calls: list[str] = []
+        self.download_calls: list[str] = []
+
+    def list_lead_attachments(self, lead_id: str) -> list[CloseAttachment]:
+        self.list_calls.append(lead_id)
+        if self._list_error is not None:
+            raise self._list_error
+        return list(self._attachments)
+
+    def download_attachment(self, attachment_id: str) -> tuple[bytes, str]:
+        self.download_calls.append(attachment_id)
+        if attachment_id in self._errors:
+            raise self._errors[attachment_id]
+        body = self._bytes.get(attachment_id, _MIN_PDF + attachment_id.encode())
+        name = self._names.get(attachment_id, f"{attachment_id}.pdf")
+        return body, name
+
+
+def _make_merchant(close_lead_id: str = "lead_abc") -> MerchantRow:
+    return MerchantRow(
+        id=uuid4(),
+        business_name="Test Merchant",
+        owner_name="Test Owner",
+        state="CA",
+        close_lead_id=close_lead_id,
+    )
+
+
+def _attachment(id_: str, name: str) -> CloseAttachment:
+    return CloseAttachment(id=id_, name=name)
+
+
+def _orchestrator_ctx(
+    *,
+    merchants: InMemoryMerchantRepository,
+    repo: InMemoryDocumentRepository,
+    audit: InMemoryAuditLog,
+    close: _FakeCloseClient,
+    upload_dir: Path,
+    enqueue_calls: list[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Build an arq ctx for the orchestrator with everything mocked."""
+    calls = enqueue_calls if enqueue_calls is not None else []
+
+    async def _capture(document_id: UUID, pdf_path: str) -> None:
+        calls.append((str(document_id), pdf_path))
+
+    return {
+        "merchants": merchants,
+        "repository": repo,
+        "audit": audit,
+        "close_client": close,
+        "enqueue_parse": _capture,
+        # persist_pdf_upload writes the temp PDF under
+        # settings.aegis_upload_dir. The test fixture below sets that
+        # env var; this ctx key is just for symmetry / future use.
+        "upload_dir": str(upload_dir),
+    }
+
+
+@pytest.fixture
+def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point persist_pdf_upload at a per-test upload dir so the on-disk
+    PDFs don't pollute the system temp."""
+    d = tmp_path / "uploads"
+    d.mkdir()
+    monkeypatch.setenv("AEGIS_UPLOAD_DIR", str(d))
+    from aegis.config import get_settings as _gs
+    _gs.cache_clear()
+    return d
+
+
+async def test_orchestrator_happy_path_filters_and_persists(
+    upload_dir: Path,
+) -> None:
+    merchant = _make_merchant("lead_abc")
+    merchants = InMemoryMerchantRepository()
+    merchants.upsert(merchant)
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+
+    close = _FakeCloseClient(
+        attachments=[
+            _attachment("file_1", "April_bank_statement.pdf"),
+            _attachment("file_2", "drivers_license.jpg"),
+            _attachment("file_3", "May_estmt_chase.pdf"),
+        ],
+    )
+    enqueued: list[tuple[str, str]] = []
+    ctx = _orchestrator_ctx(
+        merchants=merchants, repo=repo, audit=audit, close=close,
+        upload_dir=upload_dir, enqueue_calls=enqueued,
+    )
+
+    summary = await process_close_attachments(ctx, "lead_abc", "webhook")
+
+    assert summary["total"] == 3
+    assert summary["fetched"] == 2
+    assert summary["skipped"] == 1
+    assert summary["failed"] == 0
+    assert summary["duplicates"] == 0
+    assert summary["capped"] is False
+
+    actions = [e["action"] for e in audit.entries]
+    assert actions.count("close.attachment.fetched") == 2
+    assert actions.count("close.attachment.skipped") == 1
+    assert "close.orchestration.complete" in actions
+    # Two parse jobs enqueued — one per non-duplicate statement.
+    assert len(enqueued) == 2
+
+
+async def test_orchestrator_no_merchant_audits_and_returns(
+    upload_dir: Path,
+) -> None:
+    merchants = InMemoryMerchantRepository()  # empty
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    close = _FakeCloseClient(attachments=[])
+    ctx = _orchestrator_ctx(
+        merchants=merchants, repo=repo, audit=audit, close=close,
+        upload_dir=upload_dir,
+    )
+
+    summary = await process_close_attachments(ctx, "lead_missing", "webhook")
+
+    assert summary["total"] == 0
+    assert summary["fetched"] == 0
+    assert close.list_calls == [], "list_lead_attachments must not run when no merchant"
+    actions = [e["action"] for e in audit.entries]
+    assert actions == ["close.orchestration.no_merchant"]
+
+
+async def test_orchestrator_list_failed_raises_after_audit(
+    upload_dir: Path,
+) -> None:
+    merchant = _make_merchant("lead_abc")
+    merchants = InMemoryMerchantRepository()
+    merchants.upsert(merchant)
+    audit = InMemoryAuditLog()
+    close = _FakeCloseClient(
+        list_error=CloseError("close 502 transient", status_code=502),
+    )
+    ctx = _orchestrator_ctx(
+        merchants=merchants,
+        repo=InMemoryDocumentRepository(),
+        audit=audit,
+        close=close,
+        upload_dir=upload_dir,
+    )
+
+    with pytest.raises(CloseError):
+        await process_close_attachments(ctx, "lead_abc", "webhook")
+
+    actions = [e["action"] for e in audit.entries]
+    assert "close.orchestration.list_failed" in actions
+    # complete audit row must NOT fire when listing fails
+    assert "close.orchestration.complete" not in actions
+
+
+async def test_orchestrator_per_attachment_fetch_failure_isolated(
+    upload_dir: Path,
+) -> None:
+    """One CloseError on a download must not abort the batch."""
+    merchant = _make_merchant("lead_abc")
+    merchants = InMemoryMerchantRepository()
+    merchants.upsert(merchant)
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+
+    close = _FakeCloseClient(
+        attachments=[
+            _attachment("good_1", "stmt_jan.pdf"),
+            _attachment("bad_mid", "stmt_feb.pdf"),
+            _attachment("good_2", "stmt_mar.pdf"),
+        ],
+        per_attachment_error={
+            "bad_mid": CloseError("close 502 transient", status_code=502),
+        },
+    )
+    ctx = _orchestrator_ctx(
+        merchants=merchants, repo=repo, audit=audit, close=close,
+        upload_dir=upload_dir,
+    )
+
+    summary = await process_close_attachments(ctx, "lead_abc", "webhook")
+
+    assert summary["fetched"] == 2
+    assert summary["failed"] == 1
+    actions = [e["action"] for e in audit.entries]
+    assert actions.count("close.attachment.fetched") == 2
+    assert actions.count("close.attachment.fetch_failed") == 1
+    assert "close.orchestration.complete" in actions
+
+
+async def test_orchestrator_dedup_via_sha256(upload_dir: Path) -> None:
+    """Same bytes on two attachments → second is duplicate, no second
+    parse enqueue."""
+    merchant = _make_merchant("lead_abc")
+    merchants = InMemoryMerchantRepository()
+    merchants.upsert(merchant)
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+
+    same = _MIN_PDF + b"-identical"
+    close = _FakeCloseClient(
+        attachments=[
+            _attachment("file_a", "stmt_apr.pdf"),
+            _attachment("file_b", "stmt_apr_resent.pdf"),
+        ],
+        per_attachment_bytes={"file_a": same, "file_b": same},
+    )
+    enqueued: list[tuple[str, str]] = []
+    ctx = _orchestrator_ctx(
+        merchants=merchants, repo=repo, audit=audit, close=close,
+        upload_dir=upload_dir, enqueue_calls=enqueued,
+    )
+
+    summary = await process_close_attachments(ctx, "lead_abc", "webhook")
+
+    assert summary["fetched"] == 2
+    assert summary["duplicates"] == 1
+    # The SECOND attachment's persist_pdf_upload returned
+    # duplicate_of_existing=True — no parse enqueue.
+    assert len(enqueued) == 1
+
+
+async def test_orchestrator_caps_at_15_without_override(
+    upload_dir: Path,
+) -> None:
+    merchant = _make_merchant("lead_abc")
+    merchants = InMemoryMerchantRepository()
+    merchants.upsert(merchant)
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+
+    atts = [_attachment(f"f_{i:02d}", f"stmt_{i:02d}.pdf") for i in range(17)]
+    close = _FakeCloseClient(attachments=atts)
+    ctx = _orchestrator_ctx(
+        merchants=merchants, repo=repo, audit=audit, close=close,
+        upload_dir=upload_dir,
+    )
+
+    summary = await process_close_attachments(ctx, "lead_abc", "webhook")
+
+    assert summary["total"] == 17
+    assert summary["fetched"] == 15
+    assert summary["capped"] is True
+    # Only 15 downloads happened — the deferred 2 never touched Close.
+    assert len(close.download_calls) == 15
+    actions = [e["action"] for e in audit.entries]
+    assert "close.orchestration.capped" in actions
+    assert "close.orchestration.warn_high_attachment_count" in actions
+    capped_row = next(
+        e for e in audit.entries if e["action"] == "close.orchestration.capped"
+    )
+    assert capped_row["details"]["deferred_count"] == 2
+
+
+async def test_orchestrator_override_cap_processes_all(
+    upload_dir: Path,
+) -> None:
+    merchant = _make_merchant("lead_abc")
+    merchants = InMemoryMerchantRepository()
+    merchants.upsert(merchant)
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+
+    atts = [_attachment(f"f_{i:02d}", f"stmt_{i:02d}.pdf") for i in range(17)]
+    close = _FakeCloseClient(attachments=atts)
+    ctx = _orchestrator_ctx(
+        merchants=merchants, repo=repo, audit=audit, close=close,
+        upload_dir=upload_dir,
+    )
+
+    summary = await process_close_attachments(
+        ctx, "lead_abc", "rescan", override_cap=True,
+    )
+
+    assert summary["fetched"] == 17
+    assert summary["capped"] is False
+    assert summary["override_cap"] is True
+    assert len(close.download_calls) == 17
+    actions = [e["action"] for e in audit.entries]
+    assert "close.orchestration.cap_overridden" in actions
+    assert "close.orchestration.capped" not in actions
+
+
+async def test_orchestrator_trigger_label_propagates(
+    upload_dir: Path,
+) -> None:
+    merchant = _make_merchant("lead_abc")
+    merchants = InMemoryMerchantRepository()
+    merchants.upsert(merchant)
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    close = _FakeCloseClient(
+        attachments=[_attachment("f1", "stmt.pdf")],
+    )
+    ctx = _orchestrator_ctx(
+        merchants=merchants, repo=repo, audit=audit, close=close,
+        upload_dir=upload_dir,
+    )
+
+    summary = await process_close_attachments(
+        ctx, "lead_abc", "rescan", actor_email="filip@commerafunding.com",
+    )
+
+    assert summary["trigger"] == "rescan"
+    fetched = next(
+        e for e in audit.entries if e["action"] == "close.attachment.fetched"
+    )
+    assert fetched["details"]["trigger"] == "rescan"
+    assert fetched["actor_email"] == "filip@commerafunding.com"

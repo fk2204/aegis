@@ -14,10 +14,10 @@ import os
 import tempfile
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 if TYPE_CHECKING:
     from aegis.audit import AuditLog
@@ -69,6 +69,22 @@ class Settings(BaseSettings):
     close_docs_in_pre_uw_status_id: str = (
         "stat_1YZuVqdPWC8HLjWWvnXqL3NBJUPSjw3upy9mdBYXRqI"
     )
+
+    # Filename-substring filters for auto-flowing Close attachments
+    # through the parser. Case-insensitive substring match against the
+    # attachment filename in ``aegis.workers.process_close_attachments``.
+    # Non-matching attachments are audited as ``close.attachment.skipped``
+    # and never reach the parser. Override via comma-separated env var,
+    # e.g. CLOSE_ATTACHMENT_FILENAME_FILTERS=statement,estmt,stmt,bank,monthly.
+    close_attachment_filename_filters: Annotated[
+        tuple[str, ...], NoDecode
+    ] = ("statement", "estmt", "stmt", "bank")
+    # Soft cap on attachments processed per orchestration run. Warn at
+    # _warn_threshold (audit row), hard-cap at _hard_cap unless the
+    # rescan-with-override path is taken (chunk 5). Both protect against
+    # an operator dropping the wrong folder and burning N Bedrock calls.
+    close_attachment_warn_threshold: int = Field(default=10, ge=1, le=100)
+    close_attachment_hard_cap: int = Field(default=15, ge=1, le=100)
 
     # Funder-reply webhook (mp Phase 10). HMAC-SHA256 over the raw body
     # with this secret. Missing -> the webhook returns 503 so an
@@ -132,6 +148,17 @@ class Settings(BaseSettings):
                 f"BEDROCK_MODEL_ID must start with 'us.' (regional US inference profile); "
                 f"got {v!r}. Bank statements must not transit non-US regions."
             )
+        return v
+
+    @field_validator("close_attachment_filename_filters", mode="before")
+    @classmethod
+    def _split_csv_filename_filters(cls, v: object) -> object:
+        """Accept either a CSV string (operator-friendly env var) or a
+        native tuple/list. ``CLOSE_ATTACHMENT_FILENAME_FILTERS=statement,estmt``
+        parses into ``("statement", "estmt")``. Whitespace + empty tokens
+        are stripped. Pre-tuple/list inputs pass through untouched."""
+        if isinstance(v, str):
+            return tuple(token.strip() for token in v.split(",") if token.strip())
         return v
 
 

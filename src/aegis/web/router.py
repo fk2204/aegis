@@ -31,7 +31,17 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
@@ -47,8 +57,9 @@ from aegis.api.deps import (
     get_override_repository,
     get_repository,
 )
-from aegis.api.routes.upload import persist_pdf_upload
+from aegis.api.routes.upload import _make_request_enqueue, persist_pdf_upload
 from aegis.audit import AuditLog
+from aegis.close.orchestration import enqueue_close_orchestration
 from aegis.compliance.overrides import (
     OverrideError,
     OverridePayload,
@@ -1721,6 +1732,103 @@ async def merchant_funder_response(
     )
 
 
+# ---------------------------------------------------------------------------
+# Close attachment rescan (Feature 2, chunk 5).
+# ---------------------------------------------------------------------------
+
+
+@router.post("/merchants/{merchant_id}/close-rescan", response_model=None)
+async def merchant_close_rescan(
+    request: Request,
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+    override_cap: Annotated[
+        bool,
+        Query(
+            description=(
+                "Set true to bypass the close_attachment_hard_cap when a "
+                "previous run hit the cap. The chunk-5 UI surfaces a "
+                "second 'Rescan all (override cap)' button when the most "
+                "recent orchestration audit row had capped=true."
+            ),
+        ),
+    ] = False,
+) -> RedirectResponse:
+    """Operator-clicked manual rescan of a merchant's Close attachments.
+
+    Enqueues ``process_close_attachments(close_lead_id, 'rescan',
+    actor_email=..., override_cap=...)``. Audit trail mirrors the
+    webhook path so the merchant detail history panel surfaces both
+    auto and manual runs.
+
+    404 if the merchant has no ``close_lead_id``. The button on the
+    merchant detail template is only rendered when ``close_lead_id``
+    is set, but a stale browser tab could still POST against a
+    just-unlinked merchant — 404 is honest.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    if merchant.close_lead_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"merchant {merchant_id} has no close_lead_id; rescan "
+                "requires a linked Close Lead"
+            ),
+        )
+
+    await enqueue_close_orchestration(
+        request=request,
+        close_lead_id=merchant.close_lead_id,
+        merchant_id=merchant.id,
+        audit=audit,
+        trigger="rescan",
+        actor_email=actor_email,
+        override_cap=override_cap,
+    )
+
+    audit.record(
+        actor="dashboard",
+        actor_email=actor_email,
+        action="close.orchestration.manual_rescan",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={
+            "close_lead_id": merchant.close_lead_id,
+            "override_cap": override_cap,
+        },
+    )
+
+    return RedirectResponse(
+        url=f"/ui/merchants/{merchant.id}", status_code=303
+    )
+
+
+def _close_orchestration_last_capped(history: list[dict[str, Any]]) -> bool:
+    """True iff the most recent ``close.orchestration.complete`` row
+    for the merchant landed with ``capped=True``.
+
+    Drives the cap-override button visibility on the merchant detail
+    template (chunk 5). ``history`` is already newest-first per the
+    ``list_for_subject`` contract; we walk it once and stop at the
+    first orchestration-complete row. Older rows are not consulted —
+    operator behavior is "did the latest run cap?", not "did any
+    historical run cap?".
+    """
+    for row in history:
+        if row.get("action") == "close.orchestration.complete":
+            details = row.get("details") or {}
+            return bool(details.get("capped"))
+    return False
+
+
 def _latest_funder_responses(
     audit: AuditLog, merchant_id: UUID
 ) -> dict[str, dict[str, Any]]:
@@ -1942,6 +2050,7 @@ async def merchant_detail(
     history = audit.list_for_subject(
         subject_type="merchant", subject_id=merchant_id, limit=20
     )
+    close_last_orchestration_capped = _close_orchestration_last_capped(history)
 
     # Dossier is the only merchant-detail surface. The legacy v2 panel
     # template was retired when the whole app was unified on the dossier
@@ -2002,6 +2111,7 @@ async def merchant_detail(
             "ofac_match": ofac_match,
             "trend": trend,
             "history": history,
+            "close_last_orchestration_capped": close_last_orchestration_capped,
         },
     )
 
@@ -2845,7 +2955,7 @@ async def _persist_uploads(
     for filename, body in bodies:
         try:
             resp = await persist_pdf_upload(
-                request=request,
+                enqueue_parse=_make_request_enqueue(request),
                 body=body,
                 original_filename=filename,
                 repository=repository,

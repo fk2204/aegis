@@ -163,6 +163,18 @@
         <a href="/ui/merchants/{{ merchant.id }}/edit">↗ Edit merchant</a>
         {% if merchant.close_lead_id %}<a href="#">↗ Close lead {{ merchant.close_lead_id }}</a>{% endif %}
       </div>
+      {% if merchant.close_lead_id %}
+      <div class="crosslink close-rescan">
+        <form method="post" action="/ui/merchants/{{ merchant.id }}/close-rescan" class="inline">
+          <button type="submit">↻ Rescan Close attachments</button>
+        </form>
+        {% if close_last_orchestration_capped %}
+        <form method="post" action="/ui/merchants/{{ merchant.id }}/close-rescan?override_cap=true" class="inline">
+          <button type="submit" title="Last run hit the 15-attachment cap; this run processes all of them">⚠ Rescan all (override cap)</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endif %}
     </div>
   </aside>
 

@@ -29,12 +29,22 @@ if TYPE_CHECKING:
 
 from aegis.api.deps import (
     get_audit,
+    get_close_client,
     get_funder_reply_repository,
     get_llm,
+    get_merchant_repository,
     get_repository,
 )
+from aegis.api.routes.upload import EnqueueParse, persist_pdf_upload
 from aegis.audit import AuditLog
 from aegis.audit_archiver import run_archive_cron
+from aegis.close.client import (
+    CloseAttachment,
+    CloseAuthError,
+    CloseClient,
+    CloseError,
+)
+from aegis.close.field_map import filename_matches_statement_filter
 from aegis.config import get_settings
 from aegis.funders.replies import (
     FunderReplyError,
@@ -51,6 +61,7 @@ from aegis.funders.reply_extract import (
 )
 from aegis.llm import BedrockClient, LLMClient
 from aegis.logger import configure_logging, get_logger
+from aegis.merchants.repository import MerchantRepository
 from aegis.ops.cost_tracking import CostTrackingBedrockClient
 from aegis.parser.pipeline import PipelineResult, run_pipeline
 from aegis.parser.processor import (
@@ -526,10 +537,298 @@ async def process_funder_reply(
     }
 
 
+# ---------------------------------------------------------------------------
+# Feature 2 — Close attachment auto-flow orchestrator (chunk 2/5).
+# ---------------------------------------------------------------------------
+#
+# After the inbound /webhooks/close upserts a merchant, the webhook
+# fire-and-forgets this job (chunk 3). The job enumerates every
+# attachment Close has on the Lead, filename-filters out the obvious
+# non-statements, and pushes each statement through the existing
+# persist_pdf_upload path — same SHA256 dedup, same audit shape, same
+# parse-enqueue. Per-attachment errors are isolated; one bad file does
+# NOT kill the batch.
+#
+# Filename filter + cap defaults live in ``aegis.config.Settings`` and
+# the filename helper lives in ``aegis.close.field_map`` (chunk 4 of
+# the close-attachment auto-flow). The orchestrator reads both at call
+# time so an env override is picked up after a restart without code
+# changes.
+
+
+def _orchestrator_enqueue(ctx: dict[str, Any]) -> EnqueueParse:
+    """Build an :data:`EnqueueParse` callable from the arq worker ctx.
+
+    arq exposes its Redis connection as ``ctx['redis']``; that ArqRedis
+    instance has ``enqueue_job``. Falling back to a no-op when the key
+    is absent keeps unit tests that inject a fake ctx straightforward —
+    tests can also override by passing their own ``enqueue_parse`` via
+    ``ctx['enqueue_parse']`` (preferred for assertions on enqueue
+    behavior).
+    """
+    override = ctx.get("enqueue_parse")
+    if callable(override):
+        return override  # type: ignore[no-any-return]
+
+    redis = ctx.get("redis")
+
+    async def _enqueue(document_id: UUID, pdf_path: str) -> None:
+        if redis is None:
+            # In-process / test path. Mirror upload._enqueue_parse_job's
+            # pending_jobs fallback so the test harness can drain.
+            pending = ctx.setdefault("pending_jobs", [])
+            pending.append({"document_id": str(document_id), "pdf_path": pdf_path})
+            return
+        await redis.enqueue_job("parse_document", str(document_id), pdf_path)
+
+    return _enqueue
+
+
+async def process_close_attachments(
+    ctx: dict[str, Any],
+    close_lead_id: str,
+    trigger: str,
+    *,
+    actor_email: str | None = None,
+    override_cap: bool = False,
+) -> dict[str, Any]:
+    """List attachments on a Close Lead, filename-filter, persist each
+    statement through :func:`persist_pdf_upload`.
+
+    ``trigger`` is "webhook" (auto from /webhooks/close, chunk 3) or
+    "rescan" (operator-clicked, chunk 5). Audited so the operator can
+    distinguish auto vs. manual runs.
+
+    ``override_cap`` is set by the rescan-with-override UI button when
+    a previous run hit ``_ATTACHMENTS_HARD_CAP``. Default False — the
+    cap protects against the "wrong-folder, 47 PDFs" mistake burning a
+    Bedrock call per file.
+
+    Per-attachment errors (download_failed, pydantic validation, etc.)
+    are isolated and logged via audit rows; the loop walks the full
+    list before returning a summary dict. The summary lands in arq's
+    job log and (for ``trigger='rescan'``) drives the cap-override UI
+    in chunk 5.
+
+    Idempotency: the SHA256 dedup inside ``persist_pdf_upload`` short-
+    circuits before any parse enqueue or Bedrock cost. A redelivered
+    webhook + a manual rescan + the original fire all converge on the
+    same documents row per attachment. Confirmed at
+    upload.persist_pdf_upload's ``find_by_hash`` gate.
+    """
+    merchants: MerchantRepository = (
+        ctx.get("merchants") or get_merchant_repository()
+    )
+    repository: DocumentRepository = ctx.get("repository") or get_repository()
+    audit: AuditLog = ctx.get("audit") or get_audit()
+    close_client: CloseClient = ctx.get("close_client") or get_close_client()
+    enqueue_parse = _orchestrator_enqueue(ctx)
+    settings = get_settings()
+    filename_filters = settings.close_attachment_filename_filters
+    warn_threshold = settings.close_attachment_warn_threshold
+    hard_cap = settings.close_attachment_hard_cap
+
+    summary: dict[str, Any] = {
+        "trigger": trigger,
+        "close_lead_id": close_lead_id,
+        "total": 0,
+        "fetched": 0,
+        "duplicates": 0,
+        "skipped": 0,
+        "failed": 0,
+        "capped": False,
+        "override_cap": override_cap,
+    }
+
+    merchant = merchants.find_by_close_lead_id(close_lead_id)
+    if merchant is None:
+        audit.record(
+            actor="worker",
+            actor_email=actor_email,
+            action="close.orchestration.no_merchant",
+            details={"close_lead_id": close_lead_id, "trigger": trigger},
+        )
+        return summary
+
+    try:
+        attachments = close_client.list_lead_attachments(close_lead_id)
+    except (CloseAuthError, CloseError) as exc:
+        audit.record(
+            actor="worker",
+            actor_email=actor_email,
+            action="close.orchestration.list_failed",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": close_lead_id,
+                "trigger": trigger,
+                "error": type(exc).__name__,
+                "message": str(exc)[:500],
+            },
+        )
+        raise
+
+    summary["total"] = len(attachments)
+
+    # Soft cap accounting — record which attachments survive filename
+    # filtering, slice at the cap unless override is set, audit the
+    # over-cap names so the rescan-with-override UI can surface them.
+    statement_candidates: list[CloseAttachment] = []
+    for att in attachments:
+        if filename_matches_statement_filter(att.name, filename_filters):
+            statement_candidates.append(att)
+            continue
+        summary["skipped"] += 1
+        audit.record(
+            actor="worker",
+            actor_email=actor_email,
+            action="close.attachment.skipped",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "attachment_id": att.id,
+                "filename": att.name,
+                "reason": "filename_prefix_mismatch",
+                "close_lead_id": close_lead_id,
+            },
+        )
+
+    if len(statement_candidates) >= warn_threshold:
+        audit.record(
+            actor="worker",
+            actor_email=actor_email,
+            action="close.orchestration.warn_high_attachment_count",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": close_lead_id,
+                "candidate_count": len(statement_candidates),
+                "warn_threshold": warn_threshold,
+            },
+        )
+
+    skipped_by_cap: list[dict[str, str]] = []
+    if not override_cap and len(statement_candidates) > hard_cap:
+        skipped_by_cap = [
+            {"attachment_id": att.id, "filename": att.name}
+            for att in statement_candidates[hard_cap:]
+        ]
+        statement_candidates = statement_candidates[:hard_cap]
+        summary["capped"] = True
+        audit.record(
+            actor="worker",
+            actor_email=actor_email,
+            action="close.orchestration.capped",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": close_lead_id,
+                "hard_cap": hard_cap,
+                "deferred": skipped_by_cap,
+                "deferred_count": len(skipped_by_cap),
+            },
+        )
+    elif override_cap and len(attachments) > hard_cap:
+        audit.record(
+            actor="worker",
+            actor_email=actor_email,
+            action="close.orchestration.cap_overridden",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": close_lead_id,
+                "hard_cap": hard_cap,
+                "candidate_count": len(statement_candidates),
+            },
+        )
+
+    for att in statement_candidates:
+        try:
+            file_bytes, filename = close_client.download_attachment(att.id)
+        except (CloseAuthError, CloseError) as exc:
+            summary["failed"] += 1
+            audit.record(
+                actor="worker",
+                actor_email=actor_email,
+                action="close.attachment.fetch_failed",
+                subject_type="merchant",
+                subject_id=merchant.id,
+                details={
+                    "attachment_id": att.id,
+                    "filename": att.name,
+                    "close_lead_id": close_lead_id,
+                    "error": type(exc).__name__,
+                    "message": str(exc)[:500],
+                },
+            )
+            continue
+
+        try:
+            upload_response = await persist_pdf_upload(
+                enqueue_parse=enqueue_parse,
+                body=file_bytes,
+                original_filename=filename,
+                repository=repository,
+                audit=audit,
+                actor="worker",
+                actor_email=actor_email,
+                merchant_id=merchant.id,
+                close_lead_id=close_lead_id,
+            )
+        except Exception as exc:
+            # persist_pdf_upload raises HTTPException for size / non-PDF.
+            # Treat as a per-attachment fail; do not abort the batch.
+            summary["failed"] += 1
+            audit.record(
+                actor="worker",
+                actor_email=actor_email,
+                action="close.attachment.fetch_failed",
+                subject_type="merchant",
+                subject_id=merchant.id,
+                details={
+                    "attachment_id": att.id,
+                    "filename": filename,
+                    "close_lead_id": close_lead_id,
+                    "error": type(exc).__name__,
+                    "message": str(exc)[:500],
+                },
+            )
+            continue
+
+        is_duplicate = upload_response.duplicate_of_existing
+        summary["fetched"] += 1
+        if is_duplicate:
+            summary["duplicates"] += 1
+        audit.record(
+            actor="worker",
+            actor_email=actor_email,
+            action="close.attachment.fetched",
+            subject_type="document",
+            subject_id=upload_response.document_id,
+            details={
+                "attachment_id": att.id,
+                "filename": filename,
+                "close_lead_id": close_lead_id,
+                "duplicate": is_duplicate,
+                "trigger": trigger,
+            },
+        )
+
+    audit.record(
+        actor="worker",
+        actor_email=actor_email,
+        action="close.orchestration.complete",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details=dict(summary),
+    )
+    return summary
+
+
 class WorkerSettings:
     """arq config. Reads concurrency + timeout from env via Settings."""
 
-    functions = (parse_document, process_funder_reply)
+    functions = (parse_document, process_funder_reply, process_close_attachments)
     # Nightly at 02:00 UTC — low-traffic window. Per master plan §17,
     # the archive cron runs daily and is the only cron registered here.
     cron_jobs = (
@@ -578,4 +877,9 @@ except (RedisError, ConnectionError):
     _log.debug("worker.attributes_deferred", exc_info=True)
 
 
-__all__ = ["WorkerSettings", "parse_document", "process_funder_reply"]
+__all__ = [
+    "WorkerSettings",
+    "parse_document",
+    "process_close_attachments",
+    "process_funder_reply",
+]

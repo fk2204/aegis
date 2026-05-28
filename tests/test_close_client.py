@@ -29,6 +29,7 @@ import pytest
 
 from aegis.audit import InMemoryAuditLog
 from aegis.close.client import (
+    CloseAttachment,
     CloseAuthError,
     CloseClient,
     CloseError,
@@ -459,6 +460,150 @@ def test_download_attachment_401_raises_auth_error(
     ) as client:
         with pytest.raises(CloseAuthError):
             client.download_attachment("att_xyz")
+
+
+# ----------------------------------------------------------------------
+# list_lead_attachments + CloseAttachment
+# ----------------------------------------------------------------------
+
+
+def test_list_lead_attachments_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_close_env(monkeypatch)
+    seen: dict[str, Any] = {}
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(
+            200,
+            json={
+                "has_more": False,
+                "data": [
+                    {
+                        "id": "file_001",
+                        "name": "2026-04_bank_statement.pdf",
+                        "content_type": "application/pdf",
+                        "size": 12345,
+                        "created_by_name": "Filip",
+                        "date_created": "2026-04-30T12:00:00Z",
+                        # Close returns extra fields we don't care about;
+                        # confirm extra="ignore" lets them through.
+                        "object_type": "lead",
+                        "object_id": "lead_abc",
+                    },
+                    {
+                        "id": "file_002",
+                        "name": "DL.jpg",
+                        "content_type": "image/jpeg",
+                        "size": 200,
+                    },
+                ],
+            },
+        )
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        items = client.list_lead_attachments("lead_abc")
+
+    assert seen["method"] == "GET"
+    assert seen["path"].endswith("/api/v1/files/")
+    assert seen["params"]["lead_id"] == "lead_abc"
+    assert seen["params"]["_limit"] == "100"
+    assert seen["params"]["_skip"] == "0"
+    assert len(items) == 2
+    assert isinstance(items[0], CloseAttachment)
+    assert items[0].id == "file_001"
+    assert items[0].name == "2026-04_bank_statement.pdf"
+    assert items[0].content_type == "application/pdf"
+    assert items[0].size == 12345
+    assert items[1].id == "file_002"
+    assert items[1].created_by_name is None  # optional + absent
+
+
+def test_list_lead_attachments_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_close_env(monkeypatch)
+
+    def transport(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"has_more": False, "data": []})
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        items = client.list_lead_attachments("lead_zero")
+    assert items == []
+
+
+def test_list_lead_attachments_follows_pagination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """has_more=true on page 1 -> client requests page 2 with _skip=100."""
+    _set_close_env(monkeypatch)
+    skips_seen: list[str] = []
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        skip = request.url.params.get("_skip", "missing")
+        skips_seen.append(skip)
+        if skip == "0":
+            return httpx.Response(
+                200,
+                json={
+                    "has_more": True,
+                    "data": [{"id": "file_p1", "name": "p1.pdf"}],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "has_more": False,
+                "data": [{"id": "file_p2", "name": "p2.pdf"}],
+            },
+        )
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        items = client.list_lead_attachments("lead_big")
+
+    assert skips_seen == ["0", "100"]
+    assert [it.id for it in items] == ["file_p1", "file_p2"]
+
+
+def test_list_lead_attachments_401_raises_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_close_env(monkeypatch)
+
+    def transport(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="bad key")
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        with pytest.raises(CloseAuthError):
+            client.list_lead_attachments("lead_abc")
+
+
+def test_list_lead_attachments_rejects_non_list_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If Close ever returns ``data`` as something other than a list,
+    fail loudly rather than swallow the surprise."""
+    _set_close_env(monkeypatch)
+
+    def transport(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"has_more": False, "data": {"oops": 1}})
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        with pytest.raises(CloseError, match="non-list"):
+            client.list_lead_attachments("lead_abc")
 
 
 # ----------------------------------------------------------------------
