@@ -27,6 +27,7 @@ from aegis.close.field_map import (
     CLOSE_INDUSTRY_TO_NAICS,
     FICO_RANGE_LOWER_BOUND,
     FieldMapError,
+    filename_matches_statement_filter,
     get_custom_field,
     industry_to_naics,
     normalize_entity_type,
@@ -390,3 +391,34 @@ def test_normalize_entity_type_unknown_raises() -> None:
     choice in Close without updating field_map.py) must raise."""
     with pytest.raises(FieldMapError, match="unknown Close Entity type"):
         normalize_entity_type("B-Corp")
+
+
+# ----------------------------------------------------------------------
+# filename_matches_statement_filter
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "filename, expected",
+    [
+        ("April_bank_statement.pdf", True),  # 'bank' + 'statement'
+        ("STMT_2025_03.pdf", True),          # case-insensitive 'stmt'
+        ("eStmt_chase_05.pdf", True),        # 'estmt'
+        ("driver_license.jpg", False),
+        ("voided_check.pdf", False),
+        ("Bank.PDF", True),                  # case-insensitive
+        ("", False),                         # empty filename never matches
+    ],
+)
+def test_filename_matches_statement_filter_defaults(
+    filename: str, expected: bool
+) -> None:
+    """Default filter set: statement, estmt, stmt, bank."""
+    filters = ("statement", "estmt", "stmt", "bank")
+    assert filename_matches_statement_filter(filename, filters) is expected
+
+
+def test_filename_matches_statement_filter_empty_filters_returns_false() -> None:
+    """Operator opt-out via empty env should not silently let everything
+    through — explicit zero means zero."""
+    assert filename_matches_statement_filter("statement.pdf", ()) is False

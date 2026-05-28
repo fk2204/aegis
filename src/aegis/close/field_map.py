@@ -349,12 +349,34 @@ def get_custom_field(
     return payload.get(f"custom.{cf_id}")
 
 
+def filename_matches_statement_filter(
+    filename: str, filters: tuple[str, ...]
+) -> bool:
+    """Case-insensitive substring match of ``filename`` against ``filters``.
+
+    Used by ``aegis.workers.process_close_attachments`` to decide whether
+    a Close-attached file is a candidate statement (parse it) or not
+    (audit ``close.attachment.skipped`` and move on). Substring rather
+    than prefix because Close filenames often carry merchant or date
+    prefixes (``2025-04_KYC_bank_statement.pdf``, ``acme_stmt_apr.pdf``).
+
+    Empty ``filters`` returns False — operator opt-out via env to
+    explicitly disable auto-parsing should NOT silently let everything
+    through. They want zero, they get zero.
+    """
+    if not filters:
+        return False
+    lowered = filename.lower()
+    return any(token in lowered for token in filters)
+
+
 __all__ = [
     "CLOSE_ENTITY_TYPE_TO_AEGIS",
     "CLOSE_FIELD_IDS",
     "CLOSE_INDUSTRY_TO_NAICS",
     "FICO_RANGE_LOWER_BOUND",
     "FieldMapError",
+    "filename_matches_statement_filter",
     "get_custom_field",
     "industry_to_naics",
     "normalize_entity_type",
