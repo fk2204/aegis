@@ -196,12 +196,13 @@ def test_index_attention_flags_rendered_as_chips_not_joined_string(
     assert "foo_marker; [PATTERN]" not in resp.text
 
 
-def test_index_attention_flags_truncates_to_three_with_more_indicator(
+def test_index_attention_renders_all_unique_flags_no_truncation(
     client: TestClient,
     doc_repo: InMemoryDocumentRepository,
 ) -> None:
-    """When >3 flags, render the first 3 + a "+N more" hint. Matches
-    the review queue's overflow pattern so the table stays compact."""
+    """The card layout (replaces the queue table) gives flags a full-width
+    row that wraps freely. No more truncation to 3 — all unique flags
+    render as chips so the operator sees the full triage picture."""
     target = next(iter(doc_repo._docs.values()))
     flagged = target.model_copy(
         update={
@@ -220,33 +221,89 @@ def test_index_attention_flags_truncates_to_three_with_more_indicator(
 
     resp = client.get("/ui/")
     assert resp.status_code == 200
-    assert "[META] one" in resp.text
-    assert "[META] two" in resp.text
-    assert "[META] three" in resp.text
-    # The 4th and 5th do NOT appear as chips (truncated)
-    assert '<span class="chip warn">[META] four</span>' not in resp.text
-    assert '<span class="chip warn">[META] five</span>' not in resp.text
-    # "+2 more" indicator instead
-    assert "+2 more" in resp.text
+    # All five flags render as chips (no truncation in the card view).
+    assert '<span class="chip warn">[META] one</span>' in resp.text
+    assert '<span class="chip warn">[META] two</span>' in resp.text
+    assert '<span class="chip warn">[META] three</span>' in resp.text
+    assert '<span class="chip warn">[META] four</span>' in resp.text
+    assert '<span class="chip warn">[META] five</span>' in resp.text
+    # No "+N more" overflow indicator — the cap is gone.
+    assert "+2 more" not in resp.text
 
 
-def test_index_uploaded_header_right_aligned(
+def test_index_attention_groups_same_merchant_into_one_card(
     client: TestClient,
     doc_repo: InMemoryDocumentRepository,
+    merchant: MerchantRow,
 ) -> None:
-    """The Uploaded header now uses class="num" so its text-align
-    matches the right-aligned uploaded cell. Fixes the "date floats
-    off" misalignment from fix/dashboard-table-alignment."""
-    # The attention table is empty-state when zero manual_review docs;
-    # seed one so the table renders.
+    """The same merchant with multiple manual_review docs collapses into
+    one card with embedded doc sub-rows — fixes the repeated-merchant
+    wall on the Today page (Know Your Collectibles Inc x5 -> one card)."""
+    # Seed three additional manual_review docs all tied to the same merchant.
+    for i in range(3):
+        row = doc_repo.create_document(
+            file_hash=f"hash{i}".ljust(64, "0"),
+            byte_size=1024,
+            original_filename=f"extra-{i}.pdf",
+        )
+        doc_repo._docs[row.id] = row.model_copy(
+            update={
+                "merchant_id": merchant.id,
+                "parse_status": "manual_review",
+                "fraud_score": 50 + i * 10,
+                "all_flags": [f"[META] doc{i}_flag"],
+            }
+        )
+    # Plus flip the fixture's pre-existing doc to manual_review so we have 4.
     target = next(iter(doc_repo._docs.values()))
-    doc_repo._docs[target.id] = target.model_copy(
-        update={"parse_status": "manual_review", "fraud_score": 50}
-    )
+    if target.parse_status != "manual_review":
+        doc_repo._docs[target.id] = target.model_copy(
+            update={"parse_status": "manual_review", "fraud_score": 40}
+        )
+
     resp = client.get("/ui/")
     assert resp.status_code == 200
-    # th carries the num class so .queue thead th.num applies text-align:right
-    assert '<th class="num">Uploaded</th>' in resp.text
+    html = resp.text
+
+    # Merchant name appears once in a card title — not four times as separate rows.
+    # Loose check: there is exactly one .attention-card per unique merchant.
+    assert html.count('class="attention-card"') == 1
+    # The card surfaces a document count.
+    assert "documents flagged" in html
+    # All four doc-id stubs appear in the embedded sub-row list.
+    assert html.count('class="card-doc"') == 4
+
+
+def test_index_attention_card_shows_worst_fraud_score(
+    client: TestClient,
+    doc_repo: InMemoryDocumentRepository,
+    merchant: MerchantRow,
+) -> None:
+    """The card-level fraud score is the max across the group's docs —
+    operator triage signal so the worst case isn't hidden behind a
+    moderate one."""
+    # Two manual_review docs, scores 40 and 88.
+    target = next(iter(doc_repo._docs.values()))
+    doc_repo._docs[target.id] = target.model_copy(
+        update={"parse_status": "manual_review", "fraud_score": 40}
+    )
+    row = doc_repo.create_document(
+        file_hash="b" * 64, byte_size=1024, original_filename="second.pdf"
+    )
+    doc_repo._docs[row.id] = row.model_copy(
+        update={
+            "merchant_id": merchant.id,
+            "parse_status": "manual_review",
+            "fraud_score": 88,
+        }
+    )
+
+    resp = client.get("/ui/")
+    assert resp.status_code == 200
+    # Card-level score is the worst (88), tagged "worst fraud", not 40.
+    assert "worst fraud" in resp.text
+    # Worst-score span carries the "bad" class because 88 >= 65.
+    assert 'class="card-score bad"' in resp.text
 
 
 def test_dashboard_upload_page_has_form(client: TestClient) -> None:

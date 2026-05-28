@@ -50,49 +50,54 @@
 <section class="body cols-2">
 
   <div>
+    {% set total_docs = attention|sum(attribute='doc_count') %}
     <header class="sect-head">
       <h2>Attention queue</h2>
       <div class="rule"></div>
-      <div class="meta">{{ attention|length }} document{{ '' if attention|length == 1 else 's' }} · manual_review</div>
+      <div class="meta">
+        {{ attention|length }} merchant{{ '' if attention|length == 1 else 's' }} ·
+        {{ total_docs }} document{{ '' if total_docs == 1 else 's' }} · manual_review
+      </div>
     </header>
 
     {% if not attention %}
       <div class="empty">Pipeline clear<span class="copy">No documents awaiting manual review.</span></div>
     {% else %}
-      <table class="queue">
-        <thead>
-          <tr>
-            <th>Merchant</th>
-            <th class="num">Fraud</th>
-            <th>Flags</th>
-            <th class="num">Uploaded</th>
-            <th class="act"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for a in attention %}
-            <tr onclick="window.location.href='/ui/review'">
-              <td class="merchant">
-                <a href="/ui/review">{{ a.merchant_label }}</a>
-                <span class="sub">doc · {{ a.document_id[:8] }}</span>
-              </td>
-              <td class="score {% if a.fraud_score is number and a.fraud_score >= 65 %}bad{% elif a.fraud_score is number and a.fraud_score >= 35 %}warn{% else %}calm{% endif %}">
-                {% if a.fraud_score is number %}{{ a.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
-              </td>
-              <td class="flags">
-                {% if a.flags %}
-                  {% for f in a.flags[:3] %}<span class="chip warn">{{ f }}</span>{% endfor %}
-                  {% if a.flags|length > 3 %}<span class="mono-cell" style="margin-left:6px">+{{ a.flags|length - 3 }} more</span>{% endif %}
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-              <td class="uploaded">{{ a.uploaded_at }}</td>
-              <td class="act"><a href="/ui/review">review ↗</a></td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+      <div class="attention-cards">
+        {% for g in attention %}
+          <article class="attention-card">
+            <header class="card-head">
+              <div class="card-title">
+                <a href="/ui/review">{{ g.merchant_label }}</a>
+                <span class="card-sub">{{ g.doc_count }} document{{ '' if g.doc_count == 1 else 's' }} flagged</span>
+              </div>
+              <div class="card-score {% if g.worst_fraud_score is number and g.worst_fraud_score >= 65 %}bad{% elif g.worst_fraud_score is number and g.worst_fraud_score >= 35 %}warn{% else %}calm{% endif %}">
+                {% if g.worst_fraud_score is number %}{{ g.worst_fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
+                <span class="card-score-label">worst fraud</span>
+              </div>
+            </header>
+
+            {% if g.unique_flags %}
+              <div class="card-flags">
+                {% for f in g.unique_flags %}<span class="chip warn">{{ f }}</span>{% endfor %}
+              </div>
+            {% endif %}
+
+            <ul class="card-docs">
+              {% for d in g.documents %}
+                <li class="card-doc">
+                  <span class="doc-id">doc · {{ d.document_id[:8] }}</span>
+                  <span class="doc-score {% if d.fraud_score is number and d.fraud_score >= 65 %}bad{% elif d.fraud_score is number and d.fraud_score >= 35 %}warn{% else %}calm{% endif %}">
+                    {% if d.fraud_score is number %}{{ d.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
+                  </span>
+                  <span class="doc-uploaded">{{ d.uploaded_at }}</span>
+                  <a class="doc-review" href="/ui/review">review ↗</a>
+                </li>
+              {% endfor %}
+            </ul>
+          </article>
+        {% endfor %}
+      </div>
     {% endif %}
 
     <header class="sect-head" style="margin-top:32px">

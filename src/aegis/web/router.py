@@ -250,27 +250,8 @@ async def index(
         for r in recent_activity_rows
     ]
 
-    attention = []
-    for d in docs.list_documents(parse_status="manual_review", limit=8):
-        merchant_label = "—"
-        if d.merchant_id is not None:
-            try:
-                merchant_label = merchants_repo.get(d.merchant_id).business_name
-            except MerchantNotFoundError:
-                merchant_label = f"merchant {str(d.merchant_id)[:8]}"
-        attention.append(
-            {
-                "document_id": str(d.id),
-                "merchant_label": merchant_label,
-                "fraud_score": d.fraud_score if d.fraud_score is not None else "—",
-                "uploaded_at": d.uploaded_at.strftime("%Y-%m-%d %H:%M"),
-                # Flags as a list (chip-rendered in the template). Was a
-                # "; "-joined string which forced the column to expand
-                # with content, blowing out the table layout on rows with
-                # many flags. Same chip pattern review.html.j2 uses.
-                "flags": list(d.all_flags) if d.all_flags else [],
-            }
-        )
+    attention_docs = docs.list_documents(parse_status="manual_review", limit=40)
+    attention = _build_attention_groups(attention_docs, merchants_repo, max_groups=8)
 
     submitted_count = sum(
         1 for r in recent_activity_rows if r.get("action") == "deal.submit_to_funders"
@@ -338,6 +319,79 @@ def _build_funnel_rows(
         {"label": "Funded", "count": funded, "width": _w(funded), "cls": "pos"},
         {"label": "Declined", "count": declined, "width": _w(declined), "cls": "neg"},
     ]
+
+
+def _build_attention_groups(
+    documents: list[DocumentRow],
+    merchants_repo: MerchantRepository,
+    *,
+    max_groups: int = 8,
+) -> list[dict[str, Any]]:
+    """Group manual_review documents by merchant for the Today attention queue.
+
+    Input is assumed most-recent-first (the list_documents contract).
+    Output preserves that ordering — the first group is the one whose
+    most recent document was uploaded most recently.
+
+    Each group surfaces:
+      * merchant_id / merchant_label
+      * worst_fraud_score — max across the group's docs (operator triage signal)
+      * doc_count
+      * unique_flags — deduplicated union, first-seen order preserved
+      * documents — per-doc dicts (document_id, fraud_score, uploaded_at, flags),
+        most-recent first within the group
+
+    Documents with merchant_id=None bucket under a single "—" group so
+    they remain visible rather than being scattered.
+    """
+    groups: dict[UUID | None, dict[str, Any]] = {}
+
+    for d in documents:
+        key = d.merchant_id
+        if key not in groups:
+            if len(groups) >= max_groups:
+                continue
+            label = "—"
+            if key is not None:
+                try:
+                    label = merchants_repo.get(key).business_name
+                except MerchantNotFoundError:
+                    label = f"merchant {str(key)[:8]}"
+            groups[key] = {
+                "merchant_id": str(key) if key is not None else None,
+                "merchant_label": label,
+                "documents": [],
+                "_seen_flags": [],
+            }
+
+        flags = list(d.all_flags) if d.all_flags else []
+        groups[key]["documents"].append(
+            {
+                "document_id": str(d.id),
+                "fraud_score": d.fraud_score,
+                "uploaded_at": d.uploaded_at.strftime("%Y-%m-%d %H:%M"),
+                "flags": flags,
+            }
+        )
+        seen: list[str] = groups[key]["_seen_flags"]
+        for f in flags:
+            if f not in seen:
+                seen.append(f)
+
+    out: list[dict[str, Any]] = []
+    for g in groups.values():
+        scores = [doc["fraud_score"] for doc in g["documents"] if doc["fraud_score"] is not None]
+        out.append(
+            {
+                "merchant_id": g["merchant_id"],
+                "merchant_label": g["merchant_label"],
+                "worst_fraud_score": max(scores) if scores else None,
+                "doc_count": len(g["documents"]),
+                "unique_flags": g["_seen_flags"],
+                "documents": g["documents"],
+            }
+        )
+    return out
 
 
 def _format_activity_time(value: object) -> str:
