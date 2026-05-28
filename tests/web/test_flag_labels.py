@@ -112,7 +112,8 @@ def test_customer_concentration_humanizes_label_and_pct() -> None:
         "[PATTERN] customer_concentration: top counterparty = 78% of revenue (acme corp)"
     )
     assert hf.title == "Customer concentration"
-    assert hf.detail == "acme corp (78%)"
+    # Payee gets title-cased for display — bucketing stays case-insensitive.
+    assert hf.detail == "Acme Corp (78%)"
     assert hf.category == "concentration"
 
 
@@ -154,11 +155,12 @@ def test_stripped_metadata_has_no_detail() -> None:
 def test_modified_after_creation_dynamic_format() -> None:
     """Minute count is baked into the *code* (e.g. ``modified_120min_after_creation``)
     so a regex catches every variant rather than the registry needing
-    one entry per integer."""
+    one entry per integer. Title carries the action; detail carries the
+    timing — earlier wording made the chip repeat ``after creation``
+    twice."""
     hf = humanize_flag("[META] modified_120min_after_creation")
-    assert hf.title == "PDF modified after creation"
-    assert "120" in hf.detail
-    assert "min" in hf.detail
+    assert hf.title == "PDF modified"
+    assert hf.detail == "120 min after creation"
     assert hf.category == "tampering"
 
 
@@ -188,7 +190,8 @@ def test_top_counterparty_concentration_humanizes_payee_and_pct() -> None:
     )
     assert hf.code == "top_counterparty_concentration"
     assert hf.title == "Top customer"
-    assert hf.detail == "payward interactive (78%)"
+    # Payee gets title-cased for display — bucketing stays case-insensitive.
+    assert hf.detail == "Payward Interactive (78%)"
     assert hf.category == "soft"
     assert hf.severity_band == "context"
     # context band -> no chip color class (bare ``chip``)

@@ -263,7 +263,8 @@ def _fmt_customer_concentration(raw: str) -> str:
     # "top counterparty = 78% of revenue (acme corp)"
     m = re.match(r"top counterparty\s*=\s*(\d+)%\s*of revenue\s*\((?P<payee>[^)]*)\)", raw)
     if m:
-        return f"{m.group('payee').strip()} ({m.group(1)}%)"
+        payee = _title_case_payee(m.group("payee"))
+        return f"{payee} ({m.group(1)}%)"
     return raw
 
 
@@ -347,7 +348,7 @@ def _fmt_top_counterparty_concentration(raw: str) -> str:
     # "78%_(payee)"  (aggregate.py format)
     m = re.match(r"(\d+)%_\((?P<payee>[^)]*)\)", raw)
     if m:
-        payee = m.group("payee").strip()
+        payee = _title_case_payee(m.group("payee"))
         return f"{payee} ({m.group(1)}%)"
     return raw
 
@@ -393,6 +394,25 @@ def _fmt_classification_confidence_below_floor(raw: str) -> str:
 
 
 # --- helpers ---------------------------------------------------------------
+
+
+def _title_case_payee(label: str) -> str:
+    """Title-case a payee label for display.
+
+    Bank ACH descriptors arrive uppercase; ``_clean_payee_label`` in
+    aggregate.py lowercases them for case-insensitive bucketing. That's
+    right for the math, but the lowercase form reads like sloppy data on
+    a chip — "payward interactive" looks unprofessional. Title-casing
+    only at the display layer keeps bucketing case-insensitive while the
+    worker sees "Payward Interactive".
+
+    Empty / whitespace input passes through so the formatters can guard
+    on the same fallback contract they already use.
+    """
+    cleaned = label.strip()
+    if not cleaned:
+        return cleaned
+    return cleaned.title()
 
 
 def _short_money(raw_amount: str) -> str:
@@ -637,9 +657,13 @@ def humanize_flag(raw: str) -> HumanFlag:
     mod_match = _MODIFIED_AFTER_CREATION_RE.match(code)
     if mod_match:
         n, unit = mod_match.group(1), mod_match.group(2)
+        # Title carries the action ("PDF modified"); detail carries the
+        # timing ("120 min after creation"). Earlier the title repeated
+        # "after creation" so the chip read as
+        # "PDF modified after creation · 120 min after creation".
         return HumanFlag(
             code=code,
-            title="PDF modified after creation",
+            title="PDF modified",
             detail=f"{n} {'min' if unit == 'min' else 'h'} after creation",
             category="tampering",
             severity_band="material" if unit == "min" else "decline",
