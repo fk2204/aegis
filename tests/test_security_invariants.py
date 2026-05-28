@@ -45,16 +45,36 @@ _BANNED_EMAIL_IMPORTS: tuple[str, ...] = (
 
 
 # Outbound HTTP hosts we're OK with. Each entry is a substring matched
-# against URLs / domain literals in the source tree. New entries need
-# both a code change AND a one-line justification here so the
-# allow-list stays auditable.
+# against the URL host. New entries need both a code change AND a
+# one-line justification here so the allow-list stays auditable.
+#
+# Categories:
+#   endpoint    — code actually calls this URL at runtime
+#   docref      — appears in a docstring / comment as a reference, no runtime call
+#   citation    — state regulation URL stored as data in compliance/states.py
 _ALLOWED_OUTBOUND_HOSTS: dict[str, str] = {
-    "api.close.com": "Close CRM API (operator's CRM, not a funder)",
-    "bedrock-runtime": "AWS Bedrock — Claude inference",
-    "treasury.gov": "OFAC SDN list download for sanctions check",
-    "treas.gov": "OFAC SDN list download — alternative subdomain",
-    "healthchecks.io": "Ops monitoring — heartbeat pings",
-    "ntfy.sh": "Ops monitoring — push notifications",
+    # --- runtime endpoints --------------------------------------------------
+    "api.close.com":                 "endpoint — Close CRM API (operator's CRM, not a funder)",
+    "treas.gov":                     "endpoint — Treasury OFAC SDN list (sanctions check)",
+    "ntfy.sh":                       "endpoint — ops push notifications",
+    "hc-ping.com":                   "endpoint — healthchecks.io heartbeat pings",
+    "127.0.0.1":                     "endpoint — localhost healthcheck (heartbeat_cli)",
+    # --- documentation references (no runtime call) -------------------------
+    "developer.close.com":           "docref — Close auth docs cited in close/client.py",
+    "developers.cloudflare.com":     "docref — Cloudflare Access docs cited in ops/operators.py",
+    "consumerfinance.gov":           "docref — CFPB Regulation Z citation in compliance/apr.py",
+    # --- state regulation citations (data, not callers) ---------------------
+    "leginfo.legislature.ca.gov":    "citation — CA statute reference (compliance/states.py)",
+    "law.cornell.edu":               "citation — Cornell LII statute references",
+    "law.justia.com":                "citation — Justia statute references",
+    "dfpi.ca.gov":                   "citation — California DFPI regulation",
+    "dfs.ny.gov":                    "citation — NY DFS regulation",
+    "nysenate.gov":                  "citation — NY Senate bill text",
+    "flsenate.gov":                  "citation — FL Senate statute",
+    "legis.ga.gov":                  "citation — GA legislature bill text",
+    "codes.findlaw.com":             "citation — FindLaw code references",
+    "legiscan.com":                  "citation — Legiscan bill tracking",
+    "ilga.gov":                      "citation — IL General Assembly",
     # Add new outbound hosts here. Each gets a one-line justification.
 }
 
@@ -79,29 +99,16 @@ def test_no_email_sending_libraries_imported() -> None:
     )
 
 
-# Crude URL/host detector — matches the strings most likely to appear in
-# code: https://host, http://host, and bare domain literals. Avoids
-# matching email addresses (those would already fail the email test
-# above) by requiring a scheme or a top-level-domain shape.
-_URL_RE = re.compile(
-    r"""
-    (?:                                # one of:
-        https?://[^\s'"`<>]+            #   http(s) URL
-        |
-        \b                              #   or bare domain in code:
-        (?!cdn\.|fonts\.)               #     not a CDN we already know
-        [a-z0-9]                        #     leading char
-        [a-z0-9-]*                      #     hostname body
-        \.[a-z]{2,}                     #     TLD
-        (?:/[^\s'"`<>]*)?               #     optional path
-    )
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
+# URL detector — explicit ``http://`` or ``https://`` scheme only. We do
+# not try to flag bare-domain literals because Python module/attribute
+# access (``aegis.api``, ``app.state``) has the same shape and would
+# drown the test in false positives. The signal we care about is real
+# outbound calls and URL strings, which always carry a scheme.
+_URL_RE = re.compile(r"""https?://[^\s'"`<>)]+""", re.IGNORECASE)
 
 
 def test_outbound_hosts_restricted_to_allowlist() -> None:
-    """Any URL or domain literal in src/aegis must map to a known
+    """Any explicit ``http(s)://`` URL in src/aegis must map to a known
     non-funder destination. A net-new outbound host means a deliberate
     security decision — add it to ``_ALLOWED_OUTBOUND_HOSTS`` with a
     justification or remove the call."""
@@ -110,35 +117,9 @@ def test_outbound_hosts_restricted_to_allowlist() -> None:
         text = path.read_text(encoding="utf-8", errors="ignore")
         for match in _URL_RE.finditer(text):
             raw = match.group(0).lower()
-            # Strip path so we compare hostnames only.
-            host = raw.split("://", 1)[-1].split("/", 1)[0]
+            # Strip the scheme + path so we compare hostnames only.
+            host = raw.split("://", 1)[1].split("/", 1)[0]
             if any(allowed in host for allowed in _ALLOWED_OUTBOUND_HOSTS):
-                continue
-            # Drop common false positives that aren't real outbound calls:
-            #   - common file extensions parsed as TLDs (.py, .md, .html)
-            #   - dotted-quad IPs aren't matched by the TLD pattern
-            #   - example.com and test.com used in docstrings / examples
-            #   - localhost and *.local
-            if any(
-                token in host
-                for token in (
-                    ".py",
-                    ".md",
-                    ".html",
-                    ".j2",
-                    ".css",
-                    ".json",
-                    ".sql",
-                    ".yaml",
-                    ".yml",
-                    ".toml",
-                    "example.com",
-                    "example.org",
-                    "test.com",
-                    "localhost",
-                    ".local",
-                )
-            ):
                 continue
             findings.append((path.relative_to(_REPO_ROOT), match.group(0)))
 
