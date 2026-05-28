@@ -47,7 +47,7 @@ from aegis.api.deps import (
     get_override_repository,
     get_repository,
 )
-from aegis.api.routes.upload import persist_pdf_upload
+from aegis.api.routes.upload import _make_request_enqueue, persist_pdf_upload
 from aegis.audit import AuditLog
 from aegis.compliance.overrides import (
     OverrideError,
@@ -2845,7 +2845,7 @@ async def _persist_uploads(
     for filename, body in bodies:
         try:
             resp = await persist_pdf_upload(
-                request=request,
+                enqueue_parse=_make_request_enqueue(request),
                 body=body,
                 original_filename=filename,
                 repository=repository,
