@@ -153,7 +153,18 @@
 /* ===================== DATA TABLES (queue / list) ===================== */
 
 .dossier-page table.queue {
-  width: 100%;
+  /* Shrink to content, but fill up to ~900px when content is sparse.
+     width: 100% on a 1208px cols-1 shell over-allocates every column,
+     scattering right-aligned numeric values across wide gaps — the
+     visual "columns are messy" complaint from 2026-05-28. The
+     min(900px, 100%) clamp leaves Today (cols-2, parent 752px)
+     untouched (resolves to 752px there) while constraining the
+     cols-1 tables (Deals / Merchants / Funders / Review) to a
+     readable 900px instead of stretching to fill 1208px. Defaults
+     to left-align so the table's left edge matches the section
+     header above it. */
+  width: auto;
+  min-width: min(900px, 100%);
   border-collapse: collapse;
   margin-top: 10px;
   font-family: var(--serif);
