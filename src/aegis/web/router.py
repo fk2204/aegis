@@ -242,7 +242,7 @@ async def index(
     recent_activity = [
         {
             "actor": r.get("actor") or "—",
-            "action": r.get("action") or "—",
+            "action": _humanize_audit_action(r.get("action") or "—"),
             "subject_type": r.get("subject_type") or "",
             "subject_id": r.get("subject_id") or "",
             "time_short": _format_activity_time(r.get("created_at")),
@@ -406,6 +406,29 @@ def _format_activity_time(value: object) -> str:
         except ValueError:
             return value[:16]
     return "—"
+
+
+# Audit action -> operator-readable label for the dashboard activity feed.
+# Underlying audit row's ``action`` string stays as the raw code (downstream
+# scripts + replay tooling depend on the identifiers). This map is purely a
+# display concern. ``deal.submit_to_funders`` was renamed in the UI to make
+# it explicit that AEGIS does not transmit to funders — the operator records
+# the submission internally. The audit identifier was kept stable to avoid
+# breaking the funnel counter at router.py:_recent_activity ingestion.
+_AUDIT_ACTION_LABELS: dict[str, str] = {
+    "deal.submit_to_funders": "recorded submission to funders",
+}
+
+
+def _humanize_audit_action(action: str) -> str:
+    """Return a human-readable label for an audit action.
+
+    Falls back to the raw action identifier when no label is registered so
+    a new audit code never breaks the activity feed rendering. The
+    Proposal 2 humanize work will broaden this; the v1 here only retags the
+    submission action.
+    """
+    return _AUDIT_ACTION_LABELS.get(action, action)
 
 
 @router.get("/upload", response_class=HTMLResponse)

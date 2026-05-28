@@ -141,7 +141,7 @@ def test_modal_renders_for_valid_funder(
     resp = client.get(f"/ui/funders/{funder.id}/submit-modal")
     assert resp.status_code == 200
     body = resp.text
-    assert "Submit a deal to" in body
+    assert "Record a submission to" in body
     assert funder.name in body
     assert "Acme Painting LLC" in body
     # Each row links to the match panel WITH the preselect_funder param.
