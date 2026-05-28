@@ -377,52 +377,104 @@ def test_get_opportunity_hits_correct_endpoint(
     assert seen["url"].endswith("/api/v1/opportunity/oppo_abc/")
 
 
-def test_download_attachment_returns_bytes_and_filename(
+def _make_attachment(
+    download_url: str = "https://app.close.com/go/file/persisted/orga_xyz/activity.note/acti_xyz/token/april.pdf/",
+    name: str = "april_bank_statement.pdf",
+    content_type: str = "application/pdf",
+) -> CloseAttachment:
+    """Shared test factory for CloseAttachment objects."""
+    return CloseAttachment(
+        id="leadfile_xyz",
+        name=name,
+        content_type=content_type,
+        size=1024,
+        checksum="d41d8cd98f00b204e9800998ecf8427e",
+        download_url=download_url,
+        is_pinned=True,
+        last_object_type="activity.note",
+    )
+
+
+def test_download_attachment_rewrites_app_to_api_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The persisted URL always points at app.close.com; api auth fails
+    there. The download path must rewrite app.close.com → api.close.com
+    before issuing the GET."""
     _set_close_env(monkeypatch)
+    seen: dict[str, Any] = {}
 
     def transport(request: httpx.Request) -> httpx.Response:
-        assert request.url.path.endswith("/api/v1/files/att_xyz/download/")
-        return httpx.Response(
-            200,
-            content=b"%PDF-1.7 fake",
-            headers={
-                "content-disposition": 'attachment; filename="bank_stmt.pdf"',
-            },
+        seen["host"] = request.url.host
+        seen["path"] = request.url.path
+        return httpx.Response(200, content=b"%PDF-1.7 real")
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        att = _make_attachment()
+        data, filename = client.download_attachment(att)
+
+    assert seen["host"] == "api.close.com"
+    # The path portion is preserved verbatim from the persisted URL.
+    assert seen["path"] == "/go/file/persisted/orga_xyz/activity.note/acti_xyz/token/april.pdf/"
+    assert data == b"%PDF-1.7 real"
+    # filename is taken from attachment.name, not Content-Disposition
+    assert filename == "april_bank_statement.pdf"
+
+
+def test_download_attachment_follows_redirect_to_s3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Close returns 302 → close-prd-files.s3.amazonaws.com/...; the
+    client must follow the redirect to get the file bytes."""
+    _set_close_env(monkeypatch)
+    request_count = {"n": 0}
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        request_count["n"] += 1
+        if request.url.host == "api.close.com":
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "https://close-prd-files.s3.amazonaws.com/persisted/...",
+                },
+            )
+        # S3 — the redirect target — returns the actual bytes
+        assert request.url.host == "close-prd-files.s3.amazonaws.com"
+        return httpx.Response(200, content=b"%PDF-real-bytes-from-s3")
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        att = _make_attachment()
+        data, filename = client.download_attachment(att)
+
+    assert request_count["n"] == 2, "expected api.close.com hop + s3 hop"
+    assert data == b"%PDF-real-bytes-from-s3"
+    assert filename == "april_bank_statement.pdf"
+
+
+def test_download_attachment_raises_on_missing_download_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """download_url is Optional on the model for parseability, but the
+    download path requires it — raise CloseError loudly."""
+    _set_close_env(monkeypatch)
+    att = CloseAttachment(id="leadfile_x", name="x.pdf", download_url=None)
+    with CloseClient(
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200))
         )
-
-    with CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
     ) as client:
-        data, filename = client.download_attachment("att_xyz")
-    assert data == b"%PDF-1.7 fake"
-    assert filename == "bank_stmt.pdf"
-
-
-def test_download_attachment_filename_fallback_when_no_header(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Close sometimes omits Content-Disposition. We fall back to a
-    benign default so the caller always gets a usable filename."""
-    _set_close_env(monkeypatch)
-
-    def transport(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"%PDF")
-
-    with CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
-    ) as client:
-        data, filename = client.download_attachment("att_xyz")
-    assert data == b"%PDF"
-    assert filename == "unknown.pdf"
+        with pytest.raises(CloseError, match="download_url is None"):
+            client.download_attachment(att)
 
 
 def test_download_attachment_retries_on_500_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Per step 7 spec: download_attachment now wraps the retry decorator
-    (it previously did not). 500 should retry."""
+    """5xx during download should retry via tenacity."""
     _set_close_env(monkeypatch)
     monkeypatch.setattr("aegis.close.client.time.sleep", lambda _s: None)
 
@@ -432,16 +484,13 @@ def test_download_attachment_retries_on_500_then_succeeds(
         calls["n"] += 1
         if calls["n"] < 2:
             return httpx.Response(500, text="server boom")
-        return httpx.Response(
-            200,
-            content=b"%PDF",
-            headers={"content-disposition": 'attachment; filename="x.pdf"'},
-        )
+        return httpx.Response(200, content=b"%PDF")
 
     with CloseClient(
         http_client=httpx.Client(transport=httpx.MockTransport(transport))
     ) as client:
-        data, filename = client.download_attachment("att_xyz")
+        att = _make_attachment(name="x.pdf")
+        data, filename = client.download_attachment(att)
     assert calls["n"] == 2
     assert data == b"%PDF"
     assert filename == "x.pdf"
@@ -459,7 +508,7 @@ def test_download_attachment_401_raises_auth_error(
         http_client=httpx.Client(transport=httpx.MockTransport(transport))
     ) as client:
         with pytest.raises(CloseAuthError):
-            client.download_attachment("att_xyz")
+            client.download_attachment(_make_attachment())
 
 
 # ----------------------------------------------------------------------

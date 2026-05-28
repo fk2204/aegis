@@ -744,7 +744,7 @@ async def process_close_attachments(
 
     for att in statement_candidates:
         try:
-            file_bytes, filename = close_client.download_attachment(att.id)
+            file_bytes, filename = close_client.download_attachment(att)
         except (CloseAuthError, CloseError) as exc:
             summary["failed"] += 1
             audit.record(

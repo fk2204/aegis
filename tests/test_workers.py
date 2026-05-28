@@ -385,12 +385,16 @@ class _FakeCloseClient:
             raise self._list_error
         return list(self._attachments)
 
-    def download_attachment(self, attachment_id: str) -> tuple[bytes, str]:
-        self.download_calls.append(attachment_id)
-        if attachment_id in self._errors:
-            raise self._errors[attachment_id]
-        body = self._bytes.get(attachment_id, _MIN_PDF + attachment_id.encode())
-        name = self._names.get(attachment_id, f"{attachment_id}.pdf")
+    def download_attachment(
+        self, attachment: CloseAttachment
+    ) -> tuple[bytes, str]:
+        self.download_calls.append(attachment.id)
+        if attachment.id in self._errors:
+            raise self._errors[attachment.id]
+        body = self._bytes.get(
+            attachment.id, _MIN_PDF + attachment.id.encode()
+        )
+        name = self._names.get(attachment.id, attachment.name)
         return body, name
 
 

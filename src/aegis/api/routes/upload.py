@@ -345,8 +345,37 @@ async def upload_from_close(
             ),
         )
 
+    # Resolve the attachment_id to a CloseAttachment (carries the
+    # download_url + filename + content_type) by listing the lead's
+    # files. Required because download_attachment now operates on the
+    # rich attachment record, not the bare id — the unified Lead Files
+    # endpoint is the only place AEGIS can look up the persisted URL
+    # for a given file_id.
     try:
-        file_bytes, filename = close_client.download_attachment(body.attachment_id)
+        attachments = close_client.list_lead_attachments(body.close_lead_id)
+    except CloseAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"close_auth_unavailable: {exc}",
+        ) from exc
+    except CloseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"close_upstream_error: {exc}",
+        ) from exc
+
+    target = next((a for a in attachments if a.id == body.attachment_id), None)
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"close attachment {body.attachment_id!r} not found on "
+                f"lead {body.close_lead_id!r}"
+            ),
+        )
+
+    try:
+        file_bytes, filename = close_client.download_attachment(target)
     except CloseAuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

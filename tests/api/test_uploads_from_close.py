@@ -115,16 +115,42 @@ def close_client(
     def transport(request: httpx.Request) -> httpx.Response:
         close_transport_requests.append(request)
         code = close_get_status["code"]
-        if code == 200:
+        # The route makes two calls: list lead files, then download the
+        # resolved attachment. The list always succeeds in this fixture
+        # (returns a single canned entry for "att_xyz"); the `code`
+        # knob applies only to the download path so tests that set
+        # code=4xx/5xx test the download-error branch.
+        path = request.url.path
+        if path.startswith("/api/v1/lead/") and path.endswith("/files/"):
             return httpx.Response(
                 200,
-                content=close_content["bytes"],
-                headers={
-                    "content-disposition": (
-                        f'attachment; filename="{close_content["filename"]}"'
-                    ),
+                json={
+                    "has_more": False,
+                    "data": [
+                        {
+                            "id": "att_xyz",
+                            "name": close_content["filename"],
+                            "content_type": "application/pdf",
+                            "size": len(close_content["bytes"]),
+                            "checksum": "deadbeef",
+                            "download_url": (
+                                "https://app.close.com/go/file/persisted/"
+                                "orga_xyz/activity.note/acti_xyz/tok/"
+                                f"{close_content['filename']}/"
+                            ),
+                            "is_pinned": True,
+                            "last_object_type": "activity.note",
+                        },
+                    ],
                 },
             )
+        # Download path — api.close.com after host rewrite. The code
+        # knob applies here only.
+        if request.url.host == "api.close.com":
+            if code == 200:
+                return httpx.Response(200, content=close_content["bytes"])
+            return httpx.Response(code, text=f"close-error-{code}")
+        # Unknown path / host — fall through to error code.
         return httpx.Response(code, text=f"close-error-{code}")
 
     return CloseClient(
@@ -276,11 +302,12 @@ def test_from_close_happy_path_persists_and_enqueues(
     row = docs.get_document(document_id)
     assert row.merchant_id == merchant.id
 
-    # Close was called once.
-    assert len(close_transport_requests) == 1
-    req = close_transport_requests[0]
-    assert req.method == "GET"
-    assert req.url.path.endswith("/api/v1/files/att_xyz/download/")
+    # Close was called twice now: once to list the lead's files, once
+    # to download the resolved attachment via the host-swapped URL.
+    assert len(close_transport_requests) == 2
+    assert close_transport_requests[0].url.path == "/api/v1/lead/lead_abc/files/"
+    assert close_transport_requests[1].url.host == "api.close.com"
+    assert "/go/file/persisted/" in close_transport_requests[1].url.path
 
     # Audit row.
     fetched = [e for e in audit.entries if e["action"] == "close.upload.fetched"]
@@ -316,8 +343,9 @@ def test_from_close_sha256_dedup_returns_existing_no_reparse(
     assert second.json()["duplicate"] is True
     assert second.json()["parse_enqueued"] is False
 
-    # Two Close fetches, one document.
-    assert len(close_transport_requests) == 2
+    # Each call lists + downloads → 4 total Close requests across two
+    # /uploads/from-close calls. Only one document persists (SHA dedup).
+    assert len(close_transport_requests) == 4
     assert len(docs._docs) == 1
 
     # Two close.upload.fetched audit rows; only the first carries

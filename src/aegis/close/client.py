@@ -48,7 +48,6 @@ from __future__ import annotations
 import logging
 import ssl
 import time
-from email.message import Message
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -448,37 +447,69 @@ class CloseClient:
         wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
         reraise=True,
     )
-    def download_attachment(self, attachment_id: str) -> tuple[bytes, str]:
-        """GET /api/v1/files/{attachment_id}/download/.
+    def download_attachment(
+        self, attachment: CloseAttachment
+    ) -> tuple[bytes, str]:
+        """Download the bytes of a Lead-file attachment.
 
-        Returns ``(file_bytes, filename)``. ``filename`` is parsed from
-        the response's ``Content-Disposition`` header (Close's standard
-        for file downloads); falls back to ``"unknown.pdf"`` when the
-        header is missing or unparseable.
+        Uses ``attachment.download_url`` (which Close returns as
+        ``https://app.close.com/go/file/persisted/...``) with one
+        critical rewrite: ``app.close.com`` → ``api.close.com``.
+        ``app.close.com`` rejects API-key auth with HTTP 400 and the
+        explicit error "You cannot use API-based authentication on
+        app.close.com. Instead, use api.close.com." Hitting the same
+        path on ``api.close.com`` with Basic auth returns 302 to a
+        signed S3 URL; ``follow_redirects=True`` walks the redirect
+        and we get the bytes.
 
-        Used by the hybrid statement path (step 7) to pull bank-statement
-        PDFs that the operator attached to a Close Lead instead of
-        uploading to AEGIS directly.
+        httpx strips ``Authorization`` on cross-host redirects by
+        default (verified against the close-prd-files.s3.amazonaws.com
+        host the 302 points at), so the API key never reaches S3.
 
-        Same auth + retry semantics as :meth:`request`: 401 fails fast
-        (wrong key — no retry), 429 sleeps the ``RateLimit`` reset value
-        then retries within the tenacity budget, 5xx retries, other 4xx
-        propagates immediately. Streams into memory bounded by the
-        operator-configured upload cap upstream — the client does not
-        enforce that cap itself.
+        Returns ``(file_bytes, attachment.name)``. The filename comes
+        from the Close-side attachment metadata, not from a
+        Content-Disposition header — the unified Lead Files endpoint
+        already carries the canonical name, and the persisted URLs
+        S3 redirects to don't always set Content-Disposition.
+
+        Previously this method called ``/api/v1/files/{attachment_id}/download/``
+        which 404s in our Close org (the org-level Files API isn't
+        available in our plan/version). The hybrid statement path
+        (``/uploads/from-close``) never actually worked against real
+        Close until this fix. Verified end-to-end on 2026-05-28 against
+        both an ``activity.note``-provenanced PDF and a ``lead``-direct
+        PNG; both downloads succeeded with valid content.
+
+        Same auth + retry semantics: 401 → CloseAuthError (no retry),
+        429 → CloseRateLimitError (sleeps reset_seconds, retried by
+        tenacity within the attempt budget), 5xx → retried, other 4xx
+        → CloseError (no retry).
+
+        Raises ``CloseError`` if ``attachment.download_url`` is None
+        (caller error — the field is required for this method).
         """
+        if attachment.download_url is None:
+            raise CloseError(
+                "attachment.download_url is None — "
+                f"file_id={attachment.id!r} cannot be downloaded"
+            )
+
         settings = get_settings()
         if settings.close_api_key is None:
             raise CloseAuthError(
                 "CLOSE_API_KEY is not configured; set it in .env or "
                 "/etc/aegis/aegis.env"
             )
-        url = (
-            f"{settings.close_api_base.rstrip('/')}"
-            f"/api/v1/files/{attachment_id}/download/"
+
+        # The host-swap. Only the first occurrence — the URL never
+        # legitimately contains "app.close.com" twice.
+        url = attachment.download_url.replace(
+            "https://app.close.com/",
+            "https://api.close.com/",
+            1,
         )
         auth = (settings.close_api_key.get_secret_value(), "")
-        resp = self._http.request("GET", url, auth=auth)
+        resp = self._http.request("GET", url, auth=auth, follow_redirects=True)
 
         if resp.status_code == 401:
             raise CloseAuthError(
@@ -497,7 +528,7 @@ class CloseClient:
             )
             self._audit_rate_limit(
                 method="GET",
-                path=f"/api/v1/files/{attachment_id}/download/",
+                path=url,
                 reset_seconds=reset_seconds,
             )
             time.sleep(reset_seconds)
@@ -524,13 +555,7 @@ class CloseClient:
                 body=self._safe_body(resp),
             )
 
-        filename = (
-            _filename_from_content_disposition(
-                resp.headers.get("content-disposition", "")
-            )
-            or "unknown.pdf"
-        )
-        return resp.content, filename
+        return resp.content, attachment.name
 
     # ---------------------------------------------------------------
     # Helpers
@@ -604,21 +629,6 @@ class CloseClient:
             # An audit failure must not mask the rate-limit signal.
             # The standard logger warning above is the primary signal.
             _log.warning("close.rate_limit_audit_write_failed", exc_info=True)
-
-
-def _filename_from_content_disposition(header_value: str) -> str | None:
-    """Parse the ``filename`` parameter from a Content-Disposition header.
-
-    Handles the standard ``filename="x.pdf"`` form and the RFC 5987
-    ``filename*=UTF-8''x.pdf`` form. Uses ``email.message.Message`` so
-    we don't ship a hand-rolled regex parser. Returns None if no
-    filename token is present.
-    """
-    if not header_value:
-        return None
-    m = Message()
-    m["content-disposition"] = header_value
-    return m.get_filename()
 
 
 __all__ = [
