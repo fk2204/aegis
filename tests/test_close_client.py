@@ -463,6 +463,94 @@ def test_download_attachment_401_raises_auth_error(
 
 
 # ----------------------------------------------------------------------
+# CloseAttachment model — field defaults and parsing
+# ----------------------------------------------------------------------
+
+
+def test_close_attachment_defaults_new_fields_to_none_or_false() -> None:
+    """The chunk-1 minimal shape (id+name) still parses; the new fields
+    introduced by the note-attachments fix default to None / False."""
+    a = CloseAttachment(id="leadfile_x", name="x.pdf")
+    assert a.checksum is None
+    assert a.download_url is None
+    assert a.is_pinned is False
+    assert a.last_object_type is None
+    assert a.last_object_id is None
+
+
+def test_close_attachment_accepts_unified_lead_files_shape() -> None:
+    """Mirror of the real ``/api/v1/lead/{id}/files/`` response shape so
+    a future Close-API addition (extra unknown keys) doesn't break the
+    model. ``extra='ignore'`` is the contract — keys we don't read are
+    silently dropped, not raised on."""
+    payload = {
+        "id": "leadfile_0b4YISG3WcbhVfVCxgOT4d",
+        "name": "Screenshot (349).png",
+        "content_type": "image/png",
+        "size": 278585,
+        "checksum": "835b9dc89efa2a1fba2223497a773426",
+        "download_url": (
+            "https://app.close.com/go/file/persisted/orga_xyz/"
+            "activity.note/acti_xyz/token/Screenshot(349).png/"
+        ),
+        "thumbnail_url": "https://app.close.com/.../thumbnail/",
+        "is_pinned": False,
+        "last_object_type": "activity.note",
+        "last_object_id": "acti_xyz",
+        "lead_id": "lead_xyz",
+        "organization_id": "orga_xyz",
+        "date_created": "2026-05-28T04:29:07",
+        "date_updated": "2026-05-28T04:29:07",
+        "last_activity_at": "2026-05-28T04:29:06",
+        "updated_by": None,
+    }
+    a = CloseAttachment.model_validate(payload)
+    assert a.id == "leadfile_0b4YISG3WcbhVfVCxgOT4d"
+    assert a.name == "Screenshot (349).png"
+    assert a.content_type == "image/png"
+    assert a.size == 278585
+    assert a.checksum == "835b9dc89efa2a1fba2223497a773426"
+    assert a.download_url is not None and "activity.note" in a.download_url
+    assert a.is_pinned is False
+    assert a.last_object_type == "activity.note"
+    assert a.last_object_id == "acti_xyz"
+
+
+def test_close_attachment_provenance_lead_direct() -> None:
+    """Files attached directly to the Lead (no activity wrapper) carry
+    ``last_object_type='lead'``. Verified against
+    lead_FbO7xqlUiNII1Mgp9ihQUPkfMbOsOJiJmu2vDrCDSJo on 2026-05-28."""
+    payload = {
+        "id": "leadfile_2UYA5WkbZ8xEFw3gPIUo7z",
+        "name": "Screenshot (344).png",
+        "content_type": "image/png",
+        "size": 303379,
+        "checksum": "8d425106552463a6accbec15fb7c7365",
+        "download_url": (
+            "https://app.close.com/go/file/persisted/orga_xyz/"
+            "lead/lead_FbO7/token/Screenshot(344).png/"
+        ),
+        "is_pinned": False,
+        "last_object_type": "lead",
+        "last_object_id": "lead_FbO7xqlUiNII1Mgp9ihQUPkfMbOsOJiJmu2vDrCDSJo",
+    }
+    a = CloseAttachment.model_validate(payload)
+    assert a.last_object_type == "lead"
+    assert a.last_object_id == payload["last_object_id"]
+
+
+def test_close_attachment_is_pinned_true_parses() -> None:
+    """The pin gate reads this field — confirm True flows through cleanly."""
+    a = CloseAttachment(
+        id="leadfile_x",
+        name="stmt.pdf",
+        content_type="application/pdf",
+        is_pinned=True,
+    )
+    assert a.is_pinned is True
+
+
+# ----------------------------------------------------------------------
 # list_lead_attachments + CloseAttachment
 # ----------------------------------------------------------------------
 

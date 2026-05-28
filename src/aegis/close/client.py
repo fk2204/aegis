@@ -113,17 +113,28 @@ class CloseAuthError(CloseError):
 
 
 class CloseAttachment(BaseModel):
-    """One file attached to a Close Lead, as returned by the Files API.
+    """One file attached to a Close Lead, as returned by the Lead Files API.
 
-    Returned by :meth:`CloseClient.list_lead_attachments`. Used by the
-    attachment-orchestration arq job (``process_close_attachments``)
-    to decide which attachments to pull through the parser and which
-    to skip (filename-prefix filter).
+    Source: ``GET /api/v1/lead/{lead_id}/files/`` — the unified index that
+    Close's UI uses for the "Files" tab. Aggregates files from every
+    activity type (Notes, Emails, SMS/MMS, custom activities) AND files
+    attached directly to the Lead with no activity wrapper. The provenance
+    is carried on ``last_object_type`` / ``last_object_id``.
 
-    Lenient on extra fields — Close's Files API returns more keys than
-    AEGIS cares about (``object_type``, ``object_id``, organization
-    metadata, etc.). ``extra="ignore"`` keeps the model robust to
-    upstream additions without forcing a schema change here.
+    Used by the attachment-orchestration arq job
+    (``process_close_attachments``) to decide which attachments to pull
+    through the parser. Filtering pipeline applied in the orchestrator:
+
+      1. ``content_type == 'application/pdf'`` (strict — kills the
+         PNG-named-statement case).
+      2. ``is_pinned == True`` by default (operator-confirmed gate).
+         Bypassed by the rescan-with-``ignore_pin`` path.
+      3. ``checksum`` (MD5) dedup before download — same file attached
+         twice (once to a Note, once direct to Lead) downloads once.
+
+    Lenient on extra fields — Close's Lead Files response carries many
+    keys we don't read (organization_id, thumbnail_url, lead_id, etc.).
+    ``extra='ignore'`` keeps us robust to upstream additions.
     """
 
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
@@ -132,6 +143,41 @@ class CloseAttachment(BaseModel):
     name: str = Field(min_length=1)
     content_type: str | None = None
     size: int | None = None
+
+    # MD5 checksum Close computes server-side. Used by the orchestrator
+    # for cheap dedup before fetching bytes — same file attached twice
+    # (e.g. via a Note AND as a direct Lead drop) downloads once.
+    checksum: str | None = None
+
+    # The persisted URL the file lives at. Always points at
+    # ``app.close.com/go/file/persisted/...`` in responses; the
+    # download path rewrites the host to ``api.close.com`` before
+    # fetching (``app.close.com`` rejects API-key auth with HTTP 400).
+    # Optional only to keep the model parseable when a future Close
+    # response omits it; callers downloading bytes must check non-None.
+    download_url: str | None = None
+
+    # Operator-set pin flag (Close UI only — the public API exposes
+    # this field read-only). When True, signals "operator confirms this
+    # file is a bank statement" — the orchestrator's default filter.
+    is_pinned: bool = False
+
+    # Provenance — which activity (if any) the file was attached
+    # through. Observed values:
+    #   - "activity.note"  — Notes carrying attachments (web form, Close
+    #                        "Add note" with file)
+    #   - "activity.email" — Email attachments (inbound or composed)
+    #   - "activity.sms"   — MMS attachments (none in our org currently)
+    #   - "lead"           — File attached directly to the Lead via
+    #                        Close UI drag-drop without a note wrapper
+    # Informational; not used for filtering today.
+    last_object_type: str | None = None
+    last_object_id: str | None = None
+
+    # Legacy field kept for backwards compatibility with chunk-1 tests
+    # (the prior ``/api/v1/files/?lead_id=`` response shape included it
+    # under different keys). The Lead Files endpoint does NOT return
+    # this field; it will always be None going forward.
     created_by_name: str | None = None
     date_created: str | None = None
 
