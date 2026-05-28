@@ -1140,11 +1140,32 @@
   .dossier-page .form-actions .btn { flex: 1; justify-content: center; }
 }
 
-/* Table overflow safety — never let a wide table push the page wider. */
-.dossier-page table.queue { display: block; overflow-x: auto; width: 100%; }
-.dossier-page table.queue thead,
-.dossier-page table.queue tbody { display: table; width: 100%; table-layout: auto; }
+/* Table overflow safety — MOBILE ONLY.
+ *
+ * The display:block on the table + display:table on thead AND tbody
+ * splits a single <table> into two independent display:table contexts.
+ * Each one runs its own auto-layout algorithm — thead sizes columns
+ * from header text widths, tbody sizes columns from cell content
+ * widths. Result: header columns and data columns land at different
+ * X positions ("headers don't sit over their data") — the visible
+ * defect on Deals / Merchants / Funders / Review reported 2026-05-28.
+ *
+ * Restoring normal display:table on the <table> at desktop lets the
+ * browser compute column widths once for the whole table and share
+ * them across thead + tbody, which is how <table> is supposed to work.
+ *
+ * The override is only needed at narrow viewports where a wide table
+ * would actually push the page past the screen edge. At desktop the
+ * line-155 rule (width: auto; min-width: min(900px, 100%)) caps the
+ * table at 900px so there's no overflow to scroll-protect against.
+ */
 @media (max-width: 720px) {
+  .dossier-page table.queue { display: block; overflow-x: auto; width: 100%; }
   .dossier-page table.queue thead,
-  .dossier-page table.queue tbody { min-width: 640px; }
+  .dossier-page table.queue tbody {
+    display: table;
+    width: 100%;
+    table-layout: auto;
+    min-width: 640px;
+  }
 }
