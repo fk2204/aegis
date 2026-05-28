@@ -251,6 +251,47 @@
 .dossier-page table.queue tbody td.flags .chip {
   margin: 2px 4px 2px 0;
 }
+.dossier-page table.queue tbody td.flags details.flags-more,
+.dossier-page table.queue tbody td.flags details.flags-more > .flags-more-extras {
+  display: inline;
+}
+.dossier-page table.queue tbody td.flags details.flags-more > summary {
+  display: inline-block;
+  cursor: pointer;
+  list-style: none;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  border: 1px dotted var(--ink-3);
+  border-radius: 2px;
+  user-select: none;
+}
+.dossier-page table.queue tbody td.flags details.flags-more > summary:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.dossier-page table.queue tbody td.flags details.flags-more > summary::-webkit-details-marker { display: none; }
+.dossier-page table.queue tbody td.flags details.flags-more[open] > summary::after {
+  content: " ▾";
+}
+.dossier-page table.queue tbody td.flags details.flags-more:not([open]) > summary::after {
+  content: " ▸";
+}
+.dossier-page details.reasons-more,
+.dossier-page details.reasons-more > .reasons-more-extras {
+  display: inline;
+}
+.dossier-page details.reasons-more > summary {
+  display: inline;
+  cursor: pointer;
+  list-style: none;
+  border-bottom: 1px dotted currentColor;
+  user-select: none;
+}
+.dossier-page details.reasons-more > summary::-webkit-details-marker { display: none; }
 .dossier-page table.queue tbody td.mono-cell {
   font-family: var(--mono);
   font-size: 11px;

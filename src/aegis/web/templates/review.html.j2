@@ -49,7 +49,11 @@
               <td class="flags">
                 {% if r.flags %}
                   {% for f in r.flags[:3] %}<span class="chip warn">{{ f }}</span>{% endfor %}
-                  {% if r.flags|length > 3 %}<span class="mono-cell" style="margin-left:6px">+{{ r.flags|length - 3 }} more</span>{% endif %}
+                  {% if r.flags|length > 3 %}
+                    <details class="flags-more">
+                      <summary>+{{ r.flags|length - 3 }} more</summary><span class="flags-more-extras">{% for f in r.flags[3:] %}<span class="chip warn">{{ f }}</span>{% endfor %}</span>
+                    </details>
+                  {% endif %}
                 {% else %}
                   —
                 {% endif %}

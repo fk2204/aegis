@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Poppins:wght@600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=7">
-  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=7">
+  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=10">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
 </head>
 <body class="dossier-page body-root">
@@ -221,7 +221,7 @@
                 Recommend <em>manager sign-off</em> before submission &mdash; full revenue base supports the requested advance, but the soft concerns below warrant a sized-down counter.
               {% else %}
                 {% if score_result.hard_decline_reasons %}
-                  Hard decline driven by: <span class="accent">{{ score_result.hard_decline_reasons[:2]|join(', ') }}{% if score_result.hard_decline_reasons|length > 2 %} and {{ score_result.hard_decline_reasons|length - 2 }} more{% endif %}</span>.
+                  Hard decline driven by: <span class="accent">{{ score_result.hard_decline_reasons[:2]|join(', ') }}{% if score_result.hard_decline_reasons|length > 2 %} <details class="reasons-more"><summary>and {{ score_result.hard_decline_reasons|length - 2 }} more</summary><span class="reasons-more-extras">, {{ score_result.hard_decline_reasons[2:]|join(', ') }}</span></details>{% endif %}</span>.
                 {% endif %}
               {% endif %}
             </p>
