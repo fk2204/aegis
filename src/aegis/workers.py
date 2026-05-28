@@ -591,24 +591,59 @@ async def process_close_attachments(
     *,
     actor_email: str | None = None,
     override_cap: bool = False,
+    ignore_pin: bool = False,
 ) -> dict[str, Any]:
-    """List attachments on a Close Lead, filename-filter, persist each
-    statement through :func:`persist_pdf_upload`.
+    """List attachments on a Close Lead, filter, persist each statement
+    through :func:`persist_pdf_upload`.
+
+    Filter pipeline (applied in order, each step audits its skips):
+
+      1. ``content_type == 'application/pdf'`` — strict. Kills the
+         PNG-named-statement case and every non-PDF surface.
+      2. Pin gate (default ``ignore_pin=False``):
+
+           * Pin-only path: keep PDFs with ``is_pinned=True``; skipped
+             unpinned PDFs audit ``reason='not_pinned'``. The
+             operator's pin IS the "this is a statement" confirmation
+             — filename filter is bypassed so an operator pinning
+             ``april_KYC.pdf`` (an oddly-named statement) processes it.
+           * ``ignore_pin=True`` path: skip the pin check; apply the
+             filename-substring filter as the remaining signal. The
+             rescan-with-``ignore_pin`` UI button (chunk 5) sets this
+             for Leads where the operator knows everything is a
+             statement (e.g. fresh inbound web-form leads).
+
+      3. MD5 ``checksum`` dedup — same file attached twice (Note +
+         Lead-direct, say) downloads once. Cheap, the checksum is
+         already in the unified Lead Files response.
+
+      4. Warn at ``close_attachment_warn_threshold`` candidates,
+         hard-cap at ``close_attachment_hard_cap`` (bypassed by
+         ``override_cap=True``). SHA256 dedup in ``persist_pdf_upload``
+         is the second backstop after fetch.
 
     ``trigger`` is "webhook" (auto from /webhooks/close, chunk 3) or
     "rescan" (operator-clicked, chunk 5). Audited so the operator can
     distinguish auto vs. manual runs.
 
     ``override_cap`` is set by the rescan-with-override UI button when
-    a previous run hit ``_ATTACHMENTS_HARD_CAP``. Default False — the
-    cap protects against the "wrong-folder, 47 PDFs" mistake burning a
-    Bedrock call per file.
+    a previous run hit ``close_attachment_hard_cap``. Default False —
+    the cap protects against the "wrong-folder, 47 PDFs" mistake
+    burning a Bedrock call per file.
+
+    ``ignore_pin`` is set by the rescan-with-``ignore_pin`` UI button.
+    Audits ``close.orchestration.pin_ignored`` once when set.
+
+    Empty-state signal: if the pin-only path finds ≥1 PDF but none
+    pinned, write ``close.orchestration.no_pinned_files`` so the
+    merchant detail UI (chunk 5) can surface "Pin the bank-statement
+    files in Close, then click Rescan." Better than a silent no-op.
 
     Per-attachment errors (download_failed, pydantic validation, etc.)
     are isolated and logged via audit rows; the loop walks the full
     list before returning a summary dict. The summary lands in arq's
-    job log and (for ``trigger='rescan'``) drives the cap-override UI
-    in chunk 5.
+    job log and (for ``trigger='rescan'``) drives the cap-override +
+    pin-override UI buttons.
 
     Idempotency: the SHA256 dedup inside ``persist_pdf_upload`` short-
     circuits before any parse enqueue or Bedrock cost. A redelivered
@@ -669,14 +704,15 @@ async def process_close_attachments(
         raise
 
     summary["total"] = len(attachments)
+    summary["ignore_pin"] = ignore_pin
 
-    # Soft cap accounting — record which attachments survive filename
-    # filtering, slice at the cap unless override is set, audit the
-    # over-cap names so the rescan-with-override UI can surface them.
-    statement_candidates: list[CloseAttachment] = []
+    # Filter 1 — content_type must be application/pdf. Strict, by MIME
+    # not filename, so a PNG named "april_bank_statement.png" doesn't
+    # leak through to the parser.
+    pdf_attachments: list[CloseAttachment] = []
     for att in attachments:
-        if filename_matches_statement_filter(att.name, filename_filters):
-            statement_candidates.append(att)
+        if att.content_type == "application/pdf":
+            pdf_attachments.append(att)
             continue
         summary["skipped"] += 1
         audit.record(
@@ -688,10 +724,117 @@ async def process_close_attachments(
             details={
                 "attachment_id": att.id,
                 "filename": att.name,
-                "reason": "filename_prefix_mismatch",
+                "reason": "content_type_not_pdf",
+                "content_type": att.content_type,
                 "close_lead_id": close_lead_id,
             },
         )
+
+    # Filter 2 — pin gate (default) OR filename filter (ignore_pin path).
+    # Pin and filename are mutually exclusive signals: when the operator
+    # has pinned, their intent overrides the filename heuristic;
+    # when they've explicitly bypassed pin, the filename is the only
+    # remaining signal.
+    statement_candidates: list[CloseAttachment] = []
+    if ignore_pin:
+        if pdf_attachments:
+            audit.record(
+                actor="worker",
+                actor_email=actor_email,
+                action="close.orchestration.pin_ignored",
+                subject_type="merchant",
+                subject_id=merchant.id,
+                details={
+                    "close_lead_id": close_lead_id,
+                    "trigger": trigger,
+                    "candidate_count": len(pdf_attachments),
+                },
+            )
+        for att in pdf_attachments:
+            if filename_matches_statement_filter(att.name, filename_filters):
+                statement_candidates.append(att)
+                continue
+            summary["skipped"] += 1
+            audit.record(
+                actor="worker",
+                actor_email=actor_email,
+                action="close.attachment.skipped",
+                subject_type="merchant",
+                subject_id=merchant.id,
+                details={
+                    "attachment_id": att.id,
+                    "filename": att.name,
+                    "reason": "filename_prefix_mismatch",
+                    "close_lead_id": close_lead_id,
+                },
+            )
+    else:
+        for att in pdf_attachments:
+            if att.is_pinned:
+                statement_candidates.append(att)
+                continue
+            summary["skipped"] += 1
+            audit.record(
+                actor="worker",
+                actor_email=actor_email,
+                action="close.attachment.skipped",
+                subject_type="merchant",
+                subject_id=merchant.id,
+                details={
+                    "attachment_id": att.id,
+                    "filename": att.name,
+                    "reason": "not_pinned",
+                    "close_lead_id": close_lead_id,
+                },
+            )
+        # Empty-state signal: ≥1 PDF on the Lead but none pinned. The
+        # merchant detail UI (chunk 5) reads this audit row to show
+        # "Pin the bank-statement files in Close, then click Rescan."
+        if not statement_candidates and pdf_attachments:
+            audit.record(
+                actor="worker",
+                actor_email=actor_email,
+                action="close.orchestration.no_pinned_files",
+                subject_type="merchant",
+                subject_id=merchant.id,
+                details={
+                    "close_lead_id": close_lead_id,
+                    "trigger": trigger,
+                    "total_pdfs_seen": len(pdf_attachments),
+                    "unpinned_pdfs": [
+                        {"id": a.id, "name": a.name} for a in pdf_attachments
+                    ],
+                },
+            )
+
+    # Filter 3 — MD5 checksum dedup. Same file attached twice (Note
+    # plus direct Lead drop, say) downloads once. ``att.id`` fallback
+    # keeps the dedup correct when Close ever omits checksum (it's
+    # populated on every file in 2026-05-28 verification).
+    seen_keys: set[str] = set()
+    deduped: list[CloseAttachment] = []
+    for att in statement_candidates:
+        key = att.checksum or att.id
+        if key in seen_keys:
+            summary["skipped"] += 1
+            audit.record(
+                actor="worker",
+                actor_email=actor_email,
+                action="close.attachment.skipped",
+                subject_type="merchant",
+                subject_id=merchant.id,
+                details={
+                    "attachment_id": att.id,
+                    "filename": att.name,
+                    "reason": "close_checksum_duplicate",
+                    "checksum": att.checksum,
+                    "close_lead_id": close_lead_id,
+                },
+            )
+            continue
+        seen_keys.add(key)
+        deduped.append(att)
+    statement_candidates = deduped
 
     if len(statement_candidates) >= warn_threshold:
         audit.record(
