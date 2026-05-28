@@ -207,7 +207,9 @@ def _fmt_preloan_spike(raw: str) -> str:
         raw,
     )
     if m:
-        return f"${_short_money(m.group('amt'))} in {m.group('win')}d vs ${_short_money(m.group('avg'))}/wk avg"
+        amt = _short_money(m.group("amt"))
+        avg = _short_money(m.group("avg"))
+        return f"${amt} in {m.group('win')}d vs ${avg}/wk avg"
     return raw
 
 
@@ -420,65 +422,165 @@ class _FlagSpec:
     formatter: Callable[[str], str] | None
 
 
+def _spec(
+    title: str,
+    category: CategoryName,
+    severity_band: SeverityBand,
+    formatter: Callable[[str], str] | None,
+) -> _FlagSpec:
+    """Tiny wrapper so the registry entries stay readable under ruff's
+    100-char line limit."""
+    return _FlagSpec(
+        title=title,
+        category=category,
+        severity_band=severity_band,
+        formatter=formatter,
+    )
+
+
 _FLAG_REGISTRY: Final[dict[str, _FlagSpec]] = {
     # === Stacking & funder position ====================================
-    "mca_stacking":                 _FlagSpec("MCA stacking", "stacking", "material", _fmt_mca_stacking),
-    "mca_payoff_signature":         _FlagSpec("Recent MCA payoff", "stacking", "look_closer", _fmt_mca_payoff),
-    "paydown_mca_suspected":        _FlagSpec("MCA paydown pattern", "stacking", "material", _fmt_paydown_mca),
-    "withdrawal_acceleration":      _FlagSpec("MCA debit acceleration", "stacking", "material", _fmt_withdrawal_acceleration),
-    "acceleration_clause_triggered": _FlagSpec("MCA acceleration", "stacking", "decline", _fmt_acceleration_clause),
-    "unauthorized_withdrawal_dispute": _FlagSpec("Unauthorized withdrawal dispute", "stacking", "decline", _fmt_unauthorized_withdrawal_dispute),
+    "mca_stacking": _spec(
+        "MCA stacking", "stacking", "material", _fmt_mca_stacking,
+    ),
+    "mca_payoff_signature": _spec(
+        "Recent MCA payoff", "stacking", "look_closer", _fmt_mca_payoff,
+    ),
+    "paydown_mca_suspected": _spec(
+        "MCA paydown pattern", "stacking", "material", _fmt_paydown_mca,
+    ),
+    "withdrawal_acceleration": _spec(
+        "MCA debit acceleration", "stacking", "material",
+        _fmt_withdrawal_acceleration,
+    ),
+    "acceleration_clause_triggered": _spec(
+        "MCA acceleration", "stacking", "decline", _fmt_acceleration_clause,
+    ),
+    "unauthorized_withdrawal_dispute": _spec(
+        "Unauthorized withdrawal dispute", "stacking", "decline",
+        _fmt_unauthorized_withdrawal_dispute,
+    ),
 
     # === Revenue fabrication ===========================================
-    "wash_deposit_suspected":       _FlagSpec("Suspected wash deposits", "fabrication", "decline", _fmt_wash_deposit),
-    "duplicate_deposits_detected":  _FlagSpec("Duplicate deposits", "fabrication", "material", _fmt_duplicate_deposits),
-    "synthetic_low_variance":       _FlagSpec("Deposits look synthetic", "fabrication", "material", _fmt_synthetic_low_variance),
-    "round_number_deposits":        _FlagSpec("Round-number deposits", "fabrication", "material", _fmt_round_number_deposits),
-    "preloan_spike":                _FlagSpec("Pre-loan deposit spike", "fabrication", "material", _fmt_preloan_spike),
-    "deposit_velocity_spike":       _FlagSpec("Deposit velocity spike", "fabrication", "material", _fmt_deposit_velocity_spike),
+    "wash_deposit_suspected": _spec(
+        "Suspected wash deposits", "fabrication", "decline", _fmt_wash_deposit,
+    ),
+    "duplicate_deposits_detected": _spec(
+        "Duplicate deposits", "fabrication", "material",
+        _fmt_duplicate_deposits,
+    ),
+    "synthetic_low_variance": _spec(
+        "Deposits look synthetic", "fabrication", "material",
+        _fmt_synthetic_low_variance,
+    ),
+    "round_number_deposits": _spec(
+        "Round-number deposits", "fabrication", "material",
+        _fmt_round_number_deposits,
+    ),
+    "preloan_spike": _spec(
+        "Pre-loan deposit spike", "fabrication", "material", _fmt_preloan_spike,
+    ),
+    "deposit_velocity_spike": _spec(
+        "Deposit velocity spike", "fabrication", "material",
+        _fmt_deposit_velocity_spike,
+    ),
 
     # === Cashflow stress ===============================================
-    "nsf_clustering_short":         _FlagSpec("NSF concentration", "stress", "material", _fmt_nsf_clustering_short),
-    "nsf_late_concentration":       _FlagSpec("Late NSF concentration", "stress", "material", _fmt_nsf_late_concentration),
-    "payroll_absent":               _FlagSpec("Payroll absent", "stress", "look_closer", _fmt_payroll_absent),
+    "nsf_clustering_short": _spec(
+        "NSF concentration", "stress", "material", _fmt_nsf_clustering_short,
+    ),
+    "nsf_late_concentration": _spec(
+        "Late NSF concentration", "stress", "material",
+        _fmt_nsf_late_concentration,
+    ),
+    "payroll_absent": _spec(
+        "Payroll absent", "stress", "look_closer", _fmt_payroll_absent,
+    ),
 
     # === Concentration & fundamentals ==================================
-    "customer_concentration":       _FlagSpec("Customer concentration", "concentration", "material", _fmt_customer_concentration),
-    "processor_holdback_detected":  _FlagSpec("Processor holdback suspected", "concentration", "material", _fmt_processor_holdback),
-    "chargeback_velocity":          _FlagSpec("Chargeback velocity", "concentration", "material", _fmt_chargeback_velocity),
+    "customer_concentration": _spec(
+        "Customer concentration", "concentration", "material",
+        _fmt_customer_concentration,
+    ),
+    "processor_holdback_detected": _spec(
+        "Processor holdback suspected", "concentration", "material",
+        _fmt_processor_holdback,
+    ),
+    "chargeback_velocity": _spec(
+        "Chargeback velocity", "concentration", "material",
+        _fmt_chargeback_velocity,
+    ),
 
     # === Hidden account ================================================
-    "unreconciled_internal_transfer": _FlagSpec("Unreconciled internal transfer", "hidden_account", "material", _fmt_unreconciled_internal_transfer),
+    "unreconciled_internal_transfer": _spec(
+        "Unreconciled internal transfer", "hidden_account", "material",
+        _fmt_unreconciled_internal_transfer,
+    ),
 
     # === Recency / account age =========================================
-    "recent_account_opening":       _FlagSpec("New account", "recency", "material", _fmt_recent_account_opening),
+    "recent_account_opening": _spec(
+        "New account", "recency", "material", _fmt_recent_account_opening,
+    ),
 
     # === PDF tampering (metadata layer) ================================
-    "incremental_saves":            _FlagSpec("PDF saved incrementally", "tampering", "decline", _fmt_incremental_saves),
-    "editor_detected":              _FlagSpec("PDF editor detected", "tampering", "material", _fmt_editor_detected),
-    "personal_author":              _FlagSpec("Personal author on PDF", "tampering", "material", _fmt_personal_author),
-    "stripped_metadata":            _FlagSpec("PDF metadata stripped", "tampering", "material", None),
-    "page_size_inconsistency":      _FlagSpec("Page size mismatch", "tampering", "decline", _fmt_page_size_inconsistency),
-    "xref_offset_mismatch":         _FlagSpec("PDF xref offset mismatch", "tampering", "material", None),
-    "font_inconsistency":           _FlagSpec("Font inconsistency", "tampering", "material", _fmt_font_inconsistency),
-    "page_layer_anomaly":           _FlagSpec("Page layer anomaly", "tampering", "look_closer", _fmt_page_layer_anomaly),
+    "incremental_saves": _spec(
+        "PDF saved incrementally", "tampering", "decline",
+        _fmt_incremental_saves,
+    ),
+    "editor_detected": _spec(
+        "PDF editor detected", "tampering", "material", _fmt_editor_detected,
+    ),
+    "personal_author": _spec(
+        "Personal author on PDF", "tampering", "material", _fmt_personal_author,
+    ),
+    "stripped_metadata": _spec(
+        "PDF metadata stripped", "tampering", "material", None,
+    ),
+    "page_size_inconsistency": _spec(
+        "Page size mismatch", "tampering", "decline",
+        _fmt_page_size_inconsistency,
+    ),
+    "xref_offset_mismatch": _spec(
+        "PDF xref offset mismatch", "tampering", "material", None,
+    ),
+    "font_inconsistency": _spec(
+        "Font inconsistency", "tampering", "material", _fmt_font_inconsistency,
+    ),
+    "page_layer_anomaly": _spec(
+        "Page layer anomaly", "tampering", "look_closer", _fmt_page_layer_anomaly,
+    ),
     # ``modified_*_after_creation`` is matched dynamically below — the
     # minute count is baked into the code rather than the detail.
 
     # === Aggregate soft signals ========================================
-    "top_counterparty_concentration": _FlagSpec("Top customer", "soft", "context", _fmt_top_counterparty_concentration),
-    "payroll_cadence":              _FlagSpec("Payroll cadence", "soft", "context", _fmt_payroll_cadence),
-    "nsf_on_negative_days":         _FlagSpec("NSFs on negative-balance days", "soft", "context", _fmt_nsf_on_negative_days),
-    "adb_partial_coverage":         _FlagSpec("ADB coverage gap", "soft", "context", _fmt_adb_partial_coverage),
+    "top_counterparty_concentration": _spec(
+        "Top customer", "soft", "context",
+        _fmt_top_counterparty_concentration,
+    ),
+    "payroll_cadence": _spec(
+        "Payroll cadence", "soft", "context", _fmt_payroll_cadence,
+    ),
+    "nsf_on_negative_days": _spec(
+        "NSFs on negative-balance days", "soft", "context",
+        _fmt_nsf_on_negative_days,
+    ),
+    "adb_partial_coverage": _spec(
+        "ADB coverage gap", "soft", "context", _fmt_adb_partial_coverage,
+    ),
 
     # === Classifier confidence =========================================
-    "classification_confidence_below_floor": _FlagSpec(
-        "Transaction classifier confidence low", "soft", "look_closer", _fmt_classification_confidence_below_floor,
+    "classification_confidence_below_floor": _spec(
+        "Transaction classifier confidence low", "soft", "look_closer",
+        _fmt_classification_confidence_below_floor,
     ),
 
     # === Infrastructure (META prefix non-pattern) ======================
-    "ocr_fallback_used":            _FlagSpec("OCR fallback used", "soft", "context", None),
-    "per_page_routing_used":        _FlagSpec("Per-page routing used", "soft", "context", None),
+    "ocr_fallback_used": _spec(
+        "OCR fallback used", "soft", "context", None,
+    ),
+    "per_page_routing_used": _spec(
+        "Per-page routing used", "soft", "context", None,
+    ),
 }
 
 # Default category + band when a recognized prefix carries an unknown code.
