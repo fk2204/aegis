@@ -346,6 +346,16 @@
 .dossier-page .chip.bad  { color: var(--decline); border-color: color-mix(in oklch, var(--decline) 40%, var(--rule)); }
 .dossier-page .chip.info { color: var(--accent);  border-color: color-mix(in oklch, var(--accent)  40%, var(--rule)); }
 
+/* humanized-chip detail — the brief phrase rendered alongside the title.
+ * Subordinate to the title (lighter color, normal letter-spacing) so the
+ * eye lands on "Suspected wash deposits" before the "· 2 pairs in 5 days"
+ * detail. Stays on the same flex row inside the chip. */
+.dossier-page .chip .chip-detail {
+  font-weight: 400;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+}
+
 /* tier chip — same letter convention as merchant_detail */
 .dossier-page .tier-chip {
   display: inline-block;

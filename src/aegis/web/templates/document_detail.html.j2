@@ -240,7 +240,10 @@
       </header>
       <div style="display:flex;flex-direction:column;gap:6px;margin-top:12px">
         {% for f in document.all_flags %}
-          <span class="chip {{ 'bad' if f.startswith('[META]') else 'warn' }}" style="justify-content:flex-start;font-size:10.5px">{{ f }}</span>
+          {% set hf = f | humanize_flag %}
+          <span class="chip {{ hf.chip_class }}" data-flag-code="{{ hf.code }}" title="{{ hf.code }}" style="justify-content:flex-start;font-size:10.5px">
+            {{ hf.title }}{% if hf.detail %} <span class="chip-detail">· {{ hf.detail }}</span>{% endif %}
+          </span>
         {% endfor %}
       </div>
     {% endif %}

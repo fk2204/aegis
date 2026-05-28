@@ -79,7 +79,7 @@
 
             {% if g.unique_flags %}
               <div class="card-flags">
-                {% for f in g.unique_flags %}<span class="chip warn">{{ f }}</span>{% endfor %}
+                {% for f in g.unique_flags %}{% set hf = f | humanize_flag %}<span class="chip {{ hf.chip_class }}" data-flag-code="{{ hf.code }}" title="{{ hf.code }}">{{ hf.title }}{% if hf.detail %} <span class="chip-detail">· {{ hf.detail }}</span>{% endif %}</span>{% endfor %}
               </div>
             {% endif %}
 
