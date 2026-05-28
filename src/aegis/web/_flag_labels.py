@@ -35,7 +35,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 # ---------------------------------------------------------------------------
 # Public data types
@@ -601,7 +601,9 @@ def _humanize_unknown_code(code: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def humanize_audit_action(action: str, details: dict | None = None) -> str:
+def humanize_audit_action(
+    action: str, details: dict[str, Any] | None = None
+) -> str:
     """Operator-readable label for an audit row action.
 
     Same fallback contract as ``humanize_flag``: unknown actions render
