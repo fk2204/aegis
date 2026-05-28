@@ -244,6 +244,20 @@
   font-size: 10.5px;
   color: var(--ink-2);
   letter-spacing: 0.04em;
+  /* Cap the cell width and let content wrap inside. Without these the
+     flags cell expands to fit a `; `-joined or many-chip string,
+     squeezing adjacent columns and floating the next column's data
+     off the right edge under its header. Chip-rendered flags inside
+     wrap naturally; long unbroken tokens break instead of pushing. */
+  max-width: 280px;
+  white-space: normal;
+  word-break: break-word;
+  vertical-align: top;
+}
+/* Chips inside .flags get a small bottom margin so they stack into
+   visually distinct rows when the cell wraps onto multiple lines. */
+.dossier-page table.queue tbody td.flags .chip {
+  margin: 2px 4px 2px 0;
 }
 .dossier-page table.queue tbody td.mono-cell {
   font-family: var(--mono);
