@@ -176,7 +176,10 @@ def test_index_attention_flags_rendered_as_chips_not_joined_string(
     """Flags column on Today renders one chip per flag (the pattern
     review.html.j2 uses), not a ;-joined string. The joined-string
     form forced the flags column to expand and blow out the table
-    layout — see fix/dashboard-table-alignment."""
+    layout — see fix/dashboard-table-alignment. Each chip now carries
+    the raw code in ``data-flag-code`` (the humanize_flag pass adds
+    plain-language title text; the identifier stays accessible for
+    debugging and for the chip's hover tooltip)."""
     target = next(iter(doc_repo._docs.values()))
     flagged = target.model_copy(
         update={
@@ -189,10 +192,11 @@ def test_index_attention_flags_rendered_as_chips_not_joined_string(
 
     resp = client.get("/ui/")
     assert resp.status_code == 200
-    # Each flag wrapped in a chip span (same shape review.html.j2 uses).
-    assert '<span class="chip warn">[META] foo_marker</span>' in resp.text
-    assert '<span class="chip warn">[PATTERN] bar_pattern</span>' in resp.text
-    # No "; "-joined form (the bug we're fixing).
+    # Each flag renders as its own chip span carrying the raw code in
+    # data-flag-code — the new humanized chip shape from Proposal 2.
+    assert 'data-flag-code="foo_marker"' in resp.text
+    assert 'data-flag-code="bar_pattern"' in resp.text
+    # No "; "-joined form (the bug this test originally protected).
     assert "foo_marker; [PATTERN]" not in resp.text
 
 
@@ -222,11 +226,12 @@ def test_index_attention_renders_all_unique_flags_no_truncation(
     resp = client.get("/ui/")
     assert resp.status_code == 200
     # All five flags render as chips (no truncation in the card view).
-    assert '<span class="chip warn">[META] one</span>' in resp.text
-    assert '<span class="chip warn">[META] two</span>' in resp.text
-    assert '<span class="chip warn">[META] three</span>' in resp.text
-    assert '<span class="chip warn">[META] four</span>' in resp.text
-    assert '<span class="chip warn">[META] five</span>' in resp.text
+    # Each chip carries its raw code in ``data-flag-code`` post-humanize.
+    assert 'data-flag-code="one"' in resp.text
+    assert 'data-flag-code="two"' in resp.text
+    assert 'data-flag-code="three"' in resp.text
+    assert 'data-flag-code="four"' in resp.text
+    assert 'data-flag-code="five"' in resp.text
     # No "+N more" overflow indicator — the cap is gone.
     assert "+2 more" not in resp.text
 

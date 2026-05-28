@@ -48,10 +48,10 @@
               </td>
               <td class="flags">
                 {% if r.flags %}
-                  {% for f in r.flags[:3] %}<span class="chip warn">{{ f }}</span>{% endfor %}
+                  {% for f in r.flags[:3] %}{% set hf = f | humanize_flag %}<span class="chip {{ hf.chip_class }}" data-flag-code="{{ hf.code }}" title="{{ hf.code }}">{{ hf.title }}{% if hf.detail %} <span class="chip-detail">· {{ hf.detail }}</span>{% endif %}</span>{% endfor %}
                   {% if r.flags|length > 3 %}
                     <details class="flags-more">
-                      <summary>+{{ r.flags|length - 3 }} more</summary><span class="flags-more-extras">{% for f in r.flags[3:] %}<span class="chip warn">{{ f }}</span>{% endfor %}</span>
+                      <summary>+{{ r.flags|length - 3 }} more</summary><span class="flags-more-extras">{% for f in r.flags[3:] %}{% set hf = f | humanize_flag %}<span class="chip {{ hf.chip_class }}" data-flag-code="{{ hf.code }}" title="{{ hf.code }}">{{ hf.title }}{% if hf.detail %} <span class="chip-detail">· {{ hf.detail }}</span>{% endif %}</span>{% endfor %}</span>
                     </details>
                   {% endif %}
                 {% else %}
