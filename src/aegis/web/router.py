@@ -1749,9 +1749,21 @@ async def merchant_close_rescan(
         Query(
             description=(
                 "Set true to bypass the close_attachment_hard_cap when a "
-                "previous run hit the cap. The chunk-5 UI surfaces a "
-                "second 'Rescan all (override cap)' button when the most "
-                "recent orchestration audit row had capped=true."
+                "previous run hit the cap. The UI surfaces a second "
+                "'Rescan all (override cap)' button when the most recent "
+                "orchestration audit row had capped=true."
+            ),
+        ),
+    ] = False,
+    ignore_pin: Annotated[
+        bool,
+        Query(
+            description=(
+                "Set true to bypass the is_pinned gate in the orchestrator "
+                "(Path X fallback — content_type + filename filter remain "
+                "the only gates). The UI surfaces a third "
+                "'Rescan all unpinned PDFs (ignore pin)' button when the "
+                "most recent orchestration had unpinned PDFs."
             ),
         ),
     ] = False,
@@ -1759,9 +1771,9 @@ async def merchant_close_rescan(
     """Operator-clicked manual rescan of a merchant's Close attachments.
 
     Enqueues ``process_close_attachments(close_lead_id, 'rescan',
-    actor_email=..., override_cap=...)``. Audit trail mirrors the
-    webhook path so the merchant detail history panel surfaces both
-    auto and manual runs.
+    actor_email=..., override_cap=..., ignore_pin=...)``. Audit trail
+    mirrors the webhook path so the merchant detail history panel
+    surfaces both auto and manual runs.
 
     404 if the merchant has no ``close_lead_id``. The button on the
     merchant detail template is only rendered when ``close_lead_id``
@@ -1792,6 +1804,7 @@ async def merchant_close_rescan(
         trigger="rescan",
         actor_email=actor_email,
         override_cap=override_cap,
+        ignore_pin=ignore_pin,
     )
 
     audit.record(
@@ -1803,6 +1816,7 @@ async def merchant_close_rescan(
         details={
             "close_lead_id": merchant.close_lead_id,
             "override_cap": override_cap,
+            "ignore_pin": ignore_pin,
         },
     )
 
@@ -1816,7 +1830,7 @@ def _close_orchestration_last_capped(history: list[dict[str, Any]]) -> bool:
     for the merchant landed with ``capped=True``.
 
     Drives the cap-override button visibility on the merchant detail
-    template (chunk 5). ``history`` is already newest-first per the
+    template. ``history`` is already newest-first per the
     ``list_for_subject`` contract; we walk it once and stop at the
     first orchestration-complete row. Older rows are not consulted —
     operator behavior is "did the latest run cap?", not "did any
@@ -1826,6 +1840,83 @@ def _close_orchestration_last_capped(history: list[dict[str, Any]]) -> bool:
         if row.get("action") == "close.orchestration.complete":
             details = row.get("details") or {}
             return bool(details.get("capped"))
+    return False
+
+
+def _close_orchestration_latest_window(
+    history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return the audit rows that belong to the most recent orchestration.
+
+    Orchestration runs write a final ``close.orchestration.complete``
+    row, preceded (in chronological order) by per-attachment skip /
+    fetch rows + batch-level signals (``no_pinned_files``,
+    ``pin_ignored``, ``capped`` etc.). In newest-first history the
+    ``complete`` row appears first, then the earlier audit rows from
+    the same run, then ``complete`` from the previous run, and so on.
+
+    Walks newest-first: includes the first ``complete`` row, then
+    every row up to (but not including) the next ``complete``. Returns
+    an empty list when no ``complete`` row exists.
+    """
+    window: list[dict[str, Any]] = []
+    seen_first_complete = False
+    for row in history:
+        action = row.get("action") or ""
+        if action == "close.orchestration.complete":
+            if seen_first_complete:
+                # Stop — this is the prior orchestration's complete row.
+                break
+            seen_first_complete = True
+            window.append(row)
+            continue
+        if seen_first_complete:
+            window.append(row)
+    return window
+
+
+def _close_orchestration_last_no_pinned_files(
+    history: list[dict[str, Any]],
+) -> bool:
+    """True iff the most recent orchestration audited ``no_pinned_files``.
+
+    Means: pin-only mode ran and found >=1 PDF but none pinned.
+    Drives the empty-state message on the merchant detail template
+    ("Pin the bank-statement files in Close, then click Rescan.").
+
+    Returns False when ignore_pin was set (that run wrote
+    ``pin_ignored`` instead) — the empty-state message is specifically
+    for "operator forgot to pin" not "operator chose ignore_pin and
+    no statements matched."
+    """
+    window = _close_orchestration_latest_window(history)
+    return any(
+        row.get("action") == "close.orchestration.no_pinned_files"
+        for row in window
+    )
+
+
+def _close_orchestration_last_had_unpinned_pdfs(
+    history: list[dict[str, Any]],
+) -> bool:
+    """True iff the most recent orchestration encountered unpinned PDFs.
+
+    Captured via either signal in the latest orchestration window:
+      - ``close.orchestration.no_pinned_files`` (all PDFs unpinned), OR
+      - ``close.attachment.skipped`` with ``reason='not_pinned'``
+        (some PDFs were unpinned even if some were pinned too).
+
+    Drives the "Rescan all unpinned PDFs (ignore pin)" button visibility.
+    """
+    window = _close_orchestration_latest_window(history)
+    for row in window:
+        action = row.get("action") or ""
+        if action == "close.orchestration.no_pinned_files":
+            return True
+        if action == "close.attachment.skipped":
+            reason = (row.get("details") or {}).get("reason")
+            if reason == "not_pinned":
+                return True
     return False
 
 
@@ -2051,6 +2142,8 @@ async def merchant_detail(
         subject_type="merchant", subject_id=merchant_id, limit=20
     )
     close_last_orchestration_capped = _close_orchestration_last_capped(history)
+    close_last_no_pinned_files = _close_orchestration_last_no_pinned_files(history)
+    close_last_had_unpinned_pdfs = _close_orchestration_last_had_unpinned_pdfs(history)
 
     # Dossier is the only merchant-detail surface. The legacy v2 panel
     # template was retired when the whole app was unified on the dossier
@@ -2112,6 +2205,8 @@ async def merchant_detail(
             "trend": trend,
             "history": history,
             "close_last_orchestration_capped": close_last_orchestration_capped,
+            "close_last_no_pinned_files": close_last_no_pinned_files,
+            "close_last_had_unpinned_pdfs": close_last_had_unpinned_pdfs,
         },
     )
 

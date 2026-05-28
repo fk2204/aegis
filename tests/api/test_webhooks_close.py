@@ -504,6 +504,7 @@ def test_webhook_enqueues_orchestration_after_merchant_upsert(
         "trigger": "webhook",
         "actor_email": None,
         "override_cap": False,
+        "ignore_pin": False,
     }]
 
     actions = [e["action"] for e in audit.entries]

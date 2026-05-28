@@ -173,7 +173,18 @@
           <button type="submit" title="Last run hit the 15-attachment cap; this run processes all of them">⚠ Rescan all (override cap)</button>
         </form>
         {% endif %}
+        {% if close_last_had_unpinned_pdfs %}
+        <form method="post" action="/ui/merchants/{{ merchant.id }}/close-rescan?ignore_pin=true" class="inline">
+          <button type="submit" title="Last run skipped unpinned PDFs; this run processes ALL PDFs regardless of pin (content_type + filename filter remain in effect)">⚡ Rescan all unpinned PDFs (ignore pin)</button>
+        </form>
+        {% endif %}
       </div>
+      {% if close_last_no_pinned_files %}
+      <div class="close-empty-state" style="margin-top:8px;padding:10px;background:#fff3cd;border:1px solid #ffeeba;border-radius:4px;font-size:13px">
+        <strong>No statements imported.</strong>
+        Pin the bank-statement files in Close, then click Rescan.
+      </div>
+      {% endif %}
       {% endif %}
     </div>
   </aside>
