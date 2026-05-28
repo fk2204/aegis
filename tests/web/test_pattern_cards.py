@@ -122,7 +122,12 @@ def test_payroll_absent_appears_with_empty_source_transactions() -> None:
     panel summarizes the period and revenue context that triggered it."""
     txn = _txn()
     patterns = [
-        Pattern(code="payroll_absent", severity=10, detail="no payroll across period", source_ids=[]),
+        Pattern(
+            code="payroll_absent",
+            severity=10,
+            detail="no payroll across period",
+            source_ids=[],
+        ),
     ]
     cards = build_pattern_cards(_empty_analysis(patterns), [txn])
 

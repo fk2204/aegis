@@ -19,8 +19,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
-from uuid import uuid4
 
 import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
@@ -173,7 +171,7 @@ def test_acceleration_panel_separates_normal_cadence_from_spike(
     env: Environment,
 ) -> None:
     """Acceleration evidence shows the normal recurring debits first,
-    then the trailing 5–10× debit labeled as the spike."""
+    then the trailing 5-10x debit labeled as the spike."""
     normal_1 = _txn(
         amount="-612.00",
         posted_date=date(2026, 5, 1),

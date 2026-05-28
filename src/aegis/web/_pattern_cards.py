@@ -136,8 +136,8 @@ PATTERN_COPY: Final[dict[str, PatternCardCopy]] = {
     "acceleration_clause_triggered": PatternCardCopy(
         title="MCA Acceleration",
         description=(
-            "A recurring MCA position broke and a single debit 5–10x larger "
-            "than the prior median posted to the same payee — the funder "
+            "A recurring MCA position broke and a single debit 5-10x larger "
+            "than the prior median posted to the same payee - the funder "
             "called the loan after default. Decline class flag: the merchant "
             "defaulted on a prior funder, outside our risk appetite."
         ),
