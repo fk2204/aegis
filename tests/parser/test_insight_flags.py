@@ -78,6 +78,168 @@ def test_top_counterparty_concentration_fires_above_minimum_payee_count() -> Non
     ), flags
 
 
+def test_top_counterparty_concentration_never_exceeds_100pct() -> None:
+    """Property: the concentration share is bounded at 100%.
+
+    Regression for the "104% of net revenue" bug. The old denominator
+    was ``true_revenue`` (positive deposits minus transfers and
+    chargebacks); a dominant payer with even modest reversals would
+    produce a ratio above 100%. The new denominator is gross deposits,
+    so the ratio is bounded by definition.
+
+    Fixture: top payee = $100k, two small payees = $1k each, plus a
+    $4k chargeback. Under the old logic this would have rendered as
+    ~104%; the new logic clamps to a sensible 98%.
+    """
+    txns = [
+        _txn(
+            posted_date=date(2026, 1, 3),
+            description="DOMINANT CUSTOMER",
+            amount=Decimal("100000.00"),
+        ),
+        _txn(
+            posted_date=date(2026, 1, 8),
+            description="SMALL CUSTOMER A",
+            amount=Decimal("1000.00"),
+        ),
+        _txn(
+            posted_date=date(2026, 1, 14),
+            description="SMALL CUSTOMER B",
+            amount=Decimal("1000.00"),
+        ),
+        _txn(
+            posted_date=date(2026, 1, 20),
+            description="CHARGEBACK FEE",
+            amount=Decimal("-4000.00"),
+            category="chargeback",
+        ),
+    ]
+    flags = _flags(txns)
+    concentration_flags = [
+        f for f in flags if f.startswith("top_counterparty_concentration:")
+    ]
+    assert concentration_flags, flags
+    # Extract NN from "top_counterparty_concentration:NN%_(...)"
+    pct = int(concentration_flags[0].split(":")[1].split("%")[0])
+    assert 0 <= pct <= 100, f"concentration must be bounded 0-100%, got {pct}"
+    # Specifically: 100k / 102k gross = 98%.
+    assert pct == 98, f"expected 98% under gross-revenue rule, got {pct}"
+
+
+def test_top_counterparty_concentration_formula_matches_gross_definition() -> None:
+    """Concentration = top_payee_gross / sum(all_positive_deposits).
+
+    Hand-rolled fixture pinning the new formula: deposits 4000 + 3000 + 3000
+    summed gross = 10000; top payee = 4000; concentration = 40%. A
+    chargeback present in the same period must NOT affect this number —
+    that's the bug we're regression-testing.
+    """
+    txns = [
+        _txn(
+            posted_date=date(2026, 1, 5),
+            description="CUSTOMER ALPHA",
+            amount=Decimal("4000.00"),
+        ),
+        _txn(
+            posted_date=date(2026, 1, 10),
+            description="CUSTOMER BRAVO",
+            amount=Decimal("3000.00"),
+        ),
+        _txn(
+            posted_date=date(2026, 1, 15),
+            description="CUSTOMER CHARLIE",
+            amount=Decimal("3000.00"),
+        ),
+        # A chargeback in-period should not move the concentration ratio.
+        _txn(
+            posted_date=date(2026, 1, 22),
+            description="DISPUTE REVERSAL",
+            amount=Decimal("-500.00"),
+            category="chargeback",
+        ),
+    ]
+    flags = _flags(txns)
+    assert any(
+        f.startswith("top_counterparty_concentration:40%_(customer alpha)")
+        for f in flags
+    ), flags
+
+
+def test_top_counterparty_concentration_label_strips_trailing_comma() -> None:
+    """Real-world ACH descriptors arrive with trailing punctuation.
+
+    "PAYWARD INTERACTIVE, INC ID 12345" was rendering as
+    ``(payward interactive,)`` — trailing comma sneaking through the
+    20-char display slice. ``_clean_payee_label`` strips it.
+    """
+    txns = [
+        _txn(
+            posted_date=date(2026, 1, 5),
+            description="PAYWARD INTERACTIVE, INC ID 12345",
+            amount=Decimal("5000.00"),
+        ),
+        _txn(
+            posted_date=date(2026, 1, 10),
+            description="CUSTOMER ALPHA",
+            amount=Decimal("2000.00"),
+        ),
+        _txn(
+            posted_date=date(2026, 1, 15),
+            description="CUSTOMER BRAVO",
+            amount=Decimal("2000.00"),
+        ),
+    ]
+    flags = _flags(txns)
+    concentration_flags = [
+        f for f in flags if f.startswith("top_counterparty_concentration:")
+    ]
+    assert concentration_flags, flags
+    flag = concentration_flags[0]
+    # Display label is the bit inside the parens.
+    label = flag.split("(", 1)[1].rstrip(")")
+    assert "," not in label, f"trailing comma in label: {label!r}"
+    assert label == "payward interactive", f"unexpected label: {label!r}"
+
+
+def test_top_counterparty_concentration_buckets_punctuation_variants_together() -> None:
+    """Same payee with two trailing-punct variants must bucket together.
+
+    "PAYWARD INTERACTIVE" and "PAYWARD INTERACTIVE, INC" should land in
+    the SAME concentration bucket — workers reading "78%" do not want to
+    see the same merchant split across two near-duplicate chips.
+    """
+    txns = [
+        _txn(
+            posted_date=date(2026, 1, 3),
+            description="PAYWARD INTERACTIVE",
+            amount=Decimal("4000.00"),
+        ),
+        _txn(
+            posted_date=date(2026, 1, 8),
+            description="PAYWARD INTERACTIVE, INC",
+            amount=Decimal("4000.00"),
+        ),
+        _txn(
+            posted_date=date(2026, 1, 12),
+            description="OTHER CUSTOMER A",
+            amount=Decimal("1000.00"),
+        ),
+        _txn(
+            posted_date=date(2026, 1, 18),
+            description="OTHER CUSTOMER B",
+            amount=Decimal("1000.00"),
+        ),
+    ]
+    flags = _flags(txns)
+    # Bucketed share: 8000 / 10000 = 80%. If the bucket key were not
+    # cleaned, the two Payward variants would be separate buckets and
+    # neither alone (4000 / 10000 = 40%) would be the top.
+    assert any(
+        f.startswith("top_counterparty_concentration:80%_(payward interactive)")
+        for f in flags
+    ), flags
+
+
 def test_top_counterparty_silent_with_too_few_payees() -> None:
     """Only 2 distinct payees → no concentration flag (not enough baseline)."""
     txns = [

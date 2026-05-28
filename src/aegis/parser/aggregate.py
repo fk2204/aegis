@@ -98,7 +98,7 @@ def aggregate(
 
     # New fraud-signal insights — surface without persisting (no DB change
     # this round). Each is None when not applicable.
-    concentration_flag = _customer_concentration_flag(transactions, revenue.value)
+    concentration_flag = _customer_concentration_flag(transactions)
     if concentration_flag is not None:
         flags.append(concentration_flag)
     payroll_flag = _payroll_cadence_flag(transactions, revenue.value)
@@ -182,18 +182,56 @@ def _monthly_breakdown(
     return out
 
 
-def _customer_concentration_flag(
-    transactions: list[ClassifiedTransaction], true_revenue: Decimal
-) -> str | None:
-    """Top deposit counterparty as share of revenue.
+# Trailing punctuation we never want to leak into a payee bucket key or
+# display label. ACH descriptors routinely arrive as "ACME PAYMENT, INC"
+# or "PAYWARD INTERACTIVE,"; we want the comma-stripped form so two
+# variants bucket together AND the operator never sees "(payward
+# interactive,)" rendered on the chip.
+_PAYEE_LABEL_TRAILING_PUNCT = " ,;:.-"
 
-    Group revenue-included deposits by normalized description; report the
-    top counterparty's share. Returns None when revenue is zero or fewer
-    than 3 distinct counterparties exist (concentration is a meaningful
-    signal only with some baseline of payers).
+
+def _clean_payee_label(description: str) -> str:
+    """Bucket key + display label for a deposit counterparty.
+
+    Same string is used at the bucketing step AND at the format step so
+    aggregate math and chip text always agree. The 20-char cap matches
+    the soft-signals chip width; padding from the underlying ACH
+    descriptor is trimmed (multi-space, wrapping parens, trailing
+    punctuation) so "PAYWARD INTERACTIVE, INC" and "PAYWARD INTERACTIVE"
+    bucket together as ``payward interactive``.
     """
-    if true_revenue <= 0:
-        return None
+    cleaned = description.strip().lower()[:30]
+    cleaned = " ".join(cleaned.split())
+    cleaned = cleaned.strip("()")
+    # Cap to display width first so the rstrip catches whatever trailing
+    # punctuation the cap revealed (the original 30-char slice could
+    # leave a comma at position 19 that would survive without this).
+    cleaned = cleaned[:20].rstrip(_PAYEE_LABEL_TRAILING_PUNCT)
+    return cleaned
+
+
+def _customer_concentration_flag(
+    transactions: list[ClassifiedTransaction],
+) -> str | None:
+    """Top deposit counterparty as share of GROSS deposits.
+
+    Numerator: the top payee's positive deposits in ``_REVENUE_INCLUDED``.
+    Denominator: the sum of *all* positive deposits in those same
+    categories — no chargeback / transfer subtraction.
+
+    Earlier the denominator was ``true_revenue`` (net of transfers and
+    chargebacks). The mismatch produced ratios above 100% on real deals
+    — a single dominant payer plus modest reversals made the chip read
+    "104% of revenue", which is nonsense at face value. Workers expect a
+    0-100% concentration metric. ``true_revenue`` (net) is reserved for
+    the financial math that genuinely wants net (debt-to-revenue, APR,
+    payback days). Concentration is a ratio of *one stream of deposits
+    to all streams of deposits* and is therefore a gross/gross ratio.
+
+    Returns None when no positive deposits exist or fewer than 3
+    distinct counterparties show up (concentration is meaningful only
+    with some baseline of payers).
+    """
     deposits = [
         t
         for t in transactions
@@ -201,15 +239,17 @@ def _customer_concentration_flag(
     ]
     if not deposits:
         return None
+    gross_revenue = sum((t.amount for t in deposits), Decimal("0"))
+    if gross_revenue <= 0:
+        return None
     by_payee: defaultdict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     for t in deposits:
-        key = t.description.strip().lower()[:30]
-        by_payee[key] += t.amount
+        by_payee[_clean_payee_label(t.description)] += t.amount
     if len(by_payee) < 3:
         return None
     top_payee, top_total = max(by_payee.items(), key=lambda kv: kv[1])
-    share_pct = round((top_total / true_revenue) * 100)
-    return f"top_counterparty_concentration:{share_pct}%_({top_payee[:20]})"
+    share_pct = round((top_total / gross_revenue) * 100)
+    return f"top_counterparty_concentration:{share_pct}%_({top_payee})"
 
 
 def _payroll_cadence_flag(
