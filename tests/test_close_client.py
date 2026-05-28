@@ -598,8 +598,10 @@ def test_list_lead_attachments_happy_path(
         items = client.list_lead_attachments("lead_abc")
 
     assert seen["method"] == "GET"
-    assert seen["path"].endswith("/api/v1/files/")
-    assert seen["params"]["lead_id"] == "lead_abc"
+    # New endpoint: /api/v1/lead/{lead_id}/files/. lead_id is in the path,
+    # not a query param.
+    assert seen["path"] == "/api/v1/lead/lead_abc/files/"
+    assert "lead_id" not in seen["params"]
     assert seen["params"]["_limit"] == "100"
     assert seen["params"]["_skip"] == "0"
     assert len(items) == 2
@@ -609,7 +611,8 @@ def test_list_lead_attachments_happy_path(
     assert items[0].content_type == "application/pdf"
     assert items[0].size == 12345
     assert items[1].id == "file_002"
-    assert items[1].created_by_name is None  # optional + absent
+    # Legacy field still defaults to None when the new endpoint omits it.
+    assert items[1].created_by_name is None
 
 
 def test_list_lead_attachments_empty(
@@ -692,6 +695,57 @@ def test_list_lead_attachments_rejects_non_list_data(
     ) as client:
         with pytest.raises(CloseError, match="non-list"):
             client.list_lead_attachments("lead_abc")
+
+
+def test_list_lead_attachments_real_shape_with_new_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Lead Files endpoint returns rich metadata — confirm checksum,
+    download_url, is_pinned, and provenance fields flow through end to end.
+    Payload mirrors the 2026-05-28 real-data inspection."""
+    _set_close_env(monkeypatch)
+
+    def transport(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "has_more": False,
+                "data": [
+                    {
+                        "id": "leadfile_0b4YISG3WcbhVfVCxgOT4d",
+                        "name": "april_bank_statement.pdf",
+                        "content_type": "application/pdf",
+                        "size": 278585,
+                        "checksum": "835b9dc89efa2a1fba2223497a773426",
+                        "download_url": (
+                            "https://app.close.com/go/file/persisted/orga_xyz/"
+                            "activity.note/acti_xyz/token/april_bank_statement.pdf/"
+                        ),
+                        "is_pinned": True,
+                        "last_object_type": "activity.note",
+                        "last_object_id": "acti_xyz",
+                        # Extra real-response keys we don't model:
+                        "thumbnail_url": "https://app.close.com/.../thumbnail/",
+                        "lead_id": "lead_abc",
+                        "organization_id": "orga_xyz",
+                    },
+                ],
+            },
+        )
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        items = client.list_lead_attachments("lead_abc")
+
+    assert len(items) == 1
+    a = items[0]
+    assert a.checksum == "835b9dc89efa2a1fba2223497a773426"
+    assert a.download_url is not None
+    assert "app.close.com" in a.download_url
+    assert a.is_pinned is True
+    assert a.last_object_type == "activity.note"
+    assert a.last_object_id == "acti_xyz"
 
 
 # ----------------------------------------------------------------------

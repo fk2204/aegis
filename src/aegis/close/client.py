@@ -374,24 +374,40 @@ class CloseClient:
         return self.request("GET", f"/api/v1/opportunity/{opportunity_id}/")
 
     def list_lead_attachments(self, lead_id: str) -> list[CloseAttachment]:
-        """GET /api/v1/files/?lead_id={lead_id} — list all files on a Lead.
+        """GET /api/v1/lead/{lead_id}/files/ — unified Lead files index.
 
-        Used by the attachment-orchestration arq job to enumerate every
-        PDF the operator has attached to a Close Lead so the orchestrator
-        can filename-filter + auto-pull statements through the parser
-        pipeline.
+        Single source of truth for files on a Lead. Backs Close's "Files"
+        tab in the UI and aggregates every file regardless of how it was
+        attached:
 
-        Pagination: Close returns ``{"has_more": bool, "data": [...]}``
-        envelopes with a default ``_limit=100``. This method follows
-        ``has_more`` via ``_skip`` until the cursor exhausts. A Lead
-        with hundreds of attachments is not a realistic shape today,
-        but the loop is cheap and keeps the contract honest.
+          - Notes carrying attachments (``last_object_type='activity.note'``)
+          - Email attachments (``last_object_type='activity.email'``)
+          - SMS / MMS attachments (``last_object_type='activity.sms'``)
+          - Files attached directly to the Lead via UI drag-drop with
+            no activity wrapper (``last_object_type='lead'``)
+          - Custom activity attachments (e.g. Commera's deferred
+            Submission/Offer/Decline types)
 
-        Same auth + retry semantics as the other methods — each page
-        call goes through :meth:`request`, which has its own tenacity
-        decorator. 401 → CloseAuthError (no retry); 429 → CloseRateLimitError
-        (sleeps + retried inside ``request``); 5xx → retried; other 4xx
-        → CloseError raised.
+        Returns ``list[CloseAttachment]`` carrying ``id``, ``name``,
+        ``content_type``, ``size``, ``checksum`` (MD5), ``download_url``,
+        ``is_pinned``, and provenance backrefs.
+
+        Previously this method called ``/api/v1/files/?lead_id=...``
+        which 404s in our Close org (the org-level Files API isn't
+        available in our plan/version); every Feature-2 run silently
+        no-op'd. Confirmed against a live web-form lead on 2026-05-28
+        that the unified Lead-Files endpoint returns the 7 real files
+        the form uploaded.
+
+        Pagination: same Close convention — ``{"has_more": bool,
+        "data": [...]}`` with ``_limit`` (capped at 100) and ``_skip``.
+        Verified pagination behavior live with ``_limit=2`` against the
+        7-file test lead.
+
+        Same auth + retry semantics as siblings — each page goes
+        through :meth:`request` with its own tenacity decorator.
+        401 → CloseAuthError; 429 → CloseRateLimitError (retried);
+        5xx → retried; other 4xx → CloseError raised.
 
         Returns an empty list if the Lead has no attachments.
         """
@@ -401,9 +417,8 @@ class CloseClient:
         while True:
             page = self.request(
                 "GET",
-                "/api/v1/files/",
+                f"/api/v1/lead/{lead_id}/files/",
                 params={
-                    "lead_id": lead_id,
                     "_limit": page_size,
                     "_skip": skip,
                 },
@@ -411,13 +426,13 @@ class CloseClient:
             raw_items = page.get("data", [])
             if not isinstance(raw_items, list):
                 raise CloseError(
-                    "close /api/v1/files/ returned non-list data: "
+                    "close /api/v1/lead/{id}/files/ returned non-list data: "
                     f"{type(raw_items).__name__}"
                 )
             for raw in raw_items:
                 if not isinstance(raw, dict):
                     raise CloseError(
-                        "close /api/v1/files/ returned non-object item: "
+                        "close /api/v1/lead/{id}/files/ returned non-object item: "
                         f"{type(raw).__name__}"
                     )
                 items.append(CloseAttachment.model_validate(raw))
