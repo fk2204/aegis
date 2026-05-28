@@ -1,6 +1,11 @@
-{# Submit-a-deal modal — HTMX fragment served by
+{# Record-a-submission modal — HTMX fragment served by
    /ui/funders/{funder_id}/submit-modal, swapped into the
    #submit-modal-host div on the funder detail page.
+
+   AEGIS does not transmit anything to funders — this modal lets the
+   operator pick a merchant they've already contacted (or are about to
+   contact) so the submission can be recorded against the funder.
+   See merchant_match for the actual record-submission form.
 
    Backdrop captures click-outside-to-close; X button closes via the
    same inline clear. Each merchant row navigates to the match panel
@@ -8,7 +13,7 @@
 <div class="modal-backdrop" onclick="if(event.target===this) document.getElementById('submit-modal-host').innerHTML=''">
   <div class="modal-dialog">
     <header class="modal-head">
-      <h2>Submit a deal to {{ funder.name }}</h2>
+      <h2>Record a submission to {{ funder.name }}</h2>
       <button class="modal-close" type="button"
               onclick="document.getElementById('submit-modal-host').innerHTML=''"
               title="Close" aria-label="Close">×</button>
