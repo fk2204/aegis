@@ -129,3 +129,49 @@ def test_outbound_hosts_restricted_to_allowlist() -> None:
         "_ALLOWED_OUTBOUND_HOSTS with a one-line justification. Hits:\n  "
         + "\n  ".join(f"{p}: {url}" for p, url in findings)
     )
+
+
+# ---------------------------------------------------------------------------
+# Close → AEGIS callback router invariant
+# ---------------------------------------------------------------------------
+
+
+def test_close_callback_router_has_no_funder_paths() -> None:
+    """The Close-callback router must NEVER expose a route that touches
+    funder data. The router was designed Close-only (read merchant, read
+    deal, upload, sync) and a future PR that adds a funder endpoint
+    under ``/api/close-callback/`` would silently expand the Close key's
+    blast radius.
+
+    Static AST guard: enumerate every ``@router.<verb>`` decorator in
+    ``src/aegis/api/routes/close_callback.py`` and assert no path string
+    contains "funder". Cheap, catches the obvious vector at CI time.
+    """
+    import ast
+
+    target = _SRC / "api" / "routes" / "close_callback.py"
+    tree = ast.parse(target.read_text(encoding="utf-8"))
+
+    offending: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            continue
+        if not isinstance(func.value, ast.Name) or func.value.id != "router":
+            continue
+        # router.<get/post/put/...>("/path/...", ...)
+        if not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            path = first.value.lower()
+            if "funder" in path:
+                offending.append(first.value)
+
+    assert not offending, (
+        "Close-callback router has route(s) with 'funder' in the path. "
+        "The Close key must never gate funder mutation. Offending paths:\n  "
+        + "\n  ".join(offending)
+    )
