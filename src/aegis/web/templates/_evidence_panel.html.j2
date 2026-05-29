@@ -51,5 +51,14 @@
     {% else %}
       {% include "_evidence/_flat_transactions.html.j2" %}
     {% endif %}
+    {# Copy-to-clipboard button — gated on source_transactions so the
+       explanation-only panels (recent_account_opening, payroll_absent)
+       don't get a button for rows that don't exist. JS wires up via the
+       .evidence-copy-btn class. #}
+    {% if card.source_transactions %}
+      <div class="evidence-copy-row">
+        <button type="button" class="evidence-copy-btn" data-flag-code="{{ card.code }}">Copy rows</button>
+      </div>
+    {% endif %}
   </details>
 {% endif %}
