@@ -677,8 +677,9 @@ def test_persist_parse_result_overwrites_legacy_null_pattern_analysis() -> None:
     legacy = _build_dummy_analysis_row(pattern_analysis_dto=None)
     legacy_with_doc_id = legacy.model_copy(update={"document_id": row.id})
     repo._analyses[row.id] = legacy_with_doc_id
-    assert repo.get_analysis(row.id) is not None
-    assert repo.get_analysis(row.id).pattern_analysis is None  # baseline
+    baseline = repo.get_analysis(row.id)
+    assert baseline is not None
+    assert baseline.pattern_analysis is None  # legacy NULL persisted as-is
 
     # Now persist a fresh result with populated patterns. The in-memory
     # repo's dict assignment must replace the legacy row entirely; the
