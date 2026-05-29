@@ -90,8 +90,11 @@ def test_worst_fraud_score_is_none_when_all_docs_unscored() -> None:
     assert cards[0].worst_fraud_score is None
 
 
-def test_unique_flags_deduplicated_first_seen_order() -> None:
-    """Flags repeated across docs in a card dedupe; first-seen order preserved."""
+def test_flags_deduplicated_across_docs_first_seen_order() -> None:
+    """Flags repeated across docs in a card dedupe by code; first-seen order
+    preserved within the resulting category bucket. (chunk B: the legacy
+    ``unique_flags`` field was dropped; the same contract is now expressed
+    via ``flags.by_category``.)"""
     m = MerchantRow(business_name="Flaggy", owner_name="J", state="CA")
     repo = InMemoryMerchantRepository()
     repo.upsert(m)
@@ -113,7 +116,11 @@ def test_unique_flags_deduplicated_first_seen_order() -> None:
     ]
     cards = _build_attention_groups(docs, repo)
 
-    assert cards[0].unique_flags == ["[META] alpha", "[META] beta", "[META] gamma"]
+    # alpha/beta/gamma aren't registered codes — fall through the
+    # ``[META]`` prefix default into the tampering bucket. ``beta`` from
+    # doc 2 collapses against the first-seen one from doc 1.
+    bucket = cards[0].flags.by_category["tampering"]
+    assert [hf.code for hf in bucket] == ["alpha", "beta", "gamma"]
 
 
 def test_preserves_input_ordering_across_groups() -> None:
