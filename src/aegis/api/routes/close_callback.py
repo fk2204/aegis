@@ -7,8 +7,7 @@ without going through the operator dashboard. The four endpoints are:
   * ``GET  /api/close-callback/merchant/{close_lead_id}``     — read merchant
   * ``GET  /api/close-callback/deal/{close_lead_id}``         — read deal score
   * ``POST /api/close-callback/merchant/{close_lead_id}/upload`` — pull + parse Close attachments
-  * ``POST /api/close-callback/merchant/{close_lead_id}/sync``  — push the latest stored decision back
-    to Close
+  * ``POST /api/close-callback/merchant/{close_lead_id}/sync``  — push latest decision back to Close
 
 Each endpoint:
 
