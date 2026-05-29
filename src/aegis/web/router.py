@@ -103,6 +103,11 @@ from aegis.storage import (
     DocumentRepository,
     DocumentRow,
 )
+from aegis.web._attention_card import (
+    AttentionCard,
+    categorize_flags,
+    derive_fraud_band,
+)
 from aegis.web._flag_labels import humanize_audit_action, humanize_flag
 from aegis.web._pattern_cards import build_pattern_cards
 from aegis.web._slug import slugify
@@ -331,23 +336,32 @@ def _build_attention_groups(
     merchants_repo: MerchantRepository,
     *,
     max_groups: int = 8,
-) -> list[dict[str, Any]]:
+) -> list[AttentionCard]:
     """Group manual_review documents by merchant for the Today attention queue.
 
     Input is assumed most-recent-first (the list_documents contract).
-    Output preserves that ordering — the first group is the one whose
+    Output preserves that ordering — the first card is the one whose
     most recent document was uploaded most recently.
 
-    Each group surfaces:
+    Each ``AttentionCard`` surfaces:
       * merchant_id / merchant_label
-      * worst_fraud_score — max across the group's docs (operator triage signal)
+      * merchant_state / merchant_naics / requested_amount (chunk A new fields)
+      * worst_fraud_score — max across the merchant's docs in the queue
+      * fraud_band — clear/review/decline/unknown derived from worst score
+      * tier — reserved for chunks B/C (None in chunk A)
       * doc_count
-      * unique_flags — deduplicated union, first-seen order preserved
-      * documents — per-doc dicts (document_id, fraud_score, uploaded_at, flags),
-        most-recent first within the group
+      * unique_flags — flat deduplicated list of raw flag strings
+        (legacy field; the chunk-A index.html.j2 template still
+        consumes this. Chunk B replaces the chip loop with category-
+        grouped rendering off ``flags`` and drops this field.)
+      * flags — ``CategorizedFlags`` with decline_class lifted to the
+        top and the rest grouped by glossary category in display order
+      * documents — per-doc dicts (document_id, fraud_score,
+        uploaded_at, flags), most-recent first within the group
 
-    Documents with merchant_id=None bucket under a single "—" group so
-    they remain visible rather than being scattered.
+    Documents with merchant_id=None bucket under a single "—" card so
+    they stay visible rather than being scattered as multiple unlabeled
+    rows.
     """
     groups: dict[UUID | None, dict[str, Any]] = {}
 
@@ -357,14 +371,19 @@ def _build_attention_groups(
             if len(groups) >= max_groups:
                 continue
             label = "—"
+            merchant: MerchantRow | None = None
             if key is not None:
                 try:
-                    label = merchants_repo.get(key).business_name
+                    merchant = merchants_repo.get(key)
+                    label = merchant.business_name
                 except MerchantNotFoundError:
                     label = f"merchant {str(key)[:8]}"
             groups[key] = {
                 "merchant_id": str(key) if key is not None else None,
                 "merchant_label": label,
+                "merchant_state": merchant.state if merchant else None,
+                "merchant_naics": merchant.industry_naics if merchant else None,
+                "requested_amount": merchant.requested_amount if merchant else None,
                 "documents": [],
                 "_seen_flags": [],
             }
@@ -383,18 +402,29 @@ def _build_attention_groups(
             if f not in seen:
                 seen.append(f)
 
-    out: list[dict[str, Any]] = []
+    out: list[AttentionCard] = []
     for g in groups.values():
-        scores = [doc["fraud_score"] for doc in g["documents"] if doc["fraud_score"] is not None]
+        scores = [
+            doc["fraud_score"]
+            for doc in g["documents"]
+            if doc["fraud_score"] is not None
+        ]
+        worst = max(scores) if scores else None
         out.append(
-            {
-                "merchant_id": g["merchant_id"],
-                "merchant_label": g["merchant_label"],
-                "worst_fraud_score": max(scores) if scores else None,
-                "doc_count": len(g["documents"]),
-                "unique_flags": g["_seen_flags"],
-                "documents": g["documents"],
-            }
+            AttentionCard(
+                merchant_id=g["merchant_id"],
+                merchant_label=g["merchant_label"],
+                merchant_state=g["merchant_state"],
+                merchant_naics=g["merchant_naics"],
+                requested_amount=g["requested_amount"],
+                worst_fraud_score=worst,
+                fraud_band=derive_fraud_band(worst),
+                tier=None,
+                doc_count=len(g["documents"]),
+                documents=g["documents"],
+                unique_flags=g["_seen_flags"],
+                flags=categorize_flags(g["_seen_flags"]),
+            )
         )
     return out
 
