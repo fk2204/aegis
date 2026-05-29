@@ -145,15 +145,15 @@ def categorize_flags(raw_flags: list[str]) -> CategorizedFlags:
     # Apply display-order to the by_category dict so the template can
     # iterate the dict and get the right group order for free.
     ordered: dict[str, list[HumanFlag]] = {}
-    for cat in _CATEGORY_DISPLAY_ORDER:
-        if cat in raw_buckets:
-            ordered[cat] = raw_buckets[cat]
+    for known_cat in _CATEGORY_DISPLAY_ORDER:
+        if known_cat in raw_buckets:
+            ordered[known_cat] = raw_buckets[known_cat]
     # Defensive: any category outside the declared order (humanize_flag
     # always returns a known CategoryName, but a typo in a future code
     # path shouldn't drop flags silently) goes at the end.
-    for cat, flags in raw_buckets.items():
-        if cat not in ordered:
-            ordered[cat] = flags
+    for extra_cat, extra_flags in raw_buckets.items():
+        if extra_cat not in ordered:
+            ordered[extra_cat] = extra_flags
 
     return CategorizedFlags(decline_class=decline_class, by_category=ordered)
 
