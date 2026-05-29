@@ -1,8 +1,9 @@
 """Close → AEGIS callback router.
 
-A second Close webhook subscription points at ``/api/close-callback/*``
-to give Close-side workflows the ability to trigger AEGIS operations
-without going through the operator dashboard. The four endpoints are:
+A Close-side trigger (Workflow HTTP Request action, n8n step, or any
+operator-controlled caller) hits ``/api/close-callback/*`` to drive
+AEGIS operations without going through the operator dashboard. Four
+endpoints, all parameterized by ``close_lead_id``:
 
   * ``GET  /api/close-callback/merchant/{close_lead_id}``     — read merchant
   * ``GET  /api/close-callback/deal/{close_lead_id}``         — read deal score
@@ -11,22 +12,19 @@ without going through the operator dashboard. The four endpoints are:
 
 Each endpoint:
 
-  1. Validates the request's HMAC signature against
-     ``CLOSE_CALLBACK_HMAC_SECRET`` (the signature_key Close minted for
-     this subscription on creation). Mirrors ``/webhooks/close``.
-  2. Optionally validates a bearer ``Authorization`` header against
-     ``CLOSE_CALLBACK_TOKEN`` when that env var is set — defense in
-     depth that engages only if Close's webhook config supports custom
-     headers. Unset = HMAC-only.
-  3. Resolves ``close_lead_id`` → AEGIS ``merchant_id`` via the
-     existing ``find_by_close_lead_id`` lookup that ``/webhooks/close``
-     already uses.
-  4. Writes an audit row with ``actor="close_callback"`` carrying the
+  1. Validates ``Authorization: Bearer <CLOSE_CALLBACK_TOKEN>`` via
+     ``require_close_callback_bearer``. Same pattern as ``require_bearer``
+     for the operator API, but a separate env var so the Close-callback
+     surface and operator API key rotate independently. Unset token →
+     503 fail-closed via the boot-guard latch.
+  2. Resolves ``close_lead_id`` → AEGIS ``merchant_id`` via the same
+     ``find_by_close_lead_id`` lookup ``/webhooks/close`` uses.
+  3. Writes an audit row with ``actor="close_callback"`` carrying the
      endpoint, ``close_lead_id``, and client IP for forensic traceability.
-  5. Delegates to the same internal helpers the operator-facing surfaces
+  4. Delegates to the same internal helpers the operator-facing surfaces
      use — no business-logic duplication. The /sync endpoint specifically
      calls ``aegis.close.sync.push_decision_to_close`` which is the single
-     outbound write to ``api.close.com`` already covered by the
+     outbound write to ``api.close.com``, already covered by the
      ``test_outbound_hosts_restricted_to_allowlist`` invariant test.
 
 Rate limit: 60 requests per minute per client IP via an in-process
@@ -47,10 +45,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 
-from aegis.api.auth import (
-    verify_close_callback_bearer_if_configured,
-    verify_close_callback_signature,
-)
+from aegis.api.auth import require_close_callback_bearer
 from aegis.api.deps import (
     get_audit,
     get_close_client,
@@ -149,8 +144,7 @@ router = APIRouter(
     tags=["close-callback"],
     dependencies=[
         Depends(_rate_limit),
-        Depends(verify_close_callback_signature),
-        Depends(verify_close_callback_bearer_if_configured),
+        Depends(require_close_callback_bearer),
     ],
 )
 

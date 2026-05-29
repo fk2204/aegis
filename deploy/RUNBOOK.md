@@ -282,74 +282,64 @@ a new one (Close does not support in-place key regeneration).
    confirm the new subscription delivers (Close shows delivery
    attempts under the subscription detail page).
 
-### Set up the Close → AEGIS callback router secrets
+### Set up the Close → AEGIS callback router token
 
 The `/api/close-callback/*` endpoints (read merchant, read deal,
-trigger upload, trigger sync) authenticate Close-originated callbacks
-via HMAC + optional bearer. Same shape as `/webhooks/close` but with
-distinct secrets so the two subscriptions rotate independently. **Run
-these steps in your OWN terminal — never via the AEGIS agent's Bash
-tool. Plaintext tokens must not enter any chat transcript.**
+trigger upload, trigger sync) authenticate via a bearer token —
+same shape as `require_bearer` for the operator API but scoped to
+its own env var (`CLOSE_CALLBACK_TOKEN`) so the two surfaces rotate
+independently. **Run these steps in your OWN terminal — never via
+the AEGIS agent's Bash tool. The plaintext token must not enter
+any chat transcript.**
 
-1. **Verify the code is live on the box.** The router 503s on every
-   request until the HMAC secret is configured (boot-guard
-   fail-closed); that's expected.
-
-2. **Create the second Close webhook subscription** pointing at the
-   new endpoint base URL. From your terminal:
-   ```
-   curl -u "$CLOSE_API_KEY:" https://api.close.com/api/v1/webhook/ \
-     -H "Content-Type: application/json" \
-     -d '{
-       "url": "https://aegis.commerafunding.com/api/close-callback/<your-endpoint>",
-       "events": [{"object_type": "<close_object>", "action": "<close_action>"}]
-     }'
-   ```
-   Replace the URL fragment + events with whichever endpoint + Close
-   event(s) you're wiring. Capture the response's `signature_key`
-   value (hex string, shown ONCE). Treat it like any other production
-   credential — straight from the response into your password manager,
-   never into a terminal that's recording or screen-shared.
-
-3. **Paste the captured `signature_key` into the env file:**
-   ```
-   sudo nano /etc/aegis/aegis.env
-   # Set: CLOSE_CALLBACK_HMAC_SECRET=<the-hex-signature_key>
-   ```
-   Save, exit.
-
-4. **(Optional) Generate the bearer token** ONLY if Close's webhook
-   subscription supports custom HTTP headers (verify in the Close
-   admin UI before generating; without header support the bearer is
-   dead weight). In your terminal:
+1. **Generate the token in your terminal:**
    ```
    openssl rand -hex 32
    ```
-   Paste the output into both:
-   - `/etc/aegis/aegis.env` as `CLOSE_CALLBACK_TOKEN=<the-hex-token>`
-   - Close subscription's Custom Headers field as
-     `Authorization: Bearer <the-hex-token>`
+   The 64-hex-char output goes straight into your password manager.
 
-5. **Restart services:** `sudo systemctl restart aegis-web aegis-worker`.
+2. **Paste into the env file** on the box:
+   ```
+   sudo nano /etc/aegis/aegis.env
+   # Set: CLOSE_CALLBACK_TOKEN=<the-hex-token>
+   ```
+   Save, exit. The route 503s until this line is present (boot-guard
+   fail-closed).
 
-6. **Smoke-test from your terminal** by firing a known-good HMAC
-   request at the read-merchant endpoint. If the response is 200, the
-   wiring is live. If 401, recompute the HMAC; if 503, re-verify the
-   secret is set in env.
+3. **Restart services:**
+   ```
+   sudo systemctl restart aegis-web aegis-worker
+   ```
+   Verify both are `active` (`systemctl is-active aegis-web aegis-worker`).
 
-7. **Log the issuance** in the rotation log below.
+4. **Paste the same token into the Close-side trigger.** Whichever
+   Close mechanism you wire — Workflow HTTP Request action, Sequence
+   step, n8n flow — configure a custom header on the request:
+   ```
+   Authorization: Bearer <the-hex-token>
+   ```
+   If the Close mechanism you pick doesn't expose a way to set a
+   custom header, that mechanism won't work with this route — pick
+   one that does, or call the endpoints from a Close-external
+   orchestrator that supports headers.
 
-### Rotate the Close callback secrets
+5. **Verify the route is alive** without leaving your terminal:
+   ```
+   ssh aegis@aegis-ssh.commerafunding.com 'curl -sS -o /dev/null -w "%{http_code}\n" \
+     -H "Authorization: Bearer <the-hex-token>" \
+     http://127.0.0.1:5555/api/close-callback/merchant/lead_nope'
+   ```
+   - **404** → token validated, lookup miss as expected. ✓ live.
+   - **401** → token mismatch; re-check the env value.
+   - **503** → boot guard still firing; the restart didn't pick up the env change.
 
-- **HMAC secret:** same procedure as "Rotate the Close webhook secret"
-  above, scoped to the callback subscription. Delete the callback
-  subscription + recreate; update `CLOSE_CALLBACK_HMAC_SECRET`;
-  restart.
-- **Bearer token (optional):** generate a new value
-  (`openssl rand -hex 32` in your terminal), update
-  `CLOSE_CALLBACK_TOKEN` in `/etc/aegis/aegis.env`, update Close's
-  Custom Headers config to match, restart. The bearer can be rotated
-  without touching the HMAC subscription.
+6. **Log the issuance** in the rotation log below.
+
+### Rotate the Close callback token
+
+Generate a new value (`openssl rand -hex 32` in your terminal), update
+`CLOSE_CALLBACK_TOKEN` in `/etc/aegis/aegis.env`, update the
+Close-side trigger's `Authorization: Bearer` header to match, restart.
 
 ### Credential rotation log
 - 2026-05-11: Cloudflare API token cfut_wKgXNs... rotated after plaintext exposure in Claude Code session. Operator deleted token in Cloudflare dashboard.

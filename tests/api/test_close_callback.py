@@ -2,9 +2,8 @@
 
 Coverage focus:
 
-* Auth: HMAC required (mirrors /webhooks/close), bearer optional
-  (enforced only when CLOSE_CALLBACK_TOKEN is set).
-* Boot-guard fail-closed: unset HMAC secret -> every endpoint returns 503.
+* Auth: bearer required (constant-time compare against CLOSE_CALLBACK_TOKEN).
+* Boot-guard fail-closed: unset token -> every endpoint returns 503.
 * Per-endpoint happy paths for read merchant, read deal, upload trigger,
   sync trigger.
 * Audit: every request writes a close_callback.* row with actor="close_callback"
@@ -15,10 +14,7 @@ Coverage focus:
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
-import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -52,22 +48,13 @@ from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import InMemoryMerchantRepository
 from aegis.storage import DocumentRow, InMemoryDocumentRepository
 
-# Hex secret mirrors what Close returns from a subscription POST.
-_HMAC_SECRET_HEX = "deadbeef" * 8  # 64 hex chars
-_BEARER = "test-bearer-token-do-not-rotate"
+_BEARER = "test-close-callback-token-do-not-rotate"
 _LEAD_ID = "lead_close_callback_test"
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-def _sign(timestamp: str, body: bytes, secret_hex: str = _HMAC_SECRET_HEX) -> str:
-    secret = bytes.fromhex(secret_hex)
-    return hmac.new(
-        secret, timestamp.encode("utf-8") + body, hashlib.sha256
-    ).hexdigest()
 
 
 def _lead_payload(close_lead_id: str = _LEAD_ID) -> dict[str, Any]:
@@ -141,12 +128,13 @@ def merchant(repo: InMemoryMerchantRepository) -> MerchantRow:
 
 @pytest.fixture()
 def captured_patches() -> list[dict[str, Any]]:
-    """List the stub_close_client appends every PATCH body to.
+    """List the stub_close_client appends every PUT/PATCH body to.
 
-    The /sync endpoint test reads this to verify the PATCH body contains
-    exactly the five expected ``custom.{CLOSE_FIELD_IDS[...]}`` keys and
-    nothing else — the no-funder-in-payload invariant the operator wants
-    to see verified at the wire level, not just at the source level.
+    The /sync endpoint test reads this to verify the request body
+    contains exactly the five expected ``custom.{CLOSE_FIELD_IDS[...]}``
+    keys and nothing else — the no-funder-in-payload invariant the
+    operator wants to see verified at the wire level, not just at the
+    source level.
     """
     return []
 
@@ -157,7 +145,7 @@ def stub_close_client(
     captured_patches: list[dict[str, Any]],
 ) -> CloseClient:
     """Stub CloseClient returning the canned lead payload on GET and
-    capturing any PATCH body for later assertion."""
+    capturing any PUT/PATCH body for later assertion."""
     monkeypatch.setenv("CLOSE_API_KEY", "api_test")
     monkeypatch.setenv("CLOSE_API_BASE", "https://api.close.example")
     get_settings.cache_clear()
@@ -188,18 +176,17 @@ def _build_client(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    hmac_secret: str | None = _HMAC_SECRET_HEX,
-    bearer: str | None = None,
+    token: str | None = _BEARER,
 ) -> TestClient:
-    """Build the FastAPI TestClient with the requested secret config."""
-    if hmac_secret is None:
-        monkeypatch.delenv("CLOSE_CALLBACK_HMAC_SECRET", raising=False)
-    else:
-        monkeypatch.setenv("CLOSE_CALLBACK_HMAC_SECRET", hmac_secret)
-    if bearer is None:
+    """Build the FastAPI TestClient with the requested token config.
+
+    ``token=None`` -> CLOSE_CALLBACK_TOKEN is unset, exercising the
+    503 fail-closed boot-guard contract.
+    """
+    if token is None:
         monkeypatch.delenv("CLOSE_CALLBACK_TOKEN", raising=False)
     else:
-        monkeypatch.setenv("CLOSE_CALLBACK_TOKEN", bearer)
+        monkeypatch.setenv("CLOSE_CALLBACK_TOKEN", token)
     # Tests don't exercise the operator-API bearer surface; setting it
     # keeps the boot guard quiet.
     monkeypatch.setenv("API_BEARER_TOKEN", "op-token")
@@ -215,40 +202,20 @@ def _build_client(
     return TestClient(app)
 
 
-def _signed_request(
-    method: str,
-    path: str,
-    body: dict[str, Any] | None = None,
-    *,
-    secret_hex: str = _HMAC_SECRET_HEX,
-    bearer: str | None = None,
-    skew_seconds: int = 0,
-    omit_sig: bool = False,
-) -> tuple[bytes, dict[str, str]]:
-    """Compose HMAC-signed request body + headers.
-
-    A ``body=None`` argument signs over empty bytes — the server reads
-    the same empty body off a ``client.get(...)`` and re-derives the same
-    HMAC. Pass ``body={...}`` for POST flows; the caller is then
-    expected to send the returned ``raw`` bytes via ``content=raw``.
-    """
-    raw = b"" if body is None else json.dumps(body).encode("utf-8")
-    timestamp = str(int(time.time()) + skew_seconds)
-    headers: dict[str, str] = {"content-type": "application/json"}
-    if not omit_sig:
-        headers["close-sig-hash"] = _sign(timestamp, raw, secret_hex)
-        headers["close-sig-timestamp"] = timestamp
-    if bearer is not None:
-        headers["authorization"] = f"Bearer {bearer}"
-    return raw, headers
+def _auth_headers(token: str | None = _BEARER) -> dict[str, str]:
+    """Bearer auth headers. ``token=None`` returns no Authorization header
+    so the test can exercise the missing-header 401 path."""
+    if token is None:
+        return {}
+    return {"authorization": f"Bearer {token}"}
 
 
 # ---------------------------------------------------------------------------
-# Auth — HMAC required
+# Auth — bearer required
 # ---------------------------------------------------------------------------
 
 
-def test_hmac_secret_unset_returns_503(
+def test_token_unset_returns_503(
     monkeypatch: pytest.MonkeyPatch,
     repo: InMemoryMerchantRepository,
     docs: InMemoryDocumentRepository,
@@ -258,8 +225,8 @@ def test_hmac_secret_unset_returns_503(
     merchant: MerchantRow,
 ) -> None:
     """Fail-closed contract: route refuses to validate without a
-    configured secret (operator misconfiguration shouldn't read as a
-    key mismatch)."""
+    configured token (operator misconfiguration shouldn't read as
+    a key mismatch)."""
     client = _build_client(
         monkeypatch,
         repo=repo,
@@ -267,15 +234,17 @@ def test_hmac_secret_unset_returns_503(
         audit=audit,
         snapshot=snapshot,
         stub_close_client=stub_close_client,
-        hmac_secret=None,
+        token=None,
     )
-    _raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
-    resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
+    resp = client.get(
+        f"/api/close-callback/merchant/{_LEAD_ID}",
+        headers=_auth_headers(_BEARER),
+    )
     assert resp.status_code == 503
-    assert "CLOSE_CALLBACK_HMAC_SECRET" in resp.text
+    assert "CLOSE_CALLBACK_TOKEN" in resp.text
 
 
-def test_hmac_headers_missing_returns_401(
+def test_bearer_missing_returns_401(
     monkeypatch: pytest.MonkeyPatch,
     repo: InMemoryMerchantRepository,
     docs: InMemoryDocumentRepository,
@@ -296,7 +265,7 @@ def test_hmac_headers_missing_returns_401(
     assert resp.status_code == 401
 
 
-def test_hmac_mismatch_returns_401(
+def test_bearer_wrong_returns_401(
     monkeypatch: pytest.MonkeyPatch,
     repo: InMemoryMerchantRepository,
     docs: InMemoryDocumentRepository,
@@ -313,119 +282,14 @@ def test_hmac_mismatch_returns_401(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    _raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
-    headers["close-sig-hash"] = "0" * 64  # wrong sig
-    resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
-    assert resp.status_code == 401
-
-
-def test_hmac_stale_timestamp_returns_401(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: InMemoryMerchantRepository,
-    docs: InMemoryDocumentRepository,
-    audit: InMemoryAuditLog,
-    snapshot: InMemoryDecisionSnapshot,
-    stub_close_client: CloseClient,
-    merchant: MerchantRow,
-) -> None:
-    client = _build_client(
-        monkeypatch,
-        repo=repo,
-        docs=docs,
-        audit=audit,
-        snapshot=snapshot,
-        stub_close_client=stub_close_client,
-    )
-    _raw, headers = _signed_request(
-        "GET", f"/api/close-callback/merchant/{_LEAD_ID}", skew_seconds=-3600
-    )
-    resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
-    assert resp.status_code == 401
-
-
-# ---------------------------------------------------------------------------
-# Auth — bearer optional
-# ---------------------------------------------------------------------------
-
-
-def test_bearer_unset_skipped_hmac_alone_passes(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: InMemoryMerchantRepository,
-    docs: InMemoryDocumentRepository,
-    audit: InMemoryAuditLog,
-    snapshot: InMemoryDecisionSnapshot,
-    stub_close_client: CloseClient,
-    merchant: MerchantRow,
-) -> None:
-    """The optional-bearer design: HMAC alone is sufficient when
-    CLOSE_CALLBACK_TOKEN isn't configured."""
-    client = _build_client(
-        monkeypatch,
-        repo=repo,
-        docs=docs,
-        audit=audit,
-        snapshot=snapshot,
-        stub_close_client=stub_close_client,
-        bearer=None,
-    )
-    _raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
-    resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
-    assert resp.status_code == 200
-
-
-def test_bearer_configured_missing_returns_401(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: InMemoryMerchantRepository,
-    docs: InMemoryDocumentRepository,
-    audit: InMemoryAuditLog,
-    snapshot: InMemoryDecisionSnapshot,
-    stub_close_client: CloseClient,
-    merchant: MerchantRow,
-) -> None:
-    client = _build_client(
-        monkeypatch,
-        repo=repo,
-        docs=docs,
-        audit=audit,
-        snapshot=snapshot,
-        stub_close_client=stub_close_client,
-        bearer=_BEARER,
-    )
-    _raw, headers = _signed_request(
-        "GET", f"/api/close-callback/merchant/{_LEAD_ID}", bearer=None
-    )
-    resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
-    assert resp.status_code == 401
-
-
-def test_bearer_configured_wrong_returns_401(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: InMemoryMerchantRepository,
-    docs: InMemoryDocumentRepository,
-    audit: InMemoryAuditLog,
-    snapshot: InMemoryDecisionSnapshot,
-    stub_close_client: CloseClient,
-    merchant: MerchantRow,
-) -> None:
-    client = _build_client(
-        monkeypatch,
-        repo=repo,
-        docs=docs,
-        audit=audit,
-        snapshot=snapshot,
-        stub_close_client=stub_close_client,
-        bearer=_BEARER,
-    )
-    _raw, headers = _signed_request(
-        "GET",
+    resp = client.get(
         f"/api/close-callback/merchant/{_LEAD_ID}",
-        bearer="wrong-token",
+        headers=_auth_headers("wrong-token"),
     )
-    resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
     assert resp.status_code == 401
 
 
-def test_bearer_configured_correct_passes(
+def test_bearer_correct_passes(
     monkeypatch: pytest.MonkeyPatch,
     repo: InMemoryMerchantRepository,
     docs: InMemoryDocumentRepository,
@@ -441,12 +305,11 @@ def test_bearer_configured_correct_passes(
         audit=audit,
         snapshot=snapshot,
         stub_close_client=stub_close_client,
-        bearer=_BEARER,
     )
-    _raw, headers = _signed_request(
-        "GET", f"/api/close-callback/merchant/{_LEAD_ID}", bearer=_BEARER
+    resp = client.get(
+        f"/api/close-callback/merchant/{_LEAD_ID}",
+        headers=_auth_headers(),
     )
-    resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
     assert resp.status_code == 200
 
 
@@ -472,8 +335,10 @@ def test_read_merchant_returns_payload_and_audits(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    _raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
-    resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
+    resp = client.get(
+        f"/api/close-callback/merchant/{_LEAD_ID}",
+        headers=_auth_headers(),
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert body["merchant_id"] == str(merchant.id)
@@ -482,9 +347,7 @@ def test_read_merchant_returns_payload_and_audits(
     assert body["close_lead_id"] == _LEAD_ID
 
     # Audit row: actor=close_callback, action=close_callback.merchant.read.
-    rows = [
-        e for e in audit.entries if e["actor"] == "close_callback"
-    ]
+    rows = [e for e in audit.entries if e["actor"] == "close_callback"]
     assert any(
         r["action"] == "close_callback.merchant.read"
         and r["details"]["close_lead_id"] == _LEAD_ID
@@ -510,8 +373,10 @@ def test_read_deal_without_documents_returns_no_document(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    _raw, headers = _signed_request("GET", f"/api/close-callback/deal/{_LEAD_ID}")
-    resp = client.get(f"/api/close-callback/deal/{_LEAD_ID}", headers=headers)
+    resp = client.get(
+        f"/api/close-callback/deal/{_LEAD_ID}",
+        headers=_auth_headers(),
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert body["parse_status"] == "no_document"
@@ -536,21 +401,15 @@ def test_upload_triggers_orchestration_enqueue(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    raw, headers = _signed_request(
-        "POST", f"/api/close-callback/merchant/{_LEAD_ID}/upload", body={}
-    )
     resp = client.post(
         f"/api/close-callback/merchant/{_LEAD_ID}/upload",
-        content=raw,
-        headers=headers,
+        headers=_auth_headers(),
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["enqueued"] is True
 
     # Audit row records the enqueue.
-    actions = [
-        r["action"] for r in audit.entries if r["actor"] == "close_callback"
-    ]
+    actions = [r["action"] for r in audit.entries if r["actor"] == "close_callback"]
     assert "close_callback.upload.enqueued" in actions
 
 
@@ -565,14 +424,14 @@ def test_sync_with_decision_patches_exactly_five_close_custom_fields(
     merchant: MerchantRow,
 ) -> None:
     """Happy-path sync: seed a document + a stored decision, fire the
-    /sync endpoint, and confirm the wire-level PATCH body contains
+    /sync endpoint, and confirm the wire-level update body contains
     EXACTLY the five expected ``custom.{CLOSE_FIELD_IDS[...]}`` keys
     — four business fields (applicant_id, score, recommendation,
     ofac_status) plus aegis_last_synced. No funder-related keys.
 
     This is the assertion the operator asked for explicitly: prove at
     the outbound boundary that the sync touches only Close-managed
-    custom fields. Verifying via the captured PATCH body (not the
+    custom fields. Verifying via the captured request body (not the
     source code) means a future change that adds new keys to the
     handler also has to update this test.
     """
@@ -614,21 +473,17 @@ def test_sync_with_decision_patches_exactly_five_close_custom_fields(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    raw, headers = _signed_request(
-        "POST", f"/api/close-callback/merchant/{_LEAD_ID}/sync", body={}
-    )
     resp = client.post(
         f"/api/close-callback/merchant/{_LEAD_ID}/sync",
-        content=raw,
-        headers=headers,
+        headers=_auth_headers(),
     )
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["patched"] is True
 
-    # 4. Verify the wire-level PATCH body.
+    # 4. Verify the wire-level update body.
     assert len(captured_patches) == 1, (
-        f"expected exactly one PATCH; got {len(captured_patches)}"
+        f"expected exactly one PUT/PATCH; got {len(captured_patches)}"
     )
     patch_body = captured_patches[0]
 
@@ -640,7 +495,7 @@ def test_sync_with_decision_patches_exactly_five_close_custom_fields(
         f"custom.{CLOSE_FIELD_IDS['aegis_last_synced']}",
     }
     assert set(patch_body.keys()) == expected_keys, (
-        "PATCH body contained unexpected keys. Expected exactly the "
+        "Update body contained unexpected keys. Expected exactly the "
         "5 Close custom fields. Got: "
         f"{sorted(patch_body.keys())}"
     )
@@ -648,7 +503,7 @@ def test_sync_with_decision_patches_exactly_five_close_custom_fields(
     # 5. Defense: explicitly assert no funder-related key sneaks in.
     for key in patch_body:
         assert "funder" not in key.lower(), (
-            f"funder-related field in PATCH body: {key}"
+            f"funder-related field in update body: {key}"
         )
 
 
@@ -671,13 +526,9 @@ def test_sync_without_decision_returns_400(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    raw, headers = _signed_request(
-        "POST", f"/api/close-callback/merchant/{_LEAD_ID}/sync", body={}
-    )
     resp = client.post(
         f"/api/close-callback/merchant/{_LEAD_ID}/sync",
-        content=raw,
-        headers=headers,
+        headers=_auth_headers(),
     )
     assert resp.status_code == 400
 
@@ -705,8 +556,10 @@ def test_unknown_close_lead_id_returns_404(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    _raw, headers = _signed_request("GET", "/api/close-callback/merchant/lead_nope")
-    resp = client.get("/api/close-callback/merchant/lead_nope", headers=headers)
+    resp = client.get(
+        "/api/close-callback/merchant/lead_nope",
+        headers=_auth_headers(),
+    )
     assert resp.status_code == 404
 
 
@@ -733,18 +586,15 @@ def test_rate_limit_triggers_after_60_requests_per_window(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
+    headers = _auth_headers()
     last_status: int | None = None
     for _ in range(60):
-        _raw, headers = _signed_request(
-            "GET", f"/api/close-callback/merchant/{_LEAD_ID}"
-        )
         resp = client.get(
             f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers
         )
         last_status = resp.status_code
     assert last_status == 200, "first 60 requests should pass"
 
-    _raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
     overflow = client.get(
         f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers
     )
