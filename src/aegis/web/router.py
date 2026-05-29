@@ -28,7 +28,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Final, cast
 from uuid import UUID
 
 from fastapi import (
@@ -106,6 +106,7 @@ from aegis.storage import (
 from aegis.web._attention_card import (
     CATEGORY_LABELS,
     AttentionCard,
+    ReviewQueueCard,
     categorize_flags,
     derive_fraud_band,
 )
@@ -438,47 +439,122 @@ def _build_attention_groups(
     return out
 
 
+def _compute_merchant_tier(
+    merchant: MerchantRow,
+    docs: DocumentRepository,
+    ofac: OFACClient | None,
+) -> str | None:
+    """Run ``score_deal`` on a merchant and return the deal tier letter.
+
+    Shared by ``_enrich_attention_card_with_tier`` (Today, one call per
+    merchant card) and ``_build_review_queue_cards`` (Review Queue, one
+    call per merchant cached across the merchant's docs in the queue).
+
+    Falls back to ``None`` on any failure — orphaned merchant, no
+    analyzed docs yet, OFAC stale, score_deal raising on partial data,
+    or any other exception. Tier is decorative on both card surfaces; a
+    missing letter must never block the queue render. Unforeseen
+    failures log a structured WARN so the silence isn't total.
+    """
+    try:
+        items = _collect_analyzed_for_merchant(docs, merchant.id, bundle=None)
+        if not items:
+            return None
+        score_input = _score_input_multi_month(merchant, items)
+        score_result = score_deal(score_input, ofac=ofac)
+    except (MerchantNotFoundError, OFACStaleError, ValueError):
+        return None
+    except Exception as exc:
+        from aegis.logger import get_logger
+
+        get_logger(__name__).warning(
+            "card.tier_lookup_failed merchant_id=%s err=%s",
+            merchant.id,
+            exc.__class__.__name__,
+        )
+        return None
+    return score_result.tier
+
+
 def _enrich_attention_card_with_tier(
     card: AttentionCard,
     merchants_repo: MerchantRepository,
     docs: DocumentRepository,
     ofac: OFACClient | None,
 ) -> AttentionCard:
-    """Compute the deal tier for the worst-scoring document in the card.
+    """Decorate a Today attention card with its merchant's deal tier.
 
-    Looks up the merchant, collects analyzed documents, builds a score
-    input, and runs ``score_deal`` to get the tier letter. Returns the
-    card with tier set; falls back to ``tier=None`` on any failure
-    (orphaned merchant, no analyzed docs yet, OFAC stale, score_deal
-    raising on partial data). Tier is decorative on the attention card —
-    a missing letter must never block the queue render.
+    Returns a new card via ``dataclasses.replace`` — ``AttentionCard``
+    is frozen. Falls back to leaving ``tier=None`` on any failure (see
+    ``_compute_merchant_tier``).
     """
     if card.merchant_id is None:
         return card
     try:
         merchant_uuid = UUID(card.merchant_id)
         merchant = merchants_repo.get(merchant_uuid)
-        items = _collect_analyzed_for_merchant(docs, merchant_uuid, bundle=None)
-        if not items:
-            return card
-        score_input = _score_input_multi_month(merchant, items)
-        score_result = score_deal(score_input, ofac=ofac)
-    except (MerchantNotFoundError, OFACStaleError, ValueError):
+    except (MerchantNotFoundError, ValueError):
         return card
-    except Exception as exc:
-        # Broad catch is intentional — tier is decorative on the
-        # attention card and must never block the queue render. Any
-        # unforeseen scoring failure (partial analysis, network blip,
-        # logic bug) falls back to tier=None with a WARN log.
-        from aegis.logger import get_logger
+    tier = _compute_merchant_tier(merchant, docs, ofac)
+    if tier is None:
+        return card
+    return replace(card, tier=tier)
 
-        get_logger(__name__).warning(
-            "attention_card.tier_lookup_failed merchant_id=%s err=%s",
-            card.merchant_id,
-            exc.__class__.__name__,
+
+def _build_review_queue_cards(
+    documents: list[DocumentRow],
+    merchants_repo: MerchantRepository,
+    docs: DocumentRepository,
+    ofac: OFACClient | None,
+) -> list[ReviewQueueCard]:
+    """Build one ``ReviewQueueCard`` per document in the manual_review queue.
+
+    Tier is the deal-level score from running ``score_deal`` against
+    the merchant's full analyzed-document set — it's identical across
+    every card from a single merchant. The cache keyed off
+    ``merchant_id`` here ensures a queue with 10 docs from one merchant
+    runs score_deal exactly once for that merchant.
+    """
+    tier_cache: dict[UUID, str | None] = {}
+    cards: list[ReviewQueueCard] = []
+
+    for d in documents:
+        merchant: MerchantRow | None = None
+        merchant_id_str: str | None = None
+        merchant_label = "—"
+        tier: str | None = None
+        if d.merchant_id is not None:
+            merchant_id_str = str(d.merchant_id)
+            try:
+                merchant = merchants_repo.get(d.merchant_id)
+                merchant_label = merchant.business_name
+            except MerchantNotFoundError:
+                merchant_label = f"merchant {str(d.merchant_id)[:8]} (deleted)"
+            if merchant is not None:
+                if d.merchant_id not in tier_cache:
+                    tier_cache[d.merchant_id] = _compute_merchant_tier(
+                        merchant, docs, ofac
+                    )
+                tier = tier_cache[d.merchant_id]
+
+        raw_flags = list(d.all_flags) if d.all_flags else []
+        cards.append(
+            ReviewQueueCard(
+                document_id=str(d.id),
+                filename=d.original_filename,
+                uploaded_at=d.uploaded_at.strftime("%Y-%m-%d %H:%M"),
+                fraud_score=d.fraud_score,
+                fraud_band=derive_fraud_band(d.fraud_score),
+                merchant_id=merchant_id_str,
+                merchant_label=merchant_label,
+                merchant_state=merchant.state if merchant else None,
+                merchant_naics=merchant.industry_naics if merchant else None,
+                requested_amount=merchant.requested_amount if merchant else None,
+                tier=tier,
+                flags=categorize_flags(raw_flags),
+            )
         )
-        return card
-    return replace(card, tier=score_result.tier)
+    return cards
 
 
 def _format_activity_time(value: object) -> str:
@@ -759,34 +835,38 @@ async def list_merchants(
     )
 
 
+_REVIEW_QUEUE_DISPLAY_CAP: Final[int] = 200
+
+
 @router.get("/review", response_class=HTMLResponse)
 async def review_queue(
     request: Request,
     docs: Annotated[DocumentRepository, Depends(get_repository)],
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
 ) -> HTMLResponse:
-    """Manual-review queue — every document with parse_status=manual_review."""
-    review_docs = docs.list_documents(parse_status="manual_review", limit=200)
-    rows: list[dict[str, Any]] = []
-    for doc in review_docs:
-        merchant_label = "—"
-        if doc.merchant_id is not None:
-            try:
-                m = merchants.get(doc.merchant_id)
-                merchant_label = m.business_name
-            except MerchantNotFoundError:
-                merchant_label = f"merchant {str(doc.merchant_id)[:8]} (deleted)"
-        rows.append(
-            {
-                "document_id": str(doc.id),
-                "merchant_label": merchant_label,
-                "uploaded_at": doc.uploaded_at.strftime("%Y-%m-%d %H:%M"),
-                "fraud_score": doc.fraud_score if doc.fraud_score is not None else "—",
-                "flags": doc.all_flags,
-                "filename": doc.original_filename,
-            }
-        )
-    return templates.TemplateResponse(request, "review.html.j2", {"rows": rows})
+    """Manual-review queue — one card per document with parse_status=manual_review.
+
+    Per-document cards share the Today card vocabulary
+    (``_humanized_chip.html.j2`` + categorized flags + merchant header)
+    so the two surfaces read the same way. The queue is hard-capped at
+    ``_REVIEW_QUEUE_DISPLAY_CAP`` documents in the response; if the cap
+    is hit the template surfaces a banner so the operator knows the
+    queue is deeper than what they see — no silent truncation.
+    """
+    review_docs = docs.list_documents(
+        parse_status="manual_review", limit=_REVIEW_QUEUE_DISPLAY_CAP
+    )
+    cards = _build_review_queue_cards(review_docs, merchants, docs, ofac)
+    return templates.TemplateResponse(
+        request,
+        "review.html.j2",
+        {
+            "cards": cards,
+            "category_labels": CATEGORY_LABELS,
+            "queue_capacity": _REVIEW_QUEUE_DISPLAY_CAP,
+        },
+    )
 
 
 @router.get("/deals", response_class=HTMLResponse)

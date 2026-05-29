@@ -112,6 +112,47 @@ class AttentionCard:
     flags: CategorizedFlags
 
 
+@dataclass(frozen=True)
+class ReviewQueueCard:
+    """One card per document in the manual_review queue.
+
+    Where ``AttentionCard`` aggregates flags across a merchant's docs
+    (the Today triage view), ``ReviewQueueCard`` is per-document — each
+    card is one task the operator works through. Reuses the same
+    merchant header context + categorized flags vocabulary as
+    ``AttentionCard`` so the two surfaces share one visual language.
+
+    ``tier`` is the deal-level tier from running ``score_deal`` on the
+    merchant's full document set. It's identical across every
+    ReviewQueueCard belonging to a single merchant — the chunk-C
+    builder caches the value per merchant so multiple docs from one
+    merchant only pay the scoring cost once.
+
+    Per-doc fields:
+      * ``document_id`` — UUID string, used for the "open document" link
+      * ``filename`` — original PDF filename, surfaced so the operator
+        can match against their own naming
+      * ``uploaded_at`` — pre-formatted ``YYYY-MM-DD HH:MM``
+      * ``fraud_score`` / ``fraud_band`` — this document's score, not
+        the merchant's aggregate
+    """
+
+    document_id: str
+    filename: str
+    uploaded_at: str
+    fraud_score: int | None
+    fraud_band: str
+
+    merchant_id: str | None
+    merchant_label: str
+    merchant_state: str | None
+    merchant_naics: str | None
+    requested_amount: Decimal | None
+    tier: str | None
+
+    flags: CategorizedFlags
+
+
 def categorize_flags(raw_flags: list[str]) -> CategorizedFlags:
     """Categorize and deduplicate a list of raw flag strings.
 
@@ -172,6 +213,7 @@ __all__ = [
     "CATEGORY_LABELS",
     "AttentionCard",
     "CategorizedFlags",
+    "ReviewQueueCard",
     "categorize_flags",
     "derive_fraud_band",
 ]
