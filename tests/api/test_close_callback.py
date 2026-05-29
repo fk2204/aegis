@@ -85,12 +85,23 @@ def _lead_payload(close_lead_id: str = _LEAD_ID) -> dict[str, Any]:
 @pytest.fixture(autouse=True)
 def _reset_rate_limit_and_warnings() -> Iterator[None]:
     """Wipe rate-limit counters + warn latches before every test so
-    cases don't interact through module-level state."""
+    cases don't interact through module-level state.
+
+    Also force-clears the ``get_settings`` lru_cache at teardown:
+    ``_build_client`` mutates env vars via monkeypatch + cache_clear,
+    monkeypatch reverts the env at end-of-test but the cached
+    ``Settings`` object still holds the test values. Without the
+    teardown cache_clear, the next test (often outside this file —
+    e.g. ``test_routes.py``) inherits stale settings whose
+    ``api_bearer_token`` no longer matches conftest's ``test-token-not-real``,
+    producing spurious 401s. See ``.claude/rules/testing.md``.
+    """
     reset_rate_limiter_for_tests()
     _reset_close_callback_warning_latch()
     yield
     reset_rate_limiter_for_tests()
     _reset_close_callback_warning_latch()
+    get_settings.cache_clear()
 
 
 @pytest.fixture()
@@ -211,8 +222,14 @@ def _signed_request(
     skew_seconds: int = 0,
     omit_sig: bool = False,
 ) -> tuple[bytes, dict[str, str]]:
-    """Compose HMAC-signed request body + headers."""
-    raw = json.dumps(body or {}).encode("utf-8")
+    """Compose HMAC-signed request body + headers.
+
+    A ``body=None`` argument signs over empty bytes — the server reads
+    the same empty body off a ``client.get(...)`` and re-derives the same
+    HMAC. Pass ``body={...}`` for POST flows; the caller is then
+    expected to send the returned ``raw`` bytes via ``content=raw``.
+    """
+    raw = b"" if body is None else json.dumps(body).encode("utf-8")
     timestamp = str(int(time.time()) + skew_seconds)
     headers: dict[str, str] = {"content-type": "application/json"}
     if not omit_sig:
