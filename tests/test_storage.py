@@ -413,3 +413,282 @@ def test_pattern_analysis_dto_default_schema_version_is_one() -> None:
 
     dto = PatternAnalysisDTO()
     assert dto.schema_version == 1
+
+
+# ---------------------------------------------------------------------------
+# pattern_analysis end-to-end (stage 2 chunk 2)
+#
+# Chunk 2 wires _build_analysis to populate AnalysisRow.pattern_analysis from
+# the parser's PipelineResult.patterns. These tests exercise the full
+# persist_parse_result -> get_analysis loop on the in-memory repository
+# (the only repo with a working test path; Supabase persistence has its
+# own UNIQUE constraint on document_id and is exercised at the wire level
+# by the chunk-1 round-trip tests above).
+#
+# Re-parse note: AEGIS doesn't re-parse in place — the SHA256 dedup at
+# upload time blocks re-enqueue of an already-parsed document (see
+# upload.py docstring), and the only re-parse mechanism is
+# scripts/_reparse_wipe.py which deletes the analyses row before the
+# fresh upload re-runs the parser. The in-memory repository's persist
+# semantics (dict overwrite at the document_id key) are tested directly
+# below as the load-bearing contract for the legacy-row migration
+# scenario the operator called out.
+# ---------------------------------------------------------------------------
+
+
+def _patternful_pipeline_result(
+    *, tx_ids: list[UUID] | None = None
+) -> tuple[PipelineResult, UUID, UUID]:
+    """Construct a PipelineResult with a populated PatternAnalysis.
+
+    Returns ``(result, wash_pair_tx_id, mca_debit_tx_id)`` so the caller
+    can assert source_id round-trip against transactions stored in the
+    same row. Pattern shapes mirror what the real detectors emit:
+    wash_deposit_suspected with two source rows (deposit + matching
+    withdrawal), mca_stacking with one debit row.
+    """
+    from aegis.parser.patterns import (
+        CounterpartySignals,
+        McaPosition,
+        Pattern,
+        PatternAnalysis,
+    )
+
+    if tx_ids and len(tx_ids) >= 3:
+        deposit_id, withdrawal_id, mca_id = tx_ids[0], tx_ids[1], tx_ids[2]
+    else:
+        deposit_id, withdrawal_id, mca_id = uuid4(), uuid4(), uuid4()
+
+    summary = StatementSummary(
+        beginning_balance=Decimal("1000.00"),
+        ending_balance=Decimal("2000.00"),
+        deposit_total=Decimal("15000.00"),
+        withdrawal_total=Decimal("14000.00"),
+        period_start=date(2026, 1, 1),
+        period_end=date(2026, 1, 31),
+    )
+    classified = [
+        ClassifiedTransaction(
+            id=deposit_id,
+            posted_date=date(2026, 1, 10),
+            description="ACH DEPOSIT",
+            amount=Decimal("5000.00"),
+            running_balance=Decimal("6000.00"),
+            source_page=1,
+            source_line=12,
+            category="deposit",
+            classification_confidence=95,
+        ),
+        ClassifiedTransaction(
+            id=withdrawal_id,
+            posted_date=date(2026, 1, 12),
+            description="ACH WITHDRAWAL",
+            amount=Decimal("-4980.00"),
+            running_balance=Decimal("1020.00"),
+            source_page=1,
+            source_line=18,
+            category="transfer",
+            classification_confidence=92,
+        ),
+        ClassifiedTransaction(
+            id=mca_id,
+            posted_date=date(2026, 1, 20),
+            description="ONDECK DAILY DEBIT",
+            amount=Decimal("-250.00"),
+            running_balance=Decimal("770.00"),
+            source_page=2,
+            source_line=4,
+            category="mca_debit",
+            classification_confidence=98,
+        ),
+    ]
+    aggregates = Aggregates(
+        avg_daily_balance=_sourced_money("1500.00", [deposit_id]),
+        true_revenue=_sourced_money("5000.00", [deposit_id]),
+        num_nsf=_sourced_int(0),
+        days_negative=_sourced_int(0),
+        debt_to_revenue=Decimal("0.05"),
+        mca_daily_total=_sourced_money("250.00", [mca_id]),
+    )
+    patterns = PatternAnalysis(
+        patterns=[
+            Pattern(
+                code="wash_deposit_suspected",
+                severity=35,
+                detail="1 round-trip deposit/withdrawal pair within 5 days",
+                source_ids=[deposit_id, withdrawal_id],
+            ),
+            Pattern(
+                code="mca_stacking",
+                severity=30,
+                detail="1 MCA position(s) detected",
+                source_ids=[mca_id],
+            ),
+        ],
+        mca_positions=[
+            McaPosition(
+                funder_label="OnDeck",
+                daily_equivalent=Decimal("250.00"),
+                occurrences=1,
+                source_ids=[mca_id],
+            ),
+        ],
+        has_kiting=False,
+        paydown_suspected=False,
+        counterparty_signals=CounterpartySignals(),
+        payroll_present=False,
+        acceleration_clause_triggered=False,
+        unauthorized_withdrawal_dispute=False,
+        ai_generated_score=0,
+    )
+
+    extraction_stub: Any = type(
+        "Stub",
+        (),
+        {"statement": ExtractedStatement(summary=summary, transactions=classified)},
+    )()
+    result = PipelineResult(
+        parse_status="manual_review",
+        metadata=MetadataAnalysis(
+            pdf_creation_date=None,
+            pdf_modification_date=None,
+            pdf_producer=None,
+            pdf_creator=None,
+            pdf_author=None,
+            page_count=2,
+            file_size_bytes=10240,
+            eof_markers=1,
+            page_sizes=["LETTER"],
+            flags=[],
+            fraud_score=0,
+        ),
+        extraction=extraction_stub,
+        validation=ValidationResult(passed=True),
+        classified=classified,
+        patterns=patterns,
+        aggregates=aggregates,
+        fraud_score=65,
+        fraud_score_breakdown={
+            "metadata_score": 0,
+            "math_score": 0,
+            "patterns_score": 65,
+        },
+        all_flags=[
+            "[PATTERN] wash_deposit_suspected: 1 round-trip pair",
+            "[PATTERN] mca_stacking: 1 MCA position(s) detected",
+        ],
+    )
+    return result, deposit_id, withdrawal_id
+
+
+def test_persist_parse_result_populates_pattern_analysis_with_correct_codes_and_source_ids() -> None:
+    """End-to-end: parse output flows through persist_parse_result and
+    lands as a populated PatternAnalysisDTO on AnalysisRow. Asserts
+    pattern codes, severities, and source_ids match the transactions
+    stored in the same row.
+
+    This is the load-bearing assertion for stage 2 chunk 2 — once this
+    passes on prod, the Today / Review Queue card builders (chunk 3)
+    can look up per-flag transactions via the stored DTO without
+    re-running analyze_patterns()."""
+    repo = InMemoryDocumentRepository()
+    row = repo.create_document(
+        file_hash="e" * 64, byte_size=4096, original_filename="stmt.pdf"
+    )
+
+    result, deposit_id, withdrawal_id = _patternful_pipeline_result()
+    repo.persist_parse_result(row.id, result=result)
+
+    analysis = repo.get_analysis(row.id)
+    assert analysis is not None
+    assert analysis.pattern_analysis is not None
+
+    pa = analysis.pattern_analysis
+    assert pa.schema_version == 1
+
+    # Codes + severities arrive intact.
+    codes = {p.code: p for p in pa.patterns}
+    assert set(codes) == {"wash_deposit_suspected", "mca_stacking"}
+    assert codes["wash_deposit_suspected"].severity == 35
+    assert codes["mca_stacking"].severity == 30
+
+    # source_ids match the transactions stored in this row — the
+    # card-builder lookup that chunk 3 plumbs depends on this.
+    wash = codes["wash_deposit_suspected"]
+    assert set(wash.source_ids) == {deposit_id, withdrawal_id}
+
+    # And those source_ids resolve to transactions in the same row.
+    txs = repo.list_transactions(row.id)
+    tx_ids = {t.id for t in txs}
+    assert set(wash.source_ids) <= tx_ids
+    assert set(codes["mca_stacking"].source_ids) <= tx_ids
+
+    # McaPosition Decimal survives the DTO conversion.
+    assert len(pa.mca_positions) == 1
+    assert pa.mca_positions[0].funder_label == "OnDeck"
+    assert pa.mca_positions[0].daily_equivalent == Decimal("250.00")
+
+
+def test_persist_parse_result_leaves_pattern_analysis_none_when_patterns_absent() -> None:
+    """Defensive guard: PipelineResult.patterns=None (early extraction
+    failure, metadata-only flow) flows through as
+    AnalysisRow.pattern_analysis=None. Round-trip via _analysis_to_db_row
+    + _db_row_to_analysis preserves None (chunk 1 already covers that;
+    this test confirms the write path doesn't accidentally synthesize
+    an empty populated DTO instead)."""
+    repo = InMemoryDocumentRepository()
+    row = repo.create_document(
+        file_hash="f" * 64, byte_size=4096, original_filename="empty.pdf"
+    )
+
+    # The existing _make_pipeline_result helper builds a PipelineResult
+    # with patterns=None — reused here so the no-patterns shape stays
+    # in one place.
+    repo.persist_parse_result(row.id, result=_make_pipeline_result())
+
+    analysis = repo.get_analysis(row.id)
+    assert analysis is not None
+    assert analysis.pattern_analysis is None
+
+
+def test_persist_parse_result_overwrites_legacy_null_pattern_analysis() -> None:
+    """The operator's explicit concern: a document whose existing
+    AnalysisRow has pattern_analysis=None (every row written before
+    chunk 2 ships) must populate the column on the next persist call.
+    No "first parse populates, re-parse leaves NULL" bug.
+
+    Mechanism: the in-memory repo overwrites self._analyses[document_id]
+    via dict assignment. Prod (Supabase) doesn't support in-place
+    re-parse — the only path that re-creates an analyses row is the
+    wipe-then-upload flow in scripts/_reparse_wipe.py, which DELETEs
+    the legacy row first, so the subsequent INSERT lands with a fully
+    populated DTO from the start. This test exercises the in-memory
+    overwrite contract directly because Supabase's UNIQUE(document_id)
+    blocks the in-place case at the constraint level (it's not a code
+    bug, it's a schema invariant)."""
+    repo = InMemoryDocumentRepository()
+    row = repo.create_document(
+        file_hash="9" * 64, byte_size=4096, original_filename="legacy.pdf"
+    )
+
+    # Stuff a legacy-shaped AnalysisRow directly into the repo: same
+    # document_id, pattern_analysis=None (mimics a row written before
+    # migration 032 / chunk 2 landed).
+    legacy = _build_dummy_analysis_row(pattern_analysis_dto=None)
+    legacy_with_doc_id = legacy.model_copy(update={"document_id": row.id})
+    repo._analyses[row.id] = legacy_with_doc_id
+    assert repo.get_analysis(row.id) is not None
+    assert repo.get_analysis(row.id).pattern_analysis is None  # baseline
+
+    # Now persist a fresh result with populated patterns. The in-memory
+    # repo's dict assignment must replace the legacy row entirely; the
+    # new row has the DTO.
+    result, _dep, _wd = _patternful_pipeline_result()
+    repo.persist_parse_result(row.id, result=result)
+
+    fresh = repo.get_analysis(row.id)
+    assert fresh is not None
+    assert fresh.pattern_analysis is not None
+    assert fresh.pattern_analysis.schema_version == 1
+    codes = {p.code for p in fresh.pattern_analysis.patterns}
+    assert codes == {"wash_deposit_suspected", "mca_stacking"}

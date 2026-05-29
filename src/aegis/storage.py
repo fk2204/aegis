@@ -31,7 +31,11 @@ from aegis.parser.models import (
     ClassifiedTransaction,
     StatementSummary,
 )
-from aegis.parser.patterns import PatternAnalysis, PatternAnalysisDTO
+from aegis.parser.patterns import (
+    PatternAnalysis,
+    PatternAnalysisDTO,
+    pattern_analysis_to_dto,
+)
 from aegis.parser.pipeline import PipelineResult
 
 _log = get_logger(__name__)
@@ -603,6 +607,16 @@ def _build_analysis(
     mca_positions = _count_mca_positions(classified)
     returned_ach = sum(1 for t in classified if t.category == "nsf_fee")
 
+    # Stage 2 chunk 2: persist the parser's PatternAnalysis when present
+    # so card builders can read source_ids per chip without re-running
+    # analyze_patterns() at render time. ``patterns is None`` (early
+    # extraction failures, metadata-only flow) flows through as
+    # ``pattern_analysis=None`` — the storage round-trip handles that
+    # gracefully (chunk 1's test_analysis_row_with_null_pattern_analysis_round_trips).
+    pattern_analysis_dto: PatternAnalysisDTO | None = (
+        pattern_analysis_to_dto(patterns) if patterns is not None else None
+    )
+
     return AnalysisRow(
         id=uuid4(),
         document_id=document_id,
@@ -631,6 +645,7 @@ def _build_analysis(
         monthly_breakdown=monthly_breakdown or [],
         bank_name=summary.bank_name,
         account_last4=summary.account_last4,
+        pattern_analysis=pattern_analysis_dto,
     )
 
 
