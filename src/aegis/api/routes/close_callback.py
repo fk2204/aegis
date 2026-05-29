@@ -7,7 +7,8 @@ without going through the operator dashboard. The four endpoints are:
   * ``GET  /api/close-callback/merchant/{close_lead_id}``     — read merchant
   * ``GET  /api/close-callback/deal/{close_lead_id}``         — read deal score
   * ``POST /api/close-callback/merchant/{close_lead_id}/upload`` — pull + parse Close attachments
-  * ``POST /api/close-callback/merchant/{close_lead_id}/sync``  — push the latest stored decision back to Close
+  * ``POST /api/close-callback/merchant/{close_lead_id}/sync``  — push the latest stored decision back
+    to Close
 
 Each endpoint:
 
@@ -69,6 +70,7 @@ from aegis.close.sync import (
 )
 from aegis.compliance.snapshot import DecisionSnapshot
 from aegis.logger import get_logger
+from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import MerchantRepository
 from aegis.scoring.ofac import OFACStaleError
 from aegis.storage import DocumentRepository
@@ -202,7 +204,7 @@ class CallbackSyncResponse(BaseModel):
 
 def _resolve_or_404(
     close_lead_id: str, merchants_repo: MerchantRepository
-) -> Any:
+) -> MerchantRow:
     """Look up a merchant by Close lead id; 404 if no such mapping.
 
     Mirrors the resolution used by ``/webhooks/close``. Generic 404
@@ -513,4 +515,4 @@ async def callback_trigger_sync(
     )
 
 
-__all__ = ["router", "reset_rate_limiter_for_tests"]
+__all__ = ["reset_rate_limiter_for_tests", "router"]

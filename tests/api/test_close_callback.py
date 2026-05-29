@@ -235,7 +235,7 @@ def test_hmac_secret_unset_returns_503(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001 — seeds the repo
+    merchant: MerchantRow,
 ) -> None:
     """Fail-closed contract: route refuses to validate without a
     configured secret (operator misconfiguration shouldn't read as a
@@ -249,7 +249,7 @@ def test_hmac_secret_unset_returns_503(
         stub_close_client=stub_close_client,
         hmac_secret=None,
     )
-    raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
+    _raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
     resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
     assert resp.status_code == 503
     assert "CLOSE_CALLBACK_HMAC_SECRET" in resp.text
@@ -262,7 +262,7 @@ def test_hmac_headers_missing_returns_401(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001
+    merchant: MerchantRow,
 ) -> None:
     client = _build_client(
         monkeypatch,
@@ -283,7 +283,7 @@ def test_hmac_mismatch_returns_401(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001
+    merchant: MerchantRow,
 ) -> None:
     client = _build_client(
         monkeypatch,
@@ -293,7 +293,7 @@ def test_hmac_mismatch_returns_401(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
+    _raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
     headers["close-sig-hash"] = "0" * 64  # wrong sig
     resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
     assert resp.status_code == 401
@@ -306,7 +306,7 @@ def test_hmac_stale_timestamp_returns_401(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001
+    merchant: MerchantRow,
 ) -> None:
     client = _build_client(
         monkeypatch,
@@ -316,7 +316,7 @@ def test_hmac_stale_timestamp_returns_401(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    raw, headers = _signed_request(
+    _raw, headers = _signed_request(
         "GET", f"/api/close-callback/merchant/{_LEAD_ID}", skew_seconds=-3600
     )
     resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
@@ -335,7 +335,7 @@ def test_bearer_unset_skipped_hmac_alone_passes(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001
+    merchant: MerchantRow,
 ) -> None:
     """The optional-bearer design: HMAC alone is sufficient when
     CLOSE_CALLBACK_TOKEN isn't configured."""
@@ -348,7 +348,7 @@ def test_bearer_unset_skipped_hmac_alone_passes(
         stub_close_client=stub_close_client,
         bearer=None,
     )
-    raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
+    _raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
     resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
     assert resp.status_code == 200
 
@@ -360,7 +360,7 @@ def test_bearer_configured_missing_returns_401(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001
+    merchant: MerchantRow,
 ) -> None:
     client = _build_client(
         monkeypatch,
@@ -371,7 +371,7 @@ def test_bearer_configured_missing_returns_401(
         stub_close_client=stub_close_client,
         bearer=_BEARER,
     )
-    raw, headers = _signed_request(
+    _raw, headers = _signed_request(
         "GET", f"/api/close-callback/merchant/{_LEAD_ID}", bearer=None
     )
     resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
@@ -385,7 +385,7 @@ def test_bearer_configured_wrong_returns_401(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001
+    merchant: MerchantRow,
 ) -> None:
     client = _build_client(
         monkeypatch,
@@ -396,7 +396,7 @@ def test_bearer_configured_wrong_returns_401(
         stub_close_client=stub_close_client,
         bearer=_BEARER,
     )
-    raw, headers = _signed_request(
+    _raw, headers = _signed_request(
         "GET",
         f"/api/close-callback/merchant/{_LEAD_ID}",
         bearer="wrong-token",
@@ -412,7 +412,7 @@ def test_bearer_configured_correct_passes(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001
+    merchant: MerchantRow,
 ) -> None:
     client = _build_client(
         monkeypatch,
@@ -423,7 +423,7 @@ def test_bearer_configured_correct_passes(
         stub_close_client=stub_close_client,
         bearer=_BEARER,
     )
-    raw, headers = _signed_request(
+    _raw, headers = _signed_request(
         "GET", f"/api/close-callback/merchant/{_LEAD_ID}", bearer=_BEARER
     )
     resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
@@ -452,7 +452,7 @@ def test_read_merchant_returns_payload_and_audits(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
+    _raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
     resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
@@ -480,7 +480,7 @@ def test_read_deal_without_documents_returns_no_document(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001 — seeded for the lookup
+    merchant: MerchantRow,
 ) -> None:
     client = _build_client(
         monkeypatch,
@@ -490,7 +490,7 @@ def test_read_deal_without_documents_returns_no_document(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    raw, headers = _signed_request("GET", f"/api/close-callback/deal/{_LEAD_ID}")
+    _raw, headers = _signed_request("GET", f"/api/close-callback/deal/{_LEAD_ID}")
     resp = client.get(f"/api/close-callback/deal/{_LEAD_ID}", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
@@ -506,7 +506,7 @@ def test_upload_triggers_orchestration_enqueue(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001
+    merchant: MerchantRow,
 ) -> None:
     client = _build_client(
         monkeypatch,
@@ -639,7 +639,7 @@ def test_sync_without_decision_returns_400(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001
+    merchant: MerchantRow,
 ) -> None:
     """Sync requires a stored decision. Without one, surface as 400 not
     500 — the caller asked for something we can't fulfill."""
@@ -685,7 +685,7 @@ def test_unknown_close_lead_id_returns_404(
         snapshot=snapshot,
         stub_close_client=stub_close_client,
     )
-    raw, headers = _signed_request("GET", "/api/close-callback/merchant/lead_nope")
+    _raw, headers = _signed_request("GET", "/api/close-callback/merchant/lead_nope")
     resp = client.get("/api/close-callback/merchant/lead_nope", headers=headers)
     assert resp.status_code == 404
 
@@ -702,7 +702,7 @@ def test_rate_limit_triggers_after_60_requests_per_window(
     audit: InMemoryAuditLog,
     snapshot: InMemoryDecisionSnapshot,
     stub_close_client: CloseClient,
-    merchant: MerchantRow,  # noqa: ARG001
+    merchant: MerchantRow,
 ) -> None:
     """61st request from the same IP within 60s -> 429."""
     client = _build_client(
@@ -715,7 +715,7 @@ def test_rate_limit_triggers_after_60_requests_per_window(
     )
     last_status: int | None = None
     for _ in range(60):
-        raw, headers = _signed_request(
+        _raw, headers = _signed_request(
             "GET", f"/api/close-callback/merchant/{_LEAD_ID}"
         )
         resp = client.get(
@@ -724,7 +724,7 @@ def test_rate_limit_triggers_after_60_requests_per_window(
         last_status = resp.status_code
     assert last_status == 200, "first 60 requests should pass"
 
-    raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
+    _raw, headers = _signed_request("GET", f"/api/close-callback/merchant/{_LEAD_ID}")
     overflow = client.get(
         f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers
     )
