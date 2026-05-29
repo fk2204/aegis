@@ -92,17 +92,11 @@ class AttentionCard:
     and C rewrite the Today and Review Queue templates to consume this
     shape directly.
 
-    The ``unique_flags`` and dict-shaped fields keep the legacy chunk-A
-    template working without modification. Once chunk B replaces the
-    chip loop with category-grouped rendering, ``unique_flags`` can be
-    dropped — it's only a transitional duplicate of
-    ``flags.decline_class + flags.by_category.values()`` as raw strings.
-
-    ``tier`` is reserved for the redesign but not wired in chunk A —
-    deriving tier requires a per-merchant score_deal call which is more
-    expensive than the queue should pay on every render. Chunks B / C
-    can wire it from a cheaper source (latest decision snapshot, or
-    cached score) if the value is worth the lookup.
+    ``tier`` is the deal tier (A/B/C/D/F) from running ``score_deal``
+    on the merchant's analyzed documents. It falls back to ``None``
+    when the merchant has no analyzable documents, when OFAC is stale,
+    or on any scoring exception — the redesign header degrades to "no
+    tier" rather than crashing the queue.
     """
 
     merchant_id: str | None
@@ -115,8 +109,7 @@ class AttentionCard:
     tier: str | None
     doc_count: int
     documents: list[dict[str, Any]]
-    unique_flags: list[str]      # legacy back-compat for chunk A
-    flags: CategorizedFlags      # new structured form
+    flags: CategorizedFlags
 
 
 def categorize_flags(raw_flags: list[str]) -> CategorizedFlags:

@@ -65,36 +65,67 @@
     {% else %}
       <div class="attention-cards">
         {% for g in attention %}
-          <article class="attention-card">
+          <article class="attention-card band-{{ g.fraud_band }}">
             <header class="card-head">
               <div class="card-title">
-                <a href="/ui/review">{{ g.merchant_label }}</a>
-                <span class="card-sub">{{ g.doc_count }} document{{ '' if g.doc_count == 1 else 's' }} flagged</span>
+                {% if g.merchant_id %}<a href="/ui/merchants/{{ g.merchant_id }}">{{ g.merchant_label }}</a>{% else %}<span class="card-title-text">{{ g.merchant_label }}</span>{% endif %}
+                <span class="card-sub">
+                  {% if g.merchant_state %}{{ g.merchant_state }}{% endif %}{% if g.merchant_naics %} · {{ g.merchant_naics }}{% endif %}{% if g.requested_amount %} · Requested ${{ g.requested_amount }}{% endif %}
+                </span>
               </div>
-              <div class="card-score {% if g.worst_fraud_score is number and g.worst_fraud_score >= 65 %}bad{% elif g.worst_fraud_score is number and g.worst_fraud_score >= 35 %}warn{% else %}calm{% endif %}">
-                {% if g.worst_fraud_score is number %}{{ g.worst_fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
-                <span class="card-score-label">worst fraud</span>
+              <div class="card-meta">
+                <div class="card-score {% if g.fraud_band == 'decline' %}bad{% elif g.fraud_band == 'review' %}warn{% elif g.fraud_band == 'clear' %}calm{% endif %}">
+                  {% if g.worst_fraud_score is number %}{{ g.worst_fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
+                  <span class="card-score-label">worst fraud</span>
+                </div>
+                {% if g.tier %}
+                  <span class="card-tier tier-{{ g.tier|lower }}" title="Deal tier from score_deal on worst-scoring document">{{ g.tier }}<span class="card-tier-label">tier</span></span>
+                {% endif %}
               </div>
             </header>
 
-            {% if g.unique_flags %}
-              <div class="card-flags">
-                {% for f in g.unique_flags %}{% set hf = f | humanize_flag %}<span class="chip {{ hf.chip_class }}" data-flag-code="{{ hf.code }}" title="{{ hf.code }}">{{ hf.title }}{% if hf.detail %} <span class="chip-detail">· {{ hf.detail }}</span>{% endif %}</span>{% endfor %}
-              </div>
-            {% endif %}
+            {# Decline-class signals row — ALWAYS present so workers see
+               at a glance whether the card has dealbreakers. Empty state
+               renders muted ("(none)") to read as quiet confirmation, not
+               as missing data. #}
+            <div class="card-decline-row {% if g.flags.decline_class %}is-active{% else %}is-empty{% endif %}">
+              {% if g.flags.decline_class %}
+                <div class="card-section-head card-section-head-decline">Decline-class · {{ g.flags.decline_class|length }}</div>
+                <div class="card-flag-list">
+                  {% for hf in g.flags.decline_class %}{% include "_humanized_chip.html.j2" %}{% endfor %}
+                </div>
+              {% else %}
+                <div class="card-section-head card-section-head-empty">Decline-class · <span class="card-section-empty-text">(none)</span></div>
+              {% endif %}
+            </div>
 
-            <ul class="card-docs">
-              {% for d in g.documents %}
-                <li class="card-doc">
-                  <span class="doc-id">doc · {{ d.document_id[:8] }}</span>
-                  <span class="doc-score {% if d.fraud_score is number and d.fraud_score >= 65 %}bad{% elif d.fraud_score is number and d.fraud_score >= 35 %}warn{% else %}calm{% endif %}">
-                    {% if d.fraud_score is number %}{{ d.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
-                  </span>
-                  <span class="doc-uploaded">{{ d.uploaded_at }}</span>
-                  <a class="doc-review" href="/ui/review">review ↗</a>
-                </li>
-              {% endfor %}
-            </ul>
+            {# Category groups in fixed display order — only non-empty
+               render. Each group gets its glossary label as a small-caps
+               heading. #}
+            {% for category_name, category_flags in g.flags.by_category.items() %}
+              <div class="card-category">
+                <div class="card-section-head">{{ category_labels.get(category_name, category_name) }}</div>
+                <div class="card-flag-list">
+                  {% for hf in category_flags %}{% include "_humanized_chip.html.j2" %}{% endfor %}
+                </div>
+              </div>
+            {% endfor %}
+
+            <div class="card-docs-section">
+              <div class="card-section-head">Documents · {{ g.doc_count }}</div>
+              <ul class="card-docs">
+                {% for d in g.documents %}
+                  <li class="card-doc">
+                    <span class="doc-id">doc · {{ d.document_id[:8] }}</span>
+                    <span class="doc-score {% if d.fraud_score is number and d.fraud_score >= 65 %}bad{% elif d.fraud_score is number and d.fraud_score >= 35 %}warn{% elif d.fraud_score is number %}calm{% endif %}">
+                      {% if d.fraud_score is number %}{{ d.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
+                    </span>
+                    <span class="doc-uploaded">{{ d.uploaded_at }}</span>
+                    <a class="doc-review" href="/ui/documents/{{ d.document_id }}">open document ↗</a>
+                  </li>
+                {% endfor %}
+              </ul>
+            </div>
           </article>
         {% endfor %}
       </div>

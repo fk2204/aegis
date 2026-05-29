@@ -24,7 +24,7 @@ from __future__ import annotations
 import io
 import urllib.parse
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -104,6 +104,7 @@ from aegis.storage import (
     DocumentRow,
 )
 from aegis.web._attention_card import (
+    CATEGORY_LABELS,
     AttentionCard,
     categorize_flags,
     derive_fraud_band,
@@ -220,6 +221,7 @@ async def index(
     docs: Annotated[DocumentRepository, Depends(get_repository)],
     merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
 ) -> HTMLResponse:
     """Today dashboard — live KPIs sourced from Supabase / in-memory repos.
 
@@ -262,6 +264,13 @@ async def index(
 
     attention_docs = docs.list_documents(parse_status="manual_review", limit=40)
     attention = _build_attention_groups(attention_docs, merchants_repo, max_groups=8)
+    # Decorate each card with its deal tier — runs score_deal per
+    # merchant. Capped at 8 cards so the cost stays bounded; failures
+    # leave tier=None so the queue still renders.
+    attention = [
+        _enrich_attention_card_with_tier(card, merchants_repo, docs, ofac)
+        for card in attention
+    ]
 
     submitted_count = sum(
         1 for r in recent_activity_rows if r.get("action") == "deal.submit_to_funders"
@@ -294,6 +303,7 @@ async def index(
             "error_count": error,
             "funnel_rows": funnel_rows,
             "attention": attention,
+            "category_labels": CATEGORY_LABELS,
             "recent_activity": recent_activity,
         },
     )
@@ -422,11 +432,53 @@ def _build_attention_groups(
                 tier=None,
                 doc_count=len(g["documents"]),
                 documents=g["documents"],
-                unique_flags=g["_seen_flags"],
                 flags=categorize_flags(g["_seen_flags"]),
             )
         )
     return out
+
+
+def _enrich_attention_card_with_tier(
+    card: AttentionCard,
+    merchants_repo: MerchantRepository,
+    docs: DocumentRepository,
+    ofac: OFACClient | None,
+) -> AttentionCard:
+    """Compute the deal tier for the worst-scoring document in the card.
+
+    Looks up the merchant, collects analyzed documents, builds a score
+    input, and runs ``score_deal`` to get the tier letter. Returns the
+    card with tier set; falls back to ``tier=None`` on any failure
+    (orphaned merchant, no analyzed docs yet, OFAC stale, score_deal
+    raising on partial data). Tier is decorative on the attention card —
+    a missing letter must never block the queue render.
+    """
+    if card.merchant_id is None:
+        return card
+    try:
+        merchant_uuid = UUID(card.merchant_id)
+        merchant = merchants_repo.get(merchant_uuid)
+        items = _collect_analyzed_for_merchant(docs, merchant_uuid, bundle=None)
+        if not items:
+            return card
+        score_input = _score_input_multi_month(merchant, items)
+        score_result = score_deal(score_input, ofac=ofac)
+    except (MerchantNotFoundError, OFACStaleError, ValueError):
+        return card
+    except Exception as exc:
+        # Broad catch is intentional — tier is decorative on the
+        # attention card and must never block the queue render. Any
+        # unforeseen scoring failure (partial analysis, network blip,
+        # logic bug) falls back to tier=None with a WARN log.
+        from aegis.logger import get_logger
+
+        get_logger(__name__).warning(
+            "attention_card.tier_lookup_failed merchant_id=%s err=%s",
+            card.merchant_id,
+            exc.__class__.__name__,
+        )
+        return card
+    return replace(card, tier=score_result.tier)
 
 
 def _format_activity_time(value: object) -> str:

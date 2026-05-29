@@ -272,9 +272,13 @@ def test_index_attention_groups_same_merchant_into_one_card(
 
     # Merchant name appears once in a card title — not four times as separate rows.
     # Loose check: there is exactly one .attention-card per unique merchant.
-    assert html.count('class="attention-card"') == 1
-    # The card surfaces a document count.
-    assert "documents flagged" in html
+    # The chunk-B redesign adds a ``band-{fraud_band}`` modifier to the
+    # class, so the match needs the prefix rather than the bare class.
+    assert html.count('class="attention-card band-') == 1
+    # The card surfaces a document count via the chunk-B "Documents · N"
+    # heading (the earlier "N documents flagged" sub-line was replaced by
+    # state / NAICS / requested-amount context on the merchant header).
+    assert "Documents · 4" in html
     # All four doc-id stubs appear in the embedded sub-row list.
     assert html.count('class="card-doc"') == 4
 

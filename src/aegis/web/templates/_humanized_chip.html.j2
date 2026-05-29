@@ -1,0 +1,17 @@
+{# Single humanized chip — shared by the Today and Review Queue cards.
+
+   Renders one ``HumanFlag`` as a chip carrying:
+     * the human title + brief detail as visible text,
+     * the raw flag code in ``data-flag-code`` so workers can grep
+       devtools when something looks wrong,
+     * the raw code repeated in ``title`` so hovering surfaces the
+       machine identifier.
+
+   Severity band drives the chip color via ``hf.chip_class`` (set by
+   ``aegis.web._flag_labels``): decline -> ``bad``, material -> ``warn``,
+   look_closer -> ``info``, context -> bare ``chip``.
+
+   Inputs:
+     - hf: HumanFlag (in scope from the calling for-loop)
+#}
+<span class="chip {{ hf.chip_class }}" data-flag-code="{{ hf.code }}" title="{{ hf.code }}">{{ hf.title }}{% if hf.detail %} <span class="chip-detail">· {{ hf.detail }}</span>{% endif %}</span>
