@@ -296,3 +296,95 @@ def test_panel_renders_nothing_for_code_without_evidence_and_without_explanation
     rendered = env.get_template("_evidence_panel.html.j2").render(card=card)
 
     assert "<details>" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Stage 3 — Copy-rows button injection
+#
+# The button is purely additive: gated on source_transactions so the
+# explanation-only panels (recent_account_opening, payroll_absent)
+# never get a button for rows that don't exist. JS wiring lives in
+# static/evidence_copy.js — these tests only assert the DOM is present
+# in the right places.
+# ---------------------------------------------------------------------------
+
+
+def test_copy_button_renders_on_flat_evidence_panel(env: Environment) -> None:
+    """A card with source_transactions using the flat fallback must
+    include the copy-rows button."""
+    txn = _txn(amount="-150.00", posted_date=date(2026, 5, 11), description="NSF FEE")
+    card = _make_card("nsf_clustering_short", [txn])
+
+    rendered = env.get_template("_evidence_panel.html.j2").render(card=card)
+
+    assert 'class="evidence-copy-btn"' in rendered
+    assert 'data-flag-code="nsf_clustering_short"' in rendered
+    assert "Copy rows" in rendered
+
+
+def test_copy_button_renders_on_custom_wash_deposit_panel(env: Environment) -> None:
+    """Custom-shape panels (wash_deposit etc.) get the button too —
+    JS finds tables anywhere inside the enclosing <details>, multi-table
+    layouts copy cleanly."""
+    d1 = _txn(amount="12400.00", posted_date=date(2026, 5, 3))
+    w1 = _txn(amount="-12350.00", posted_date=date(2026, 5, 7))
+    card = _make_card("wash_deposit_suspected", [d1, w1])
+
+    rendered = env.get_template("_evidence_panel.html.j2").render(card=card)
+
+    assert 'class="evidence-copy-btn"' in rendered
+    assert 'data-flag-code="wash_deposit_suspected"' in rendered
+
+
+def test_copy_button_omitted_on_recent_account_opening_explanation(
+    env: Environment,
+) -> None:
+    """Explanation-only panels carry no rows to copy. Gating on
+    source_transactions keeps the button out of these panels so workers
+    don't click something that produces empty clipboard output."""
+    card = _make_card("recent_account_opening", [])
+
+    # Pass analysis=None — the explanation template's
+    # `analysis is defined and analysis` guard takes the no-analysis
+    # fallback branch, no stub needed.
+    rendered = env.get_template("_evidence_panel.html.j2").render(
+        card=card, analysis=None
+    )
+
+    # Explanation panel renders (it's in _explanation_codes) but no
+    # copy button — gated on source_transactions which is empty.
+    assert "<details>" in rendered
+    assert "evidence-copy-btn" not in rendered
+
+
+def test_copy_button_omitted_on_payroll_absent_explanation(
+    env: Environment,
+) -> None:
+    """Symmetric guard for payroll_absent — the other explanation-only code."""
+    card = _make_card("payroll_absent", [])
+
+    rendered = env.get_template("_evidence_panel.html.j2").render(
+        card=card, analysis=None
+    )
+
+    assert "<details>" in rendered
+    assert "evidence-copy-btn" not in rendered
+
+
+def test_copy_button_is_inside_details_wrapper(env: Environment) -> None:
+    """The button must sit inside the enclosing <details> so the JS's
+    .closest('details') lookup finds the right wrapper. Catches a
+    placement regression that would scope the button to the wrong panel
+    (or to nothing)."""
+    txn = _txn(amount="-150.00", posted_date=date(2026, 5, 11), description="NSF FEE")
+    card = _make_card("nsf_clustering_short", [txn])
+
+    rendered = env.get_template("_evidence_panel.html.j2").render(card=card)
+
+    # Find the button's offset and the closing </details>; button must
+    # appear before the closing tag of the enclosing <details>.
+    btn_idx = rendered.find('class="evidence-copy-btn"')
+    close_idx = rendered.rfind("</details>")
+    assert btn_idx != -1
+    assert close_idx != -1
+    assert btn_idx < close_idx, "copy button must sit inside the <details>"

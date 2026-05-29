@@ -370,6 +370,40 @@
   display: inline-flex;
 }
 
+/* Evidence-copy button — sits at the bottom-right of each <details>
+ * evidence panel. Captures every <table class="ledger"> in its
+ * enclosing <details> and writes the rows as tab-separated text to
+ * the clipboard (see static/evidence_copy.js). Workers paste into
+ * Sheets / Close notes / emails / bank-portal searches.
+ *
+ * Visually low-weight — the value is the function, not the affordance.
+ * Only renders when the panel has actual transaction rows (no button
+ * on the explanation-only panels for recent_account_opening and
+ * payroll_absent). */
+.dossier-page .evidence-copy-row {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+.dossier-page .evidence-copy-btn {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.dossier-page .evidence-copy-btn:hover {
+  border-color: color-mix(in oklch, var(--accent) 40%, var(--rule));
+  color: var(--accent);
+}
+.dossier-page .evidence-copy-btn.evidence-copy-flash {
+  border-color: var(--approve);
+  color: var(--approve);
+}
+
 /* tier chip — same letter convention as merchant_detail */
 .dossier-page .tier-chip {
   display: inline-block;
