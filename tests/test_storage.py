@@ -581,7 +581,7 @@ def _patternful_pipeline_result(
     return result, deposit_id, withdrawal_id
 
 
-def test_persist_parse_result_populates_pattern_analysis_with_correct_codes_and_source_ids() -> None:
+def test_persist_parse_result_populates_pattern_analysis_with_codes_and_source_ids() -> None:
     """End-to-end: parse output flows through persist_parse_result and
     lands as a populated PatternAnalysisDTO on AnalysisRow. Asserts
     pattern codes, severities, and source_ids match the transactions
