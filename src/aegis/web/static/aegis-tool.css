@@ -251,35 +251,11 @@
 .dossier-page table.queue tbody td.flags .chip {
   margin: 2px 4px 2px 0;
 }
-.dossier-page table.queue tbody td.flags details.flags-more,
-.dossier-page table.queue tbody td.flags details.flags-more > .flags-more-extras {
-  display: inline;
-}
-.dossier-page table.queue tbody td.flags details.flags-more > summary {
-  display: inline-block;
-  cursor: pointer;
-  list-style: none;
-  margin-left: 6px;
-  padding: 1px 6px;
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  color: var(--ink-3);
-  border: 1px dotted var(--ink-3);
-  border-radius: 2px;
-  user-select: none;
-}
-.dossier-page table.queue tbody td.flags details.flags-more > summary:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-.dossier-page table.queue tbody td.flags details.flags-more > summary::-webkit-details-marker { display: none; }
-.dossier-page table.queue tbody td.flags details.flags-more[open] > summary::after {
-  content: " ▾";
-}
-.dossier-page table.queue tbody td.flags details.flags-more:not([open]) > summary::after {
-  content: " ▸";
-}
+/* The chunk-1 .flags-more details/summary expander for the review
+ * queue table was retired in chunk C of the redesign — the queue now
+ * uses category-grouped flag chips inside attention cards, so the
+ * +N more truncation pattern is no longer needed. Selectors removed
+ * to keep the stylesheet honest. */
 .dossier-page details.reasons-more,
 .dossier-page details.reasons-more > .reasons-more-extras {
   display: inline;
@@ -564,6 +540,22 @@
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--rule);
+}
+
+/* Per-doc footer row on a ReviewQueueCard — the per-doc card has a
+ * single embedded "doc" sub-row instead of the Today card's documents
+ * list. Layout: doc-id, filename (flex-1 so it claims slack space),
+ * uploaded timestamp, open link. */
+.dossier-page .attention-card .card-doc.card-doc-review {
+  grid-template-columns: minmax(120px, auto) minmax(160px, 1fr) auto auto;
+}
+.dossier-page .attention-card .card-doc .doc-filename {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dossier-page .attention-card .card-docs {
   list-style: none;

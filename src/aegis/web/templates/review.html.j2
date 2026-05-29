@@ -6,7 +6,10 @@
 <header class="deck">
   <h1>Review<em> · manual queue</em></h1>
   <div class="meta">
-    {{ rows|length }} document{{ '' if rows|length == 1 else 's' }} &nbsp;·&nbsp; parse_status = manual_review
+    {{ cards|length }} document{{ '' if cards|length == 1 else 's' }} &nbsp;·&nbsp; parse_status = manual_review
+    {% if cards|length >= queue_capacity %}
+      &nbsp;·&nbsp;<span style="color:var(--decline)">at display cap ({{ queue_capacity }}) — drain before reviewing further</span>
+    {% endif %}
   </div>
   <div class="actions">
     <a class="btn primary" href="/ui/upload">+ Re-upload</a>
@@ -17,52 +20,74 @@
 {% block body %}
 <section class="body cols-1">
   <div>
-    <header class="sect-head">
-      <h2>Documents in manual review</h2>
-      <div class="rule"></div>
-      <div class="meta">n = {{ rows|length }} &nbsp;·&nbsp; all rows scored ≥ 65</div>
-    </header>
-
-    {% if not rows %}
+    {% if not cards %}
       <div class="empty">No documents in manual-review state<span class="copy">Pipeline is clean.</span></div>
     {% else %}
-      <table class="queue">
-        <thead>
-          <tr>
-            <th>Uploaded</th>
-            <th>Merchant</th>
-            <th>File</th>
-            <th class="num">Fraud</th>
-            <th>Flags</th>
-            <th class="act"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for r in rows %}
-            <tr class="no-click">
-              <td class="mono-cell">{{ r.uploaded_at }}</td>
-              <td class="merchant">{{ r.merchant_label }}</td>
-              <td class="mono-cell">{{ r.filename }}</td>
-              <td class="score {% if r.fraud_score is number and r.fraud_score >= 65 %}bad{% elif r.fraud_score is number and r.fraud_score >= 35 %}warn{% elif r.fraud_score is number %}calm{% endif %}">
-                {% if r.fraud_score is number %}{{ r.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
-              </td>
-              <td class="flags">
-                {% if r.flags %}
-                  {% for f in r.flags[:3] %}{% set hf = f | humanize_flag %}<span class="chip {{ hf.chip_class }}" data-flag-code="{{ hf.code }}" title="{{ hf.code }}">{{ hf.title }}{% if hf.detail %} <span class="chip-detail">· {{ hf.detail }}</span>{% endif %}</span>{% endfor %}
-                  {% if r.flags|length > 3 %}
-                    <details class="flags-more">
-                      <summary>+{{ r.flags|length - 3 }} more</summary><span class="flags-more-extras">{% for f in r.flags[3:] %}{% set hf = f | humanize_flag %}<span class="chip {{ hf.chip_class }}" data-flag-code="{{ hf.code }}" title="{{ hf.code }}">{{ hf.title }}{% if hf.detail %} <span class="chip-detail">· {{ hf.detail }}</span>{% endif %}</span>{% endfor %}</span>
-                    </details>
-                  {% endif %}
-                {% else %}
-                  —
+      <div class="attention-cards">
+        {% for c in cards %}
+          <article class="attention-card band-{{ c.fraud_band }}">
+            <header class="card-head">
+              <div class="card-title">
+                {% if c.merchant_id %}<a href="/ui/merchants/{{ c.merchant_id }}">{{ c.merchant_label }}</a>{% else %}<span class="card-title-text">{{ c.merchant_label }}</span>{% endif %}
+                <span class="card-sub">
+                  {% if c.merchant_state %}{{ c.merchant_state }}{% endif %}{% if c.merchant_naics %} · {{ c.merchant_naics }}{% endif %}{% if c.requested_amount %} · Requested ${{ c.requested_amount }}{% endif %}
+                </span>
+              </div>
+              <div class="card-meta">
+                <div class="card-score {% if c.fraud_band == 'decline' %}bad{% elif c.fraud_band == 'review' %}warn{% elif c.fraud_band == 'clear' %}calm{% endif %}">
+                  {% if c.fraud_score is number %}{{ c.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
+                  <span class="card-score-label">fraud</span>
+                </div>
+                {% if c.tier %}
+                  <span class="card-tier tier-{{ c.tier|lower }}" title="Deal tier from score_deal on the merchant's analyzed documents">{{ c.tier }}<span class="card-tier-label">tier</span></span>
                 {% endif %}
-              </td>
-              <td class="act"><a href="/ui/upload">re-upload ↗</a></td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+              </div>
+            </header>
+
+            {# Decline-class signals row — ALWAYS present so workers see
+               at a glance whether the document carries a dealbreaker.
+               Empty state renders muted "(none)" — quiet confirmation
+               rather than missing data. #}
+            <div class="card-decline-row {% if c.flags.decline_class %}is-active{% else %}is-empty{% endif %}">
+              {% if c.flags.decline_class %}
+                <div class="card-section-head card-section-head-decline">Decline-class · {{ c.flags.decline_class|length }}</div>
+                <div class="card-flag-list">
+                  {% for hf in c.flags.decline_class %}{% include "_humanized_chip.html.j2" %}{% endfor %}
+                </div>
+              {% else %}
+                <div class="card-section-head card-section-head-empty">Decline-class · <span class="card-section-empty-text">(none)</span></div>
+              {% endif %}
+            </div>
+
+            {# Category groups in fixed display order — only non-empty
+               categories render. #}
+            {% for category_name, category_flags in c.flags.by_category.items() %}
+              <div class="card-category">
+                <div class="card-section-head">{{ category_labels.get(category_name, category_name) }}</div>
+                <div class="card-flag-list">
+                  {% for hf in category_flags %}{% include "_humanized_chip.html.j2" %}{% endfor %}
+                </div>
+              </div>
+            {% endfor %}
+
+            {# Document footer — one row, action link drills into the
+               per-document detail page. Filename surfaced so the
+               operator can recognize the upload against their own
+               naming. #}
+            <div class="card-docs-section">
+              <div class="card-section-head">Document</div>
+              <ul class="card-docs">
+                <li class="card-doc card-doc-review">
+                  <span class="doc-id">doc · {{ c.document_id[:8] }}</span>
+                  <span class="doc-filename">{{ c.filename }}</span>
+                  <span class="doc-uploaded">{{ c.uploaded_at }}</span>
+                  <a class="doc-review" href="/ui/documents/{{ c.document_id }}">open document ↗</a>
+                </li>
+              </ul>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
     {% endif %}
   </div>
 </section>
