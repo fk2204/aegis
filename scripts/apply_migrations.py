@@ -244,6 +244,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM operators "
         "WHERE email='filip@commerafunding.com'"
     ),
+    "032_analyses_pattern_analysis.sql": (
+        # pattern_analysis is the column added by 032. Probing on the
+        # column itself rather than the GIN index because Supabase's
+        # information_schema view doesn't always surface indexes
+        # consistently across role contexts; column presence is the
+        # load-bearing signal that the migration body ran.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='analyses' "
+        "AND column_name='pattern_analysis'"
+    ),
 }
 
 
