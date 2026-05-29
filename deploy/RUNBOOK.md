@@ -177,8 +177,17 @@ SELECT pg_terminate_backend(<pid>);
 
 1. Create `migrations/NNN_short_name.sql` where NNN is the next integer (one greater than the highest existing prefix).
 2. Add a probe entry to `scripts/apply_migrations.py` `MIGRATION_PROBES` (a single SELECT that returns a row iff the migration has been applied — usually a `pg_tables` / `information_schema.columns` check).
-3. Run `make migrate TARGET=dev DRY_RUN=1` to preview.
-4. Run `make migrate TARGET=dev`, then the test suite, then promote to staging/prod.
+3. **Write post-apply verification checks** under `scripts/db_checks/migration-NNN-<aspect>.sql` — one file per assertion (column shape, index presence, schema_migrations row, audit_log row). Each file declares `EXPECT_ROWS: 1` so a missing row surfaces as a failed check rather than silent pass. See `scripts/db_checks/migration-032-*.sql` for the canonical four-file template.
+4. Run `make migrate TARGET=dev DRY_RUN=1` to preview.
+5. Run `make migrate TARGET=dev`, then the test suite, then promote to staging/prod.
+6. **After every apply**, run the verification checks:
+   ```bash
+   uv run python scripts/db_verify.py --target prod --check migration-NNN-column
+   uv run python scripts/db_verify.py --target prod --check migration-NNN-index           # if the migration added an index
+   uv run python scripts/db_verify.py --target prod --check migration-NNN-schema-migrations
+   uv run python scripts/db_verify.py --target prod --check migration-NNN-audit-log
+   ```
+   Each check exits non-zero if `EXPECT_ROWS: 1` is not satisfied. All four must pass before moving on to dependent work.
 
 The `tests/test_apply_migrations.py::test_migration_probes_cover_every_real_migration` test fails CI if step (2) is forgotten.
 
