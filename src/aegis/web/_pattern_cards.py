@@ -162,6 +162,75 @@ PATTERN_COPY: Final[dict[str, PatternCardCopy]] = {
             "plausible; W-2 claims without a payroll trace is a red flag."
         ),
     ),
+    "unauthorized_withdrawal_dispute": PatternCardCopy(
+        title="Unauthorized Withdrawal Dispute",
+        description=(
+            "A credit row with reversal/dispute keywords ('reversal', "
+            "'unauthorized', 'ach return credit') pairs with a prior MCA "
+            "debit within 14 days at near-equal amount. The merchant "
+            "fought (and won) a funder withdrawal — most funders won't "
+            "touch a merchant who disputed a prior funder. Near-decline "
+            "single-event signal. Ask directly which funder, why the "
+            "dispute, and how it resolved."
+        ),
+    ),
+    "unreconciled_internal_transfer": PatternCardCopy(
+        title="Unreconciled Internal Transfer",
+        description=(
+            "Transfer-OUT > $500 with no matching transfer-IN (within "
+            "$1, within ±3 days) in the bundle. Money leaving the visible "
+            "accounts to an undisclosed account — often hosting an "
+            "undisclosed MCA. Severity scales with unmatched count (15 "
+            "base, +5 per additional, capped at 40). Request all bank "
+            "account statements; merchants hiding accounts often hide MCAs."
+        ),
+    ),
+    "mca_payoff_signature": PatternCardCopy(
+        title="MCA Payoff Signature",
+        description=(
+            "Any single debit > $5,000 whose description contains a known "
+            "funder token. Recently-paid-off MCA still counts in renewal-"
+            "likelihood scoring even if not currently active. Look-closer "
+            "signal, not a decline. Ask the merchant when this funder was "
+            "paid off and confirm no balance remains."
+        ),
+    ),
+    "customer_concentration": PatternCardCopy(
+        title="Customer Concentration",
+        description=(
+            "Top single counterparty's share of revenue exceeds 30% "
+            "(severity 10), 40% (20), or 60% (30). Single-customer "
+            "dependency — lose that customer and the merchant can't "
+            "service the advance. Material above 50%; over 70% pauses "
+            "the deal regardless of other signals. Ask who the customer "
+            "is, contract length, and whether it's renewable."
+        ),
+    ),
+    "chargeback_velocity": PatternCardCopy(
+        title="Chargeback / Refund Velocity",
+        description=(
+            "Debits containing chargeback or refund keywords "
+            "('chargeback', 'refund', 'return ach', 'dispute', 'merchant "
+            "return', 'credit reversal'). Three paths: short statements "
+            "with ≥5 rows; longer statements where last-14d count > 1.5x "
+            "the prior fortnight; longer statements with ≥6 total rows. "
+            "Leading indicator of B2C distress and dispute risk on the "
+            "funder's holdback. Cross-check against revenue scale — 1% "
+            "is normal, > 3% is alarming."
+        ),
+    ),
+    "processor_holdback_detected": PatternCardCopy(
+        title="Processor Holdback Detected",
+        description=(
+            "≥10 deposits from a known card processor (Stripe / Square / "
+            "Toast / etc.) over a ≥14 day period, with the daily-summed "
+            "coefficient of variation ≥ 0.50. Variable processor payouts "
+            "strongly imply an in-place MCA holdback — a funder taking a "
+            "cut before payout reaches the bank. Ask directly whether "
+            "any card processor payout is split or held by a funder, "
+            "and cross-check against the MCA stacking count."
+        ),
+    ),
 }
 
 
@@ -241,3 +310,38 @@ def build_pattern_cards(
 
 
 __all__ = ["PATTERN_COPY", "PatternCard", "build_pattern_cards"]
+
+
+def _emitted_pattern_codes_from_source() -> frozenset[str]:
+    """AST-walk ``aegis.parser.patterns`` for every ``Pattern(code=...)``
+    literal. Used by the regression test that prevents the silent-drop
+    bug (a detector emits a code that ``build_pattern_cards`` doesn't
+    recognize and quietly skips, hiding the card from the dossier).
+
+    Exposed as a module-level helper so the test stays one-liner
+    simple. Returns the union of every ``code=`` keyword argument
+    passed to a ``Pattern(...)`` constructor in patterns.py.
+    """
+    import ast
+    from pathlib import Path
+
+    source_path = (
+        Path(__file__).resolve().parent.parent / "parser" / "patterns.py"
+    )
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+    codes: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Name) and func.id == "Pattern"):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "code":
+                continue
+            if isinstance(kw.value, ast.Constant) and isinstance(
+                kw.value.value, str
+            ):
+                codes.add(kw.value.value)
+    return frozenset(codes)
