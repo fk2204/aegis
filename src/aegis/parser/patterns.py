@@ -33,6 +33,8 @@ from decimal import Decimal
 from typing import Final
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from aegis.parser.models import ClassifiedTransaction
 
 # Known MCA funders + behavioral terms. Generic single words ("advance",
@@ -165,6 +167,176 @@ class PatternAnalysis:
     @property
     def flags(self) -> list[str]:
         return [p.code for p in self.patterns]
+
+
+# ---------------------------------------------------------------------------
+# Persistence DTOs
+#
+# Pydantic mirrors of the dataclass shapes above, used to round-trip a
+# PatternAnalysis through ``analyses.pattern_analysis`` (jsonb). The
+# dataclass remains the runtime shape every callsite uses — the DTO is
+# touched only at the storage boundary.
+#
+# Decimals serialize as strings (matching the monthly_breakdown
+# convention from migration 009) so Pydantic round-trips them
+# losslessly. UUIDs serialize as strings via Pydantic's default JSON
+# mode.
+#
+# schema_version bumps on any breaking shape change. v1 is the only
+# version today; future readers must branch on ``schema_version`` if
+# they need to deserialize older formats.
+# ---------------------------------------------------------------------------
+
+
+class _StrictDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+
+class PatternDTO(_StrictDTO):
+    """Persistence shape for a single ``Pattern`` dataclass."""
+
+    code: str
+    severity: int
+    detail: str
+    source_ids: list[UUID] = Field(default_factory=list)
+
+
+class McaPositionDTO(_StrictDTO):
+    """Persistence shape for a single ``McaPosition`` dataclass."""
+
+    funder_label: str
+    daily_equivalent: Decimal
+    occurrences: int
+    source_ids: list[UUID]
+
+
+class CounterpartySignalsDTO(_StrictDTO):
+    """Persistence shape for ``CounterpartySignals``."""
+
+    top_counterparty_pct: int | None = None
+    top_counterparty_label: str | None = None
+    top_counterparty_source_ids: list[UUID] = Field(default_factory=list)
+    top_5_revenue_share_pct: int | None = None
+    top_5_revenue_source_ids: list[UUID] = Field(default_factory=list)
+    top_5_expense_share_pct: int | None = None
+    top_5_expense_source_ids: list[UUID] = Field(default_factory=list)
+
+
+class PatternAnalysisDTO(_StrictDTO):
+    """Persistence shape for ``PatternAnalysis``.
+
+    Stored on ``AnalysisRow.pattern_analysis`` so card builders can
+    look up per-flag source transactions without re-running
+    ``analyze_patterns()`` at render time. NOT a source of truth for
+    scoring — the scorer always recomputes from current transactions.
+
+    See ``migrations/032_analyses_pattern_analysis.sql`` for the
+    column definition and rollout strategy.
+    """
+
+    schema_version: int = 1
+    patterns: list[PatternDTO] = Field(default_factory=list)
+    mca_positions: list[McaPositionDTO] = Field(default_factory=list)
+    has_kiting: bool = False
+    paydown_suspected: bool = False
+    counterparty_signals: CounterpartySignalsDTO | None = None
+    payroll_present: bool = False
+    acceleration_clause_triggered: bool = False
+    unauthorized_withdrawal_dispute: bool = False
+    ai_generated_score: int = 0
+
+
+def pattern_analysis_to_dto(pa: PatternAnalysis) -> PatternAnalysisDTO:
+    """Serialize a runtime ``PatternAnalysis`` into the persistence DTO.
+
+    Lossless. The dataclass shape and the Pydantic shape carry the
+    same fields; this helper just maps types (e.g. dataclass instance
+    -> Pydantic model_validate).
+    """
+    cs = pa.counterparty_signals
+    counterparty_dto = CounterpartySignalsDTO(
+        top_counterparty_pct=cs.top_counterparty_pct,
+        top_counterparty_label=cs.top_counterparty_label,
+        top_counterparty_source_ids=list(cs.top_counterparty_source_ids),
+        top_5_revenue_share_pct=cs.top_5_revenue_share_pct,
+        top_5_revenue_source_ids=list(cs.top_5_revenue_source_ids),
+        top_5_expense_share_pct=cs.top_5_expense_share_pct,
+        top_5_expense_source_ids=list(cs.top_5_expense_source_ids),
+    )
+    return PatternAnalysisDTO(
+        schema_version=1,
+        patterns=[
+            PatternDTO(
+                code=p.code,
+                severity=p.severity,
+                detail=p.detail,
+                source_ids=list(p.source_ids),
+            )
+            for p in pa.patterns
+        ],
+        mca_positions=[
+            McaPositionDTO(
+                funder_label=m.funder_label,
+                daily_equivalent=m.daily_equivalent,
+                occurrences=m.occurrences,
+                source_ids=list(m.source_ids),
+            )
+            for m in pa.mca_positions
+        ],
+        has_kiting=pa.has_kiting,
+        paydown_suspected=pa.paydown_suspected,
+        counterparty_signals=counterparty_dto,
+        payroll_present=pa.payroll_present,
+        acceleration_clause_triggered=pa.acceleration_clause_triggered,
+        unauthorized_withdrawal_dispute=pa.unauthorized_withdrawal_dispute,
+        ai_generated_score=pa.ai_generated_score,
+    )
+
+
+def pattern_analysis_from_dto(dto: PatternAnalysisDTO) -> PatternAnalysis:
+    """Deserialize a stored DTO back into the runtime ``PatternAnalysis``.
+
+    Inverse of ``pattern_analysis_to_dto``. Used by the (post-stage-2
+    cleanup) dossier reader and by tests verifying the round-trip is
+    lossless.
+    """
+    cs_source = dto.counterparty_signals or CounterpartySignalsDTO()
+    counterparty = CounterpartySignals(
+        top_counterparty_pct=cs_source.top_counterparty_pct,
+        top_counterparty_label=cs_source.top_counterparty_label,
+        top_counterparty_source_ids=list(cs_source.top_counterparty_source_ids),
+        top_5_revenue_share_pct=cs_source.top_5_revenue_share_pct,
+        top_5_revenue_source_ids=list(cs_source.top_5_revenue_source_ids),
+        top_5_expense_share_pct=cs_source.top_5_expense_share_pct,
+        top_5_expense_source_ids=list(cs_source.top_5_expense_source_ids),
+    )
+    return PatternAnalysis(
+        patterns=[
+            Pattern(
+                code=p.code,
+                severity=p.severity,
+                detail=p.detail,
+                source_ids=list(p.source_ids),
+            )
+            for p in dto.patterns
+        ],
+        mca_positions=[
+            McaPosition(
+                funder_label=m.funder_label,
+                daily_equivalent=m.daily_equivalent,
+                occurrences=m.occurrences,
+                source_ids=list(m.source_ids),
+            )
+            for m in dto.mca_positions
+        ],
+        has_kiting=dto.has_kiting,
+        paydown_suspected=dto.paydown_suspected,
+        counterparty_signals=counterparty,
+        payroll_present=dto.payroll_present,
+        acceleration_clause_triggered=dto.acceleration_clause_triggered,
+        unauthorized_withdrawal_dispute=dto.unauthorized_withdrawal_dispute,
+        ai_generated_score=dto.ai_generated_score,
+    )
 
 
 def analyze_patterns(

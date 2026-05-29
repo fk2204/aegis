@@ -31,7 +31,7 @@ from aegis.parser.models import (
     ClassifiedTransaction,
     StatementSummary,
 )
-from aegis.parser.patterns import PatternAnalysis
+from aegis.parser.patterns import PatternAnalysis, PatternAnalysisDTO
 from aegis.parser.pipeline import PipelineResult
 
 _log = get_logger(__name__)
@@ -125,6 +125,15 @@ class AnalysisRow(_StrictModel):
     # land in a single "bank not detected" bundle.
     bank_name: str | None = None
     account_last4: str | None = Field(default=None, max_length=4)
+
+    # Cached PatternAnalysisDTO from migration 032 — drives the
+    # Today / Review Queue chip-evidence drill-down without re-running
+    # analyze_patterns() at render time. NULL on rows analyzed before
+    # stage 2 chunk 2 ships; populated on every new analysis after.
+    # Card builders fall back to rendering chips without expander when
+    # this is None. NOT a source of truth for scoring — the scorer
+    # always recomputes from current transactions.
+    pattern_analysis: PatternAnalysisDTO | None = None
 
 
 # Protocol ---------------------------------------------------------------------
@@ -729,6 +738,14 @@ def _analysis_to_db_row(analysis: AnalysisRow) -> dict[str, Any]:
         "monthly_breakdown": analysis.monthly_breakdown,
         "bank_name": analysis.bank_name,
         "account_last4": analysis.account_last4,
+        # mode="json" serializes Decimal -> str and UUID -> str so the
+        # resulting dict round-trips cleanly through Supabase's
+        # jsonb column. None preserved (column is nullable).
+        "pattern_analysis": (
+            analysis.pattern_analysis.model_dump(mode="json")
+            if analysis.pattern_analysis is not None
+            else None
+        ),
     }
 
 
@@ -763,6 +780,11 @@ def _db_row_to_analysis(row: dict[str, Any]) -> AnalysisRow:
         monthly_breakdown=row.get("monthly_breakdown") or [],
         bank_name=row.get("bank_name"),
         account_last4=row.get("account_last4"),
+        pattern_analysis=(
+            PatternAnalysisDTO.model_validate(row["pattern_analysis"])
+            if row.get("pattern_analysis") is not None
+            else None
+        ),
     )
 
 
