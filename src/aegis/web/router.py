@@ -465,7 +465,11 @@ def _enrich_attention_card_with_tier(
         score_result = score_deal(score_input, ofac=ofac)
     except (MerchantNotFoundError, OFACStaleError, ValueError):
         return card
-    except Exception as exc:  # noqa: BLE001 — tier is decorative; never block on it
+    except Exception as exc:
+        # Broad catch is intentional — tier is decorative on the
+        # attention card and must never block the queue render. Any
+        # unforeseen scoring failure (partial analysis, network blip,
+        # logic bug) falls back to tier=None with a WARN log.
         from aegis.logger import get_logger
 
         get_logger(__name__).warning(
