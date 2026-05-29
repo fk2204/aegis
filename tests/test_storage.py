@@ -18,7 +18,9 @@ from aegis.parser.models import (
     ValidationResult,
 )
 from aegis.parser.pipeline import PipelineResult
+from aegis.parser.patterns import PatternAnalysisDTO
 from aegis.storage import (
+    AnalysisRow,
     DocumentExistsError,
     DocumentNotFoundError,
     InMemoryDocumentRepository,
@@ -171,13 +173,11 @@ def test_list_transactions_filter_by_category() -> None:
 
 
 def _build_dummy_analysis_row(
-    *, pattern_analysis_dto: object | None = None
-) -> object:
+    *, pattern_analysis_dto: PatternAnalysisDTO | None = None
+) -> AnalysisRow:
     """Construct an AnalysisRow with the minimum required fields plus
     the pattern_analysis under test. Field values are arbitrary —
     only the round-trip matters here."""
-    from aegis.storage import AnalysisRow
-
     return AnalysisRow(
         id=uuid4(),
         document_id=uuid4(),
@@ -198,7 +198,7 @@ def _build_dummy_analysis_row(
         debt_to_revenue=Decimal("0.00"),
         payroll_detected=False,
         returned_ach_count=0,
-        pattern_analysis=pattern_analysis_dto,  # type: ignore[arg-type]
+        pattern_analysis=pattern_analysis_dto,
     )
 
 
@@ -207,7 +207,7 @@ def test_analysis_row_pattern_analysis_defaults_to_none() -> None:
     Catches accidental Field(default_factory=...) regressions that
     would conjure a populated DTO out of nowhere."""
     row = _build_dummy_analysis_row()
-    assert row.pattern_analysis is None  # type: ignore[attr-defined]
+    assert row.pattern_analysis is None
 
 
 def test_analysis_row_pattern_analysis_round_trips_through_supabase_helpers() -> None:
@@ -270,7 +270,7 @@ def test_analysis_row_pattern_analysis_round_trips_through_supabase_helpers() ->
     src = _build_dummy_analysis_row(pattern_analysis_dto=dto)
 
     # Round-trip: serialize to db dict, deserialize back.
-    db_row = _analysis_to_db_row(src)  # type: ignore[arg-type]
+    db_row = _analysis_to_db_row(src)
     restored = _db_row_to_analysis(db_row)
 
     assert restored.pattern_analysis is not None
@@ -320,7 +320,7 @@ def test_analysis_row_with_null_pattern_analysis_round_trips() -> None:
 
     src = _build_dummy_analysis_row(pattern_analysis_dto=None)
 
-    db_row = _analysis_to_db_row(src)  # type: ignore[arg-type]
+    db_row = _analysis_to_db_row(src)
     assert db_row["pattern_analysis"] is None
 
     restored = _db_row_to_analysis(db_row)
@@ -334,7 +334,7 @@ def test_analysis_row_handles_missing_pattern_analysis_key() -> None:
     from aegis.storage import _analysis_to_db_row, _db_row_to_analysis
 
     src = _build_dummy_analysis_row(pattern_analysis_dto=None)
-    db_row = _analysis_to_db_row(src)  # type: ignore[arg-type]
+    db_row = _analysis_to_db_row(src)
 
     # Simulate a pre-migration row by dropping the key entirely.
     del db_row["pattern_analysis"]
