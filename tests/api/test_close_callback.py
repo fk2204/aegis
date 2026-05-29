@@ -162,8 +162,11 @@ def stub_close_client(
     monkeypatch.setenv("CLOSE_API_BASE", "https://api.close.example")
     get_settings.cache_clear()
 
+    # update_lead_custom_fields ships a PUT (Close's lead update is
+    # PUT-shaped despite being semantically partial). Capture both PUT
+    # and PATCH so the test remains correct if Close's verb changes.
     def transport(request: httpx.Request) -> httpx.Response:
-        if request.method == "PATCH":
+        if request.method in ("PUT", "PATCH"):
             try:
                 body = json.loads(request.content)
             except json.JSONDecodeError:
