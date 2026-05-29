@@ -94,23 +94,14 @@ class Settings(BaseSettings):
     # API auth
     api_bearer_token: SecretStr | None = None
 
-    # Close → AEGIS callback router (/api/close-callback/*). Auth model:
-    #
-    # 1. CLOSE_CALLBACK_HMAC_SECRET — required. Hex-encoded signature_key
-    #    returned by Close when the dedicated callback webhook
-    #    subscription is created via ``POST /api/v1/webhook/``. Mirrors
-    #    the existing CLOSE_WEBHOOK_SECRET pattern; unset → route 503s
-    #    fail-closed.
-    #
-    # 2. CLOSE_CALLBACK_TOKEN — optional bearer. When set, the close-
-    #    callback router requires ``Authorization: Bearer <token>`` IN
-    #    ADDITION TO the HMAC signature (defense in depth). When unset,
-    #    the bearer check is skipped — HMAC alone protects, same shape
-    #    as /webhooks/close. This lets the code ship before we verify
-    #    whether Close's webhook subscriptions support custom HTTP
-    #    headers; if they do, paste the operator-generated token into
-    #    both the env and the Close webhook config to engage bearer.
-    close_callback_hmac_secret: SecretStr | None = None
+    # Close → AEGIS callback router (/api/close-callback/*). Bearer auth,
+    # same shape as ``require_bearer`` for the operator API but scoped to
+    # a separate env var so the two surfaces rotate independently.
+    # Operator-generated (``openssl rand -hex 32``), pasted into both
+    # ``/etc/aegis/aegis.env`` and the Close-side trigger config (e.g. a
+    # Workflow HTTP Request action's custom ``Authorization: Bearer ...``
+    # header). Unset → every /api/close-callback/* request 503s
+    # fail-closed via ``warn_if_close_callback_token_unconfigured``.
     close_callback_token: SecretStr | None = None
 
     # Redis (arq)

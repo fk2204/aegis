@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 from aegis.api.auth import (
     warn_if_bearer_unconfigured,
-    warn_if_close_callback_hmac_unconfigured,
+    warn_if_close_callback_token_unconfigured,
 )
 from aegis.api.deps import get_merchant_repository, get_repository
 from aegis.api.routes import ALL_ROUTERS
@@ -58,7 +58,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # load_matrix() so the matrix is available for the template-SHA scan.
     run_boot_checks()
     warn_if_bearer_unconfigured()  # once-per-process operator visibility
-    warn_if_close_callback_hmac_unconfigured()  # /api/close-callback/* fail-closed
+    warn_if_close_callback_token_unconfigured()  # /api/close-callback/* fail-closed
 
     # Detect lingering ZOHO_* env vars after the Close cutover (step 9).
     # Non-fatal: AEGIS still boots, but the operator gets a structured
