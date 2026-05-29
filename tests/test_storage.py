@@ -17,8 +17,8 @@ from aegis.parser.models import (
     StatementSummary,
     ValidationResult,
 )
-from aegis.parser.pipeline import PipelineResult
 from aegis.parser.patterns import PatternAnalysisDTO
+from aegis.parser.pipeline import PipelineResult
 from aegis.storage import (
     AnalysisRow,
     DocumentExistsError,
