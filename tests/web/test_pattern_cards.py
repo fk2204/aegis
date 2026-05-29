@@ -24,8 +24,8 @@ import pytest
 from aegis.parser.models import ClassifiedTransaction
 from aegis.parser.patterns import Pattern, PatternAnalysis
 from aegis.web._pattern_cards import (
-    PATTERN_COPY,
     _RENDERED_ELSEWHERE,
+    PATTERN_COPY,
     _emitted_pattern_codes_from_source,
     build_pattern_cards,
 )

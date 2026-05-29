@@ -212,7 +212,7 @@ PATTERN_COPY: Final[dict[str, PatternCardCopy]] = {
             "Debits containing chargeback or refund keywords "
             "('chargeback', 'refund', 'return ach', 'dispute', 'merchant "
             "return', 'credit reversal'). Three paths: short statements "
-            "with ≥5 rows; longer statements where last-14d count > 1.5× "
+            "with ≥5 rows; longer statements where last-14d count > 1.5x "
             "the prior fortnight; longer statements with ≥6 total rows. "
             "Leading indicator of B2C distress and dispute risk on the "
             "funder's holdback. Cross-check against revenue scale — 1% "
