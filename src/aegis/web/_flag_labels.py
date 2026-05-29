@@ -65,6 +65,11 @@ class HumanFlag:
     ``code`` stays the raw identifier so audit, log, and ``data-flag-code``
     attributes keep their machine-readable form. The other fields are
     operator-facing.
+
+    ``cluster_signals`` is populated only for ``fraud_cluster_triangulated``
+    — it carries the constituent ``HumanFlag`` objects parsed out of the
+    cluster's detail string (``4_signals_a,b,c,d``) so the chip template
+    can render them as an inline expander. ``None`` for every other flag.
     """
 
     code: str
@@ -72,6 +77,7 @@ class HumanFlag:
     detail: str
     category: CategoryName
     severity_band: SeverityBand
+    cluster_signals: list[HumanFlag] | None = None
 
     @property
     def chip_class(self) -> str:
@@ -287,6 +293,20 @@ def _fmt_processor_holdback(raw: str) -> str:
     m = re.match(r"(\d+) processor payouts;\s*daily CV=(\d+)%", raw)
     if m:
         return f"processor CV {m.group(2)}% over {m.group(1)} payouts"
+    return raw
+
+
+def _fmt_fraud_cluster_triangulation(raw: str) -> str:
+    # "4_signals_mca_stacking,wash_deposit_suspected,paydown_mca_suspected,withdrawal_acceleration"
+    # The constituent code list stays out of the chip text — the inline
+    # expander (driven by HumanFlag.cluster_signals) renders the
+    # humanized signal names. Chip text just carries the count so
+    # workers see "Fraud cluster triangulated · 4 contributing signals"
+    # at a glance.
+    m = re.match(r"^(\d+)_signals_", raw)
+    if m:
+        n = int(m.group(1))
+        return _plural(n, "contributing signal")
     return raw
 
 
@@ -606,6 +626,16 @@ _FLAG_REGISTRY: Final[dict[str, _FlagSpec]] = {
     "per_page_routing_used": _spec(
         "Per-page routing used", "soft", "context", None,
     ),
+
+    # === Composite — triangulation across multiple patterns ============
+    # Detail shape is ``"N_signals_code1,code2,..."`` (codes are the
+    # contributing Pattern codes). The cluster-signal parser below
+    # attaches the humanized constituents onto the HumanFlag so the
+    # template renders them as an inline expander.
+    "fraud_cluster_triangulated": _spec(
+        "Fraud cluster triangulated", "composite", "decline",
+        _fmt_fraud_cluster_triangulation,
+    ),
 }
 
 # Default category + band when a recognized prefix carries an unknown code.
@@ -632,6 +662,46 @@ _MODIFIED_AFTER_CREATION_RE: Final[re.Pattern[str]] = re.compile(
 
 
 _PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^\[(?P<prefix>[A-Z]+)\]\s*(?P<body>.*)$")
+
+# Cluster detail shape: "N_signals_code1,code2,..."  (codes is the comma
+# list).  Compiled once because the cluster chip is hot on dashboard
+# renders where multiple triangulated merchants land in the queue.
+_CLUSTER_DETAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+_signals_(?P<codes>.+)$"
+)
+
+
+def _parse_cluster_signals(raw_detail: str) -> list[HumanFlag] | None:
+    """Parse a ``fraud_cluster_triangulated`` detail string into the list of
+    humanized constituent ``HumanFlag`` objects.
+
+    Detail shape (emitted by ``pipeline._fraud_cluster_triangulation``):
+    ``"N_signals_code1,code2,..."``. Each constituent is humanized as
+    if it had arrived as ``[PATTERN] <code>`` (no detail body, so the
+    constituent chip carries only its registered title + category +
+    severity band — no count or amount, those would need the parser's
+    per-pattern detail which the cluster string drops).
+
+    Returns ``None`` when the detail doesn't match the expected shape so
+    the chip degrades to a plain detail-text render rather than crashing
+    or attaching half-data.
+
+    Defensive: skips any constituent equal to
+    ``"fraud_cluster_triangulated"`` to prevent infinite recursion. The
+    pipeline never emits this shape — the guard exists so a future
+    refactor that broke the contract surfaces as a missing chip rather
+    than a stack overflow.
+    """
+    m = _CLUSTER_DETAIL_RE.match(raw_detail.strip())
+    if not m:
+        return None
+    codes = [c.strip() for c in m.group("codes").split(",") if c.strip()]
+    signals: list[HumanFlag] = []
+    for code in codes:
+        if code == "fraud_cluster_triangulated":
+            continue
+        signals.append(humanize_flag(f"[PATTERN] {code}"))
+    return signals or None
 
 
 def humanize_flag(raw: str) -> HumanFlag:
@@ -672,12 +742,16 @@ def humanize_flag(raw: str) -> HumanFlag:
     spec = _FLAG_REGISTRY.get(code)
     if spec is not None:
         detail = spec.formatter(raw_detail) if spec.formatter else raw_detail
+        cluster_signals: list[HumanFlag] | None = None
+        if code == "fraud_cluster_triangulated":
+            cluster_signals = _parse_cluster_signals(raw_detail)
         return HumanFlag(
             code=code,
             title=spec.title,
             detail=detail,
             category=spec.category,
             severity_band=spec.severity_band,
+            cluster_signals=cluster_signals,
         )
 
     # Unknown code — graceful fallback. Title comes from the code itself

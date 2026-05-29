@@ -332,6 +332,44 @@
   letter-spacing: 0.04em;
 }
 
+/* Cluster chip wrapper — used only for fraud_cluster_triangulated, where
+ * the HumanFlag carries cluster_signals (the constituent humanized
+ * patterns). `display: contents` makes the <details> element invisible
+ * to layout so the summary's chip stays inline in the surrounding
+ * flag-list flexbox until the worker clicks. When open, the
+ * constituents render as a wrapped row directly below the chip.
+ * Disclosure marker hidden — the chip's pill shape is the affordance. */
+.dossier-page .chip-cluster {
+  display: contents;
+}
+.dossier-page .chip-cluster > summary {
+  display: inline-flex;
+  list-style: none;
+  cursor: pointer;
+}
+.dossier-page .chip-cluster > summary::-webkit-details-marker {
+  display: none;
+}
+.dossier-page .chip-cluster > summary::marker {
+  display: none;
+  content: "";
+}
+.dossier-page .chip-cluster:not([open]) > .chip-cluster-signals {
+  display: none;
+}
+.dossier-page .chip-cluster[open] > .chip-cluster-signals {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 6px 0 2px 16px;
+  padding: 0;
+  list-style: none;
+}
+.dossier-page .chip-cluster-signals > li {
+  display: inline-flex;
+}
+
 /* tier chip — same letter convention as merchant_detail */
 .dossier-page .tier-chip {
   display: inline-block;

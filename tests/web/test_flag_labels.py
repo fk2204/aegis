@@ -277,6 +277,130 @@ def test_unknown_code_does_not_crash_and_falls_back_usable() -> None:
     assert hf.severity_band == "material"
 
 
+# ---------------------------------------------------------------------------
+# Composite — fraud_cluster_triangulated (stage 1 of chip evidence work)
+#
+# Pipeline emits "[COMPOUND] fraud_cluster_triangulated:N_signals_c1,c2,..."
+# The chip should read as "N contributing signals" with the constituent
+# codes humanized + attached as ``cluster_signals`` so the template can
+# render them as an inline expander.
+# ---------------------------------------------------------------------------
+
+
+def test_fraud_cluster_triangulation_humanizes_count_and_constituents() -> None:
+    """The 4-signal cluster the operator screenshotted as broken."""
+    raw = (
+        "[COMPOUND] fraud_cluster_triangulated:4_signals_"
+        "mca_stacking,wash_deposit_suspected,paydown_mca_suspected,"
+        "withdrawal_acceleration"
+    )
+    hf = humanize_flag(raw)
+    assert hf.code == "fraud_cluster_triangulated"
+    assert hf.title == "Fraud cluster triangulated"
+    assert hf.detail == "4 contributing signals"
+    assert hf.category == "composite"
+    assert hf.severity_band == "decline"
+
+    assert hf.cluster_signals is not None
+    assert [s.title for s in hf.cluster_signals] == [
+        "MCA stacking",
+        "Suspected wash deposits",
+        "MCA paydown pattern",
+        "MCA debit acceleration",
+    ]
+    # Constituents carry their registered severity bands so the inline
+    # list color-codes correctly — not just flat text.
+    bands = {s.code: s.severity_band for s in hf.cluster_signals}
+    assert bands["mca_stacking"] == "material"
+    assert bands["wash_deposit_suspected"] == "decline"
+
+
+def test_fraud_cluster_singular_renders_singular_noun() -> None:
+    """Defensive — the cluster fires at >=3 patterns so N==1 should
+    never happen in practice, but the formatter shouldn't render
+    grammatically broken "1 contributing signals"."""
+    raw = "[COMPOUND] fraud_cluster_triangulated:1_signals_mca_stacking"
+    hf = humanize_flag(raw)
+    assert hf.detail == "1 contributing signal"
+    assert hf.cluster_signals is not None
+    assert len(hf.cluster_signals) == 1
+
+
+def test_fraud_cluster_unknown_constituent_degrades_gracefully() -> None:
+    """A future detector lands and gets picked up by the triangulation
+    before its copy is registered — the chip must not crash. The
+    unknown constituent renders via the same de-snake-cased fallback as
+    any other unregistered code."""
+    raw = (
+        "[COMPOUND] fraud_cluster_triangulated:3_signals_"
+        "wash_deposit_suspected,brand_new_detector,mca_stacking"
+    )
+    hf = humanize_flag(raw)
+    assert hf.detail == "3 contributing signals"
+    assert hf.cluster_signals is not None
+    titles = [s.title for s in hf.cluster_signals]
+    assert titles == [
+        "Suspected wash deposits",
+        "Brand new detector",
+        "MCA stacking",
+    ]
+    # Unknown constituent inherits the [PATTERN] prefix defaults.
+    unknown = next(s for s in hf.cluster_signals if s.code == "brand_new_detector")
+    assert unknown.category == "unknown"
+    assert unknown.severity_band == "material"
+
+
+def test_fraud_cluster_malformed_detail_falls_back_to_raw() -> None:
+    """If the detail doesn't match ``N_signals_...`` (a future shape
+    change in pipeline._fraud_cluster_triangulation), don't crash and
+    don't attach half-data — pass the raw detail through and leave
+    cluster_signals as None so the template renders a plain chip."""
+    raw = "[COMPOUND] fraud_cluster_triangulated:malformed_shape_here"
+    hf = humanize_flag(raw)
+    assert hf.title == "Fraud cluster triangulated"
+    # Formatter regex misses -> raw detail passes through unchanged.
+    assert hf.detail == "malformed_shape_here"
+    # No constituents attached -> template falls through to the plain
+    # <span class="chip"> path.
+    assert hf.cluster_signals is None
+
+
+def test_fraud_cluster_self_referential_constituent_does_not_recurse() -> None:
+    """Defensive: a future bug in the pipeline that emits a cluster
+    whose constituent code is itself ``fraud_cluster_triangulated``
+    would normally recurse indefinitely. The parser skips self-
+    references so the chip degrades to the non-self constituents
+    only (or to an empty list -> None -> plain chip)."""
+    raw = (
+        "[COMPOUND] fraud_cluster_triangulated:2_signals_"
+        "mca_stacking,fraud_cluster_triangulated"
+    )
+    hf = humanize_flag(raw)
+    assert hf.detail == "2 contributing signals"
+    # mca_stacking survives; the self-reference is dropped.
+    assert hf.cluster_signals is not None
+    assert [s.code for s in hf.cluster_signals] == ["mca_stacking"]
+
+
+def test_non_cluster_flags_have_no_cluster_signals() -> None:
+    """Defense in depth — cluster_signals is opt-in for one flag code.
+    Every other flag must report it as None so the template's
+    ``{% if hf.cluster_signals %}`` branch only fires where intended."""
+    samples = [
+        "[PATTERN] mca_stacking: 3 MCA position(s) detected",
+        "[META] incremental_saves: 2 EOF markers",
+        "[AGGREGATE] top_counterparty_concentration:78%_(acme corp)",
+        "[MATH] reconciliation_failed_deposit",
+        "[CONFIDENCE] classification_confidence_below_floor: avg=56 floor=60",
+        "[PATTERN] brand_new_detector_v2: 3 events",
+    ]
+    for raw in samples:
+        hf = humanize_flag(raw)
+        assert hf.cluster_signals is None, (
+            f"non-cluster flag carries cluster_signals: {raw}"
+        )
+
+
 def test_unknown_code_in_aggregate_prefix_uses_soft_category() -> None:
     hf = humanize_flag("[AGGREGATE] surprise_signal:42_widgets")
     assert hf.code == "surprise_signal"
