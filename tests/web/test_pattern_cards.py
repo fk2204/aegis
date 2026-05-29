@@ -25,6 +25,8 @@ from aegis.parser.models import ClassifiedTransaction
 from aegis.parser.patterns import Pattern, PatternAnalysis
 from aegis.web._pattern_cards import (
     PATTERN_COPY,
+    _RENDERED_ELSEWHERE,
+    _emitted_pattern_codes_from_source,
     build_pattern_cards,
 )
 
@@ -181,3 +183,61 @@ def test_severity_band_thresholds() -> None:
     assert by_code["round_number_deposits"] == "pos"
     assert by_code["duplicate_deposits_detected"] == "warn"
     assert by_code["wash_deposit_suspected"] == "neg"
+
+
+# ---------------------------------------------------------------------------
+# Regression guard — every emitted Pattern code MUST have copy or be
+# explicitly rendered elsewhere. Closes the silent-drop bug surfaced in
+# 2026-05 where six detectors (unauthorized_withdrawal_dispute,
+# unreconciled_internal_transfer, mca_payoff_signature,
+# customer_concentration, chargeback_velocity, processor_holdback_detected)
+# emitted codes but had no PATTERN_COPY entries, so build_pattern_cards
+# returned ``copy is None`` and the cards never made it to the dossier.
+# ---------------------------------------------------------------------------
+
+
+def test_every_emitted_pattern_code_has_copy_or_is_rendered_elsewhere() -> None:
+    """AST-walks ``aegis.parser.patterns`` for every ``Pattern(code=...)``
+    literal and asserts each one is reachable from the dashboard via
+    either ``PATTERN_COPY`` (renders as a generic pattern card) or
+    ``_RENDERED_ELSEWHERE`` (intentionally skipped because something
+    else owns the render — ``mca_stacking`` -> StackingCard, etc.).
+
+    Adding a new detector to patterns.py without registering its copy
+    will fail this test. That's the contract: every emitted code is
+    visible to the worker, no silent drops.
+    """
+    emitted = _emitted_pattern_codes_from_source()
+    known = set(PATTERN_COPY.keys()) | set(_RENDERED_ELSEWHERE)
+    missing = emitted - known
+
+    assert not missing, (
+        "Pattern code(s) emitted by aegis.parser.patterns but missing "
+        "from BOTH PATTERN_COPY and _RENDERED_ELSEWHERE — these cards "
+        "would be silently dropped from the dossier. Add operator copy "
+        "in src/aegis/web/_pattern_cards.py (pull from "
+        "docs/FLAG_GLOSSARY.md) or add the code to _RENDERED_ELSEWHERE "
+        "if another surface owns it. Missing: "
+        + ", ".join(sorted(missing))
+    )
+
+
+def test_pattern_copy_has_no_unused_entries() -> None:
+    """Symmetric check: every PATTERN_COPY entry should correspond to
+    a code actually emitted by patterns.py. Stale entries are a dead-
+    code smell (detector was removed but its copy stuck around).
+
+    Codes in _RENDERED_ELSEWHERE are exempt — they're declared
+    intentionally even when present elsewhere — but PATTERN_COPY's
+    job is to feed the generic card list, so an entry there with no
+    matching detector is genuinely unused.
+    """
+    emitted = _emitted_pattern_codes_from_source()
+    unused = set(PATTERN_COPY.keys()) - emitted
+
+    assert not unused, (
+        "PATTERN_COPY entries with no matching Pattern(code=...) emission "
+        "in patterns.py — detector removed but copy stuck around. Drop "
+        "the entries or restore the detector. Unused: "
+        + ", ".join(sorted(unused))
+    )
