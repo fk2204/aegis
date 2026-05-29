@@ -28,7 +28,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Final, cast
 from uuid import UUID
 
 from fastapi import (
