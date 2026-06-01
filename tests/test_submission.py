@@ -409,12 +409,15 @@ def test_match_preselect_funder_checks_correct_card(
     checkbox renders with the `checked` attribute and no eligibility
     banner appears.
 
-    Note: the fixture merchant has very lean data (true_revenue ~$3K)
-    so score_deal returns tier F, which makes every card render with
-    data-color="red" via _match_card. That's a separate matter — what
-    we verify here is that the preselect logic does not banner a card
-    whose `hard_reasons` list is empty (qualifies on criteria; only
-    the global tier is low).
+    Note: the fixture merchant has lean data (true_revenue ~$3K) so
+    score_deal returns tier F. Prior to the tier-F color-rule fix, the
+    overall tier-F signal would poison every per-funder card into
+    rendering data-color="red" + disabled even when the funder
+    qualified on criteria. Fixed by splitting the color rule from
+    ``match.match_score == 0`` to ``not bool(match.reasons)`` — the
+    real qualifies signal. Permissive Capital now renders green; the
+    preselect-banner check below already gated on hard_reasons being
+    non-empty so this test's assertions are unaffected.
     """
     permissive = FunderRow(
         name="Permissive Capital",
