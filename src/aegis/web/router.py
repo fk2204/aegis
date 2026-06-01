@@ -3184,23 +3184,30 @@ def _match_card(
 ) -> dict[str, Any]:
     """Translate a FunderMatch into a card dict the template renders.
 
-    ``match_funder`` sets ``match_score=0`` exactly when at least one hard
-    fail fired (see ``_likelihood`` + the qualifies branch). When
-    qualified, the ``soft_concerns`` list holds soft signals only; when
-    not qualified it holds hard-fail reasons (matcher unions hard+soft so
-    the operator sees the full picture). We split using ``match_score`` so
-    the template can color-code without re-deriving the rule.
+    ``match_funder`` sets ``reasons=["tier_<X>"]`` exactly when the
+    merchant clears every funder criterion (qualifies=True), and
+    ``reasons=[]`` otherwise. We use ``reasons`` as the qualifies
+    signal — NOT ``match_score`` — because ``_likelihood`` returns 0
+    for both real disqualification AND tier-F merchants who clear
+    every criterion (the tier-F base is 0, so
+    ``max(0, 0 - 10*len(soft))`` is always 0). Conflating those cases
+    rendered every funder card red+disabled for tier-F merchants even
+    when they qualified — a known UI bug. When qualified, the
+    ``soft_concerns`` list holds soft signals only; when not qualified
+    it holds hard-fail reasons unioned with soft (matcher returns
+    ``hard + soft`` so the operator sees the full picture).
 
     Color rule:
-      * red    — match_score == 0 (any hard fail)
-      * yellow — match_score > 0 with at least one soft concern
-      * green  — match_score > 0 and zero soft concerns
+      * red    — not qualifies (at least one hard fail on funder criteria)
+      * yellow — qualifies with at least one soft concern
+      * green  — qualifies and zero soft concerns
 
     When ``score_input`` is supplied, the card also carries a side-by-side
     criteria comparison rendered as an expandable details block inside the
     funder card.
     """
-    if match.match_score == 0:
+    qualifies = bool(match.reasons)
+    if not qualifies:
         color = "red"
         hard_reasons = list(match.soft_concerns)
         soft_concerns: list[str] = []
