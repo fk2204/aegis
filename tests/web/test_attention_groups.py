@@ -12,8 +12,31 @@ from uuid import UUID, uuid4
 
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import InMemoryMerchantRepository
-from aegis.storage import DocumentRow
-from aegis.web.router import _build_attention_groups
+from aegis.storage import DocumentRow, InMemoryDocumentRepository
+from aegis.web._attention_card import AttentionCard
+from aegis.web.router import _build_attention_groups as _build_groups_impl
+
+
+def _call_build(
+    docs: list[DocumentRow],
+    repo: InMemoryMerchantRepository,
+    *,
+    max_groups: int = 8,
+) -> list[AttentionCard]:
+    """Thread a fresh empty DocumentRepository through to
+    ``_build_attention_groups``.
+
+    Chunk 3 added a ``docs: DocumentRepository`` parameter so the
+    builder can prefetch analyses + transactions for the per-merchant
+    ``PatternIndex``. These tests don't exercise drill-down — they
+    cover grouping, merchant context, fraud band, categorized flags —
+    so an empty repo yields the correct "no drill-down decoration"
+    outcome and leaves every other assertion untouched. Dedicated
+    drill-down tests live in ``test_pattern_index.py``.
+    """
+    return _build_groups_impl(
+        docs, repo, InMemoryDocumentRepository(), max_groups=max_groups
+    )
 
 
 def _doc(
@@ -49,7 +72,7 @@ def test_groups_same_merchant_into_one_entry() -> None:
         _doc(merchant_id=m.id, fraud_score=50, uploaded_at=base - timedelta(minutes=5)),
         _doc(merchant_id=m.id, fraud_score=80, uploaded_at=base - timedelta(minutes=10)),
     ]
-    cards = _build_attention_groups(docs, repo)
+    cards = _call_build(docs, repo)
 
     assert len(cards) == 1
     assert cards[0].merchant_label == "Acme Inc"
@@ -69,7 +92,7 @@ def test_worst_fraud_score_is_max_across_group() -> None:
         _doc(merchant_id=m.id, fraud_score=88, uploaded_at=base - timedelta(minutes=5)),
         _doc(merchant_id=m.id, fraud_score=45, uploaded_at=base - timedelta(minutes=10)),
     ]
-    cards = _build_attention_groups(docs, repo)
+    cards = _call_build(docs, repo)
 
     assert cards[0].worst_fraud_score == 88
 
@@ -85,7 +108,7 @@ def test_worst_fraud_score_is_none_when_all_docs_unscored() -> None:
         _doc(merchant_id=m.id, fraud_score=None, uploaded_at=base),
         _doc(merchant_id=m.id, fraud_score=None, uploaded_at=base - timedelta(minutes=1)),
     ]
-    cards = _build_attention_groups(docs, repo)
+    cards = _call_build(docs, repo)
 
     assert cards[0].worst_fraud_score is None
 
@@ -114,7 +137,7 @@ def test_flags_deduplicated_across_docs_first_seen_order() -> None:
             flags=["[META] beta", "[META] gamma"],
         ),
     ]
-    cards = _build_attention_groups(docs, repo)
+    cards = _call_build(docs, repo)
 
     # alpha/beta/gamma aren't registered codes — fall through the
     # ``[META]`` prefix default into the tampering bucket. ``beta`` from
@@ -141,7 +164,7 @@ def test_preserves_input_ordering_across_groups() -> None:
         _doc(merchant_id=b.id, fraud_score=90, uploaded_at=base - timedelta(minutes=5)),
         _doc(merchant_id=a.id, fraud_score=50, uploaded_at=base - timedelta(minutes=10)),
     ]
-    cards = _build_attention_groups(docs, repo)
+    cards = _call_build(docs, repo)
 
     assert [c.merchant_label for c in cards] == ["First Seen", "Second Seen"]
 
@@ -156,7 +179,7 @@ def test_documents_without_merchant_id_bucket_under_dash() -> None:
         _doc(merchant_id=None, fraud_score=30, uploaded_at=base),
         _doc(merchant_id=None, fraud_score=70, uploaded_at=base - timedelta(minutes=5)),
     ]
-    cards = _build_attention_groups(docs, repo)
+    cards = _call_build(docs, repo)
 
     assert len(cards) == 1
     assert cards[0].merchant_label == "—"
@@ -178,7 +201,7 @@ def test_max_groups_caps_distinct_merchants() -> None:
         _doc(merchant_id=m.id, fraud_score=50, uploaded_at=base - timedelta(minutes=i))
         for i, m in enumerate(merchants)
     ]
-    cards = _build_attention_groups(docs, repo, max_groups=3)
+    cards = _call_build(docs, repo, max_groups=3)
 
     assert len(cards) == 3
     # The first 3 merchants seen are kept; later ones dropped.
@@ -194,7 +217,7 @@ def test_unknown_merchant_id_falls_back_to_short_label() -> None:
 
     base = datetime(2026, 5, 28, 10, 0, tzinfo=UTC)
     docs = [_doc(merchant_id=orphan_id, fraud_score=50, uploaded_at=base)]
-    cards = _build_attention_groups(docs, repo)
+    cards = _call_build(docs, repo)
 
     assert len(cards) == 1
     assert cards[0].merchant_label == "merchant 12345678"
@@ -214,7 +237,7 @@ def test_per_document_fields_present_in_output() -> None:
 
     base = datetime(2026, 5, 28, 10, 30, tzinfo=UTC)
     doc = _doc(merchant_id=m.id, fraud_score=72, uploaded_at=base, flags=["[META] foo"])
-    cards = _build_attention_groups([doc], repo)
+    cards = _call_build([doc], repo)
 
     out_doc = cards[0].documents[0]
     assert out_doc["document_id"] == str(doc.id)
@@ -239,7 +262,7 @@ def test_card_carries_merchant_context_when_lookup_succeeds() -> None:
     repo.upsert(m)
 
     base = datetime(2026, 5, 28, 10, 0, tzinfo=UTC)
-    cards = _build_attention_groups(
+    cards = _call_build(
         [_doc(merchant_id=m.id, fraud_score=42, uploaded_at=base)], repo
     )
 
@@ -256,7 +279,7 @@ def test_fraud_band_derived_from_worst_score() -> None:
 
     base = datetime(2026, 5, 28, 10, 0, tzinfo=UTC)
     for score, expected in ((20, "clear"), (50, "review"), (80, "decline")):
-        cards = _build_attention_groups(
+        cards = _call_build(
             [_doc(merchant_id=m.id, fraud_score=score, uploaded_at=base)], repo
         )
         assert cards[0].fraud_band == expected, (score, cards[0].fraud_band)
@@ -269,7 +292,7 @@ def test_fraud_band_unknown_when_no_score() -> None:
     repo.upsert(m)
 
     base = datetime(2026, 5, 28, 10, 0, tzinfo=UTC)
-    cards = _build_attention_groups(
+    cards = _call_build(
         [_doc(merchant_id=m.id, fraud_score=None, uploaded_at=base)], repo
     )
 
@@ -283,7 +306,7 @@ def test_tier_reserved_for_later_chunks_and_is_none() -> None:
     repo.upsert(m)
 
     base = datetime(2026, 5, 28, 10, 0, tzinfo=UTC)
-    cards = _build_attention_groups(
+    cards = _call_build(
         [_doc(merchant_id=m.id, fraud_score=50, uploaded_at=base)], repo
     )
 
@@ -310,7 +333,7 @@ def test_card_carries_categorized_flags_with_decline_class_lifted() -> None:
             ],
         ),
     ]
-    cards = _build_attention_groups(docs, repo)
+    cards = _call_build(docs, repo)
 
     decline = cards[0].flags.decline_class
     assert [hf.code for hf in decline] == ["wash_deposit_suspected"]
@@ -326,7 +349,7 @@ def test_card_categorized_flags_empty_when_no_flags() -> None:
     repo.upsert(m)
 
     base = datetime(2026, 5, 28, 10, 0, tzinfo=UTC)
-    cards = _build_attention_groups(
+    cards = _call_build(
         [_doc(merchant_id=m.id, fraud_score=42, uploaded_at=base, flags=[])], repo
     )
 

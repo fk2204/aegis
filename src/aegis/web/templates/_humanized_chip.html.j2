@@ -11,11 +11,26 @@
    ``aegis.web._flag_labels``): decline -> ``bad``, material -> ``warn``,
    look_closer -> ``info``, context -> bare ``chip``.
 
-   When ``hf.cluster_signals`` is populated (only for
-   ``fraud_cluster_triangulated``), the chip is wrapped in a ``<details>``
-   so clicking it expands an inline list of the humanized constituent
-   signals. CSS gives the wrapper ``display: contents`` so the chip stays
-   inline in the surrounding flag-list flexbox until the worker opens it.
+   Three render branches, mutually exclusive:
+
+   1. ``hf.cluster_signals`` populated → ``<details class="chip-cluster">``
+      wraps the chip; opening expands the constituent humanized
+      signals as an inline list. Used only for
+      ``fraud_cluster_triangulated``.
+   2. ``hf.source_transactions`` populated (chunk 3) →
+      ``_evidence/_chip_drilldown.html.j2`` wraps the chip; opening
+      expands an inline evidence table of contributing source
+      transactions with cross-doc filename tagging. Populated by
+      ``categorize_flags(pattern_index=...)`` when the flag code
+      matches an emitted Pattern in the doc's ``pattern_analysis``
+      cache (migration 032).
+   3. neither set → plain ``<span class="chip">`` (no drill-down).
+
+   In practice (1) and (2) don't overlap: cluster_signals appears only
+   on ``fraud_cluster_triangulated``, whose Pattern entry carries no
+   source_ids on the detail string. The order above sets cluster as
+   the dominant branch defensively, so a future detector that emits
+   both wouldn't accidentally double-wrap.
 
    Inputs:
      - hf: HumanFlag (in scope from the calling for-loop)
@@ -29,6 +44,8 @@
     {% endfor %}
   </ul>
 </details>
+{% elif hf.source_transactions %}
+{% include "_evidence/_chip_drilldown.html.j2" %}
 {% else %}
 <span class="chip {{ hf.chip_class }}" data-flag-code="{{ hf.code }}" title="{{ hf.code }}">{{ hf.title }}{% if hf.detail %} <span class="chip-detail">· {{ hf.detail }}</span>{% endif %}</span>
 {% endif %}

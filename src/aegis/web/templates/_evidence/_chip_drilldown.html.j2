@@ -1,0 +1,54 @@
+{# Chip drill-down — wraps a humanized flag chip in <details> with a
+   flat evidence table of the contributing source transactions plus a
+   filename column for cross-doc tagging.
+
+   Active only when ``hf.source_transactions`` is populated. The chunk-3
+   ``PatternIndex`` builder (see ``aegis.web._attention_card``) fills
+   this for flags whose code matches an emitted ``Pattern`` in the
+   doc's ``AnalysisRow.pattern_analysis`` cache (migration 032). Codes
+   without a parser-side PatternAnalysis entry (tampering, soft
+   signals, confidence layer) fall through to the plain-span branch of
+   ``_humanized_chip.html.j2``.
+
+   Cross-doc filename column: on Review Queue cards every row's
+   filename is identical (one doc per card); on Today's merchant-level
+   cards the column tells workers which upload contributed each
+   contributing row. Flat-with-column was chosen over grouped-by-
+   filename because workers scan by date and amount before document
+   identity — matching the existing dossier evidence-panel pattern.
+
+   Wires into the standing evidence_copy.js: the ``.evidence-copy-btn``
+   inside this ``<details>`` is found by ``static/evidence_copy.js`` at
+   click time, the enclosing ``<details>`` is walked for every
+   ``table.ledger``, and the rows are written tab-separated to the
+   clipboard. No JS change required — the partial just emits the
+   shape the existing scanner expects.
+
+   Inputs:
+     - hf: HumanFlag with hf.source_transactions populated (in scope
+       from the calling for-loop in ``_humanized_chip.html.j2``)
+#}
+<details class="chip-drilldown">
+  <summary><span class="chip {{ hf.chip_class }}" data-flag-code="{{ hf.code }}" title="{{ hf.code }}">{{ hf.title }}{% if hf.detail %} <span class="chip-detail">· {{ hf.detail }}</span>{% endif %}</span></summary>
+  <div class="chip-drilldown-body">
+    <table class="ledger">
+      <thead>
+        <tr><th>Date</th><th>Description</th><th>Amount</th><th>Source</th><th>Document</th></tr>
+      </thead>
+      <tbody>
+        {% for t in hf.source_transactions|sort(attribute='posted_date') %}
+          <tr>
+            <td>{{ t.posted_date }}</td>
+            <td>{{ t.description }}</td>
+            <td class="amt">{{ t.amount | money }}</td>
+            <td class="cite">p{{ t.source_page }} L{{ t.source_line }}</td>
+            <td class="cite">{{ t.filename }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="evidence-copy-row">
+      <button type="button" class="evidence-copy-btn" data-flag-code="{{ hf.code }}">Copy rows</button>
+    </div>
+  </div>
+</details>

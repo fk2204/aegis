@@ -35,6 +35,8 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 from typing import Any, Final, Literal
 
 # ---------------------------------------------------------------------------
@@ -59,6 +61,28 @@ SeverityBand = Literal["decline", "material", "look_closer", "context"]
 
 
 @dataclass(frozen=True)
+class FlagSourceTransaction:
+    """One source transaction backing a flag's chip drill-down.
+
+    Chunk-3 presentation DTO. Carries the minimum fields the
+    ``_chip_drilldown.html.j2`` partial renders, plus ``document_id`` +
+    ``filename`` so the Today attention-queue's merchant-level chip
+    expanders can tag each row with which upload contributed it. On the
+    Review Queue (one doc per card) every row in a single chip shares
+    the same filename; on Today (one merchant, N docs) the column lets
+    workers scan which document a contributing row came from.
+    """
+
+    posted_date: date
+    description: str
+    amount: Decimal
+    source_page: int
+    source_line: int
+    document_id: str
+    filename: str
+
+
+@dataclass(frozen=True)
 class HumanFlag:
     """Renderable shape for a single flag chip.
 
@@ -70,6 +94,13 @@ class HumanFlag:
     — it carries the constituent ``HumanFlag`` objects parsed out of the
     cluster's detail string (``4_signals_a,b,c,d``) so the chip template
     can render them as an inline expander. ``None`` for every other flag.
+
+    ``source_transactions`` is the chunk-3 drill-down hook. Populated by
+    ``categorize_flags(pattern_index=...)`` for flag codes that match a
+    ``Pattern`` in the doc's ``AnalysisRow.pattern_analysis`` cache
+    (migration 032). ``None`` → chip renders as a plain span without
+    drill-down (tampering, soft signals, confidence layer, and any code
+    not emitted by ``analyze_patterns()`` fall through this branch).
     """
 
     code: str
@@ -78,6 +109,7 @@ class HumanFlag:
     category: CategoryName
     severity_band: SeverityBand
     cluster_signals: list[HumanFlag] | None = None
+    source_transactions: list[FlagSourceTransaction] | None = None
 
     @property
     def chip_class(self) -> str:
@@ -832,6 +864,7 @@ def humanize_audit_action(
 
 __all__ = [
     "CategoryName",
+    "FlagSourceTransaction",
     "HumanFlag",
     "SeverityBand",
     "humanize_audit_action",

@@ -14,11 +14,21 @@ directly, after which ``unique_flags`` becomes redundant.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
+from uuid import UUID
 
-from aegis.web._flag_labels import CategoryName, HumanFlag, humanize_flag
+from aegis.web._flag_labels import (
+    CategoryName,
+    FlagSourceTransaction,
+    HumanFlag,
+    humanize_flag,
+)
+
+if TYPE_CHECKING:
+    from aegis.parser.models import ClassifiedTransaction
+    from aegis.storage import AnalysisRow
 
 # Display order for category groups on the card. ``stacking`` and
 # ``fabrication`` come first because they're the deal-defining flag
@@ -153,7 +163,152 @@ class ReviewQueueCard:
     flags: CategorizedFlags
 
 
-def categorize_flags(raw_flags: list[str]) -> CategorizedFlags:
+@dataclass(frozen=True)
+class DocumentPatternContext:
+    """One document's worth of context for ``PatternIndex.build_for_merchant``.
+
+    Carries the doc's identity (``document_id`` + ``filename``) and the
+    persisted PatternAnalysis cache + the document's classified
+    transactions. ``analysis`` is None for docs whose AnalysisRow is
+    missing (orphaned parse_status=manual_review with no analyses row)
+    OR present but with ``pattern_analysis=None`` (legacy rows parsed
+    before stage 2 chunk 2 deployed). Either case contributes no
+    drill-down entries to the index — the chips for that doc's flags
+    degrade to plain spans.
+    """
+
+    document_id: UUID
+    filename: str
+    analysis: AnalysisRow | None
+    transactions: list[ClassifiedTransaction]
+
+
+@dataclass(frozen=True)
+class PatternIndex:
+    """Lookup table from flag code → contributing FlagSourceTransactions.
+
+    Built per attention/review card. Reads from the doc's persisted
+    ``AnalysisRow.pattern_analysis`` (migration 032, populated by stage
+    2 chunk 2) and resolves each Pattern's ``source_ids`` to the actual
+    ClassifiedTransaction rows, wrapping each as a
+    ``FlagSourceTransaction`` tagged with the contributing doc's
+    filename.
+
+    Two builders:
+
+    * ``build_for_document`` — per-doc form for the Review Queue, where
+      each card is one document. Every row in the resulting index
+      carries the same filename.
+    * ``build_for_merchant`` — per-merchant form for the Today
+      attention queue, where each card aggregates flags across the
+      merchant's docs. Cross-doc filename tagging lets workers scan
+      which upload contributed each row.
+
+    An empty index (no pattern_analysis available, or no patterns
+    inside) is the graceful-degradation contract: ``categorize_flags``
+    proceeds normally and the chips render as plain spans without
+    drill-down. Same shape as passing ``pattern_index=None``.
+    """
+
+    by_code: dict[str, list[FlagSourceTransaction]]
+
+    def get(self, code: str) -> list[FlagSourceTransaction] | None:
+        sources = self.by_code.get(code)
+        return sources if sources else None
+
+    @classmethod
+    def empty(cls) -> PatternIndex:
+        return cls(by_code={})
+
+    @classmethod
+    def build_for_document(
+        cls,
+        *,
+        analysis: AnalysisRow | None,
+        transactions: list[ClassifiedTransaction],
+        document_id: UUID,
+        filename: str,
+    ) -> PatternIndex:
+        """Build a per-document index. Empty when no PatternAnalysis cache."""
+        if analysis is None or analysis.pattern_analysis is None:
+            return cls.empty()
+        by_id: dict[UUID, ClassifiedTransaction] = {t.id: t for t in transactions}
+        by_code: dict[str, list[FlagSourceTransaction]] = {}
+        seen_per_code: dict[str, set[UUID]] = {}
+        for p in analysis.pattern_analysis.patterns:
+            for source_id in p.source_ids:
+                tx = by_id.get(source_id)
+                if tx is None:
+                    continue
+                if source_id in seen_per_code.setdefault(p.code, set()):
+                    continue
+                seen_per_code[p.code].add(source_id)
+                by_code.setdefault(p.code, []).append(
+                    _to_flag_source(
+                        tx, document_id=str(document_id), filename=filename
+                    )
+                )
+        return cls(by_code=by_code)
+
+    @classmethod
+    def build_for_merchant(
+        cls, contexts: list[DocumentPatternContext]
+    ) -> PatternIndex:
+        """Build a per-merchant index across N docs with filename tagging.
+
+        Within a single (doc, transaction_id) tuple, duplicates are
+        dropped per code so two Pattern entries with the same code in
+        one doc's analysis don't double-list the same source row.
+        Cross-doc duplicates (different doc but same code + tx_id) are
+        preserved — the filename column distinguishes them, and the
+        operator wants to see each contributing upload.
+        """
+        by_code: dict[str, list[FlagSourceTransaction]] = {}
+        seen_per_code: dict[str, set[tuple[UUID, UUID]]] = {}
+        for ctx in contexts:
+            if ctx.analysis is None or ctx.analysis.pattern_analysis is None:
+                continue
+            by_id: dict[UUID, ClassifiedTransaction] = {
+                t.id: t for t in ctx.transactions
+            }
+            for p in ctx.analysis.pattern_analysis.patterns:
+                for source_id in p.source_ids:
+                    tx = by_id.get(source_id)
+                    if tx is None:
+                        continue
+                    key = (ctx.document_id, source_id)
+                    if key in seen_per_code.setdefault(p.code, set()):
+                        continue
+                    seen_per_code[p.code].add(key)
+                    by_code.setdefault(p.code, []).append(
+                        _to_flag_source(
+                            tx,
+                            document_id=str(ctx.document_id),
+                            filename=ctx.filename,
+                        )
+                    )
+        return cls(by_code=by_code)
+
+
+def _to_flag_source(
+    tx: ClassifiedTransaction, *, document_id: str, filename: str
+) -> FlagSourceTransaction:
+    """Adapt a ClassifiedTransaction into the chip-drilldown DTO."""
+    return FlagSourceTransaction(
+        posted_date=tx.posted_date,
+        description=tx.description,
+        amount=tx.amount,
+        source_page=tx.source_page,
+        source_line=tx.source_line,
+        document_id=document_id,
+        filename=filename,
+    )
+
+
+def categorize_flags(
+    raw_flags: list[str],
+    pattern_index: PatternIndex | None = None,
+) -> CategorizedFlags:
     """Categorize and deduplicate a list of raw flag strings.
 
     Each raw flag is humanized via ``humanize_flag``. Duplicates (by
@@ -161,6 +316,14 @@ def categorize_flags(raw_flags: list[str]) -> CategorizedFlags:
     band is ``decline`` go into ``decline_class``; everything else into
     ``by_category`` under the flag's category in fixed display order.
     Empty category buckets are omitted from the result.
+
+    ``pattern_index`` is the chunk-3 drill-down hook. When provided,
+    every HumanFlag whose code matches an entry in the index is
+    decorated with the contributing ``FlagSourceTransaction`` list,
+    which ``_chip_drilldown.html.j2`` renders as an inline ``<details>``
+    evidence table. ``None`` (the legacy default) means no drill-down —
+    chips render as plain spans. The index itself degrades gracefully:
+    a code with no matching entry leaves the chip undecorated.
     """
     seen: set[str] = set()
     decline_class: list[HumanFlag] = []
@@ -171,6 +334,7 @@ def categorize_flags(raw_flags: list[str]) -> CategorizedFlags:
         if hf.code in seen:
             continue
         seen.add(hf.code)
+        hf = _maybe_attach_sources(hf, pattern_index)
         if hf.severity_band == "decline":
             decline_class.append(hf)
             continue
@@ -209,10 +373,30 @@ def derive_fraud_band(score: int | None) -> str:
     return "decline"
 
 
+def _maybe_attach_sources(
+    hf: HumanFlag, pattern_index: PatternIndex | None
+) -> HumanFlag:
+    """Return ``hf`` decorated with ``source_transactions`` if the index
+    has entries for its code; otherwise return ``hf`` unchanged.
+
+    The PatternIndex.get contract returns ``None`` for "no entries" so
+    we don't accidentally attach an empty list (which the template
+    would treat as "drill-down available with zero rows" — confusing).
+    """
+    if pattern_index is None:
+        return hf
+    sources = pattern_index.get(hf.code)
+    if not sources:
+        return hf
+    return replace(hf, source_transactions=sources)
+
+
 __all__ = [
     "CATEGORY_LABELS",
     "AttentionCard",
     "CategorizedFlags",
+    "DocumentPatternContext",
+    "PatternIndex",
     "ReviewQueueCard",
     "categorize_flags",
     "derive_fraud_band",

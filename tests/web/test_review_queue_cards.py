@@ -42,16 +42,25 @@ def _doc(
 
 class _StubDocRepo:
     """Stand-in for DocumentRepository — only ``list_transactions`` /
-    ``get_analysis`` would be hit by ``_collect_analyzed_for_merchant``.
-    Returning empty makes tier resolution fall back to None safely, so
-    these tests focus on the per-doc shape and tier caching without
-    requiring a fully wired scoring path."""
+    ``get_analysis`` / ``get_analyses_by_document_ids`` would be hit by
+    ``_collect_analyzed_for_merchant`` and the chunk-3 PatternIndex
+    prefetch in ``_build_review_queue_cards``.  Returning empty makes
+    tier resolution fall back to None safely AND the PatternIndex is
+    empty for every doc — these tests focus on the per-doc shape and
+    tier caching without requiring a fully wired scoring path or
+    populated pattern_analysis cache. Dedicated drill-down tests live
+    in ``test_pattern_index.py``."""
 
     def list_documents(self, **_: object) -> list[DocumentRow]:
         return []
 
     def get_analysis(self, *_: object, **__: object) -> object | None:
         return None
+
+    def get_analyses_by_document_ids(
+        self, document_ids: list[object]
+    ) -> dict[object, object]:
+        return {}
 
     def list_transactions(self, *_: object, **__: object) -> list[object]:
         return []

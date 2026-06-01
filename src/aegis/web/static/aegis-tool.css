@@ -370,6 +370,68 @@
   display: inline-flex;
 }
 
+/* Chip drill-down wrapper — chunk-3 inline evidence expander on Today
+ * and Review Queue chips. Same `display: contents` trick as
+ * .chip-cluster so the <details> is invisible to layout and the
+ * summary's chip stays inline in the surrounding flag-list flexbox.
+ * On click, the body breaks to a new flex row at full width with a
+ * subtle paper-tone surface + accent border so it reads as "this is
+ * evidence under that chip" rather than a new section. */
+.dossier-page .chip-drilldown {
+  display: contents;
+}
+.dossier-page .chip-drilldown > summary {
+  display: inline-flex;
+  list-style: none;
+  cursor: pointer;
+}
+.dossier-page .chip-drilldown > summary::-webkit-details-marker {
+  display: none;
+}
+.dossier-page .chip-drilldown > summary::marker {
+  display: none;
+  content: "";
+}
+.dossier-page .chip-drilldown:not([open]) > .chip-drilldown-body {
+  display: none;
+}
+.dossier-page .chip-drilldown[open] > .chip-drilldown-body {
+  flex-basis: 100%;
+  display: block;
+  margin: 8px 0 4px 16px;
+  padding: 10px 12px 8px;
+  background: color-mix(in oklch, var(--paper) 96%, var(--ink-3));
+  border-left: 2px solid color-mix(in oklch, var(--accent) 35%, var(--rule));
+  border-radius: 3px;
+}
+.dossier-page .chip-drilldown-body .ledger {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+.dossier-page .chip-drilldown-body .ledger th,
+.dossier-page .chip-drilldown-body .ledger td {
+  padding: 4px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--rule);
+}
+.dossier-page .chip-drilldown-body .ledger th {
+  font-weight: 600;
+  color: var(--ink-3);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dossier-page .chip-drilldown-body .ledger td.amt {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.dossier-page .chip-drilldown-body .ledger td.cite {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-family: var(--mono);
+}
+
 /* Evidence-copy button — sits at the bottom-right of each <details>
  * evidence panel. Captures every <table class="ledger"> in its
  * enclosing <details> and writes the rows as tab-separated text to

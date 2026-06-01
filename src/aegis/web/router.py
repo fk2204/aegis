@@ -106,6 +106,8 @@ from aegis.storage import (
 from aegis.web._attention_card import (
     CATEGORY_LABELS,
     AttentionCard,
+    DocumentPatternContext,
+    PatternIndex,
     ReviewQueueCard,
     categorize_flags,
     derive_fraud_band,
@@ -264,7 +266,9 @@ async def index(
     ]
 
     attention_docs = docs.list_documents(parse_status="manual_review", limit=40)
-    attention = _build_attention_groups(attention_docs, merchants_repo, max_groups=8)
+    attention = _build_attention_groups(
+        attention_docs, merchants_repo, docs, max_groups=8
+    )
     # Decorate each card with its deal tier — runs score_deal per
     # merchant. Capped at 8 cards so the cost stays bounded; failures
     # leave tier=None so the queue still renders.
@@ -345,6 +349,7 @@ def _build_funnel_rows(
 def _build_attention_groups(
     documents: list[DocumentRow],
     merchants_repo: MerchantRepository,
+    docs: DocumentRepository,
     *,
     max_groups: int = 8,
 ) -> list[AttentionCard]:
@@ -373,8 +378,23 @@ def _build_attention_groups(
     Documents with merchant_id=None bucket under a single "—" card so
     they stay visible rather than being scattered as multiple unlabeled
     rows.
+
+    Chunk 3: builds a per-merchant ``PatternIndex`` from the contributing
+    docs' ``AnalysisRow.pattern_analysis`` caches (migration 032), with
+    cross-doc filename tagging on each source row. The index decorates
+    every ``HumanFlag`` whose code matches an emitted Pattern so the
+    chip template renders an inline ``<details>`` drill-down. Docs whose
+    cache is None (legacy pre-chunk-2 rows) contribute no entries and
+    their flags degrade to plain spans — graceful by construction.
     """
+    # Pre-fetch all docs' analyses in one batched query. Transactions
+    # are fetched lazily below, only for docs whose pattern_analysis is
+    # populated, so legacy rows skip the per-doc transactions round-trip.
+    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in documents])
+    transactions_by_doc: dict[UUID, list[ClassifiedTransaction]] = {}
+
     groups: dict[UUID | None, dict[str, Any]] = {}
+    group_docs: dict[UUID | None, list[DocumentRow]] = {}
 
     for d in documents:
         key = d.merchant_id
@@ -398,7 +418,9 @@ def _build_attention_groups(
                 "documents": [],
                 "_seen_flags": [],
             }
+            group_docs[key] = []
 
+        group_docs[key].append(d)
         flags = list(d.all_flags) if d.all_flags else []
         groups[key]["documents"].append(
             {
@@ -414,13 +436,16 @@ def _build_attention_groups(
                 seen.append(f)
 
     out: list[AttentionCard] = []
-    for g in groups.values():
+    for key, g in groups.items():
         scores = [
             doc["fraud_score"]
             for doc in g["documents"]
             if doc["fraud_score"] is not None
         ]
         worst = max(scores) if scores else None
+        pattern_index = _build_merchant_pattern_index(
+            group_docs[key], analyses_by_doc, transactions_by_doc, docs
+        )
         out.append(
             AttentionCard(
                 merchant_id=g["merchant_id"],
@@ -433,10 +458,52 @@ def _build_attention_groups(
                 tier=None,
                 doc_count=len(g["documents"]),
                 documents=g["documents"],
-                flags=categorize_flags(g["_seen_flags"]),
+                flags=categorize_flags(
+                    g["_seen_flags"], pattern_index=pattern_index
+                ),
             )
         )
     return out
+
+
+def _build_merchant_pattern_index(
+    docs_in_group: list[DocumentRow],
+    analyses_by_doc: dict[UUID, AnalysisRow],
+    transactions_cache: dict[UUID, list[ClassifiedTransaction]],
+    docs: DocumentRepository,
+) -> PatternIndex:
+    """Build a per-merchant PatternIndex across the group's docs.
+
+    ``transactions_cache`` is shared across groups so a doc that
+    appeared in an earlier group (shouldn't happen in practice since
+    documents partition by merchant_id, but the cache is cheap) won't
+    re-query. Transactions are only fetched for docs whose analysis
+    cache is populated — legacy rows skip the round-trip.
+    """
+    contexts: list[DocumentPatternContext] = []
+    for d in docs_in_group:
+        analysis = analyses_by_doc.get(d.id)
+        if analysis is None or analysis.pattern_analysis is None:
+            contexts.append(
+                DocumentPatternContext(
+                    document_id=d.id,
+                    filename=d.original_filename,
+                    analysis=None,
+                    transactions=[],
+                )
+            )
+            continue
+        if d.id not in transactions_cache:
+            transactions_cache[d.id] = docs.list_transactions(d.id)
+        contexts.append(
+            DocumentPatternContext(
+                document_id=d.id,
+                filename=d.original_filename,
+                analysis=analysis,
+                transactions=transactions_cache[d.id],
+            )
+        )
+    return PatternIndex.build_for_merchant(contexts)
 
 
 def _compute_merchant_tier(
@@ -514,7 +581,17 @@ def _build_review_queue_cards(
     every card from a single merchant. The cache keyed off
     ``merchant_id`` here ensures a queue with 10 docs from one merchant
     runs score_deal exactly once for that merchant.
+
+    Chunk 3: builds a per-document ``PatternIndex`` from the doc's
+    ``AnalysisRow.pattern_analysis`` cache (migration 032) so the chip
+    template renders inline ``<details>`` drill-downs of contributing
+    source transactions. Docs whose cache is None (legacy pre-chunk-2
+    rows) produce an empty index and their chips degrade to plain
+    spans — graceful by construction.
     """
+    # Pre-fetch analyses in one batched query; transactions are
+    # fetched per-doc lazily (only for docs with a populated cache).
+    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in documents])
     tier_cache: dict[UUID, str | None] = {}
     cards: list[ReviewQueueCard] = []
 
@@ -537,6 +614,18 @@ def _build_review_queue_cards(
                     )
                 tier = tier_cache[d.merchant_id]
 
+        analysis = analyses_by_doc.get(d.id)
+        if analysis is not None and analysis.pattern_analysis is not None:
+            transactions = docs.list_transactions(d.id)
+        else:
+            transactions = []
+        pattern_index = PatternIndex.build_for_document(
+            analysis=analysis,
+            transactions=transactions,
+            document_id=d.id,
+            filename=d.original_filename,
+        )
+
         raw_flags = list(d.all_flags) if d.all_flags else []
         cards.append(
             ReviewQueueCard(
@@ -551,7 +640,7 @@ def _build_review_queue_cards(
                 merchant_naics=merchant.industry_naics if merchant else None,
                 requested_amount=merchant.requested_amount if merchant else None,
                 tier=tier,
-                flags=categorize_flags(raw_flags),
+                flags=categorize_flags(raw_flags, pattern_index=pattern_index),
             )
         )
     return cards
