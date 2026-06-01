@@ -103,16 +103,21 @@ def _parse_headers(sql_body: str) -> tuple[str, int | None, int | None]:
     description = ""
     expect_rows: int | None = None
     expect_rows_min: int | None = None
+    # Each header binds to the FIRST matching line only. Otherwise a
+    # commentary line that quotes a header token (e.g.
+    # "EXPECT_ROWS_MIN: 1 is the load-bearing assertion") re-triggers
+    # parsing on the prose and crashes int() — see
+    # migration-032-populated.sql.
     for raw in sql_body.splitlines():
         line = raw.strip()
         if not line.startswith("--"):
             break
         body = line.lstrip("-").strip()
-        if body.upper().startswith("EXPECT_ROWS:"):
+        if body.upper().startswith("EXPECT_ROWS:") and expect_rows is None:
             expect_rows = int(body.split(":", 1)[1].strip())
-        elif body.upper().startswith("EXPECT_ROWS_MIN:"):
+        elif body.upper().startswith("EXPECT_ROWS_MIN:") and expect_rows_min is None:
             expect_rows_min = int(body.split(":", 1)[1].strip())
-        elif body.upper().startswith("DESCRIPTION:"):
+        elif body.upper().startswith("DESCRIPTION:") and not description:
             description = body.split(":", 1)[1].strip()
     return description, expect_rows, expect_rows_min
 
