@@ -85,7 +85,11 @@ from aegis.merchants.repository import (
 )
 from aegis.ops.operators import resolve_operator_email
 from aegis.parser.models import ClassifiedTransaction
-from aegis.parser.patterns import analyze_patterns
+from aegis.parser.patterns import (
+    PatternAnalysis,
+    analyze_patterns,
+    pattern_analysis_from_dto,
+)
 from aegis.scoring.match_funders import match_funder
 from aegis.scoring.models import FunderMatch, ScoreInput
 from aegis.scoring.multi_month import (
@@ -2242,6 +2246,40 @@ def _parse_funder_ids(values: list[str]) -> list[UUID]:
     return out
 
 
+def _dossier_pattern_analysis(
+    latest_analysis: AnalysisRow,
+    latest_transactions: list[ClassifiedTransaction],
+) -> PatternAnalysis | None:
+    """Return a ``PatternAnalysis`` for the dossier render — prefer the
+    stored cache, recompute as fallback for legacy rows.
+
+    Closes backlog item #6 — the dossier no longer pays the
+    ``analyze_patterns()`` cost on every render. ``AnalysisRow.pattern_analysis``
+    is populated on every new analysis since stage 2 chunk 2 deployed
+    (migration 032, 2026-05-29), so the common path is one DTO →
+    dataclass conversion. Rows analyzed before chunk 2 still carry
+    ``pattern_analysis=None`` and fall back to live recomputation, so
+    the dossier render keeps working across the legacy / fresh split
+    until those rows age out.
+
+    Recomputation is wrapped in ``try/except → None`` mirroring the
+    historical call-site behavior: defensive against malformed
+    transactions so the dossier render never crashes on a single
+    statement. The ``from_dto`` path doesn't need a guard — the DTO
+    was validated by Pydantic at storage time.
+    """
+    if latest_analysis.pattern_analysis is not None:
+        return pattern_analysis_from_dto(latest_analysis.pattern_analysis)
+    try:
+        return analyze_patterns(
+            latest_transactions,
+            latest_analysis.statement_period_start,
+            latest_analysis.statement_period_end,
+        )
+    except Exception:
+        return None
+
+
 @router.get("/merchants/{merchant_id}", response_class=HTMLResponse)
 async def merchant_detail(
     request: Request,
@@ -2320,23 +2358,17 @@ async def merchant_detail(
             else _select_default_bundle(all_items)
         )
         bundle_summaries = _build_bundle_summaries(bundle_options, active_bundle)
-        # Pattern cards are re-derived on view rather than persisted: the
-        # parser emits Pattern dataclasses whose fields (severity, detail,
-        # source_ids) aren't on AnalysisRow yet, so the dashboard recomputes
-        # from the stored transactions. ~100ms overhead for typical
-        # statements — cheap relative to the value of source-row drill-down.
-        # Phase 9: pattern_analysis is also feed into score_input so the
-        # counterparty / detector signals reach the scorer.
+        # Pattern analysis is sourced from the AnalysisRow cache
+        # populated by stage 2 chunk 2 (migration 032), with a
+        # transactions-based recomputation as fallback for legacy rows
+        # — see ``_dossier_pattern_analysis``. Also feeds ``score_input``
+        # so the counterparty / detector signals reach the scorer
+        # (master plan §9).
         latest_transactions = docs.list_transactions(latest_doc.id)
         stacking = build_stacking_card(latest_analysis, latest_transactions)
-        try:
-            pattern_analysis = analyze_patterns(
-                latest_transactions,
-                latest_analysis.statement_period_start,
-                latest_analysis.statement_period_end,
-            )
-        except Exception:
-            pattern_analysis = None
+        pattern_analysis = _dossier_pattern_analysis(
+            latest_analysis, latest_transactions
+        )
         pattern_cards = list(
             build_pattern_cards(pattern_analysis, latest_transactions)
         )
@@ -2528,18 +2560,16 @@ def _build_pdf_dossier_context(
         items = _collect_analyzed_for_merchant(docs, merchant.id, bundle=None)
         active_bundle = _select_default_bundle(all_items)
 
-        # Phase 9: derive pattern_analysis BEFORE score_input so the
-        # counterparty + Phase 9 detector signals reach the scorer.
+        # Pattern analysis sourced from the AnalysisRow cache with a
+        # recomputation fallback for legacy rows
+        # (``_dossier_pattern_analysis``). Built BEFORE score_input so
+        # the counterparty + master-plan §9 detector signals reach the
+        # scorer.
         latest_transactions = docs.list_transactions(latest_doc.id)
         stacking = build_stacking_card(latest_analysis, latest_transactions)
-        try:
-            pattern_analysis = analyze_patterns(
-                latest_transactions,
-                latest_analysis.statement_period_start,
-                latest_analysis.statement_period_end,
-            )
-        except Exception:
-            pattern_analysis = None
+        pattern_analysis = _dossier_pattern_analysis(
+            latest_analysis, latest_transactions
+        )
         pattern_cards = list(build_pattern_cards(pattern_analysis, latest_transactions))
 
         if items:
