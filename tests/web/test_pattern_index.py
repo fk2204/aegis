@@ -35,7 +35,6 @@ from aegis.web._attention_card import (
 )
 from aegis.web._flag_labels import FlagSourceTransaction
 
-
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
@@ -437,7 +436,7 @@ def test_categorize_flags_without_pattern_index_leaves_source_transactions_none(
     HumanFlag emerges with source_transactions=None."""
     raw = [
         "[PATTERN] mca_stacking: 1 MCA position(s) detected",
-        "[META] incremental_saves: 2 EOF markers",
+        "[META] page_layer_anomaly: 2 page(s) have an off-mode /Contents stream count",
     ]
     result = categorize_flags(raw)
 
@@ -471,7 +470,7 @@ def test_categorize_flags_with_pattern_index_decorates_matching_codes() -> None:
 
     raw = [
         "[PATTERN] mca_stacking: 1 MCA position(s) detected",
-        "[META] incremental_saves: 2 EOF markers",
+        "[META] page_layer_anomaly: 2 page(s) have an off-mode /Contents stream count",
     ]
     result = categorize_flags(raw, pattern_index=idx)
 
@@ -482,7 +481,7 @@ def test_categorize_flags_with_pattern_index_decorates_matching_codes() -> None:
     assert stacking_hf.source_transactions[0].filename == "march.pdf"
 
     tampering_hf = result.by_category["tampering"][0]
-    assert tampering_hf.code == "incremental_saves"
+    assert tampering_hf.code == "page_layer_anomaly"
     assert tampering_hf.source_transactions is None
 
 
