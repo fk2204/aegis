@@ -22,7 +22,6 @@ every criterion. The fix splits the color rule onto
 
 from __future__ import annotations
 
-from decimal import Decimal
 from uuid import uuid4
 
 from aegis.funders.models import FunderRow
