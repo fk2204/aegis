@@ -83,7 +83,7 @@ def test_returns_cache_converted_to_dataclass_when_populated() -> None:
     )
     analysis = _analysis(pattern_analysis_dto=dto)
 
-    result = _dossier_pattern_analysis(analysis, transactions=[])
+    result = _dossier_pattern_analysis(analysis, latest_transactions=[])
 
     assert isinstance(result, PatternAnalysis)
     assert [p.code for p in result.patterns] == ["wash_deposit_suspected"]
@@ -99,7 +99,7 @@ def test_falls_back_to_recompute_when_cache_is_none() -> None:
     crashing."""
     analysis = _analysis(pattern_analysis_dto=None)
 
-    result = _dossier_pattern_analysis(analysis, transactions=[])
+    result = _dossier_pattern_analysis(analysis, latest_transactions=[])
 
     assert isinstance(result, PatternAnalysis)
     assert result.patterns == []
@@ -140,7 +140,7 @@ def test_cache_path_does_not_match_transactions_used() -> None:
         ),
     ]
 
-    result = _dossier_pattern_analysis(analysis, transactions=transactions)
+    result = _dossier_pattern_analysis(analysis, latest_transactions=transactions)
 
     assert result is not None
     assert [p.code for p in result.patterns] == ["round_number_deposits"]
