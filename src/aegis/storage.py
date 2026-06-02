@@ -79,6 +79,20 @@ class DocumentRow(_StrictModel):
     parsed_at: datetime | None = None
     uploaded_by: str = "system"
 
+    # PDF retention chunk B (migration 033). All four nullable for
+    # legacy rows (pre-chunk-B parses, ~30 docs as of 2026-06-02) AND
+    # rows where the storage step failed in a way that left no
+    # ciphertext on Supabase. Populated together atomically by
+    # ``persist_storage_metadata`` — the partial index on
+    # ``retention_until WHERE storage_path IS NOT NULL`` depends on
+    # the four columns moving as one (no row should ever carry
+    # ``storage_path != NULL`` with ``retention_until = NULL``; see
+    # ``scripts/db_checks/migration-033-no-retained-forever-anomaly.sql``).
+    storage_path: str | None = None
+    sha256_original: str | None = None
+    encryption_key_version: int | None = None
+    retention_until: datetime | None = None
+
 
 class AnalysisRow(_StrictModel):
     """Application view of a row in the ``analyses`` table.
@@ -208,6 +222,54 @@ class DocumentRepository(Protocol):
 
     def count_by_parse_status(self) -> dict[str, int]:
         """Return a {parse_status -> count} histogram across all documents."""
+
+    # PDF retention chunk B (migration 033) ---------------------------------
+
+    def persist_storage_metadata(
+        self,
+        document_id: UUID,
+        *,
+        storage_path: str,
+        sha256_original: str,
+        encryption_key_version: int,
+        retention_until: datetime,
+    ) -> None:
+        """Atomic update of all four PDF-storage columns together.
+
+        Single ``UPDATE documents SET ... WHERE id = ?`` so the partial
+        index on ``retention_until WHERE storage_path IS NOT NULL``
+        never observes a half-state where ``storage_path`` is set
+        without a ``retention_until`` (which would be a row retained
+        forever — see
+        ``scripts/db_checks/migration-033-no-retained-forever-anomaly.sql``).
+
+        Worker calls this only AFTER ``storage_objects.upload`` returns
+        successfully. If this method raises, the caller treats the
+        outcome as a transient failure and quarantines the ciphertext.
+        """
+
+    def list_retention_expired(
+        self, *, limit: int = 1000
+    ) -> list[DocumentRow]:
+        """Return docs whose ``retention_until < NOW()`` AND
+        ``storage_path IS NOT NULL``, oldest-expiry first, bounded by
+        ``limit``.
+
+        Powers the chunk-E retention sweep cron — only rows that still
+        have ciphertext to delete are scanned (the partial index
+        ``idx_documents_retention_until`` excludes legacy /
+        already-swept rows so the sweep doesn't pay for scanning
+        the full table).
+        """
+
+    def clear_storage_path(self, document_id: UUID) -> None:
+        """Set ``storage_path = NULL`` on the named document.
+
+        Used by the chunk-E sweep after the blob has been deleted from
+        Supabase Storage AND ``confirm_absent`` returned True. The
+        ``retention_until`` column is left as-is — preserved as a
+        forensic record of what the retention basis was at sweep time.
+        """
 
 
 # In-memory implementation -----------------------------------------------------
@@ -342,6 +404,46 @@ class InMemoryDocumentRepository:
         doc = self.get_document(document_id)
         doc.parse_status = "error"
         doc.error_detail = detail
+        self._docs[document_id] = doc
+
+    # PDF retention chunk B -------------------------------------------------
+
+    def persist_storage_metadata(
+        self,
+        document_id: UUID,
+        *,
+        storage_path: str,
+        sha256_original: str,
+        encryption_key_version: int,
+        retention_until: datetime,
+    ) -> None:
+        doc = self.get_document(document_id)
+        # Single atomic mutation — in-memory backend writes all four
+        # fields at once, mirroring the production single-UPDATE contract.
+        doc.storage_path = storage_path
+        doc.sha256_original = sha256_original
+        doc.encryption_key_version = encryption_key_version
+        doc.retention_until = retention_until
+        self._docs[document_id] = doc
+
+    def list_retention_expired(
+        self, *, limit: int = 1000
+    ) -> list[DocumentRow]:
+        now = datetime.now(UTC)
+        candidates = [
+            d for d in self._docs.values()
+            if d.storage_path is not None
+            and d.retention_until is not None
+            and d.retention_until < now
+        ]
+        candidates.sort(key=lambda d: d.retention_until or now)
+        return candidates[:limit]
+
+    def clear_storage_path(self, document_id: UUID) -> None:
+        doc = self.get_document(document_id)
+        doc.storage_path = None
+        # retention_until preserved per the sweep design — forensic
+        # record of what triggered the deletion.
         self._docs[document_id] = doc
 
 
@@ -578,8 +680,106 @@ class SupabaseDocumentRepository:
             }
         ).eq("id", str(document_id)).execute()
 
+    # PDF retention chunk B (migration 033) ---------------------------------
+
+    def persist_storage_metadata(
+        self,
+        document_id: UUID,
+        *,
+        storage_path: str,
+        sha256_original: str,
+        encryption_key_version: int,
+        retention_until: datetime,
+    ) -> None:
+        """Single-UPDATE atomic write of all four PDF-storage columns.
+
+        Atomicity is the load-bearing contract here:
+        ``idx_documents_retention_until`` is a partial index defined
+        ``WHERE storage_path IS NOT NULL``, and the
+        ``no-retained-forever-anomaly`` db_check asserts every row
+        with ``storage_path != NULL`` carries a non-NULL
+        ``retention_until``. A multi-UPDATE that wrote storage_path
+        first and crashed before writing retention_until would create
+        an anomaly row — Postgres single-UPDATE semantics prevent it.
+        """
+        get_supabase().table("documents").update(
+            {
+                "storage_path": storage_path,
+                "sha256_original": sha256_original,
+                "encryption_key_version": encryption_key_version,
+                "retention_until": retention_until.isoformat(),
+            }
+        ).eq("id", str(document_id)).execute()
+
+    def list_retention_expired(
+        self, *, limit: int = 1000
+    ) -> list[DocumentRow]:
+        """Scan the partial index ``idx_documents_retention_until``
+        for rows whose retention has passed. Oldest expiry first so
+        the chunk-E sweep makes deterministic per-run progress on a
+        large backlog."""
+        now_iso = datetime.now(UTC).isoformat()
+        result = (
+            get_supabase()
+            .table("documents")
+            .select("*")
+            .lt("retention_until", now_iso)
+            .not_.is_("storage_path", "null")
+            .order("retention_until", desc=False)
+            .limit(limit)
+            .execute()
+        )
+        return [
+            _doc_row_from_db(cast(dict[str, Any], row))
+            for row in cast(list[dict[str, Any]], result.data or [])
+        ]
+
+    def clear_storage_path(self, document_id: UUID) -> None:
+        """Single-UPDATE: ``storage_path = NULL``. ``retention_until``
+        is intentionally NOT cleared — preserved as a forensic record
+        of what triggered the deletion (the chunk-E sweep's audit row
+        cites it)."""
+        get_supabase().table("documents").update(
+            {"storage_path": None}
+        ).eq("id", str(document_id)).execute()
+
 
 # Internal helpers -------------------------------------------------------------
+
+
+def _doc_row_from_db(row: dict[str, Any]) -> DocumentRow:
+    """Project a Supabase ``documents`` row into the ``DocumentRow``
+    model. Used by ``list_retention_expired`` which returns rows
+    rather than dicts so the chunk-E sweep code can stay typed.
+    """
+    return DocumentRow(
+        id=UUID(str(row["id"])),
+        file_hash=str(row["file_hash"]),
+        byte_size=int(row["byte_size"]),
+        original_filename=str(row["original_filename"]),
+        merchant_id=(
+            UUID(str(row["merchant_id"])) if row.get("merchant_id") else None
+        ),
+        parse_status=cast(ParseStatus, row.get("parse_status", "pending")),
+        fraud_score=row.get("fraud_score"),
+        fraud_score_breakdown=row.get("fraud_score_breakdown") or {},
+        all_flags=list(row.get("all_flags") or []),
+        metadata_flags=list(row.get("metadata_flags") or []),
+        error_detail=row.get("error_detail"),
+        uploaded_at=datetime.fromisoformat(row["uploaded_at"]),
+        parsed_at=(
+            datetime.fromisoformat(row["parsed_at"])
+            if row.get("parsed_at") else None
+        ),
+        uploaded_by=str(row.get("uploaded_by") or "system"),
+        storage_path=row.get("storage_path"),
+        sha256_original=row.get("sha256_original"),
+        encryption_key_version=row.get("encryption_key_version"),
+        retention_until=(
+            datetime.fromisoformat(row["retention_until"])
+            if row.get("retention_until") else None
+        ),
+    )
 
 
 def _build_analysis(

@@ -16,7 +16,9 @@ Boot: ``make worker`` runs ``arq aegis.workers.WorkerSettings``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -69,6 +71,8 @@ from aegis.parser.processor import (
     detect_processor,
     run_processor_pipeline,
 )
+from aegis import storage_objects
+from aegis.crypto import CryptoConfigError, current_key_version, encrypt_pdf
 from aegis.storage import DocumentNotFoundError, DocumentRepository
 
 _log = get_logger(__name__)
@@ -170,10 +174,16 @@ async def parse_document(
         )
         if hasattr(repository, "mark_error"):
             repository.mark_error(document_id, f"{type(exc).__name__}: {exc}")
-        raise
-    finally:
+        # Parse failed: delete local plaintext (no storage step ran;
+        # nothing to encrypt or audit beyond the parse error). Day-one
+        # disk-hygiene rule preserved on the failure path.
         _safe_unlink(pdf_path)
+        raise
 
+    # Parse SUCCEEDED. Persist + audit the parse outcome BEFORE the
+    # storage step runs. The storage step is best-effort: a failure
+    # there must not erase the fact that we have a valid parse on
+    # record.
     repository.persist_parse_result(document_id, result=result)
 
     audit.record(
@@ -187,6 +197,25 @@ async def parse_document(
             "transaction_count": len(result.classified),
             "flag_count": len(result.all_flags),
         },
+    )
+
+    # PDF retention chunk B — encrypted-storage step.
+    # Reads the plaintext one more time, computes sha256_original,
+    # encrypts under the current key version, uploads to Supabase
+    # Storage, and persists the four storage columns atomically. Manages
+    # local-file cleanup in EVERY outcome (success / transient
+    # quarantine / terminal dead-letter) so the day-one "no plaintext
+    # at rest past parse" rule is preserved across the failure paths.
+    # Re-fetches the doc row so the storage_path picks up any
+    # merchant_id that persist_parse_result associated.
+    doc_after_persist = repository.get_document(document_id)
+    await _try_encrypted_storage_step(
+        pdf_path=pdf_path,
+        document_id=document_id,
+        merchant_id=doc_after_persist.merchant_id,
+        file_hash=doc_after_persist.file_hash,
+        repository=repository,
+        audit=audit,
     )
 
     return {
@@ -238,8 +267,6 @@ async def _run_processor_branch(
             repository.mark_error(document_id, f"{type(exc).__name__}: {exc}")
         _safe_unlink(pdf_path)
         raise
-    finally:
-        _safe_unlink(pdf_path)
 
     details: dict[str, Any] = {
         "brand": brand,
@@ -274,6 +301,24 @@ async def _run_processor_branch(
         # aggregates to the processor_statements table here.
         repository.mark_processor_parsed(document_id, parse_status=result.parse_status)
 
+    # PDF retention chunk B — encrypted-storage step (processor branch).
+    # Same outcome contract as parse_document's bank-statement path:
+    # success → blob uploaded + metadata persisted + plaintext deleted;
+    # transient failure → ciphertext quarantined + plaintext deleted;
+    # terminal failure → dead-letter + plaintext deleted. Passes
+    # ``plaintext_bytes`` since the processor pipeline already read the
+    # PDF at the top of this function — avoids a second disk read.
+    doc_after = repository.get_document(document_id)
+    await _try_encrypted_storage_step(
+        pdf_path=pdf_path,
+        document_id=document_id,
+        merchant_id=doc_after.merchant_id,
+        file_hash=doc_after.file_hash,
+        repository=repository,
+        audit=audit,
+        plaintext_bytes=pdf_bytes,
+    )
+
     return {
         "document_id": str(document_id),
         "parse_status": result.parse_status,
@@ -286,6 +331,13 @@ def _safe_unlink(pdf_path: str) -> None:
 
     The PDF is the secret here — leaving it behind is the bigger risk
     than failing a single job because of a stale handle.
+
+    Chunk B: this helper is now called explicitly at the end of each
+    parse outcome path (success after storage step, parse failure,
+    storage transient quarantine, storage terminal dead-letter). The
+    pre-chunk-B unconditional ``finally: _safe_unlink`` block has been
+    removed — having the unlink in finally would have deleted the
+    plaintext BEFORE the storage step could read it.
     """
     p = Path(pdf_path)
     if not p.exists():
@@ -294,6 +346,342 @@ def _safe_unlink(pdf_path: str) -> None:
         p.unlink()
     except OSError:
         _log.warning("worker.cleanup_failed path=%s", pdf_path)
+
+
+# ---------------------------------------------------------------------------
+# PDF retention chunk B — encrypted storage step
+# ---------------------------------------------------------------------------
+#
+# Called once per successful parse (bank or processor pipeline) AFTER
+# ``persist_parse_result`` and the ``document.parse.complete`` audit
+# row. Manages plaintext cleanup in EVERY outcome path so the day-one
+# "no plaintext at rest past parse" disk-hygiene rule is preserved.
+#
+# Three outcome classes:
+#
+#   SUCCESS:    encrypt → upload → persist_storage_metadata succeed;
+#               audit ``document.original_stored``; plaintext unlinked.
+#
+#   TRANSIENT:  ``storage_objects.upload`` raises (network / 5xx /
+#               timeout / auth) OR ``persist_storage_metadata`` raises
+#               (DB blip). Ciphertext (already in memory) is written
+#               to ``quarantine/{document_id}.pdf.enc`` + ``.meta``
+#               sidecar; audit ``document.original_storage_failed``
+#               (reason=upload_failed or persist_failed); plaintext
+#               unlinked. The chunk-E reconcile cron retries from the
+#               quarantined ciphertext — NEVER re-reads plaintext,
+#               NEVER re-encrypts (it's already sealed).
+#
+#   TERMINAL:  sha256(plaintext) != documents.file_hash (the on-disk
+#               file changed between upload and parse-complete) OR
+#               ``encrypt_pdf`` raises ``CryptoConfigError`` (env-var
+#               key missing/malformed). Artifacts written to
+#               ``quarantine/dead-letter/`` so the reconcile cron
+#               (which scans ``quarantine/`` NON-RECURSIVELY) NEVER
+#               picks them up for retry. The audit row's
+#               ``outcome: dead_letter`` field is the operator-facing
+#               signal that manual review is required.
+#
+# Never raises — the parse is already persisted by the time this runs
+# and the worker shouldn't fail the job over a storage problem. The
+# return value is informational only (used by tests + future
+# observability metrics).
+
+
+def _build_storage_path(merchant_id: UUID | None, document_id: UUID) -> str:
+    """Stable Supabase-Storage path. Orphan docs (merchant_id=None at
+    parse-complete time) land under ``unassigned/``; merchant-linked
+    docs under ``merchants/{merchant_id}/``. Path is recorded
+    verbatim in ``documents.storage_path`` and is the lookup key for
+    the chunk-C view route + chunk-E sweep cron."""
+    if merchant_id is None:
+        return f"unassigned/documents/{document_id}.pdf.enc"
+    return f"merchants/{merchant_id}/documents/{document_id}.pdf.enc"
+
+
+def _quarantine_dir() -> Path:
+    """Quarantine directory — same filesystem as plaintext upload dir
+    so a future quarantine-to-disk write doesn't pay for a cross-FS
+    move. Reconcile cron scans this directory NON-RECURSIVELY."""
+    return get_settings().aegis_upload_dir / "quarantine"
+
+
+def _dead_letter_dir() -> Path:
+    """Dead-letter directory — subdirectory of ``quarantine/`` so the
+    reconcile cron's non-recursive scan naturally skips terminal
+    failures. Operator inspects these manually."""
+    return _quarantine_dir() / "dead-letter"
+
+
+def _write_quarantine(
+    document_id: UUID,
+    *,
+    ciphertext: bytes,
+    meta: dict[str, Any],
+) -> None:
+    """Write ciphertext blob + ``.meta`` sidecar to ``quarantine/``.
+
+    CIPHERTEXT ONLY — never plaintext. The whole project exists
+    because plaintext-at-rest was the failure mode; quarantining the
+    plaintext to retry the upload would silently reintroduce it.
+    The sidecar carries everything reconcile needs to retry the
+    storage step without re-reading plaintext: sha256_original,
+    encryption_key_version, storage_path, retention_until, plus a
+    forensic record of the failure reason.
+    """
+    qdir = _quarantine_dir()
+    qdir.mkdir(parents=True, exist_ok=True)
+    blob_path = qdir / f"{document_id}.pdf.enc"
+    meta_path = qdir / f"{document_id}.meta.json"
+    blob_path.write_bytes(ciphertext)
+    meta_path.write_text(
+        json.dumps({"document_id": str(document_id), **meta}, sort_keys=True)
+    )
+
+
+def _write_dead_letter(
+    document_id: UUID,
+    *,
+    ciphertext: bytes | None,
+    meta: dict[str, Any],
+) -> None:
+    """Write dead-letter artifacts to ``quarantine/dead-letter/``.
+
+    ``ciphertext=None`` cases: sha256_divergence (bytes can't be
+    trusted, never encrypted) and encryption_error (couldn't encrypt
+    at all). Either way the ``.meta`` sidecar lands so the operator
+    has the forensic record. Reconcile cron NEVER retries from this
+    directory.
+    """
+    ddir = _dead_letter_dir()
+    ddir.mkdir(parents=True, exist_ok=True)
+    if ciphertext is not None:
+        (ddir / f"{document_id}.pdf.enc").write_bytes(ciphertext)
+    meta_path = ddir / f"{document_id}.meta.json"
+    meta_path.write_text(
+        json.dumps({"document_id": str(document_id), **meta}, sort_keys=True)
+    )
+
+
+async def _try_encrypted_storage_step(
+    *,
+    pdf_path: str,
+    document_id: UUID,
+    merchant_id: UUID | None,
+    file_hash: str,
+    repository: DocumentRepository,
+    audit: AuditLog,
+    plaintext_bytes: bytes | None = None,
+) -> bool:
+    """Run encrypt + upload + persist + audit, manage plaintext cleanup.
+
+    See the module-level chunk-B comment above for the outcome
+    contract. Returns ``True`` on success, ``False`` on any failure
+    path — the caller doesn't act on the return value (every outcome
+    is already audited + the plaintext is already cleaned up by the
+    time this returns).
+
+    ``plaintext_bytes`` is an optimization for the processor pipeline
+    which already read the file at the top of ``_run_processor_branch``
+    — passing them avoids a redundant disk read. Bank pipeline passes
+    None and we read here.
+    """
+    try:
+        # Read plaintext + compute integrity hash
+        if plaintext_bytes is None:
+            plaintext_bytes = await asyncio.to_thread(
+                Path(pdf_path).read_bytes
+            )
+        sha256_original = hashlib.sha256(plaintext_bytes).hexdigest()
+
+        # TERMINAL CHECK — sha256 divergence. The bytes on disk
+        # don't match what was recorded at upload (``documents.file_hash``).
+        # Storing this blob would silently misrepresent the archived
+        # original. Dead-letter; reconcile NEVER retries.
+        if sha256_original != file_hash:
+            _write_dead_letter(
+                document_id,
+                ciphertext=None,
+                meta={
+                    "reason": "sha256_divergence",
+                    "sha256_original": sha256_original,
+                    "file_hash": file_hash,
+                    "byte_size": len(plaintext_bytes),
+                },
+            )
+            audit.record(
+                actor="worker",
+                action="document.original_storage_failed",
+                subject_type="document",
+                subject_id=document_id,
+                details={
+                    "reason": "sha256_divergence",
+                    "sha256_original": sha256_original,
+                    "file_hash": file_hash,
+                    "outcome": "dead_letter",
+                },
+            )
+            _safe_unlink(pdf_path)
+            return False
+
+        # Encrypt
+        try:
+            key_version = current_key_version()
+            ciphertext = encrypt_pdf(plaintext_bytes, key_version=key_version)
+        except CryptoConfigError as exc:
+            # TERMINAL — key missing/malformed, operator must fix
+            # /etc/aegis/aegis.env; auto-retry can't help.
+            _write_dead_letter(
+                document_id,
+                ciphertext=None,
+                meta={
+                    "reason": "encryption_error",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc)[:500],
+                    "sha256_original": sha256_original,
+                    "byte_size": len(plaintext_bytes),
+                },
+            )
+            audit.record(
+                actor="worker",
+                action="document.original_storage_failed",
+                subject_type="document",
+                subject_id=document_id,
+                details={
+                    "reason": "encryption_error",
+                    "error_type": type(exc).__name__,
+                    "outcome": "dead_letter",
+                },
+            )
+            _safe_unlink(pdf_path)
+            return False
+
+        storage_path = _build_storage_path(merchant_id, document_id)
+        retention_until = datetime.now(UTC) + timedelta(days=365 * 7)
+
+        # Upload — TRANSIENT-CAPABLE
+        try:
+            await asyncio.to_thread(
+                storage_objects.upload, storage_path, ciphertext
+            )
+        except Exception as exc:
+            _write_quarantine(
+                document_id,
+                ciphertext=ciphertext,
+                meta={
+                    "reason": "upload_failed",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc)[:500],
+                    "sha256_original": sha256_original,
+                    "encryption_key_version": key_version,
+                    "storage_path": storage_path,
+                    "retention_until": retention_until.isoformat(),
+                    "merchant_id": (
+                        str(merchant_id) if merchant_id else None
+                    ),
+                    "byte_size": len(plaintext_bytes),
+                },
+            )
+            audit.record(
+                actor="worker",
+                action="document.original_storage_failed",
+                subject_type="document",
+                subject_id=document_id,
+                details={
+                    "reason": "upload_failed",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc)[:500],
+                    "storage_path": storage_path,
+                    "outcome": "quarantine",
+                },
+            )
+            _safe_unlink(pdf_path)
+            return False
+
+        # Persist storage metadata — TRANSIENT-CAPABLE (DB blip).
+        # If this fails after the blob is uploaded, the blob is on
+        # Supabase but documents.storage_path is NULL — an orphan
+        # that reconcile fixes by re-running the (idempotent) upload
+        # + persist sequence.
+        try:
+            await asyncio.to_thread(
+                repository.persist_storage_metadata,
+                document_id,
+                storage_path=storage_path,
+                sha256_original=sha256_original,
+                encryption_key_version=key_version,
+                retention_until=retention_until,
+            )
+        except Exception as exc:
+            _write_quarantine(
+                document_id,
+                ciphertext=ciphertext,
+                meta={
+                    "reason": "persist_failed",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc)[:500],
+                    "sha256_original": sha256_original,
+                    "encryption_key_version": key_version,
+                    "storage_path": storage_path,
+                    "retention_until": retention_until.isoformat(),
+                    "merchant_id": (
+                        str(merchant_id) if merchant_id else None
+                    ),
+                    "byte_size": len(plaintext_bytes),
+                },
+            )
+            audit.record(
+                actor="worker",
+                action="document.original_storage_failed",
+                subject_type="document",
+                subject_id=document_id,
+                details={
+                    "reason": "persist_failed",
+                    "error_type": type(exc).__name__,
+                    "outcome": "quarantine",
+                },
+            )
+            _safe_unlink(pdf_path)
+            return False
+
+        # SUCCESS — blob uploaded + metadata persisted. Plaintext
+        # safe to delete; audit the success.
+        audit.record(
+            actor="worker",
+            action="document.original_stored",
+            subject_type="document",
+            subject_id=document_id,
+            details={
+                "storage_path": storage_path,
+                "encryption_key_version": key_version,
+                "byte_size": len(plaintext_bytes),
+                "retention_until": retention_until.isoformat(),
+            },
+        )
+        _safe_unlink(pdf_path)
+        return True
+
+    except Exception as exc:
+        # Defensive: any unmapped exception (e.g. file read OS error).
+        # Audit + leave the plaintext on disk for operator inspection
+        # — we don't know what state we're in, so the day-one cleanup
+        # rule yields to the day-one "don't lose evidence" rule.
+        _log.exception(
+            "worker.encrypted_storage.unexpected document_id=%s", document_id
+        )
+        audit.record(
+            actor="worker",
+            action="document.original_storage_failed",
+            subject_type="document",
+            subject_id=document_id,
+            details={
+                "reason": "unknown",
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:500],
+                "outcome": "no_cleanup",
+            },
+        )
+        return False
 
 
 async def _on_startup(ctx: dict[str, Any]) -> None:

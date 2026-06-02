@@ -135,13 +135,30 @@ class _SupabaseStorageBackend:
 
     def upload(self, path: str, data: bytes) -> None:
         try:
-            self._api().storage.from_(_bucket()).upload(
+            result = self._api().storage.from_(_bucket()).upload(
                 path=path,
                 file=data,
                 file_options={"content-type": "application/octet-stream"},
             )
         except Exception as exc:
             raise StorageError(f"upload {path!r} failed: {exc}") from exc
+
+        # Defensive: even when supabase-py doesn't raise, inspect the
+        # response shape for an error indicator. The library's behavior
+        # on non-2xx has varied across versions (some raise immediately,
+        # some return a dict carrying an ``error`` field). Chunk-B's
+        # worker callers rely on upload() raising on any non-success
+        # so the "storage_path set + blob absent" failure mode is
+        # structurally unreachable — without this check, the worker's
+        # success path would run on a silently-failed upload, the
+        # plaintext would be deleted, and the dossier "View original
+        # PDF" link would 404 at view time.
+        if isinstance(result, dict):
+            error = result.get("error")
+            if error:
+                raise StorageError(
+                    f"upload {path!r} failed (response error): {error!r}"
+                )
 
     def download(self, path: str) -> bytes:
         try:

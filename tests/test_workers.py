@@ -8,13 +8,16 @@ running the real LLM.
 
 from __future__ import annotations
 
-from datetime import date
+import hashlib
+from collections.abc import Iterator
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 
+from aegis import storage_objects
 from aegis.audit import InMemoryAuditLog
 from aegis.close.client import CloseAttachment, CloseError
 from aegis.merchants.models import MerchantRow
@@ -32,13 +35,41 @@ def fake_pdf(tmp_path: Path) -> Path:
     return p
 
 
+def _real_file_hash(path: Path) -> str:
+    """SHA-256 hex of the file bytes — what production code records
+    in ``documents.file_hash`` at upload time. Used in success-path
+    tests so the chunk-B sha256-divergence check doesn't silently
+    route them through the dead-letter path (which would still
+    delete the plaintext, passing ``assert not fake_pdf.exists()`` —
+    but for the wrong reason)."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.fixture
+def chunk_b_storage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Iterator[Path]:
+    """Point ``aegis_upload_dir`` at ``tmp_path`` so chunk-B's
+    ``quarantine/`` and ``quarantine/dead-letter/`` writes land where
+    the test can inspect them. Resets the storage_objects backend
+    between tests so a previous test's in-memory blobs don't bleed
+    over."""
+    monkeypatch.setenv("AEGIS_UPLOAD_DIR", str(tmp_path))
+    from aegis.config import get_settings
+    get_settings.cache_clear()
+    storage_objects.reset_backend_for_tests()
+    yield tmp_path
+    storage_objects.reset_backend_for_tests()
+    get_settings.cache_clear()
+
+
 async def test_parse_document_persists_and_audits(
     monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
 ) -> None:
     repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
     row = repo.create_document(
-        file_hash="h" * 64, byte_size=fake_pdf.stat().st_size, original_filename="f.pdf"
+        file_hash=_real_file_hash(fake_pdf), byte_size=fake_pdf.stat().st_size, original_filename="f.pdf"
     )
 
     fake_result = _make_pipeline_result()
@@ -141,7 +172,7 @@ async def test_parse_document_wraps_bedrock_client_with_cost_tracking(
     repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
     row = repo.create_document(
-        file_hash="j" * 64, byte_size=fake_pdf.stat().st_size, original_filename="f.pdf"
+        file_hash=_real_file_hash(fake_pdf), byte_size=fake_pdf.stat().st_size, original_filename="f.pdf"
     )
 
     # A minimal BedrockClient stand-in — production path is `isinstance(llm,
@@ -183,7 +214,7 @@ async def test_parse_document_does_not_wrap_non_bedrock_llm(
     repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
     row = repo.create_document(
-        file_hash="k" * 64, byte_size=fake_pdf.stat().st_size, original_filename="f.pdf"
+        file_hash=_real_file_hash(fake_pdf), byte_size=fake_pdf.stat().st_size, original_filename="f.pdf"
     )
 
     captured_llm: list[object] = []
@@ -229,7 +260,7 @@ async def test_parse_document_routes_processor_pdf_to_processor_pipeline(
     repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
     row = repo.create_document(
-        file_hash="p" * 64, byte_size=fake_pdf.stat().st_size, original_filename="s.pdf"
+        file_hash=_real_file_hash(fake_pdf), byte_size=fake_pdf.stat().st_size, original_filename="s.pdf"
     )
 
     # Force detection to "stripe" regardless of the PDF contents.
@@ -349,6 +380,311 @@ async def test_parse_document_ambiguous_processor_routes_to_manual_review(
         e for e in audit.entries if e["action"] == "document.parse.error"
     )
     assert err_event["details"]["error"] == "AmbiguousProcessor"
+
+
+# =====================================================================
+# PDF retention chunk B — encrypted-storage step (worker)
+# =====================================================================
+#
+# Tests the new control-flow after parse-complete:
+#   plaintext → sha256(...) → encrypt → upload → persist → audit → unlink.
+#
+# Three outcome classes covered:
+#   SUCCESS    — happy path; storage_path populated, audit
+#                document.original_stored, plaintext unlinked.
+#   TRANSIENT  — upload raises (network/5xx); ciphertext quarantined
+#                (NOT plaintext); audit document.original_storage_failed
+#                reason=upload_failed outcome=quarantine; plaintext
+#                unlinked; NO exception propagates.
+#   TERMINAL   — sha256(plaintext) != documents.file_hash; dead-letter
+#                instead of quarantine (so reconcile NEVER picks it
+#                up); audit reason=sha256_divergence outcome=dead_letter.
+#
+# Plus: persist_storage_metadata atomicity (single call writes all
+# four storage columns together) and the existing 4 PDF-deleted
+# assertions in this file confirm the SUCCESS-path local-cleanup
+# contract still holds after chunk B.
+
+
+async def test_chunk_b_success_populates_storage_columns(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_pdf: Path,
+    chunk_b_storage: Path,
+) -> None:
+    """Success path locks down all four contract details:
+      * documents.storage_path is populated
+      * documents.sha256_original == sha256(plaintext_bytes)
+      * documents.encryption_key_version == 1 (the conftest test key)
+      * documents.retention_until ≈ NOW() + 7yr (±2s tolerance)
+      * audit document.original_stored row written
+      * plaintext at pdf_path is deleted
+    """
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
+    )
+    plaintext_bytes = fake_pdf.read_bytes()
+    expected_sha = hashlib.sha256(plaintext_bytes).hexdigest()
+
+    fake_result = _make_pipeline_result()
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda *_a, **_kw: fake_result,
+    )
+
+    await parse_document(
+        {"repository": repo, "audit": audit, "llm": object()},
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    persisted = repo.get_document(row.id)
+    assert persisted.storage_path is not None
+    assert persisted.storage_path.endswith(f"{row.id}.pdf.enc")
+    assert persisted.sha256_original == expected_sha
+    assert persisted.encryption_key_version == 1
+    assert persisted.retention_until is not None
+    expected_retention = datetime.now(UTC) + timedelta(days=365 * 7)
+    delta = abs(
+        (persisted.retention_until - expected_retention).total_seconds()
+    )
+    assert delta < 2.0, f"retention_until off by {delta}s"
+
+    actions = [e["action"] for e in audit.entries]
+    assert "document.original_stored" in actions
+    success_event = next(
+        e for e in audit.entries
+        if e["action"] == "document.original_stored"
+    )
+    assert success_event["details"]["encryption_key_version"] == 1
+    assert success_event["details"]["byte_size"] == len(plaintext_bytes)
+
+    # Local plaintext deleted on success — day-one cleanup rule
+    # preserved when the storage step succeeds.
+    assert not fake_pdf.exists()
+
+
+async def test_chunk_b_upload_failure_quarantines_ciphertext(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_pdf: Path,
+    chunk_b_storage: Path,
+) -> None:
+    """Transient upload failure (storage_objects.upload raises) →
+    ciphertext written to quarantine/{doc_id}.pdf.enc + .meta
+    sidecar; plaintext at pdf_path is DELETED; documents.storage_path
+    stays NULL; audit document.original_storage_failed row written
+    with reason=upload_failed and outcome=quarantine; NO exception
+    propagates to the worker's caller (parse already succeeded)."""
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
+    )
+    plaintext_bytes = fake_pdf.read_bytes()
+
+    fake_result = _make_pipeline_result()
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda *_a, **_kw: fake_result,
+    )
+
+    def boom_upload(path: str, data: bytes) -> None:
+        raise storage_objects.StorageError("simulated transient failure")
+
+    monkeypatch.setattr("aegis.storage_objects.upload", boom_upload)
+
+    # MUST NOT raise — storage failure is best-effort
+    out = await parse_document(
+        {"repository": repo, "audit": audit, "llm": object()},
+        str(row.id),
+        str(fake_pdf),
+    )
+    assert out["parse_status"] == "proceed"
+
+    # Storage NOT recorded on documents row
+    persisted = repo.get_document(row.id)
+    assert persisted.storage_path is None
+    assert persisted.sha256_original is None
+    assert persisted.encryption_key_version is None
+    assert persisted.retention_until is None
+
+    # Audit row written with the expected reason + outcome
+    storage_failed_rows = [
+        e for e in audit.entries
+        if e["action"] == "document.original_storage_failed"
+    ]
+    assert len(storage_failed_rows) == 1
+    failure = storage_failed_rows[0]
+    assert failure["details"]["reason"] == "upload_failed"
+    assert failure["details"]["outcome"] == "quarantine"
+    assert failure["details"]["error_type"] == "StorageError"
+
+    # Plaintext at pdf_path is DELETED — no plaintext at rest past parse
+    assert not fake_pdf.exists()
+
+    # Quarantine holds the recovery artifacts: ciphertext blob + meta
+    qdir = chunk_b_storage / "quarantine"
+    blob_path = qdir / f"{row.id}.pdf.enc"
+    meta_path = qdir / f"{row.id}.meta.json"
+    assert blob_path.exists(), "quarantine ciphertext must be present"
+    assert meta_path.exists(), "quarantine meta sidecar must be present"
+
+    # The quarantined bytes are CIPHERTEXT, not plaintext — assertion
+    # locks down the load-bearing contract that we never reintroduce
+    # plaintext-at-rest in the failure path.
+    quarantined = blob_path.read_bytes()
+    assert quarantined != plaintext_bytes, (
+        "quarantine MUST hold ciphertext, never plaintext (the whole "
+        "project exists because plaintext-at-rest is the failure mode "
+        "we're closing — see docs/PDF_RETENTION_DESIGN.md §1)"
+    )
+    assert len(quarantined) >= 28  # AES-GCM nonce(12) + tag(16) min
+
+    # Meta sidecar carries everything reconcile needs to retry
+    # without re-reading plaintext or re-encrypting
+    import json as _json
+    meta = _json.loads(meta_path.read_text())
+    assert meta["reason"] == "upload_failed"
+    assert meta["sha256_original"] == hashlib.sha256(plaintext_bytes).hexdigest()
+    assert meta["encryption_key_version"] == 1
+    assert meta["storage_path"].endswith(f"{row.id}.pdf.enc")
+    assert "retention_until" in meta
+
+
+async def test_chunk_b_sha256_divergence_dead_letters(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_pdf: Path,
+    chunk_b_storage: Path,
+) -> None:
+    """sha256(plaintext) != documents.file_hash → TERMINAL.
+
+    Artifacts go to quarantine/dead-letter/ — NOT to quarantine/
+    where the reconcile cron retries. Without this separation,
+    reconcile would infinite-loop: re-read divergent plaintext,
+    re-hash, re-detect divergence, re-quarantine, repeat.
+
+    This test explicitly asserts the negative: no file lands in
+    quarantine/{doc_id}.pdf.enc — reconcile's non-recursive scan
+    of quarantine/ won't pick it up.
+    """
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    # Create the doc with a WRONG file_hash so the post-parse
+    # sha256 check detects divergence
+    row = repo.create_document(
+        file_hash="0" * 64,  # not the real hash of fake_pdf
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
+    )
+
+    fake_result = _make_pipeline_result()
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda *_a, **_kw: fake_result,
+    )
+
+    await parse_document(
+        {"repository": repo, "audit": audit, "llm": object()},
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    # Audit reason + outcome
+    storage_failed_rows = [
+        e for e in audit.entries
+        if e["action"] == "document.original_storage_failed"
+    ]
+    assert len(storage_failed_rows) == 1
+    failure = storage_failed_rows[0]
+    assert failure["details"]["reason"] == "sha256_divergence"
+    assert failure["details"]["outcome"] == "dead_letter"
+
+    # Dead-letter has the .meta sidecar (forensic record)
+    dlq_dir = chunk_b_storage / "quarantine" / "dead-letter"
+    dlq_meta = dlq_dir / f"{row.id}.meta.json"
+    assert dlq_meta.exists()
+
+    # CRITICAL: nothing in quarantine/ that reconcile would pick up
+    qdir = chunk_b_storage / "quarantine"
+    retry_blob = qdir / f"{row.id}.pdf.enc"
+    retry_meta = qdir / f"{row.id}.meta.json"
+    assert not retry_blob.exists(), (
+        "sha256_divergence is TERMINAL — must NOT land in quarantine/ "
+        "where reconcile would loop forever"
+    )
+    assert not retry_meta.exists()
+
+    # storage_path stays NULL
+    persisted = repo.get_document(row.id)
+    assert persisted.storage_path is None
+
+    # Plaintext deleted
+    assert not fake_pdf.exists()
+
+
+async def test_chunk_b_persist_storage_metadata_is_atomic(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_pdf: Path,
+    chunk_b_storage: Path,
+) -> None:
+    """persist_storage_metadata is the single atomic UPDATE writing
+    all four storage columns together. The partial index
+    ``idx_documents_retention_until WHERE storage_path IS NOT NULL``
+    + the ``no-retained-forever-anomaly`` db_check depend on the
+    four fields moving as one.
+
+    This test spies on the repo method and asserts:
+      * exactly ONE call (not three separate UPDATEs)
+      * all four columns are arguments to that one call
+    """
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
+    )
+
+    original = repo.persist_storage_metadata
+    call_log: list[dict[str, Any]] = []
+
+    def spy_persist(document_id: UUID, **kwargs: Any) -> None:
+        call_log.append({"document_id": document_id, **kwargs})
+        original(document_id, **kwargs)
+
+    monkeypatch.setattr(repo, "persist_storage_metadata", spy_persist)
+
+    fake_result = _make_pipeline_result()
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda *_a, **_kw: fake_result,
+    )
+
+    await parse_document(
+        {"repository": repo, "audit": audit, "llm": object()},
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    # Single call — atomicity contract
+    assert len(call_log) == 1, (
+        f"persist_storage_metadata MUST be a single atomic call; "
+        f"observed {len(call_log)} invocations"
+    )
+    call = call_log[0]
+    # All four columns argued together
+    assert "storage_path" in call
+    assert "sha256_original" in call
+    assert "encryption_key_version" in call
+    assert "retention_until" in call
+    # Sanity on values
+    assert call["storage_path"].endswith(f"{row.id}.pdf.enc")
+    assert call["encryption_key_version"] == 1
 
 
 # =====================================================================
