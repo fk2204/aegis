@@ -12,13 +12,18 @@ Chunk A of the PDF retention redesign. Focused on:
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
+from typing import Any
+from uuid import UUID
 
 import pytest
 
 from aegis import storage_objects
 from aegis.storage_objects import (
+    StorageBackendError,
     StorageError,
+    _SupabaseStorageBackend,
     confirm_absent,
     delete,
     download,
@@ -122,18 +127,6 @@ def test_different_paths_isolated() -> None:
 # that returns a fake storage client raising the desired exception. No
 # real Supabase access — these are pure unit tests on the classification
 # logic.
-
-
-import logging
-from typing import Any
-
-from aegis.storage_objects import (
-    StorageBackendError,
-    _SupabaseStorageBackend,
-)
-
-
-from uuid import UUID
 
 
 class _AuditCapture:
