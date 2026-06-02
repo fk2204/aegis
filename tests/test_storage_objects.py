@@ -452,19 +452,19 @@ def test_no_audit_passed_proceeds_without_emitting(
 def test_extract_status_code_from_int_attribute() -> None:
     from aegis.storage_objects import _extract_status_code
 
-    class _E(Exception):
+    class _StubError(Exception):
         code = 404
 
-    assert _extract_status_code(_E()) == 404
+    assert _extract_status_code(_StubError()) == 404
 
 
 def test_extract_status_code_from_string_attribute() -> None:
     from aegis.storage_objects import _extract_status_code
 
-    class _E(Exception):
+    class _StubError(Exception):
         code = "401"
 
-    assert _extract_status_code(_E()) == 401
+    assert _extract_status_code(_StubError()) == 401
 
 
 def test_extract_status_code_from_response_attribute() -> None:
@@ -474,10 +474,10 @@ def test_extract_status_code_from_response_attribute() -> None:
     class _Resp:
         status_code = 500
 
-    class _E(Exception):
+    class _StubError(Exception):
         response = _Resp()
 
-    assert _extract_status_code(_E()) == 500
+    assert _extract_status_code(_StubError()) == 500
 
 
 def test_extract_status_code_returns_none_for_shapes_without_status() -> None:
@@ -495,10 +495,10 @@ def test_extract_status_code_rejects_out_of_range_values() -> None:
     doesn't accidentally match a 4xx/5xx branch."""
     from aegis.storage_objects import _extract_status_code
 
-    class _E(Exception):
+    class _StubError(Exception):
         code = 99999
 
-    assert _extract_status_code(_E()) is None
+    assert _extract_status_code(_StubError()) is None
 
 
 # --- _is_network_error edge cases ---------------------------------------
