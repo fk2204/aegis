@@ -399,11 +399,13 @@ def _classify_and_emit_bucket_check_failure(
     except Exception:
         # DELIBERATE swallow — see _SupabaseStorageBackend.assert_bucket_private
         # docstring for the deviation rationale (boot is the operation; we
-        # don't fail boot on inability to audit). Log CRITICAL so journal
-        # alerting catches the audit-write failure itself.
-        _log.exception(
+        # don't fail boot on inability to audit). Logged at CRITICAL (with
+        # traceback) so journal-side alerting catches the audit-write
+        # failure itself even if the cause was Supabase-wide weather.
+        _log.critical(
             "ops.boot.audit_write_failed action=%s bucket=%s",
             action, bucket,
+            exc_info=True,
         )
 
 
