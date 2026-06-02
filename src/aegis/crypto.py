@@ -75,13 +75,27 @@ def _decode_key(b64: str, version: int) -> bytes:
 
 
 def _key_for_version(version: int) -> bytes:
-    """Look up the raw 32-byte key for the given version.
+    """External lookup. Fetches the cached settings and resolves the
+    key. ``encrypt_pdf`` / ``decrypt_pdf`` use this form (the lru_cache
+    on ``get_settings`` has populated long before any runtime call).
+    """
+    return _key_for_version_with_settings(get_settings(), version)
+
+
+def _key_for_version_with_settings(
+    settings: Settings, version: int
+) -> bytes:
+    """Internal lookup taking settings explicitly. Required by
+    ``validate_crypto_config_at_boot`` during the first-time
+    ``get_settings()`` call (cache-miss path) — calling
+    ``_key_for_version`` there would re-enter ``get_settings`` and
+    recurse until ``RecursionError``. Tests passed against the
+    earlier monkeypatched form because monkeypatching short-circuited
+    the cycle; production cold boot tripped it on every restart.
 
     Raises ``CryptoConfigError`` if the version is not configured in
-    settings. Used by both ``encrypt_pdf`` (with the current version)
-    and ``decrypt_pdf`` (with the per-document stored version).
+    the passed settings.
     """
-    settings = get_settings()
     env_attr = f"pdf_encryption_key_v{version}"
     secret = getattr(settings, env_attr, None)
     if secret is None:
@@ -187,12 +201,11 @@ def validate_crypto_config_at_boot(settings: Settings | None = None) -> None:
     current = settings.pdf_encryption_keys_current
     if current is None or current == 0:
         return  # not yet rotated in; no callers depend on it
-    # Triggering _key_for_version raises CryptoConfigError on any failure.
-    # _key_for_version reads from get_settings() too, but by the time
-    # this branch fires, get_settings() has either already cached (when
-    # called externally) OR is being passed settings explicitly from
-    # the cache-miss path — either way no recursion.
-    _key_for_version(current)
+    # Use the settings-explicit form. The plain ``_key_for_version``
+    # internally calls ``get_settings()`` which would re-enter the
+    # uncached first call and recurse — tripped in production cold
+    # boot on 2026-06-01.
+    _key_for_version_with_settings(settings, current)
 
 
 __all__ = [
