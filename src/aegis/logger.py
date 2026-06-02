@@ -23,10 +23,34 @@ directly — that bypasses the masking filter.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Final
 
 from aegis.config import get_settings
+
+
+# Syslog priority codes (RFC 5424). systemd's SyslogLevelPrefix=true
+# parses ``<N>`` at the start of each stderr line and uses N to
+# classify the journal entry's priority. Without the prefix, Python
+# ERROR/CRITICAL stderr lines land at systemd's default priority
+# (notice / info depending on systemd config), and ``journalctl -p err``
+# misses them — the blind-spot this module closes.
+#
+# Unmapped levels (e.g. ``logging.log(25, ...)`` for a custom NOTICE
+# level) fall back to ERROR (3), NOT INFO (6). Rationale: this whole
+# fix exists because INFO-default classification HID real ERROR
+# lines. A custom level showing up too loud is recoverable noise; a
+# custom level silently downgraded is invisible to ``-p err``, which
+# is the exact failure mode we are closing.
+_SYSLOG_PRIORITY_BY_LEVEL: Final[dict[int, int]] = {
+    logging.CRITICAL: 2,  # crit
+    logging.ERROR:    3,  # err
+    logging.WARNING:  4,  # warning
+    logging.INFO:     6,  # info
+    logging.DEBUG:    7,  # debug
+}
+_UNMAPPED_PRIORITY_FALLBACK: Final[int] = 3  # err — fail loud, not invisible
 
 _PII_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -125,6 +149,53 @@ class PiiMaskingFilter(logging.Filter):
         return True
 
 
+class _JournalPriorityFormatter(logging.Formatter):
+    """Wraps the stdlib Formatter and prepends the syslog priority
+    prefix ``<N>`` so systemd's journal classifies the entry at the
+    right priority.
+
+    Used ONLY when stderr is connected to systemd-journald (detection
+    is one-shot via the ``JOURNAL_STREAM`` env var, evaluated in
+    ``_select_stream_formatter`` at logger setup — not per-line, not
+    at module import). Paired with ``SyslogLevelPrefix=true`` in the
+    systemd unit, which strips the prefix and uses it as the priority.
+
+    Without this formatter + the systemd unit flag, every Python
+    ERROR/CRITICAL line emitted via stderr lands at systemd's default
+    priority and ``journalctl -p err`` returns ``-- No entries --``
+    even when real errors fired. This blind-spot hid AEGIS errors
+    across the whole codebase until the chunk-A bucket-absent verify
+    surfaced it.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        line = super().format(record)
+        priority = _SYSLOG_PRIORITY_BY_LEVEL.get(
+            record.levelno, _UNMAPPED_PRIORITY_FALLBACK
+        )
+        return f"<{priority}>{line}"
+
+
+def _select_stream_formatter() -> logging.Formatter:
+    """Pick the right stderr Formatter based on launch context.
+
+    * JOURNAL_STREAM in env (systemd has connected stderr to journald)
+      → ``_JournalPriorityFormatter`` so ``journalctl -p err`` filters
+      correctly.
+    * JOURNAL_STREAM absent (Windows dev box, CI, plain terminal,
+      pytest, REPL) → stdlib ``logging.Formatter``. Behavior on those
+      paths is byte-for-byte unchanged from before this chunk —
+      proven by ``tests/test_logger_journal_priority.py``.
+
+    Detection happens once at logger setup, not per-line.
+    """
+    fmt = "%(asctime)s %(levelname)s %(name)s %(message)s"
+    datefmt = "%Y-%m-%dT%H:%M:%S%z"
+    if "JOURNAL_STREAM" in os.environ:
+        return _JournalPriorityFormatter(fmt=fmt, datefmt=datefmt)
+    return logging.Formatter(fmt=fmt, datefmt=datefmt)
+
+
 _CONFIGURED = False
 
 
@@ -138,12 +209,7 @@ def configure_logging() -> None:
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
 
     handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter(
-            fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
-            datefmt="%Y-%m-%dT%H:%M:%S%z",
-        )
-    )
+    handler.setFormatter(_select_stream_formatter())
     handler.addFilter(PiiMaskingFilter())
 
     root = logging.getLogger()
