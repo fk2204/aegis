@@ -35,6 +35,16 @@ ReadWritePaths=/var/log/aegis /var/lib/aegis /tmp
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=aegis-worker
+# Strip the <N> syslog priority prefix that aegis.logger's
+# _JournalPriorityFormatter prepends to every line when running under
+# the journal (detected via the JOURNAL_STREAM env var), and use N to
+# set the journal entry's priority. Without this flag, every Python
+# ERROR/CRITICAL stderr line lands at systemd's default priority
+# (notice/info) and `journalctl -p err` returns "-- No entries --"
+# even when real errors fired. Worker has the same blind-spot as web
+# — chunk B/E errors run here, so the fix has to apply to both. See
+# src/aegis/logger.py for the priority mapping.
+SyslogLevelPrefix=true
 
 LimitNOFILE=4096
 MemoryMax=2G
