@@ -12,6 +12,8 @@ Chunk A of the PDF retention redesign. Focused on:
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
 from aegis import storage_objects
@@ -26,7 +28,7 @@ from aegis.storage_objects import (
 
 
 @pytest.fixture(autouse=True)
-def _force_memory_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+def _force_memory_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Force the in-memory backend for every test. Real Supabase
     backend tests would need a separate fixture with mocked HTTP."""
     reset_backend_for_tests()

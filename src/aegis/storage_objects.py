@@ -24,7 +24,7 @@ a cross-env Supabase read can't reach the wrong corpus.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Final, Protocol
+from typing import Any, Final, Protocol
 
 from aegis.config import get_settings
 from aegis.logger import get_logger
@@ -109,13 +109,17 @@ class _SupabaseStorageBackend:
     """
 
     def __init__(self) -> None:
-        # Lazy client — we don't want module import to hit Supabase
-        self._client = None  # type: ignore[assignment]
+        # Lazy client — we don't want module import to hit Supabase.
+        # supabase-py's Client class has inconsistent type exposure across
+        # versions; ``Any`` keeps this module free of upstream typing
+        # noise without losing IDE support at call sites (the public
+        # functions below are still strictly typed).
+        self._client: Any = None
 
-    def _api(self):  # type: ignore[no-untyped-def]
+    def _api(self) -> Any:
         if self._client is None:
             from aegis.db import get_supabase
-            self._client = get_supabase()  # type: ignore[assignment]
+            self._client = get_supabase()
         return self._client
 
     def upload(self, path: str, data: bytes) -> None:
@@ -130,9 +134,16 @@ class _SupabaseStorageBackend:
 
     def download(self, path: str) -> bytes:
         try:
-            return self._api().storage.from_(_bucket()).download(path)
+            data = self._api().storage.from_(_bucket()).download(path)
         except Exception as exc:
             raise StorageError(f"download {path!r} failed: {exc}") from exc
+        # supabase-py returns bytes; widen-then-narrow to satisfy mypy
+        # under no-any-return.
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            return bytes(data)
+        raise StorageError(
+            f"download {path!r} returned non-bytes ({type(data).__name__})"
+        )
 
     def delete(self, path: str) -> None:
         # supabase-py's remove([paths]) is idempotent for already-gone
