@@ -133,8 +133,16 @@ from aegis.storage_objects import (
 )
 
 
+from uuid import UUID
+
+
 class _AuditCapture:
-    """Test stub that records every audit row written."""
+    """Test stub that records every audit row written.
+
+    Implements the full AuditLog Protocol (``record``, ``list_recent``,
+    ``list_for_subject``) so it passes mypy's structural check. The
+    list_* methods return empty lists — these tests only care about
+    what got written, not about reading rows back."""
 
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
@@ -145,7 +153,7 @@ class _AuditCapture:
         actor: str,
         action: str,
         subject_type: str | None = None,
-        subject_id: object | None = None,
+        subject_id: UUID | None = None,
         details: dict[str, Any] | None = None,
         actor_email: str | None = None,
     ) -> None:
@@ -157,6 +165,21 @@ class _AuditCapture:
             "details": details or {},
             "actor_email": actor_email,
         })
+
+    def list_recent(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        del limit
+        return []
+
+    def list_for_subject(
+        self,
+        *,
+        subject_type: str,
+        subject_id: UUID,
+        action: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        del subject_type, subject_id, action, limit
+        return []
 
 
 def _stub_backend_with_get_bucket(get_bucket_impl: Any) -> _SupabaseStorageBackend:
@@ -367,8 +390,38 @@ def test_audit_write_failure_does_not_brick_boot(
     backend = _stub_backend_with_get_bucket(_raise_connect)
 
     class _AuditBlowsUp:
-        def record(self, **kwargs: object) -> None:
+        """Full Protocol surface so mypy passes; record() raises;
+        list_* return empty (never invoked in this test)."""
+
+        def record(
+            self,
+            *,
+            actor: str,
+            action: str,
+            subject_type: str | None = None,
+            subject_id: UUID | None = None,
+            details: dict[str, Any] | None = None,
+            actor_email: str | None = None,
+        ) -> None:
+            del (
+                actor, action, subject_type, subject_id, details, actor_email,
+            )
             raise RuntimeError("audit log is also down")
+
+        def list_recent(self, *, limit: int = 20) -> list[dict[str, Any]]:
+            del limit
+            return []
+
+        def list_for_subject(
+            self,
+            *,
+            subject_type: str,
+            subject_id: UUID,
+            action: str | None = None,
+            limit: int = 200,
+        ) -> list[dict[str, Any]]:
+            del subject_type, subject_id, action, limit
+            return []
 
     with caplog.at_level(logging.CRITICAL):
         # MUST NOT raise — the boot proceeds even when both the bucket
