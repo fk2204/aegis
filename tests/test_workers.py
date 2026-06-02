@@ -69,7 +69,9 @@ async def test_parse_document_persists_and_audits(
     repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
     row = repo.create_document(
-        file_hash=_real_file_hash(fake_pdf), byte_size=fake_pdf.stat().st_size, original_filename="f.pdf"
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
     )
 
     fake_result = _make_pipeline_result()
@@ -172,7 +174,9 @@ async def test_parse_document_wraps_bedrock_client_with_cost_tracking(
     repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
     row = repo.create_document(
-        file_hash=_real_file_hash(fake_pdf), byte_size=fake_pdf.stat().st_size, original_filename="f.pdf"
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
     )
 
     # A minimal BedrockClient stand-in — production path is `isinstance(llm,
@@ -214,7 +218,9 @@ async def test_parse_document_does_not_wrap_non_bedrock_llm(
     repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
     row = repo.create_document(
-        file_hash=_real_file_hash(fake_pdf), byte_size=fake_pdf.stat().st_size, original_filename="f.pdf"
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
     )
 
     captured_llm: list[object] = []
@@ -260,7 +266,9 @@ async def test_parse_document_routes_processor_pdf_to_processor_pipeline(
     repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
     row = repo.create_document(
-        file_hash=_real_file_hash(fake_pdf), byte_size=fake_pdf.stat().st_size, original_filename="s.pdf"
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="s.pdf",
     )
 
     # Force detection to "stripe" regardless of the PDF contents.
