@@ -24,10 +24,13 @@ a cross-env Supabase read can't reach the wrong corpus.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from aegis.config import get_settings
 from aegis.logger import get_logger
+
+if TYPE_CHECKING:
+    from aegis.audit import AuditLog
 
 _log = get_logger(__name__)
 
@@ -52,7 +55,9 @@ class _StorageBackend(Protocol):
     def download(self, path: str) -> bytes: ...
     def delete(self, path: str) -> None: ...
     def confirm_absent(self, path: str) -> bool: ...
-    def assert_bucket_private(self, bucket: str) -> None: ...
+    def assert_bucket_private(
+        self, bucket: str, audit: AuditLog | None = None
+    ) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -82,9 +87,15 @@ class _InMemoryStorageBackend:
     def confirm_absent(self, path: str) -> bool:
         return path not in self._blobs
 
-    def assert_bucket_private(self, bucket: str) -> None:
+    def assert_bucket_private(
+        self, bucket: str, audit: AuditLog | None = None
+    ) -> None:
         # Tests opt in; default is "private". Real backend asserts
         # against Supabase ACL.
+        # ``audit`` is accepted to satisfy the Protocol; the in-memory
+        # backend never has a "cannot determine" path that would
+        # warrant an audit row.
+        del audit  # explicit no-op marker for ruff
         self._private_buckets.add(bucket)
 
     # Test helpers
@@ -173,20 +184,47 @@ class _SupabaseStorageBackend:
         except Exception as exc:
             raise StorageError(f"confirm_absent {path!r} failed: {exc}") from exc
 
-    def assert_bucket_private(self, bucket: str) -> None:
+    def assert_bucket_private(
+        self, bucket: str, audit: AuditLog | None = None
+    ) -> None:
         """Verify the bucket exists and is configured private.
 
-        Boots-time check called by app.lifespan. Implementation hits
+        Boot-time check called by ``app.lifespan``. Implementation hits
         ``storage.get_bucket(bucket)`` and inspects the public flag.
-        Raises ``StorageBackendError`` if the bucket is public or
-        unreachable.
+
+        Behavior by outcome (per design doc §3 + operator-required
+        chunk-A refinement: don't brick the web tier on Supabase
+        weather):
+
+          * Verified PUBLIC  → raise ``StorageBackendError`` (fail closed)
+          * Verified PRIVATE → return silently (pass)
+          * 401 / 403 (auth)  → log CRITICAL, audit
+            ``boot.bucket_auth_failed``, **proceed**. A wrong
+            service_role credential is a real fault, escalated above
+            routine WARN so the journal-side alerting catches it.
+          * 404 (absent)      → log ERROR, audit ``boot.bucket_absent``,
+            **proceed**. Incomplete provisioning — chunk B will
+            quarantine every upload until it exists.
+          * Network / timeout → log WARN, audit
+            ``boot.bucket_check_unreachable``, **proceed**. Supabase
+            outage during routine maintenance must not take AEGIS down.
+
+        Audit-write failures inside the proceed paths are swallowed
+        with a CRITICAL log entry — this is a DELIBERATE deviation
+        from CLAUDE.md's "audit-write failures fail the operation"
+        rule, narrowly scoped to this boot check. Rationale: the
+        operation here IS booting; failing boot because we can't
+        record an observation defeats the operator's "don't brick
+        the tier" requirement. The structured journal log is the
+        always-on signal; the audit row is a durable record when
+        possible.
         """
         try:
             info = self._api().storage.get_bucket(bucket)
         except Exception as exc:
-            raise StorageBackendError(
-                f"cannot reach bucket {bucket!r} via service_role: {exc}"
-            ) from exc
+            _classify_and_emit_bucket_check_failure(bucket, exc, audit)
+            return  # proceed regardless of which unknown — operator-required
+
         # supabase-py returns a dict-like or object with .public attribute
         is_public = getattr(info, "public", None)
         if is_public is None and isinstance(info, dict):
@@ -265,24 +303,163 @@ def confirm_absent(path: str) -> bool:
     return _get_backend().confirm_absent(path)
 
 
-def assert_bucket_private_at_startup() -> None:
+def assert_bucket_private_at_startup(audit: AuditLog | None = None) -> None:
     """Boot-time guard. Verifies the configured bucket exists and is
     private. Called by ``app.lifespan`` so a misconfigured bucket
     refuses to start.
+
+    Behavior (chunk-A operator refinement): refuses boot ONLY on
+    verified-public. Cannot-determine outcomes (unreachable, absent,
+    auth) write a journal log at the appropriate severity + an audit
+    row tagged with the specific cause, then proceed. See
+    ``_SupabaseStorageBackend.assert_bucket_private`` for the full
+    contract.
+
+    ``audit`` is optional so tests that don't wire an audit log can
+    still call this guard; production callers (``app.lifespan``) pass
+    ``get_audit()`` so the cannot-determine paths get a durable trace.
 
     No-op for the in-memory backend (tests).
     """
     backend = _get_backend()
     bucket = _bucket()
-    if isinstance(backend, _InMemoryStorageBackend):
-        backend.assert_bucket_private(bucket)
+    backend.assert_bucket_private(bucket, audit=audit)
+
+
+# ---------------------------------------------------------------------------
+# Bucket-check failure classification (chunk-A operator refinement)
+# ---------------------------------------------------------------------------
+
+
+def _classify_and_emit_bucket_check_failure(
+    bucket: str, exc: Exception, audit: AuditLog | None
+) -> None:
+    """Classify the bucket-check exception into one of three
+    cannot-determine paths and emit the matching log + audit row.
+
+    Severity ladder (per operator's chunk-A refinement):
+      * AUTH (401/403)   → CRITICAL log + ``boot.bucket_auth_failed``
+      * ABSENT (404)     → ERROR log    + ``boot.bucket_absent``
+      * UNREACHABLE      → WARNING log  + ``boot.bucket_check_unreachable``
+      * UNKNOWN          → WARNING log  + ``boot.bucket_check_unreachable``
+        (conservative default — treat the unmapped shape as Supabase
+        weather rather than escalating it)
+
+    Audit-write failures are swallowed with a CRITICAL log entry —
+    see ``_SupabaseStorageBackend.assert_bucket_private`` for the
+    deliberate deviation rationale.
+    """
+    status = _extract_status_code(exc)
+    error_type = type(exc).__name__
+    error_message = str(exc)[:500]
+
+    if status in (401, 403):
+        action = "boot.bucket_auth_failed"
+        _log.critical(
+            "ops.boot.bucket_auth_failed bucket=%s error=%s status=%s",
+            bucket, error_type, status,
+        )
+    elif status == 404:
+        action = "boot.bucket_absent"
+        _log.error(
+            "ops.boot.bucket_absent bucket=%s error=%s",
+            bucket, error_type,
+        )
+    elif _is_network_error(exc):
+        action = "boot.bucket_check_unreachable"
+        _log.warning(
+            "ops.boot.bucket_check_unreachable bucket=%s error=%s",
+            bucket, error_type,
+        )
+    else:
+        # Unmapped exception shape — default to unreachable. Logging
+        # at WARNING (not error/critical) keeps Supabase-weather
+        # outages from spam-paging on every unfamiliar exception
+        # subclass; a genuinely-faulty shape gets re-classified
+        # when we learn what it looks like.
+        action = "boot.bucket_check_unreachable"
+        _log.warning(
+            "ops.boot.bucket_check_unmapped bucket=%s error=%s status=%s",
+            bucket, error_type, status,
+        )
+
+    if audit is None:
         return
-    backend.assert_bucket_private(bucket)
+    try:
+        audit.record(
+            actor="boot",
+            action=action,
+            details={
+                "bucket": bucket,
+                "error_type": error_type,
+                "error_message": error_message,
+                "status_code": status,
+            },
+        )
+    except Exception:
+        # DELIBERATE swallow — see _SupabaseStorageBackend.assert_bucket_private
+        # docstring for the deviation rationale (boot is the operation; we
+        # don't fail boot on inability to audit). Log CRITICAL so journal
+        # alerting catches the audit-write failure itself.
+        _log.exception(
+            "ops.boot.audit_write_failed action=%s bucket=%s",
+            action, bucket,
+        )
+
+
+def _extract_status_code(exc: Exception) -> int | None:
+    """Best-effort HTTP-status extraction from various exception
+    shapes supabase-py / httpx might raise.
+
+    Supports:
+      * direct ``.code`` / ``.status_code`` / ``.status`` attributes
+        (int or numeric string — supabase-py StorageApiError varies
+        by version)
+      * ``.response.status_code`` (httpx HTTPStatusError shape)
+      * fallback ``None`` for shapes that don't carry a status
+
+    Returns ``None`` (not 0) so callers can distinguish "no status"
+    from "status 0".
+    """
+    for attr in ("code", "status_code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int) and 100 <= value <= 599:
+            return value
+        if isinstance(value, str) and value.isdigit():
+            parsed = int(value)
+            if 100 <= parsed <= 599:
+                return parsed
+    response = getattr(exc, "response", None)
+    if response is not None:
+        candidate = getattr(response, "status_code", None)
+        if isinstance(candidate, int) and 100 <= candidate <= 599:
+            return candidate
+    return None
+
+
+def _is_network_error(exc: Exception) -> bool:
+    """True for httpx transport-level exceptions (connect failure,
+    timeout, DNS, etc.). Used to distinguish "Supabase weather"
+    (unreachable) from "Supabase responded with a problem"
+    (auth / absent).
+
+    Lazy-imports ``httpx`` because storage_objects is imported at
+    boot regardless of which backend is active, and the tests for
+    the in-memory backend shouldn't pay an httpx import cost.
+    """
+    try:
+        import httpx
+    except ImportError:
+        return False
+    return isinstance(exc, httpx.TransportError)
 
 
 __all__ = [
     "StorageBackendError",
     "StorageError",
+    "_classify_and_emit_bucket_check_failure",
+    "_extract_status_code",
+    "_is_network_error",
     "assert_bucket_private_at_startup",
     "confirm_absent",
     "delete",

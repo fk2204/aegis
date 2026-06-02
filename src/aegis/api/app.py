@@ -57,12 +57,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     #    encrypted-PDF persistence layer assumes service_role-only
     #    access).
     assert_uvicorn_loopback_bind()
-    # Bucket assertion is lazy-imported because storage_objects pulls
-    # in supabase-py only when the supabase backend is selected; the
-    # memory backend skips the real Supabase call.
+    # Bucket assertion. Three "cannot determine" outcomes (unreachable,
+    # absent, auth) WARN + audit + proceed per the operator-required
+    # chunk-A refinement — a Supabase outage during a routine restart
+    # must not brick the web tier. Verified-public is the only
+    # refuse-boot branch.
+    #
+    # Lazy import: storage_objects only pulls supabase-py when the
+    # supabase backend is selected.
+    from aegis.api.deps import get_audit
     from aegis.storage_objects import assert_bucket_private_at_startup
 
-    assert_bucket_private_at_startup()
+    assert_bucket_private_at_startup(audit=get_audit())
     validate_states_table()  # legacy boot-time fail-closed compliance check
     # mp Phase 1: load + validate states.yaml; fail closed on drift.
     app.state.state_matrix = load_matrix()
