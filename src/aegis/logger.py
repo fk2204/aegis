@@ -29,7 +29,6 @@ from typing import Final
 
 from aegis.config import get_settings
 
-
 # Syslog priority codes (RFC 5424). systemd's SyslogLevelPrefix=true
 # parses ``<N>`` at the start of each stderr line and uses N to
 # classify the journal entry's priority. Without the prefix, Python
