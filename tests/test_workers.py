@@ -635,6 +635,167 @@ async def test_chunk_b_sha256_divergence_dead_letters(
     assert not fake_pdf.exists()
 
 
+async def test_chunk_b_quarantine_dir_is_mode_0700(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_pdf: Path,
+    chunk_b_storage: Path,
+) -> None:
+    """Q4(a) — quarantine/ and quarantine/dead-letter/ must be mode
+    0700 (owner-only). The ``.meta`` sidecars carry storage-layout
+    metadata (storage_path, sha256_original, key_version) — must NOT
+    be world-readable. Skipped on Windows where chmod semantics
+    differ; the prod box is Linux which is what matters.
+    """
+    import sys
+    if sys.platform.startswith("win"):
+        pytest.skip("POSIX-mode test; Windows chmod is permissive")
+
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
+    )
+    fake_result = _make_pipeline_result()
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda *_a, **_kw: fake_result,
+    )
+
+    def boom_upload(path: str, data: bytes) -> None:
+        raise storage_objects.StorageError("force quarantine path")
+
+    monkeypatch.setattr("aegis.storage_objects.upload", boom_upload)
+
+    await parse_document(
+        {"repository": repo, "audit": audit, "llm": object()},
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    qdir = chunk_b_storage / "quarantine"
+    qmode = qdir.stat().st_mode & 0o777
+    assert qmode == 0o700, (
+        f"quarantine/ must be mode 0700 (got 0o{qmode:o}) — .meta "
+        "sidecars carry storage-layout metadata that must not be "
+        "world-readable"
+    )
+
+
+async def test_chunk_b_dead_letter_dir_is_mode_0700(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_pdf: Path,
+    chunk_b_storage: Path,
+) -> None:
+    """Q4(a) — quarantine/dead-letter/ must also be mode 0700.
+    Triggered via sha256 divergence (the canonical terminal path)."""
+    import sys
+    if sys.platform.startswith("win"):
+        pytest.skip("POSIX-mode test; Windows chmod is permissive")
+
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash="0" * 64,  # forces divergence → dead-letter
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
+    )
+    fake_result = _make_pipeline_result()
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda *_a, **_kw: fake_result,
+    )
+
+    await parse_document(
+        {"repository": repo, "audit": audit, "llm": object()},
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    dlq = chunk_b_storage / "quarantine" / "dead-letter"
+    dmode = dlq.stat().st_mode & 0o777
+    assert dmode == 0o700, (
+        f"quarantine/dead-letter/ must be mode 0700 (got 0o{dmode:o})"
+    )
+    # And the parent quarantine/ which dead-letter sits under
+    qdir = chunk_b_storage / "quarantine"
+    qmode = qdir.stat().st_mode & 0o777
+    assert qmode == 0o700, (
+        f"parent quarantine/ must also be 0700 (got 0o{qmode:o}); "
+        "0700 on dead-letter/ alone is moot if traversal of the parent "
+        "is permissive"
+    )
+
+
+async def test_chunk_b_fifth_path_unmapped_exception_unlinks_and_audits(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_pdf: Path,
+    chunk_b_storage: Path,
+) -> None:
+    """Q1 — the 5th-path catch-all must:
+      * log CRITICAL (journal-priority surfaces it via -p err / -p crit)
+      * write audit ``document.original_storage_failed`` with
+        ``outcome=best_effort_cleanup`` (NOT ``no_cleanup`` — the old
+        name was wrong; we DO attempt cleanup)
+      * best-effort delete the plaintext (preserve disk-hygiene rule)
+
+    Forced by patching ``encrypt_pdf`` to raise something OTHER than
+    ``CryptoConfigError`` (which has its own explicit handler) —
+    here a ``RuntimeError`` that the explicit branches above don't
+    catch, falling through to the 5th-path catch-all.
+    """
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
+    )
+    fake_result = _make_pipeline_result()
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda *_a, **_kw: fake_result,
+    )
+
+    def boom_encrypt(plaintext: bytes, *, key_version: int) -> bytes:
+        # Not CryptoConfigError — falls through to the 5th-path catch
+        raise RuntimeError("unmapped encryption failure")
+
+    monkeypatch.setattr("aegis.workers.encrypt_pdf", boom_encrypt)
+
+    out = await parse_document(
+        {"repository": repo, "audit": audit, "llm": object()},
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    # Parse already persisted before storage step; result still returned
+    assert out["parse_status"] == "proceed"
+
+    # Audit row written with reason=unknown outcome=best_effort_cleanup
+    storage_failed_rows = [
+        e for e in audit.entries
+        if e["action"] == "document.original_storage_failed"
+    ]
+    assert len(storage_failed_rows) == 1
+    failure = storage_failed_rows[0]
+    assert failure["details"]["reason"] == "unknown"
+    assert failure["details"]["outcome"] == "best_effort_cleanup", (
+        "outcome must be best_effort_cleanup — the 5th path attempts "
+        "_safe_unlink at the end. The old 'no_cleanup' label promised "
+        "plaintext-at-rest, which is the failure mode we're closing."
+    )
+    assert failure["details"]["error_type"] == "RuntimeError"
+
+    # Plaintext deleted — disk-hygiene rule preserved on the 5th path
+    assert not fake_pdf.exists()
+
+    # storage_path stays NULL (no successful upload happened)
+    persisted = repo.get_document(row.id)
+    assert persisted.storage_path is None
+
+
 async def test_chunk_b_persist_storage_metadata_is_atomic(
     monkeypatch: pytest.MonkeyPatch,
     fake_pdf: Path,

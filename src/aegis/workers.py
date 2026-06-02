@@ -413,6 +413,29 @@ def _dead_letter_dir() -> Path:
     return _quarantine_dir() / "dead-letter"
 
 
+def _make_chunk_b_dir(path: Path) -> Path:
+    """Create a chunk-B working directory with restrictive 0700 mode.
+
+    The .meta sidecars in quarantine/ and quarantine/dead-letter/
+    carry storage-layout metadata (storage_path, sha256_original,
+    key_version) — must NOT be world-readable. We apply 0700 on
+    BOTH create (covers new directories) AND post-create chmod
+    (covers pre-existing directories created with default systemd
+    umask — typically 0755 on Linux without
+    ``UMask=0077`` in the unit). Both belt and suspenders.
+    """
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        # Best-effort. Some FSes (e.g. a mounted Windows share in a
+        # dev environment) don't fully honor chmod. The log surfaces
+        # the failure but doesn't block the worker — without the
+        # chmod the data still goes to the right path.
+        _log.warning("worker.chunk_b.chmod_failed path=%s", path)
+    return path
+
+
 def _write_quarantine(
     document_id: UUID,
     *,
@@ -429,8 +452,7 @@ def _write_quarantine(
     encryption_key_version, storage_path, retention_until, plus a
     forensic record of the failure reason.
     """
-    qdir = _quarantine_dir()
-    qdir.mkdir(parents=True, exist_ok=True)
+    qdir = _make_chunk_b_dir(_quarantine_dir())
     blob_path = qdir / f"{document_id}.pdf.enc"
     meta_path = qdir / f"{document_id}.meta.json"
     blob_path.write_bytes(ciphertext)
@@ -453,8 +475,11 @@ def _write_dead_letter(
     has the forensic record. Reconcile cron NEVER retries from this
     directory.
     """
-    ddir = _dead_letter_dir()
-    ddir.mkdir(parents=True, exist_ok=True)
+    # Ensure the parent quarantine/ exists at 0700 too — dead-letter/
+    # alone with 0700 still leaves the parent traversal-permissioned
+    # at whatever umask default applied on first create.
+    _make_chunk_b_dir(_quarantine_dir())
+    ddir = _make_chunk_b_dir(_dead_letter_dir())
     if ciphertext is not None:
         (ddir / f"{document_id}.pdf.enc").write_bytes(ciphertext)
     meta_path = ddir / f"{document_id}.meta.json"
@@ -662,25 +687,65 @@ async def _try_encrypted_storage_step(
         return True
 
     except Exception as exc:
-        # Defensive: any unmapped exception (e.g. file read OS error).
-        # Audit + leave the plaintext on disk for operator inspection
-        # — we don't know what state we're in, so the day-one cleanup
-        # rule yields to the day-one "don't lose evidence" rule.
-        _log.exception(
-            "worker.encrypted_storage.unexpected document_id=%s", document_id
+        # 5th-path catch-all — any exception not handled by the three
+        # explicit terminal/transient branches above. Real reachable
+        # causes given those explicit handlers (per chunk-B review):
+        #
+        #   * ``Path.read_bytes`` OSError — plaintext file disappeared
+        #     between persist_parse_result and storage step (rare;
+        #     would imply another process running on /var/lib/aegis/
+        #     uploads/, which shouldn't happen)
+        #   * ``_write_quarantine`` / ``_write_dead_letter`` OSError —
+        #     disk full or directory permission failure (we couldn't
+        #     persist the recovery artifact AT ALL)
+        #   * ``audit.record`` raising AuditWriteError — Supabase
+        #     Postgres unreachable AT THE MOMENT OF AUDIT (chunk A's
+        #     bucket-private path proved we don't fail boot when
+        #     Supabase is down; the parse already-completed audit row
+        #     would have failed first, so we likely never reach here
+        #     while audit is broken — but in principle possible)
+        #   * MemoryError on encrypt_pdf for a 25MB PDF — extreme;
+        #     catching wouldn't help the worker recover
+        #   * Anything unmapped in cryptography / asyncio (defense-in-
+        #     depth against future library version surprises)
+        #
+        # ALERT LOUD per operator chunk-B review: CRITICAL log so the
+        # journal-priority fix surfaces this in ``journalctl -p err``
+        # AND ``-p crit`` immediately. Plaintext is best-effort
+        # unlinked at the end — leaving it on disk in a state where
+        # the operator doesn't know about it would silently
+        # reintroduce plaintext-at-rest, the exact failure mode this
+        # entire project closes.
+        _log.critical(
+            "ops.worker.encrypted_storage.unknown document_id=%s",
+            document_id,
+            exc_info=True,
         )
-        audit.record(
-            actor="worker",
-            action="document.original_storage_failed",
-            subject_type="document",
-            subject_id=document_id,
-            details={
-                "reason": "unknown",
-                "error_type": type(exc).__name__,
-                "error_message": str(exc)[:500],
-                "outcome": "no_cleanup",
-            },
-        )
+        try:
+            audit.record(
+                actor="worker",
+                action="document.original_storage_failed",
+                subject_type="document",
+                subject_id=document_id,
+                details={
+                    "reason": "unknown",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc)[:500],
+                    "outcome": "best_effort_cleanup",
+                },
+            )
+        except Exception:
+            _log.critical(
+                "ops.worker.encrypted_storage.audit_also_failed "
+                "document_id=%s",
+                document_id,
+                exc_info=True,
+            )
+        # Best-effort plaintext unlink — preserves disk-hygiene rule
+        # whenever possible. ``_safe_unlink`` itself catches OSError;
+        # if even that fails, the CRITICAL log above is the operator's
+        # tripwire.
+        _safe_unlink(pdf_path)
         return False
 
 
