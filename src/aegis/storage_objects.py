@@ -413,16 +413,28 @@ def _extract_status_code(exc: Exception) -> int | None:
     """Best-effort HTTP-status extraction from various exception
     shapes supabase-py / httpx might raise.
 
-    Supports:
-      * direct ``.code`` / ``.status_code`` / ``.status`` attributes
-        (int or numeric string — supabase-py StorageApiError varies
-        by version)
-      * ``.response.status_code`` (httpx HTTPStatusError shape)
-      * fallback ``None`` for shapes that don't carry a status
+    Conservative-fallback contract: returns ``None`` whenever no
+    parseable status can be recovered. The classifier treats ``None``
+    as "unmapped" and routes to the unreachable / proceed branch.
+    NEVER raises; NEVER returns a value that would route to
+    refuse-boot. A future supabase-py shape change must degrade to
+    wrong-severity (extra noise on the journal), not to bricked-tier.
 
-    Returns ``None`` (not 0) so callers can distinguish "no status"
-    from "status 0".
+    Supported shapes:
+      * direct ``.code`` / ``.status_code`` / ``.status`` attribute
+        (int or numeric string)
+      * ``.response.status_code`` (httpx HTTPStatusError shape)
+      * ``.message`` or ``args[0]`` is a dict containing
+        ``"statusCode"`` (camelCase, the JSON key supabase actually
+        returns — verified against prod 2026-06-01 by the bucket
+        probe) or ``"status_code"`` (snake_case defensive fallback)
+
+    The dict-dig matches on the numeric ``statusCode`` key, NOT on
+    the English label (e.g. ``"Bucket not found"``) — the status
+    integer is the stable cross-version contract; labels get
+    reworded by upstream.
     """
+    # Direct numeric attributes
     for attr in ("code", "status_code", "status"):
         value = getattr(exc, attr, None)
         if isinstance(value, int) and 100 <= value <= 599:
@@ -431,11 +443,34 @@ def _extract_status_code(exc: Exception) -> int | None:
             parsed = int(value)
             if 100 <= parsed <= 599:
                 return parsed
+
+    # httpx HTTPStatusError shape
     response = getattr(exc, "response", None)
     if response is not None:
         candidate = getattr(response, "status_code", None)
         if isinstance(candidate, int) and 100 <= candidate <= 599:
             return candidate
+
+    # supabase-py StorageApiError shape: ``.message`` or ``args[0]`` is
+    # a dict carrying the HTTP statusCode under the camelCase JSON
+    # key. Defensive: also accept ``status_code`` for snake_case
+    # variants future versions might emit.
+    for candidate_obj in (
+        getattr(exc, "message", None),
+        exc.args[0] if exc.args else None,
+    ):
+        if not isinstance(candidate_obj, dict):
+            continue
+        sc = candidate_obj.get("statusCode")
+        if sc is None:
+            sc = candidate_obj.get("status_code")
+        if isinstance(sc, int) and 100 <= sc <= 599:
+            return sc
+        if isinstance(sc, str) and sc.isdigit():
+            parsed = int(sc)
+            if 100 <= parsed <= 599:
+                return parsed
+
     return None
 
 

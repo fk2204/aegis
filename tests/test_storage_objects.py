@@ -524,3 +524,168 @@ def test_is_network_error_false_for_runtime_error() -> None:
     from aegis.storage_objects import _is_network_error
 
     assert _is_network_error(RuntimeError("unrelated")) is False
+
+
+# --- supabase-py StorageApiError shape (verified against prod 2026-06-01) ---
+
+
+class _StubStorageApiError(Exception):
+    """Mimics supabase-py's ``StorageApiError`` shape for the
+    bucket-not-found case, verified against prod 2026-06-01 by the
+    Q2(a) bucket probe.
+
+    Attribute layout observed:
+
+      * ``status_code`` → ``None`` (supabase-py doesn't populate it)
+      * ``code``        → ``"Bucket not found"`` (human label, NOT numeric)
+      * ``message``     → dict ``{"statusCode": 404, "error": "Bucket not
+                          found", "message": "Bucket not found"}``
+
+    The numeric ``404`` lives ONLY inside the ``message`` dict's
+    ``statusCode`` camelCase key — the dict-dig path of
+    ``_extract_status_code`` is what recovers it.
+    """
+
+    def __init__(self, status_code: int = 404, error: str = "Bucket not found"):
+        self.status_code = None  # mirroring supabase-py — empty by design
+        self.code = error  # human label, not numeric
+        self.message = {
+            "statusCode": status_code,
+            "error": error,
+            "message": error,
+        }
+        super().__init__(self.message)
+
+
+def test_supabase_storage_api_error_404_routes_to_absent_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Real supabase-py ``StorageApiError`` shape (verified against
+    prod 2026-06-01) must route to ``boot.bucket_absent`` (ERROR
+    level), NOT to ``boot.bucket_check_unreachable`` (WARN level).
+
+    The Q2(b) severity ladder is the load-bearing contract: absent =
+    incomplete provisioning (louder alert + chunk-B quarantine
+    behavior) vs unreachable = Supabase weather (routine WARN). A
+    misclassification here would emit the wrong severity on the
+    journal alert AND propagate to chunk-B's quarantine decision.
+    """
+    def _raise_404(name: str) -> Any:
+        raise _StubStorageApiError(status_code=404)
+
+    backend = _stub_backend_with_get_bucket(_raise_404)
+    audit = _AuditCapture()
+
+    with caplog.at_level(logging.ERROR):
+        backend.assert_bucket_private("documents", audit=audit)  # no raise
+
+    assert len(audit.records) == 1
+    assert audit.records[0]["action"] == "boot.bucket_absent"
+    assert audit.records[0]["details"]["status_code"] == 404
+    assert any(
+        "bucket_absent" in r.message and r.levelname == "ERROR"
+        for r in caplog.records
+    )
+
+
+def test_supabase_storage_api_error_401_routes_to_auth_path() -> None:
+    """The same dict-dig recovers 401 from a StorageApiError-shaped
+    auth failure. The chunk-B quarantine logic depends on the auth
+    case being distinguishable from absent — both end up "no upload
+    succeeds", but auth needs a credential-rotation alert vs
+    "create the bucket" for absent.
+    """
+    def _raise_401(name: str) -> Any:
+        raise _StubStorageApiError(status_code=401, error="invalid token")
+
+    backend = _stub_backend_with_get_bucket(_raise_401)
+    audit = _AuditCapture()
+
+    backend.assert_bucket_private("documents", audit=audit)
+
+    assert audit.records[0]["action"] == "boot.bucket_auth_failed"
+
+
+def test_malformed_storage_api_error_falls_through_to_unreachable() -> None:
+    """Conservative-fallback contract: if the StorageApiError-shape
+    dict-dig finds NO parseable ``statusCode``, classification falls
+    through to UNREACHABLE (WARN + proceed), NEVER to refuse-boot.
+
+    A future supabase-py shape change (renaming the JSON key,
+    flattening the dict, emitting a string-only error) must degrade
+    to wrong-severity (extra journal noise), not to bricked-tier.
+    """
+
+    class _FutureSupabaseError(Exception):
+        """A hypothetical future shape with no recoverable status."""
+        def __init__(self) -> None:
+            self.code = "Some New Error Label"  # not numeric
+            # message is a dict but WITHOUT statusCode
+            self.message: dict[str, Any] = {"error": "Some new error format"}
+            super().__init__(self.message)
+
+    def _raise_future(name: str) -> Any:
+        raise _FutureSupabaseError()
+
+    backend = _stub_backend_with_get_bucket(_raise_future)
+    audit = _AuditCapture()
+
+    # MUST NOT RAISE — the conservative fallback proceeds
+    backend.assert_bucket_private("documents", audit=audit)
+
+    # Falls through to unreachable, NOT absent (the dict had no
+    # statusCode to decode)
+    assert audit.records[0]["action"] == "boot.bucket_check_unreachable"
+
+
+def test_non_dict_message_falls_through_to_unreachable() -> None:
+    """Defensive: if ``.message`` is not a dict at all (e.g. a string
+    or None), the dict-dig branch is skipped entirely and the
+    classifier falls through to unreachable. NEVER refuse-boot."""
+
+    class _StringMessageError(Exception):
+        """exc.message is a plain string — no dict to dig."""
+        def __init__(self) -> None:
+            self.message = "Just a string, no statusCode anywhere"
+            super().__init__(self.message)
+
+    def _raise_string_message(name: str) -> Any:
+        raise _StringMessageError()
+
+    backend = _stub_backend_with_get_bucket(_raise_string_message)
+    audit = _AuditCapture()
+
+    backend.assert_bucket_private("documents", audit=audit)  # no raise
+    assert audit.records[0]["action"] == "boot.bucket_check_unreachable"
+
+
+def test_extract_status_code_recovers_from_message_dict() -> None:
+    """Unit-level test of the dict-dig logic in ``_extract_status_code``."""
+    from aegis.storage_objects import _extract_status_code
+
+    exc = _StubStorageApiError(status_code=404)
+    assert _extract_status_code(exc) == 404
+
+
+def test_extract_status_code_recovers_from_args_dict() -> None:
+    """If the dict lives in ``args[0]`` rather than ``.message``,
+    the dig still recovers the status."""
+    from aegis.storage_objects import _extract_status_code
+
+    class _ArgsDictError(Exception):
+        pass
+
+    exc = _ArgsDictError({"statusCode": 500, "error": "server boom"})
+    assert _extract_status_code(exc) == 500
+
+
+def test_extract_status_code_rejects_dict_with_no_status() -> None:
+    """A dict without ``statusCode``/``status_code`` returns ``None``
+    so the classifier falls through to the conservative branch."""
+    from aegis.storage_objects import _extract_status_code
+
+    class _EmptyDictError(Exception):
+        pass
+
+    exc = _EmptyDictError({"error": "no status here"})
+    assert _extract_status_code(exc) is None

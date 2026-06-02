@@ -273,3 +273,95 @@ def test_key_must_be_valid_base64(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(CryptoConfigError):
         validate_crypto_config_at_boot()
+
+
+# ---------------------------------------------------------------------------
+# Cold-boot integration test — exercises the REAL production entrypoint
+# ---------------------------------------------------------------------------
+#
+# Background: chunk A shipped with two distinct recursion bugs on the
+# crypto-boot-guard path.
+#
+#   1. ``get_settings()`` called ``validate_crypto_config_at_boot()``
+#      with no args, which then called ``get_settings()`` again — fixed
+#      by passing settings explicitly (commit 5384ca8).
+#
+#   2. ``validate_crypto_config_at_boot(settings)`` called
+#      ``_key_for_version(version)``, which itself called
+#      ``get_settings()`` internally — fixed by introducing
+#      ``_key_for_version_with_settings`` (commit ae75fc2).
+#
+# Both bugs slipped through the entire unit-test suite because every
+# existing test monkeypatches ``aegis.crypto.get_settings`` to return a
+# stub. The monkeypatch short-circuits the cycle — the stub returns
+# instantly on every call instead of re-entering the cache-miss path.
+# Production cold boot (first call to ``get_settings`` after a process
+# restart) was the only context where the cycle could fire, and it
+# fired on every restart.
+#
+# The test below is the regression guard for both bugs AND any future
+# recursion hop somebody adds to the chain. It:
+#
+#   * does NOT monkeypatch ``aegis.crypto.get_settings`` — uses the
+#     real symbol so any hidden ``get_settings()`` call inside the
+#     chain would re-enter the cache-miss path and recurse
+#   * provides env vars at the ``os.environ`` level (same shape the
+#     systemd unit produces) so ``Settings()`` constructs naturally
+#   * clears the lru_cache before AND after so the test doesn't
+#     pollute neighbors and isn't masked by a previously-cached value
+#   * implicitly asserts no recursion (a real ``RecursionError`` would
+#     fail the test) and verifies the chain populated settings
+#     correctly
+
+
+def test_cold_boot_get_settings_chain_no_recursion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the REAL production cold-boot path of ``get_settings``.
+
+    Critically does NOT monkeypatch ``aegis.crypto.get_settings`` —
+    that's the move every other crypto test makes, and it's what
+    masked two prior recursion bugs in chunk A (both surfaced
+    2026-06-01 by an actual prod cold-boot probe).
+
+    The cold chain exercised here:
+
+        get_settings()  [lru_cache miss]
+          → Settings()  [reads env vars; pydantic-settings]
+          → data_residency check (passes via conftest)
+          → validate_crypto_config_at_boot(settings)  [explicit settings]
+          → _key_for_version_with_settings(settings, 1)
+          → _decode_key(b64, 1)
+          → return settings [cache populated]
+
+    A future change adding ANY ``get_settings()`` call inside this
+    chain (e.g. a "convenient" lookup inside ``_decode_key``) would
+    re-enter the uncached first call and recurse. This test catches
+    that in CI.
+    """
+    from aegis.config import get_settings as cfg_get_settings
+
+    raw_key = os.urandom(32)
+    b64_key = base64.b64encode(raw_key).decode("ascii")
+
+    monkeypatch.setenv("PDF_ENCRYPTION_KEYS_CURRENT", "1")
+    monkeypatch.setenv("PDF_ENCRYPTION_KEY_V1", b64_key)
+
+    cfg_get_settings.cache_clear()
+    try:
+        # MUST NOT raise RecursionError. A successful return is the
+        # implicit assertion — any unfound recursion hop would blow
+        # past Python's default recursion limit (1000) long before
+        # the lookup chain settles.
+        settings = cfg_get_settings()
+    finally:
+        # Restore cache state so neighbor tests rebuild from the
+        # conftest env (without my PDF_* overrides).
+        cfg_get_settings.cache_clear()
+
+    # Verify the chain actually executed (the recursion-fix path
+    # populates these values; a no-op return would leave them None).
+    assert settings.pdf_encryption_keys_current == 1
+    # Per design: the env var is loaded into a SecretStr field —
+    # presence (not value) is the meaningful assertion here.
+    assert settings.pdf_encryption_key_v1 is not None
