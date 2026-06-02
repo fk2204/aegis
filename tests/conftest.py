@@ -33,12 +33,12 @@ os.environ["AEGIS_STORAGE_BACKEND"] = "memory"
 # ephemeral and never persisted, reproducible across CI runs, AND forces
 # the test value even when /etc/aegis/aegis.env is sourced on the box —
 # pytest must not accidentally seal test fixtures with the real prod key.
-import base64 as _b64  # noqa: E402
+import base64 as _b64
 
 os.environ["PDF_ENCRYPTION_KEYS_CURRENT"] = "1"
-os.environ["PDF_ENCRYPTION_KEY_V1"] = _b64.b64encode(bytes(32)).decode("ascii")  # noqa: S105 — test stub
+os.environ["PDF_ENCRYPTION_KEY_V1"] = _b64.b64encode(bytes(32)).decode("ascii")
 
-from aegis.config import get_settings  # noqa: E402
+from aegis.config import get_settings
 
 # Clear cache so the test env is honored regardless of prior imports.
 get_settings.cache_clear()

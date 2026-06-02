@@ -29,6 +29,7 @@ from redis.exceptions import RedisError
 if TYPE_CHECKING:
     from arq.connections import RedisSettings
 
+from aegis import storage_objects
 from aegis.api.deps import (
     get_audit,
     get_close_client,
@@ -48,6 +49,7 @@ from aegis.close.client import (
 )
 from aegis.close.field_map import filename_matches_statement_filter
 from aegis.config import get_settings
+from aegis.crypto import CryptoConfigError, current_key_version, encrypt_pdf
 from aegis.funders.replies import (
     FunderReplyError,
     FunderReplyPayload,
@@ -71,8 +73,6 @@ from aegis.parser.processor import (
     detect_processor,
     run_processor_pipeline,
 )
-from aegis import storage_objects
-from aegis.crypto import CryptoConfigError, current_key_version, encrypt_pdf
 from aegis.storage import DocumentNotFoundError, DocumentRepository
 
 _log = get_logger(__name__)
