@@ -730,7 +730,7 @@ class SupabaseDocumentRepository:
             .execute()
         )
         return [
-            _doc_row_from_db(cast(dict[str, Any], row))
+            _doc_row_from_db(row)
             for row in cast(list[dict[str, Any]], result.data or [])
         ]
 
