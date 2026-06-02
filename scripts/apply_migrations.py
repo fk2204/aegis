@@ -254,6 +254,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='analyses' "
         "AND column_name='pattern_analysis'"
     ),
+    "033_documents_storage_and_retention.sql": (
+        # storage_path is the canonical signal for 033: it's the column
+        # the worker writes when chunk B ships and is the predicate of
+        # idx_documents_retention_until. If storage_path exists, the
+        # other three documents columns + merchants.deleted_at landed
+        # together (single migration body, single BEGIN/COMMIT).
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='documents' "
+        "AND column_name='storage_path'"
+    ),
 }
 
 

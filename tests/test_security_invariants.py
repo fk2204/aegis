@@ -175,3 +175,52 @@ def test_close_callback_router_has_no_funder_paths() -> None:
         "The Close key must never gate funder mutation. Offending paths:\n  "
         + "\n  ".join(offending)
     )
+
+
+# ---------------------------------------------------------------------------
+# PDF retention redesign — chunk A invariant
+# ---------------------------------------------------------------------------
+
+
+# Forbidden Supabase Storage URL helpers. The view route in chunk C
+# never hands a Supabase URL to the client — operator browser → AEGIS
+# → Supabase, and the AEGIS response streams plaintext bytes via the
+# StreamingResponse path that runs the SHA-256 integrity check and
+# writes the document.original_viewed audit row. A signed URL would
+# let the browser cache the link and re-fetch without an audit row,
+# AND would skip the integrity check entirely.
+#
+# Locked down by source grep — if a future caller does
+# ``storage.from_(bucket).create_signed_url(...)`` or ``.get_public_url(...)``
+# this test fails the build before the change merges. supabase-py
+# exposes both snake_case (Python convention) and camelCase
+# (TypeScript-port convention) variants — both are forbidden.
+_FORBIDDEN_SUPABASE_URL_HELPERS: tuple[str, ...] = (
+    "create_signed_url",
+    "createSignedUrl",
+    "get_public_url",
+    "getPublicUrl",
+)
+
+
+def test_no_supabase_signed_or_public_url_helpers_in_source() -> None:
+    """The PDF view route (chunk C) NEVER returns a Supabase URL to
+    the client. See ``docs/PDF_RETENTION_DESIGN.md`` §9.
+
+    If you have a legitimate reason to call ``create_signed_url`` from
+    AEGIS — e.g. a future operator-facing tool that doesn't need an
+    audit row per access — surface the design change before adding it
+    to the codebase. Right now: zero callers.
+    """
+    violations: list[str] = []
+    for path in _SRC.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for term in _FORBIDDEN_SUPABASE_URL_HELPERS:
+            if term in text:
+                rel = path.relative_to(_REPO_ROOT).as_posix()
+                violations.append(f"{rel} mentions {term!r}")
+
+    assert not violations, (
+        "Forbidden Supabase URL helper(s) found in src/aegis — see "
+        "docs/PDF_RETENTION_DESIGN.md §9:\n  " + "\n  ".join(violations)
+    )

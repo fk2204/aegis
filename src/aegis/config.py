@@ -150,6 +150,56 @@ class Settings(BaseSettings):
     # corpus + token-cost data validates the per-deal savings.
     aegis_parser_page_routing: bool = False
 
+    # ------------------------------------------------------------------
+    # PDF retention redesign (chunk A) — see docs/PDF_RETENTION_DESIGN.md
+    # ------------------------------------------------------------------
+
+    # Supabase Storage bucket name. Per-env separation: prod / staging /
+    # dev each get their own bucket so a cross-env service-role lookup
+    # can't reach the wrong corpus. Boot guard
+    # (storage_objects.assert_bucket_private_at_startup) asserts the
+    # bucket exists and is PRIVATE (service_role only).
+    aegis_document_bucket: str = "documents"
+
+    # Defense-in-depth header injected by cloudflared and verified by
+    # require_tunnel_secret on every CF-authenticated route. Protects
+    # against an attacker who got code execution as a non-root user on
+    # the box but no read of /etc/aegis/aegis.env. base64-random-32-bytes;
+    # rotation procedure in deploy/RUNBOOK.md.
+    # Unset → require_tunnel_secret fails closed (every route 503s). See
+    # chunk-C deployment ordering note in project-pdf-retention-redesign
+    # memory: configure cloudflared FIRST, verify header arrives, THEN
+    # enable require_tunnel_secret app-side.
+    aegis_tunnel_shared_secret: SecretStr | None = None
+
+    # Encryption-key versioning. PDF_ENCRYPTION_KEYS_CURRENT names the
+    # version used for new writes. Old versions stay configured as long
+    # as any documents row references them; rotation procedure in
+    # docs/PDF_KEY_ROTATION.md.
+    #
+    # Set to None / 0 until chunk B deploys (no callers depend on it
+    # before then). Once chunk B is live, the systemd unit + ops
+    # runbook ensure the current-version key is configured at boot.
+    pdf_encryption_keys_current: int | None = None
+
+    # Versioned keys (base64-encoded, must decode to exactly 32 bytes).
+    # Declared explicitly v1..v10 because pydantic-settings binds env
+    # vars at class-definition time, not dynamically; supporting 10
+    # rotations without a code change is enough headroom for v1 design.
+    # The boot guard (crypto.validate_crypto_config_at_boot) verifies
+    # that PDF_ENCRYPTION_KEYS_CURRENT points at a populated key that
+    # decodes to exactly 32 bytes.
+    pdf_encryption_key_v1: SecretStr | None = None
+    pdf_encryption_key_v2: SecretStr | None = None
+    pdf_encryption_key_v3: SecretStr | None = None
+    pdf_encryption_key_v4: SecretStr | None = None
+    pdf_encryption_key_v5: SecretStr | None = None
+    pdf_encryption_key_v6: SecretStr | None = None
+    pdf_encryption_key_v7: SecretStr | None = None
+    pdf_encryption_key_v8: SecretStr | None = None
+    pdf_encryption_key_v9: SecretStr | None = None
+    pdf_encryption_key_v10: SecretStr | None = None
+
     @field_validator("bedrock_model_id")
     @classmethod
     def _model_must_be_regional_us(cls, v: str) -> str:
@@ -181,6 +231,18 @@ def get_settings() -> Settings:
             "AEGIS_DATA_RESIDENCY_CONFIRMED must be true. "
             "Refusing to boot until US-only data routing is acknowledged."
         )
+    # PDF retention chunk A — crypto key sanity check. No-op when
+    # PDF_ENCRYPTION_KEYS_CURRENT is unset (chunk A ships before any
+    # caller depends on a populated key); once chunk B deploys, the
+    # systemd unit ensures the current-version key is configured at
+    # boot and a misconfiguration here refuses to start.
+    #
+    # Lazy import — aegis.crypto imports get_settings() at module level
+    # for _key_for_version lookups, so a top-level import here would
+    # create a cycle.
+    from aegis.crypto import validate_crypto_config_at_boot
+
+    validate_crypto_config_at_boot()
     return settings
 
 

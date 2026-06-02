@@ -60,7 +60,14 @@ These apply to every file. Domain-specific rules (parser internals, compliance, 
 
 ### PII & data handling
 - **Never log PII.** PII fields: `business_name, dba, owner_name, phone, email, address_*, bank_name, account_holder, account_last4, ssn, ssn_last4, ein, tax_id, owner_dob, transaction_description`. Logger masks by key name AND value pattern.
-- **Never store PDFs long-term.** Parse → extract → delete from disk in a `finally` block. DB stores transactions and metadata, not the PDF.
+- **PDF storage posture** (migration 033 / chunk A of the PDF retention redesign — see `docs/PDF_RETENTION_DESIGN.md`):
+  - **Local disk:** parse → extract → delete (unchanged from day one). The worker's `_safe_unlink` MUST run only after the storage step succeeds — on storage failure the local file is preserved under `quarantine/{document_id}.pdf.enc` (ciphertext, NOT plaintext per chunk-B sub-spec) for the reconcile cron to retry. The day-one unconditional `finally`-delete is OBSOLETE with chunk B.
+  - **Long-term:** encrypted ciphertext in Supabase Storage via AEGIS-managed client-side AES-256-GCM with versioned keys (`/etc/aegis/aegis.env PDF_ENCRYPTION_KEY_V{n}`). Compromised Supabase = ciphertext only. Compromised box = full disclosure — honest threat-model boundary: keys + storage creds share `aegis.env`. Mitigating box compromise requires KMS, deferred.
+  - **View access:** through `GET /api/documents/{id}/original` only — SSO-authenticated, ACL-domain-gated, shared-secret tunnel header `Cf-Aegis-Tunnel-Secret` enforced. NEVER via Supabase signed URLs — `tests/test_security_invariants.py` greps source for `create_signed_url` / `get_public_url` and fails if either appears.
+  - **Integrity:** SHA-256 of plaintext at `documents.sha256_original`, checked on every read (in addition to AES-GCM auth tag). Mismatch = 500 + `document.original_viewed_integrity_failed` audit row.
+  - **Retention:** 7 years from upload baseline; `GREATEST(retention_until, NOW()+5yr)` on merchant soft-delete (extends, never shortens). Commera internal policy — NOT a 16 CFR §1020.220 CIP binding (AEGIS is not a covered financial institution). Nightly arq cron `run_retention_sweep_cron` enforces: blob delete → confirm absent → atomic `clear_storage_path` + `document.retention_deleted` audit with `deletion_confirmed: true`.
+  - **Every PDF-touching code path writes an audit row.** Full action list in `docs/PDF_RETENTION_DESIGN.md` §12.
+  - **Legacy docs** (`storage_path IS NULL`, pre-033) render without "View original PDF" link and require local re-upload for re-parse. `_reparse_*.py --from-storage` works only on post-033 docs.
 - **Transaction descriptions are PII.** Mask in logs. Acceptable in the database for funder review and audit, never in log files.
 
 ### Security
