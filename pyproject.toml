@@ -38,6 +38,9 @@ dependencies = [
     # HTTPS call fails CERTIFICATE_VERIFY_FAILED. The OS store has the
     # working CAs and revocation info. On Linux this is a no-op.
     "truststore>=0.10",
+    # cryptography: AES-256-GCM for client-side PDF encryption (PDF
+    # retention redesign chunk A, see docs/PDF_RETENTION_DESIGN.md §6).
+    "cryptography>=44",
 ]
 
 [dependency-groups]

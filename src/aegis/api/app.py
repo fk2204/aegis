@@ -26,6 +26,7 @@ from aegis.api.auth import (
     warn_if_bearer_unconfigured,
     warn_if_close_callback_token_unconfigured,
 )
+from aegis.api.boot_guards import assert_uvicorn_loopback_bind
 from aegis.api.deps import get_merchant_repository, get_repository
 from aegis.api.routes import ALL_ROUTERS
 from aegis.compliance.anti_drift import run_boot_checks
@@ -44,6 +45,30 @@ _log = get_logger(__name__)
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging()
+    # PDF retention chunk A — boot guards. Run BEFORE anything else
+    # touches the network or schema so a misconfigured deployment
+    # refuses to start instead of leaking PDFs or accepting traffic
+    # on an interface it shouldn't be on.
+    #
+    # 1. uvicorn must be bound to loopback (regression guard against a
+    #    future systemd unit edit that flips --host to 0.0.0.0 and
+    #    silently reopens the PDF-exfil hole guarded by the CF tunnel).
+    # 2. Supabase document bucket must exist and be private (the
+    #    encrypted-PDF persistence layer assumes service_role-only
+    #    access).
+    assert_uvicorn_loopback_bind()
+    # Bucket assertion. Three "cannot determine" outcomes (unreachable,
+    # absent, auth) WARN + audit + proceed per the operator-required
+    # chunk-A refinement — a Supabase outage during a routine restart
+    # must not brick the web tier. Verified-public is the only
+    # refuse-boot branch.
+    #
+    # Lazy import: storage_objects only pulls supabase-py when the
+    # supabase backend is selected.
+    from aegis.api.deps import get_audit
+    from aegis.storage_objects import assert_bucket_private_at_startup
+
+    assert_bucket_private_at_startup(audit=get_audit())
     validate_states_table()  # legacy boot-time fail-closed compliance check
     # mp Phase 1: load + validate states.yaml; fail closed on drift.
     app.state.state_matrix = load_matrix()
