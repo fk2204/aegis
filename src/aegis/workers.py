@@ -711,14 +711,32 @@ async def _try_encrypted_storage_step(
         #
         # ALERT LOUD per operator chunk-B review: CRITICAL log so the
         # journal-priority fix surfaces this in ``journalctl -p err``
-        # AND ``-p crit`` immediately. Plaintext is best-effort
-        # unlinked at the end — leaving it on disk in a state where
-        # the operator doesn't know about it would silently
-        # reintroduce plaintext-at-rest, the exact failure mode this
-        # entire project closes.
+        # AND ``-p crit`` immediately.
+        #
+        # CLEANUP DECISION — discriminated by exception class:
+        #
+        #   * ``OSError`` (and subclasses: PermissionError, ENOSPC,
+        #     FileNotFoundError, etc.) → write/IO failure path. The
+        #     recovery-artifact write into quarantine/ or
+        #     dead-letter/ failed, which means the plaintext on disk
+        #     is THE LAST COPY of this document's bytes. Deleting it
+        #     would be data loss — disk full + delete = the worst
+        #     possible outcome. PRESERVE the plaintext; the operator
+        #     frees space / fixes permissions, then re-runs
+        #     ``scripts/_reparse_one.py`` to retry.
+        #
+        #   * anything else (RuntimeError, MemoryError, asyncio
+        #     internals, unmapped library exceptions) → genuine-leak
+        #     path. The file's status is unknown; best-effort unlink
+        #     preserves the disk-hygiene rule.
+        #
+        # ``_safe_unlink`` itself catches OSError, so the unlink call
+        # below can't raise even on the file-already-gone case.
+        is_write_failure = isinstance(exc, OSError)
         _log.critical(
-            "ops.worker.encrypted_storage.unknown document_id=%s",
-            document_id,
+            "ops.worker.encrypted_storage.unknown document_id=%s "
+            "is_write_failure=%s",
+            document_id, is_write_failure,
             exc_info=True,
         )
         try:
@@ -731,7 +749,11 @@ async def _try_encrypted_storage_step(
                     "reason": "unknown",
                     "error_type": type(exc).__name__,
                     "error_message": str(exc)[:500],
-                    "outcome": "best_effort_cleanup",
+                    "outcome": (
+                        "write_failure_preserved"
+                        if is_write_failure
+                        else "best_effort_cleanup"
+                    ),
                 },
             )
         except Exception:
@@ -741,10 +763,14 @@ async def _try_encrypted_storage_step(
                 document_id,
                 exc_info=True,
             )
-        # Best-effort plaintext unlink — preserves disk-hygiene rule
-        # whenever possible. ``_safe_unlink`` itself catches OSError;
-        # if even that fails, the CRITICAL log above is the operator's
-        # tripwire.
+        if is_write_failure:
+            # PRESERVE plaintext — operator-recovery copy. Loud CRITICAL
+            # log above is the tripwire so this state doesn't go
+            # unnoticed.
+            return False
+        # Best-effort plaintext unlink for non-IO unmapped exceptions.
+        # The file is presumed orphaned by definition (something
+        # unexpected happened during the storage step we didn't model).
         _safe_unlink(pdf_path)
         return False
 

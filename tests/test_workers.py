@@ -796,6 +796,92 @@ async def test_chunk_b_fifth_path_unmapped_exception_unlinks_and_audits(
     assert persisted.storage_path is None
 
 
+async def test_chunk_b_write_failure_preserves_plaintext(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_pdf: Path,
+    chunk_b_storage: Path,
+) -> None:
+    """Q1 refinement — if the recovery-artifact write fails (disk
+    full, IO error, permissions), the plaintext on disk is THE LAST
+    COPY of this document's bytes. Best-effort unlink in this case
+    would be data loss: we couldn't write the encrypted recovery
+    artifact AND we deleted the only remaining copy.
+
+    The 5th path discriminates by ``isinstance(exc, OSError)``:
+    OSError → preserve plaintext; anything else → best-effort
+    unlink. Operator frees space / fixes permissions, then
+    ``scripts/_reparse_one.py`` retries from the preserved plaintext.
+
+    Test forces the path by:
+      1. Triggering the upload-failure branch (so
+         ``_write_quarantine`` gets called)
+      2. Patching ``_write_quarantine`` itself to raise OSError
+         (ENOSPC — "No space left on device")
+      3. The OSError escapes the upload-fail inner except,
+         propagates to the outer 5th-path catch
+    """
+    import errno
+
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
+    )
+    fake_result = _make_pipeline_result()
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda *_a, **_kw: fake_result,
+    )
+
+    # Trigger the upload-fail branch (which calls _write_quarantine)
+    def boom_upload(path: str, data: bytes) -> None:
+        raise storage_objects.StorageError("transient upload failure")
+    monkeypatch.setattr("aegis.storage_objects.upload", boom_upload)
+
+    # Force _write_quarantine to ENOSPC — escapes the inner except
+    def enospc_write(
+        document_id: UUID, *, ciphertext: bytes, meta: dict[str, Any]
+    ) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+    monkeypatch.setattr("aegis.workers._write_quarantine", enospc_write)
+
+    out = await parse_document(
+        {"repository": repo, "audit": audit, "llm": object()},
+        str(row.id),
+        str(fake_pdf),
+    )
+    # Parse already completed before the storage step
+    assert out["parse_status"] == "proceed"
+
+    # CRITICAL: plaintext is PRESERVED — operator-recovery copy
+    assert fake_pdf.exists(), (
+        "OSError during recovery-artifact write must NOT delete the "
+        "plaintext — disk-full + delete = data loss. The plaintext on "
+        "disk is the LAST copy after the quarantine write failed; "
+        "preserving it lets the operator free space + reprocess."
+    )
+
+    # Audit signals the discrimination — write_failure_preserved
+    storage_failed_rows = [
+        e for e in audit.entries
+        if e["action"] == "document.original_storage_failed"
+    ]
+    assert len(storage_failed_rows) == 1
+    failure = storage_failed_rows[0]
+    assert failure["details"]["reason"] == "unknown"
+    assert failure["details"]["outcome"] == "write_failure_preserved", (
+        "outcome must signal write-failure preservation, NOT "
+        "best_effort_cleanup (which would have deleted the plaintext)"
+    )
+    assert failure["details"]["error_type"] == "OSError"
+
+    # storage_path stays NULL (upload + quarantine both failed)
+    persisted = repo.get_document(row.id)
+    assert persisted.storage_path is None
+
+
 async def test_chunk_b_persist_storage_metadata_is_atomic(
     monkeypatch: pytest.MonkeyPatch,
     fake_pdf: Path,
