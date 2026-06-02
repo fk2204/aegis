@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import base64
 import os
-from unittest.mock import patch
 
 import pytest
 from pydantic import SecretStr

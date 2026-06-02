@@ -116,7 +116,7 @@ class _SupabaseStorageBackend:
         # functions below are still strictly typed).
         self._client: Any = None
 
-    def _api(self) -> Any:
+    def _api(self) -> Any:  # noqa: ANN401  # supabase-py types are version-inconsistent; Any is intentional
         if self._client is None:
             from aegis.db import get_supabase
             self._client = get_supabase()

@@ -71,11 +71,11 @@ def test_refuses_0_0_0_0(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_argv(monkeypatch, [
         "/opt/aegis/.venv/bin/uvicorn",
         "aegis.api.app:app",
-        "--host", "0.0.0.0",
+        "--host", "0.0.0.0",  # noqa: S104  # test asserts REFUSAL of this binding
     ])
     with pytest.raises(UvicornBindError) as exc:
         assert_uvicorn_loopback_bind()
-    assert "0.0.0.0" in str(exc.value)
+    assert "0.0.0.0" in str(exc.value)  # noqa: S104  # asserting the rejection message names the offender
 
 
 def test_refuses_public_ip(monkeypatch: pytest.MonkeyPatch) -> None:
