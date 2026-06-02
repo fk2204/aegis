@@ -150,6 +150,24 @@ def test_current_key_version_reads_settings() -> None:
     assert current_key_version() == 1
 
 
+def test_current_key_version_raises_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker call to ``current_key_version()`` before any key is
+    configured must fail loud rather than silently return None and skip
+    the storage step. Boot guard prevents this state in production, but
+    the runtime guard belongs here too."""
+    class _S:
+        pdf_encryption_keys_current = None
+        pdf_encryption_key_v1 = None
+
+    monkeypatch.setattr("aegis.crypto.get_settings", lambda: _S())
+
+    with pytest.raises(CryptoConfigError) as exc:
+        current_key_version()
+    assert "PDF_ENCRYPTION_KEYS_CURRENT" in str(exc.value)
+
+
 def test_encrypt_with_missing_key_version_raises_config_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

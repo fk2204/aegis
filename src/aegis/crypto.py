@@ -95,8 +95,21 @@ def current_key_version() -> int:
     The boot guard in ``aegis.config`` validates that this version
     points at a configured key that decodes to exactly 32 bytes —
     runtime callers can rely on the lookup succeeding.
+
+    Raises ``CryptoConfigError`` when ``PDF_ENCRYPTION_KEYS_CURRENT``
+    is unset (chunk A ships before any caller depends on it; once
+    chunk B's worker calls this it MUST fail loud rather than silently
+    return None and skip the storage step).
     """
-    return get_settings().pdf_encryption_keys_current
+    current = get_settings().pdf_encryption_keys_current
+    if current is None or current == 0:
+        raise CryptoConfigError(
+            "PDF_ENCRYPTION_KEYS_CURRENT is not set; cannot encrypt. "
+            "Set the env var in /etc/aegis/aegis.env to the version of "
+            "the key that should seal new writes (see "
+            "docs/PDF_KEY_ROTATION.md)."
+        )
+    return current
 
 
 def encrypt_pdf(plaintext: bytes, *, key_version: int) -> bytes:
