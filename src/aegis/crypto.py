@@ -21,11 +21,14 @@ from __future__ import annotations
 
 import base64
 import os
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from aegis.config import get_settings
+
+if TYPE_CHECKING:
+    from aegis.config import Settings
 
 _NONCE_BYTES: Final[int] = 12       # AES-GCM standard
 _TAG_BYTES: Final[int] = 16         # AES-GCM auth tag length
@@ -160,13 +163,18 @@ def decrypt_pdf(blob: bytes, *, key_version: int) -> bytes:
         raise CorruptCiphertextError(str(exc) or type(exc).__name__) from exc
 
 
-def validate_crypto_config_at_boot() -> None:
+def validate_crypto_config_at_boot(settings: Settings | None = None) -> None:
     """Boot-time guard.
 
     Confirms that ``PDF_ENCRYPTION_KEYS_CURRENT`` points at a configured
-    key that decodes to exactly 32 bytes. Called by
-    ``aegis.config.Settings`` validators so a misconfigured environment
-    refuses to start instead of silently failing the first write.
+    key that decodes to exactly 32 bytes. Called by ``get_settings()``
+    so a misconfigured environment refuses to start instead of
+    silently failing the first write.
+
+    ``settings`` is accepted as an explicit argument when called from
+    within ``get_settings()`` itself (cache miss path) — re-entering
+    ``get_settings()`` from inside the first-time-cache-fill recurses
+    until ``RecursionError``. External callers can omit the arg.
 
     Skipped (no-op) when ``PDF_ENCRYPTION_KEYS_CURRENT`` is unset (zero
     or None) — chunk A ships before any caller depends on a populated
@@ -174,11 +182,16 @@ def validate_crypto_config_at_boot() -> None:
     deploys, the systemd unit + ops runbook ensure the current-version
     key is configured.
     """
-    settings = get_settings()
+    if settings is None:
+        settings = get_settings()
     current = settings.pdf_encryption_keys_current
     if current is None or current == 0:
         return  # not yet rotated in; no callers depend on it
-    # Triggering _key_for_version raises CryptoConfigError on any failure
+    # Triggering _key_for_version raises CryptoConfigError on any failure.
+    # _key_for_version reads from get_settings() too, but by the time
+    # this branch fires, get_settings() has either already cached (when
+    # called externally) OR is being passed settings explicitly from
+    # the cache-miss path — either way no recursion.
     _key_for_version(current)
 
 

@@ -240,9 +240,14 @@ def get_settings() -> Settings:
     # Lazy import — aegis.crypto imports get_settings() at module level
     # for _key_for_version lookups, so a top-level import here would
     # create a cycle.
+    #
+    # ``settings`` is passed EXPLICITLY because we're still inside the
+    # first-time get_settings() call (the @lru_cache hasn't returned
+    # yet); without the explicit arg validate_crypto_config_at_boot
+    # would call get_settings() recursively → RecursionError.
     from aegis.crypto import validate_crypto_config_at_boot
 
-    validate_crypto_config_at_boot()
+    validate_crypto_config_at_boot(settings)
     return settings
 
 
