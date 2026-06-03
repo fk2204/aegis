@@ -163,6 +163,44 @@ async def parse_document(
 
     try:
         result: PipelineResult = await asyncio.to_thread(run_pipeline, pdf_path, llm)
+    except asyncio.CancelledError:
+        # arq's job-timeout path: ``arq.worker.run_job`` wraps the
+        # task in ``asyncio.wait_for(task, AEGIS_WORKER_JOB_TIMEOUT)``
+        # and raises ``CancelledError`` into us when the budget expires
+        # (verified 2026-06-03 against the 3df15a58 zombie).
+        # ``CancelledError`` inherits from ``BaseException`` (not
+        # ``Exception``) on Python 3.12+, so without this handler the
+        # ``except Exception`` below silently misses it — leaving
+        # ``parse_status`` stuck at ``"pending"`` AND the plaintext PDF
+        # on disk forever. That breaks the day-one plaintext-at-rest
+        # invariant the entire retention design exists to enforce.
+        #
+        # Cleanup mirrors the ``except Exception`` handler exactly so
+        # operators see the same row/audit shape regardless of which
+        # failure mode hit. Then re-raise so arq still counts the
+        # cancellation and emits its own TimeoutError on the queue.
+        _log.warning(
+            "worker.parse.cancelled document_id=%s — likely arq job timeout",
+            document_id,
+        )
+        audit.record(
+            actor="worker",
+            action="document.parse.error",
+            subject_type="document",
+            subject_id=document_id,
+            details={
+                "error": "CancelledError",
+                "reason": "timeout",
+                "message": "arq job timeout — parse cancelled before completion",
+            },
+        )
+        if hasattr(repository, "mark_error"):
+            repository.mark_error(
+                document_id,
+                "CancelledError: parse cancelled (likely arq job timeout)",
+            )
+        _safe_unlink(pdf_path)
+        raise
     except Exception as exc:
         _log.exception("worker.parse.failed document_id=%s", document_id)
         audit.record(
@@ -248,6 +286,39 @@ async def _run_processor_branch(
         result: ProcessorPipelineResult = await asyncio.to_thread(
             run_processor_pipeline, pdf_path, pdf_bytes, llm, brand=brand,  # type: ignore[arg-type]
         )
+    except asyncio.CancelledError:
+        # Same Python-3.12 CancelledError-is-BaseException case as the
+        # bank-statement path above. arq's job timeout cancels the
+        # processor pipeline mid-flight too (Stripe/Square statements
+        # are LLM-bound for the same reasons bank statements are);
+        # without this handler the row stayed at "pending" and the
+        # plaintext lingered on disk. Cleanup mirrors the
+        # ``except Exception`` handler; re-raise so arq counts the
+        # cancellation.
+        _log.warning(
+            "worker.processor.cancelled document_id=%s brand=%s — likely arq job timeout",
+            document_id,
+            brand,
+        )
+        audit.record(
+            actor="worker",
+            action="document.parse.error",
+            subject_type="document",
+            subject_id=document_id,
+            details={
+                "error": "CancelledError",
+                "reason": "timeout",
+                "message": "arq job timeout — processor parse cancelled",
+                "brand": brand,
+            },
+        )
+        if hasattr(repository, "mark_error"):
+            repository.mark_error(
+                document_id,
+                "CancelledError: processor parse cancelled (likely arq job timeout)",
+            )
+        _safe_unlink(pdf_path)
+        raise
     except Exception as exc:
         _log.exception(
             "worker.processor.failed document_id=%s brand=%s", document_id, brand

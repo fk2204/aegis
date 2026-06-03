@@ -154,6 +154,131 @@ async def test_parse_document_unknown_id_raises_and_unlinks(
     assert not fake_pdf.exists()
 
 
+async def test_parse_document_cancelled_marks_error_unlinks_and_reraises(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """``arq``'s job-timeout path raises ``CancelledError`` into the
+    worker via ``asyncio.wait_for``. On Python 3.12+ ``CancelledError``
+    inherits from ``BaseException``, not ``Exception``, so the bare
+    ``except Exception`` does NOT catch it — without an explicit
+    handler the row stayed at ``parse_status="pending"`` AND the
+    plaintext PDF survived on disk forever, breaking the day-one
+    plaintext-at-rest invariant (verified 2026-06-03 against doc
+    3df15a58 and the lingering uploads in
+    ``/var/lib/aegis/uploads/``).
+
+    Contract this test pins:
+      1. ``CancelledError`` is RE-RAISED (arq must still see the
+         cancellation).
+      2. ``parse_status`` lands on ``"error"`` with a non-empty
+         ``error_detail`` mentioning the timeout reason.
+      3. The plaintext PDF is unlinked.
+      4. A ``document.parse.error`` audit row exists with
+         ``reason="timeout"`` and ``error="CancelledError"``.
+    """
+    import asyncio as _asyncio
+
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash="c" * 64, byte_size=10, original_filename="cancel.pdf"
+    )
+
+    def cancel_during_pipeline(
+        _path: str, _llm: object, today: date | None = None
+    ) -> PipelineResult:
+        raise _asyncio.CancelledError()
+
+    monkeypatch.setattr("aegis.workers.run_pipeline", cancel_during_pipeline)
+
+    with pytest.raises(_asyncio.CancelledError):
+        await parse_document(
+            {"repository": repo, "audit": audit, "llm": object()},
+            str(row.id),
+            str(fake_pdf),
+        )
+
+    assert not fake_pdf.exists(), "PDF must be deleted on cancellation"
+
+    after = repo.get_document(row.id)
+    assert after.parse_status == "error"
+    assert after.error_detail is not None
+    assert "CancelledError" in after.error_detail
+    assert "timeout" in after.error_detail.lower()
+
+    error_rows = [e for e in audit.entries if e["action"] == "document.parse.error"]
+    assert len(error_rows) == 1
+    details = error_rows[0]["details"]
+    assert details["error"] == "CancelledError"
+    assert details["reason"] == "timeout"
+    # The success-side audit was NEVER written.
+    actions = [e["action"] for e in audit.entries]
+    assert "document.parse.complete" not in actions
+    # parse.start fired BEFORE the cancellation — preserved for the trace.
+    assert "document.parse.start" in actions
+
+
+async def test_run_processor_branch_cancelled_marks_error_unlinks_and_reraises(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """Same CancelledError-handling contract as the bank-statement path,
+    but for the Stripe/Square branch (``_run_processor_branch``). The
+    processor pipeline is also LLM-bound and was equally exposed to the
+    Python-3.12 BaseException semantics. Both branches must lose the
+    plaintext on cancellation, mark the row, audit, and re-raise."""
+    import asyncio as _asyncio
+
+    from aegis.parser.processor.detect import ProcessorDetection
+
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="stripe_cancel.pdf",
+    )
+
+    # Route to the processor branch by faking detection.
+    monkeypatch.setattr(
+        "aegis.workers.detect_processor",
+        lambda _path: ProcessorDetection(
+            brand="stripe", stripe_hits=3, square_hits=0
+        ),
+    )
+
+    def cancel_during_processor_pipeline(
+        _path: object, _bytes: bytes, _llm: object, *, brand: str
+    ) -> object:
+        raise _asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        "aegis.workers.run_processor_pipeline", cancel_during_processor_pipeline
+    )
+
+    with pytest.raises(_asyncio.CancelledError):
+        await parse_document(
+            {"repository": repo, "audit": audit, "llm": object()},
+            str(row.id),
+            str(fake_pdf),
+        )
+
+    assert not fake_pdf.exists(), "PDF must be deleted on processor cancellation"
+
+    after = repo.get_document(row.id)
+    assert after.parse_status == "error"
+    assert after.error_detail is not None
+    assert "CancelledError" in after.error_detail
+
+    error_rows = [e for e in audit.entries if e["action"] == "document.parse.error"]
+    assert len(error_rows) == 1
+    details = error_rows[0]["details"]
+    assert details["error"] == "CancelledError"
+    assert details["reason"] == "timeout"
+    assert details["brand"] == "stripe"
+    actions = [e["action"] for e in audit.entries]
+    assert "document.parse.processor_complete" not in actions
+
+
 # ---------------------------------------------------------------------------
 # Cost-tracking wrap (mp Phase 11 #2): when the worker receives a real
 # BedrockClient (production), it gets wrapped in CostTrackingBedrockClient
