@@ -92,6 +92,13 @@ async def parse_document(
     repository: DocumentRepository = ctx.get("repository") or get_repository()
     audit: AuditLog = ctx.get("audit") or get_audit()
     llm: LLMClient = ctx.get("llm") or get_llm()
+    # Migration 034 — merchant-from-statement (chunk B). The worker
+    # finalize step (after persist_parse_result) reads from this; the
+    # failure-path flag helper writes to it. Pulled here so tests can
+    # inject an in-memory repo via the ctx dict.
+    merchants_repo: MerchantRepository = (
+        ctx.get("merchants") or get_merchant_repository()
+    )
 
     # Wrap the production BedrockClient with cost tracking so every
     # Bedrock call writes one bedrock.usage audit row tagged with this
@@ -159,8 +166,18 @@ async def parse_document(
             llm=llm,
             audit=audit,
             repository=repository,
+            merchants_repo=merchants_repo,
         )
 
+    # ===================================================================
+    # CONCERN 1 of 3 — run the parse pipeline, handle failure cleanup.
+    # Three sub-concerns live inside the failure handlers below:
+    #   (a) the existing doc-side cleanup (audit, mark_error, unlink),
+    #   (b) chunk-B's plaintext-at-rest cancellation handling
+    #       (commit 490c476 — CancelledError doesn't inherit Exception),
+    #   (c) chunk-B(merchant)'s zombie-provisional prevention
+    #       (migration 034 — flag the merchant for manual naming).
+    # ===================================================================
     try:
         result: PipelineResult = await asyncio.to_thread(run_pipeline, pdf_path, llm)
     except asyncio.CancelledError:
@@ -200,6 +217,15 @@ async def parse_document(
                 "CancelledError: parse cancelled (likely arq job timeout)",
             )
         _safe_unlink(pdf_path)
+        # Migration 034 zombie-prevention — surface the provisional
+        # merchant out of "still parsing" into "needs your input".
+        _flag_provisional_for_manual_naming(
+            merchants_repo=merchants_repo,
+            audit=audit,
+            repository=repository,
+            document_id=document_id,
+            reason="parse_cancelled",
+        )
         raise
     except Exception as exc:
         _log.exception("worker.parse.failed document_id=%s", document_id)
@@ -216,6 +242,15 @@ async def parse_document(
         # nothing to encrypt or audit beyond the parse error). Day-one
         # disk-hygiene rule preserved on the failure path.
         _safe_unlink(pdf_path)
+        # Migration 034 zombie-prevention — same as the cancel path
+        # above but a different reason for the audit row.
+        _flag_provisional_for_manual_naming(
+            merchants_repo=merchants_repo,
+            audit=audit,
+            repository=repository,
+            document_id=document_id,
+            reason="parse_exception",
+        )
         raise
 
     # Parse SUCCEEDED. Persist + audit the parse outcome BEFORE the
@@ -237,16 +272,39 @@ async def parse_document(
         },
     )
 
-    # PDF retention chunk B — encrypted-storage step.
+    # Re-fetch the doc row — persist_parse_result associates merchant_id
+    # if it wasn't already set. Both downstream concerns read it.
+    doc_after_persist = repository.get_document(document_id)
+
+    # ===================================================================
+    # CONCERN 2 of 3 — migration 034 merchant finalize / flag.
+    # Independent of the storage step. Runs FIRST because it's a single
+    # UPDATE (cheap); a finalize failure must not strand ciphertext in
+    # the bucket. The helper handles the four outcomes:
+    #   * doc.merchant_id is None (bearer / orphan upload) — skip.
+    #   * clean account_holder — finalize_provisional + audit (rowcount
+    #     gated; only on observed change).
+    #   * blank account_holder OR no extraction — mark_needs_manual_naming
+    #     + audit (rowcount gated; reason=blank_account_holder).
+    #   * merchant already finalized (operator manual rename) — no-op.
+    # ===================================================================
+    _finalize_or_flag_merchant_from_statement(
+        merchants_repo=merchants_repo,
+        audit=audit,
+        document_id=document_id,
+        merchant_id=doc_after_persist.merchant_id,
+        extraction=result.extraction,
+    )
+
+    # ===================================================================
+    # CONCERN 3 of 3 — chunk-B encrypted PDF storage step.
     # Reads the plaintext one more time, computes sha256_original,
     # encrypts under the current key version, uploads to Supabase
     # Storage, and persists the four storage columns atomically. Manages
     # local-file cleanup in EVERY outcome (success / transient
     # quarantine / terminal dead-letter) so the day-one "no plaintext
     # at rest past parse" rule is preserved across the failure paths.
-    # Re-fetches the doc row so the storage_path picks up any
-    # merchant_id that persist_parse_result associated.
-    doc_after_persist = repository.get_document(document_id)
+    # ===================================================================
     await _try_encrypted_storage_step(
         pdf_path=pdf_path,
         document_id=document_id,
@@ -271,6 +329,7 @@ async def _run_processor_branch(
     llm: LLMClient,
     audit: AuditLog,
     repository: DocumentRepository,
+    merchants_repo: MerchantRepository,
 ) -> dict[str, Any]:
     """Run the processor pipeline + audit the result (mp Phase 6.6).
 
@@ -280,6 +339,14 @@ async def _run_processor_branch(
     ``audit_log`` so the operator can see the parsed result in the
     dashboard's recent-activity feed, and mark the document's
     parse_status so downstream queries can filter on it.
+
+    Migration 034 — the processor pipeline doesn't expose an
+    ``account_holder`` analogue, so a processor-branch SUCCESS (let
+    alone a failure or cancellation) flags the provisional merchant
+    for manual naming. The flag-helper call sites are spread across
+    the four failure handlers AND the success tail; see the
+    ``_flag_provisional_for_manual_naming`` docstring for the four
+    ``reason`` codes the dashboard renders banners for.
     """
     try:
         pdf_bytes = await asyncio.to_thread(Path(pdf_path).read_bytes)
@@ -318,6 +385,14 @@ async def _run_processor_branch(
                 "CancelledError: processor parse cancelled (likely arq job timeout)",
             )
         _safe_unlink(pdf_path)
+        # Migration 034 zombie-prevention — flag provisional merchant.
+        _flag_provisional_for_manual_naming(
+            merchants_repo=merchants_repo,
+            audit=audit,
+            repository=repository,
+            document_id=document_id,
+            reason="parse_cancelled",
+        )
         raise
     except Exception as exc:
         _log.exception(
@@ -337,6 +412,14 @@ async def _run_processor_branch(
         if hasattr(repository, "mark_error"):
             repository.mark_error(document_id, f"{type(exc).__name__}: {exc}")
         _safe_unlink(pdf_path)
+        # Migration 034 zombie-prevention — flag provisional merchant.
+        _flag_provisional_for_manual_naming(
+            merchants_repo=merchants_repo,
+            audit=audit,
+            repository=repository,
+            document_id=document_id,
+            reason="parse_exception",
+        )
         raise
 
     details: dict[str, Any] = {
@@ -372,6 +455,24 @@ async def _run_processor_branch(
         # aggregates to the processor_statements table here.
         repository.mark_processor_parsed(document_id, parse_status=result.parse_status)
 
+    doc_after = repository.get_document(document_id)
+
+    # Migration 034 — processor pipeline doesn't expose an
+    # ``account_holder`` analogue (the processor statement summary
+    # carries the gross_volume / payouts shape but not a clean
+    # business-name string). Surface the provisional merchant to
+    # ``needs_manual_naming`` so the dashboard tells the truth: parse
+    # is DONE, awaiting the OPERATOR (not awaiting parse). Reason
+    # ``processor_branch`` distinguishes from the failure-path reasons
+    # in the audit row's banner mapping.
+    _flag_provisional_for_manual_naming(
+        merchants_repo=merchants_repo,
+        audit=audit,
+        repository=repository,
+        document_id=document_id,
+        reason="processor_branch",
+    )
+
     # PDF retention chunk B — encrypted-storage step (processor branch).
     # Same outcome contract as parse_document's bank-statement path:
     # success → blob uploaded + metadata persisted + plaintext deleted;
@@ -379,7 +480,6 @@ async def _run_processor_branch(
     # terminal failure → dead-letter + plaintext deleted. Passes
     # ``plaintext_bytes`` since the processor pipeline already read the
     # PDF at the top of this function — avoids a second disk read.
-    doc_after = repository.get_document(document_id)
     await _try_encrypted_storage_step(
         pdf_path=pdf_path,
         document_id=document_id,
@@ -395,6 +495,199 @@ async def _run_processor_branch(
         "parse_status": result.parse_status,
         "fraud_score": 0,  # processor pipeline doesn't compute a fraud_score
     }
+
+
+# ===========================================================================
+# Migration 034 — merchant-from-statement helpers.
+#
+# Two pure functions: one for the success path (auto-name from the
+# statement's ``account_holder``, fall back to ``needs_manual_naming``
+# on blank), one for the can't-auto-name paths (failures + processor
+# branch success). Both are rowcount-gated on the audit emission so a
+# false "this changed" row never lands.
+# ===========================================================================
+
+
+def _finalize_or_flag_merchant_from_statement(
+    *,
+    merchants_repo: MerchantRepository,
+    audit: AuditLog,
+    document_id: UUID,
+    merchant_id: UUID | None,
+    extraction: Any | None,  # noqa: ANN401  # ExtractionPass1Result | None — Any keeps the worker's import surface narrow
+) -> None:
+    """Bank-path post-parse: lift the provisional merchant out of
+    ``provisional``.
+
+    Four outcomes, mirroring the four scenarios the design doc
+    enumerated:
+
+    1. ``merchant_id`` is ``None`` — this doc came in via the bearer
+       ``/upload`` route or the legacy orphan path. There's no
+       provisional to lift; return silently.
+
+    2. ``extraction`` is ``None`` (page-router low-confidence
+       fail-closed, or any other path that produced no extraction
+       payload) OR ``account_holder`` is blank/whitespace — call
+       ``mark_needs_manual_naming``. Audit ``merchant.needs_manual_naming``
+       only if the rowcount comes back as 1 (i.e. the row was actually
+       provisional). Reason ``blank_account_holder`` for the dashboard
+       banner.
+
+    3. Clean ``account_holder`` — call ``finalize_provisional`` with
+       the stripped name. Audit ``merchant.finalized`` only if
+       rowcount==1. Rowcount==0 means the row was already
+       ``finalized`` (operator manual rename in between, idempotent
+       no-op) — no audit row, no error.
+
+    4. ``finalize_provisional`` raises — let it propagate. The caller's
+       outer storage step still runs, so a finalize DB blip doesn't
+       strand ciphertext.
+
+    The rowcount gating is operator-required (design doc §6 + the
+    chunk-A repository unit tests): a ``merchant.finalized`` audit row
+    that didn't actually transition anything would silently corrupt
+    the merchant history. Better to skip the audit than to lie.
+    """
+    if merchant_id is None:
+        return
+
+    # Extract the account_holder defensively — extraction may be None
+    # (page-router fail-closed) and the summary may carry None for the
+    # field even when extraction exists (rare).
+    account_holder: str | None = None
+    if extraction is not None:
+        account_holder = extraction.statement.summary.account_holder
+    clean_name = (account_holder or "").strip()
+
+    if not clean_name:
+        updated = merchants_repo.mark_needs_manual_naming(
+            merchant_id=merchant_id
+        )
+        if updated == 1:
+            audit.record(
+                actor="worker",
+                action="merchant.needs_manual_naming",
+                subject_type="merchant",
+                subject_id=merchant_id,
+                details={
+                    "source_document_id": str(document_id),
+                    "reason": "blank_account_holder",
+                    "account_holder_raw": account_holder,
+                },
+            )
+        return
+
+    updated = merchants_repo.finalize_provisional(
+        merchant_id=merchant_id, business_name=clean_name
+    )
+    if updated == 1:
+        audit.record(
+            actor="worker",
+            action="merchant.finalized",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={
+                "business_name": clean_name,
+                "source_document_id": str(document_id),
+                "account_holder_raw": account_holder,
+            },
+        )
+
+
+def _flag_provisional_for_manual_naming(
+    *,
+    merchants_repo: MerchantRepository,
+    audit: AuditLog,
+    repository: DocumentRepository,
+    document_id: UUID,
+    reason: str,
+) -> None:
+    """Surface a provisional merchant out of "still parsing" and into
+    "needs your input" when the worker can't auto-name it.
+
+    Called from FOUR places (two failure handlers x two parse paths)
+    AND from the processor-branch SUCCESS tail — the name is
+    ``flag_provisional_for_manual_naming``, NOT
+    ``_on_failure``, because the processor success uses the same
+    transition for the same UI reason (parse is done, name unknown).
+
+    ``reason`` ∈ {parse_exception, parse_cancelled, processor_branch}.
+    The bank-path post-persist success branch uses
+    ``_finalize_or_flag_merchant_from_statement`` instead, which has
+    its own ``blank_account_holder`` reason.
+
+    Defensive contract:
+      * Document row missing (rare — failure during initial verify) →
+        return silently. Nothing to flag.
+      * Document has no merchant_id (bearer/orphan upload) →
+        return silently.
+      * ``mark_needs_manual_naming`` rowcount=0 (already finalized or
+        already needs_manual_naming) → no audit row. Idempotent.
+      * Audit-write failures during cleanup paths must not mask the
+        caller's original exception — wrap and swallow with a
+        CRITICAL log so the journal still surfaces the issue. The
+        original exception re-raises one frame up.
+    """
+    try:
+        doc = repository.get_document(document_id)
+    except Exception:
+        # Doc row vanished or DB is unreachable — nothing to do; let
+        # the caller's original failure path propagate.
+        _log.warning(
+            "worker.merchant_flag.doc_lookup_failed document_id=%s reason=%s",
+            document_id,
+            reason,
+        )
+        return
+
+    if doc.merchant_id is None:
+        return
+
+    try:
+        updated = merchants_repo.mark_needs_manual_naming(
+            merchant_id=doc.merchant_id
+        )
+    except Exception:
+        # DB blip on the UPDATE — log and bail. The caller's exception
+        # is the load-bearing failure; we don't add a second exception
+        # type on top of it.
+        _log.critical(
+            "worker.merchant_flag.update_failed document_id=%s merchant_id=%s reason=%s",
+            document_id,
+            doc.merchant_id,
+            reason,
+            exc_info=True,
+        )
+        return
+
+    if updated != 1:
+        return
+
+    try:
+        audit.record(
+            actor="worker",
+            action="merchant.needs_manual_naming",
+            subject_type="merchant",
+            subject_id=doc.merchant_id,
+            details={
+                "source_document_id": str(document_id),
+                "reason": reason,
+            },
+        )
+    except Exception:
+        # Same swallow rationale as
+        # storage_objects._classify_and_emit_bucket_check_failure: a
+        # cleanup-time audit-write failure must not mask the caller's
+        # original cancellation/exception. Logged at CRITICAL so the
+        # journal still catches it.
+        _log.critical(
+            "worker.merchant_flag.audit_write_failed document_id=%s merchant_id=%s reason=%s",
+            document_id,
+            doc.merchant_id,
+            reason,
+            exc_info=True,
+        )
 
 
 def _safe_unlink(pdf_path: str) -> None:
