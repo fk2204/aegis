@@ -32,19 +32,56 @@
 <body class="dossier-page body-root">
 
 {# === compact topstrip === #}
-<div class="topstrip">
-  <div class="links">
-    <a href="/ui/">Today</a>
-    <a href="/ui/deals">Deals</a>
-    <a href="/ui/merchants">Merchants</a>
-    <a href="/ui/funders">Funders</a>
-    <a href="/ui/upload">Upload</a>
-    <a href="/ui/review">Review queue</a>
+{# Wave 2.4 (2026-06-03): use the shared `_topstrip.html.j2` partial
+   instead of a divergent hand-maintained copy. The previous inline
+   version had silently fallen behind base.html.j2 — missing the
+   `/ui/intake` link. The dossier doesn't highlight any nav, so
+   `active` is intentionally not set. #}
+{% include "_topstrip.html.j2" %}
+
+{# Wave 2.4: gate routing actions (Match funders / Sync to Close)
+   behind a finalized status. A provisional or needs-manual-naming
+   merchant has either a placeholder business name or no name at all,
+   so funder matching and Close CRM sync would push junk downstream.
+   Disabled buttons render as a static span (no href) with inline
+   opacity + cursor styles. NOTE: no canonical `.is-disabled` class
+   exists in any of the Wave-1 CSS files; inline styles here are a
+   deliberate scope-respecting hold until a `.btn.is-disabled` rule
+   is added in a follow-up CSS unit (flagged for Wave 1.5). #}
+{% set _actions_locked = merchant.status != 'finalized' %}
+{% set _locked_title = 'Available after merchant is finalized' %}
+{% set _locked_btn_style = 'opacity:0.45;cursor:not-allowed' %}
+
+{# === Wave 2.4 merchant-status banner (2026-06-03) ===
+   Renders for the two non-final lifecycle states (see
+   merchants/models.py). Copy is intentionally NEUTRAL for
+   `needs_manual_naming` — that status is reached via four distinct
+   underlying causes (blank account_holder, parse exception, parse
+   cancellation, processor-branch success) and cause-specific copy
+   would lie about which one applies. Provisional copy explains the
+   in-flight parse so the operator doesn't act on the placeholder
+   business name. Styled as `.flash` to reuse the existing dossier
+   flash chrome (aegis-dossier.css :196-218). #}
+{% if merchant.status != 'finalized' %}
+  <div class="flash">
+    <div>
+      <div class="copy">
+        {% if merchant.status == 'needs_manual_naming' %}
+          <strong>This merchant needs a name.</strong>
+          Open intake to set it.
+        {% elif merchant.status == 'provisional' %}
+          <strong>This merchant is being created from your upload.</strong>
+          The business name will fill in when parsing completes.
+        {% endif %}
+      </div>
+      <div class="actions">
+        {% if merchant.status == 'needs_manual_naming' %}
+          <a class="btn primary" href="/ui/intake">Open intake →</a>
+        {% endif %}
+      </div>
+    </div>
   </div>
-  <div class="view-toggle">
-    <span style="color:var(--sage)">aegis · dossier</span>
-  </div>
-</div>
+{% endif %}
 
 {# === intake flash banner (carried over from v2 Block 6) === #}
 {% if from_intake %}
@@ -65,7 +102,11 @@
       </div>
       <div class="actions">
         {% if intake_docs_uploaded > 0 %}
-          <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders →</a>
+          {% if _actions_locked %}
+            <span class="btn primary" title="{{ _locked_title }}" aria-disabled="true" style="{{ _locked_btn_style }}">Match funders →</span>
+          {% else %}
+            <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders →</a>
+          {% endif %}
         {% endif %}
         <a class="btn{% if intake_docs_uploaded == 0 %} primary{% endif %}" href="/ui/upload">Upload statements</a>
         <a class="btn" href="/ui/merchants/{{ merchant.id }}/edit">Edit</a>
@@ -169,7 +210,11 @@
       <h4>Cross-references</h4>
       <div class="crosslink">
         <a href="/ui/merchants/{{ merchant.id }}/findings.csv">↗ Findings (audit CSV)</a>
-        <a href="/ui/merchants/{{ merchant.id }}/match">↗ Funder match panel</a>
+        {% if _actions_locked %}
+          <span title="{{ _locked_title }}" aria-disabled="true" style="color:var(--ink-3);cursor:not-allowed">↗ Funder match panel</span>
+        {% else %}
+          <a href="/ui/merchants/{{ merchant.id }}/match">↗ Funder match panel</a>
+        {% endif %}
         <a href="/ui/merchants/{{ merchant.id }}/edit">↗ Edit merchant</a>
         {% if merchant.close_lead_id %}<a href="#">↗ Close lead {{ merchant.close_lead_id }}</a>{% endif %}
       </div>
@@ -237,7 +282,11 @@
             </p>
 
             <div class="actions">
-              <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders</a>
+              {% if _actions_locked %}
+                <span class="btn primary" title="{{ _locked_title }}" aria-disabled="true" style="{{ _locked_btn_style }}">Match funders</span>
+              {% else %}
+                <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders</a>
+              {% endif %}
               <a class="btn" href="/ui/merchants/{{ merchant.id }}/edit">Edit deal terms</a>
               <a class="btn" href="/ui/merchants/{{ merchant.id }}/findings.csv">Audit CSV</a>
               <a class="btn" href="/ui/merchants/{{ merchant.id }}/dossier.pdf">Download PDF dossier</a>
@@ -624,7 +673,11 @@
           {% endif %}
         </div>
         <div>
-          <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Open match panel →</a>
+          {% if _actions_locked %}
+            <span class="btn primary" title="{{ _locked_title }}" aria-disabled="true" style="{{ _locked_btn_style }}">Open match panel →</span>
+          {% else %}
+            <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Open match panel →</a>
+          {% endif %}
         </div>
       </div>
     </section>
