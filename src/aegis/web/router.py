@@ -747,6 +747,37 @@ async def upload_submit(
                 },
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
+    else:
+        # Migration 034 — auto-create branch (chunk B).
+        #
+        # The operator dropped files without picking a merchant. Create
+        # ONE provisional merchant for the batch, attach every file to
+        # it. Worker finalize at parse-completion fills the name from
+        # ``statement.account_holder``; the failure paths flag the
+        # merchant for manual naming so nothing zombies in
+        # ``provisional`` forever.
+        #
+        # Scope (locked): this branch lives ONLY on the dashboard
+        # ``/ui/upload``. The bearer ``/upload``, the Close-attachment
+        # ``/uploads/from-close``, and the operator-curated
+        # ``/ui/intake`` all keep their existing behavior (orphan,
+        # Close-lead-resolved, and manual-create respectively).
+        valid_files = [f for f in files if f.filename]
+        if valid_files:
+            provisional = merchants_repo.create_provisional()
+            parsed_merchant_id = provisional.id
+            audit.record(
+                actor="dashboard",
+                actor_email=actor_email,
+                action="merchant.provisional_created",
+                subject_type="merchant",
+                subject_id=provisional.id,
+                details={
+                    "batch_size": len(valid_files),
+                    "file_names": [f.filename for f in valid_files],
+                    "uploaded_by": actor_email or "dashboard",
+                },
+            )
 
     settings = get_settings()
     results, total_error = await _persist_uploads(

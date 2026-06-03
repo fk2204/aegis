@@ -279,6 +279,489 @@ async def test_run_processor_branch_cancelled_marks_error_unlinks_and_reraises(
     assert "document.parse.processor_complete" not in actions
 
 
+# ===========================================================================
+# Migration 034 / chunk B — merchant finalize + manual-naming flag tests.
+#
+# These tests construct a provisional merchant via create_provisional,
+# attach a doc to it, then run parse_document with monkeypatched
+# run_pipeline / run_processor_pipeline / detect_processor stubs to
+# exercise the five outcomes:
+#
+#   1. clean account_holder → merchant.finalized
+#   2. blank account_holder → merchant.needs_manual_naming
+#   3. parse exception     → merchant.needs_manual_naming (parse_exception)
+#   4. parse cancellation  → merchant.needs_manual_naming (parse_cancelled)
+#   5. processor success   → merchant.needs_manual_naming (processor_branch)
+#
+# Plus the no-merchant-id skip case.
+# ===========================================================================
+
+
+def _pipeline_result_with_account_holder(
+    account_holder: str | None,
+) -> PipelineResult:
+    """Build a fully-formed ``PipelineResult`` whose
+    ``extraction.statement.summary.account_holder`` is the given value.
+
+    Wraps ``_make_pipeline_result`` from ``tests.test_storage`` (which
+    builds a complete graph with real ``StatementSummary`` /
+    ``ExtractedStatement`` etc.) and re-stamps the summary so the
+    worker's finalize step reads the account_holder we want without
+    losing any of the downstream fields ``persist_parse_result`` needs.
+    """
+    from aegis.parser.models import ExtractedStatement, StatementSummary
+
+    base = _make_pipeline_result()
+    assert base.extraction is not None  # _make_pipeline_result invariant
+    old_summary = base.extraction.statement.summary
+
+    new_summary = StatementSummary(
+        beginning_balance=old_summary.beginning_balance,
+        ending_balance=old_summary.ending_balance,
+        deposit_total=old_summary.deposit_total,
+        withdrawal_total=old_summary.withdrawal_total,
+        period_start=old_summary.period_start,
+        period_end=old_summary.period_end,
+        bank_name=old_summary.bank_name,
+        account_holder=account_holder,
+        account_last4=old_summary.account_last4,
+    )
+
+    # Mirror _make_pipeline_result's extraction-stub shape (duck-typed,
+    # so we don't need to construct the real ExtractionPass1Result).
+    extraction_stub: Any = type(
+        "Stub",
+        (),
+        {
+            "statement": ExtractedStatement(
+                summary=new_summary,
+                transactions=base.extraction.statement.transactions,
+            )
+        },
+    )()
+    base.extraction = extraction_stub
+    return base
+
+
+async def test_parse_document_finalizes_provisional_with_clean_account_holder(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """Happy path: provisional merchant + clean account_holder →
+    merchant.finalized audit row + business_name filled from the
+    statement."""
+    from aegis.merchants.repository import (
+        PROVISIONAL_BUSINESS_NAME_PLACEHOLDER,
+        InMemoryMerchantRepository,
+    )
+
+    docs_repo = InMemoryDocumentRepository()
+    merchants_repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+
+    provisional = merchants_repo.create_provisional()
+    assert provisional.business_name == PROVISIONAL_BUSINESS_NAME_PLACEHOLDER
+    row = docs_repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="stmt.pdf",
+        merchant_id=provisional.id,
+    )
+
+    fake_result = _pipeline_result_with_account_holder("Acme LLC")
+
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda _p, _l, today=None: fake_result,
+    )
+
+    await parse_document(
+        {
+            "repository": docs_repo,
+            "audit": audit,
+            "llm": object(),
+            "merchants": merchants_repo,
+        },
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    # The merchant row carries the REAL business_name (unmasked).
+    finalized = merchants_repo.get(provisional.id)
+    assert finalized.status == "finalized"
+    assert finalized.business_name == "Acme LLC"
+
+    # The audit row's ``business_name`` and ``account_holder_raw``
+    # fields are masked by the audit_log PII filter (see _PII_KEYS in
+    # aegis.logger — ``business_name`` and ``account_holder`` are both
+    # listed). What we assert here is the SHAPE: the row exists, points
+    # at the right merchant + source doc, and the details fields are
+    # present (even if their PII-bearing values land as "***").
+    rows = [e for e in audit.entries if e["action"] == "merchant.finalized"]
+    assert len(rows) == 1
+    assert rows[0]["subject_id"] == str(provisional.id)
+    assert "business_name" in rows[0]["details"]
+    assert rows[0]["details"]["source_document_id"] == str(row.id)
+    assert "account_holder_raw" in rows[0]["details"]
+
+
+async def test_parse_document_finalize_idempotent_on_already_finalized(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """If the operator manually finalized in between, the worker's
+    finalize_provisional UPDATE matches 0 rows → NO merchant.finalized
+    audit row fires (rowcount-gated; false claim of state change
+    forbidden by operator)."""
+    from aegis.merchants.repository import InMemoryMerchantRepository
+
+    docs_repo = InMemoryDocumentRepository()
+    merchants_repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+
+    # Operator already finalized this merchant before parse completed.
+    provisional = merchants_repo.create_provisional()
+    merchants_repo.finalize_provisional(
+        merchant_id=provisional.id, business_name="Operator Name"
+    )
+
+    row = docs_repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="stmt.pdf",
+        merchant_id=provisional.id,
+    )
+
+    fake_result = _pipeline_result_with_account_holder(
+        "Statement Name From Parser"
+    )
+
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda _p, _l, today=None: fake_result,
+    )
+
+    await parse_document(
+        {
+            "repository": docs_repo,
+            "audit": audit,
+            "llm": object(),
+            "merchants": merchants_repo,
+        },
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    # The operator's name SURVIVES.
+    final = merchants_repo.get(provisional.id)
+    assert final.business_name == "Operator Name"
+    # NO audit row was written — the action was a no-op.
+    assert not [
+        e for e in audit.entries if e["action"] == "merchant.finalized"
+    ]
+
+
+async def test_parse_document_blank_account_holder_marks_needs_manual_naming(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """Whitespace-only or empty account_holder → no auto-name attempt,
+    merchant flagged needs_manual_naming with reason=blank_account_holder."""
+    from aegis.merchants.repository import InMemoryMerchantRepository
+
+    docs_repo = InMemoryDocumentRepository()
+    merchants_repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+
+    provisional = merchants_repo.create_provisional()
+    row = docs_repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="stmt.pdf",
+        merchant_id=provisional.id,
+    )
+
+    # str_strip_whitespace on StatementSummary turns "   " into "" at
+    # construction time. Pass "" directly to make the post-Pydantic
+    # input value unambiguous in the audit assertion below.
+    fake_result = _pipeline_result_with_account_holder("")
+
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda _p, _l, today=None: fake_result,
+    )
+
+    await parse_document(
+        {
+            "repository": docs_repo,
+            "audit": audit,
+            "llm": object(),
+            "merchants": merchants_repo,
+        },
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    flagged = merchants_repo.get(provisional.id)
+    assert flagged.status == "needs_manual_naming"
+
+    rows = [
+        e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["details"]["reason"] == "blank_account_holder"
+    assert rows[0]["details"]["source_document_id"] == str(row.id)
+    # ``account_holder_raw`` IS present in the audit details for
+    # postmortem, but its value is a blank string (post-Pydantic strip)
+    # or None depending on caller — assert presence, not exact value.
+    assert "account_holder_raw" in rows[0]["details"]
+
+
+async def test_parse_document_skips_finalize_when_no_merchant_id(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """Bearer / orphan upload — doc.merchant_id is None. The finalize
+    helper returns early; no audit rows on the merchants surface."""
+    from aegis.merchants.repository import InMemoryMerchantRepository
+
+    docs_repo = InMemoryDocumentRepository()
+    merchants_repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+
+    row = docs_repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="stmt.pdf",
+        # NO merchant_id — orphan
+    )
+
+    fake_result = _pipeline_result_with_account_holder("Acme LLC")
+
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda _p, _l, today=None: fake_result,
+    )
+
+    await parse_document(
+        {
+            "repository": docs_repo,
+            "audit": audit,
+            "llm": object(),
+            "merchants": merchants_repo,
+        },
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    # No merchant created, no audit rows on the merchant surface.
+    actions = [e["action"] for e in audit.entries]
+    assert "merchant.finalized" not in actions
+    assert "merchant.needs_manual_naming" not in actions
+
+
+async def test_parse_document_exception_flags_merchant_and_reraises(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """Parse Exception path → provisional merchant transitions to
+    needs_manual_naming (reason=parse_exception) BEFORE the exception
+    propagates. The original exception is re-raised; cleanup happens
+    in between."""
+    from aegis.merchants.repository import InMemoryMerchantRepository
+
+    docs_repo = InMemoryDocumentRepository()
+    merchants_repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+
+    provisional = merchants_repo.create_provisional()
+    row = docs_repo.create_document(
+        file_hash="e" * 64,
+        byte_size=10,
+        original_filename="explodes.pdf",
+        merchant_id=provisional.id,
+    )
+
+    def boom(
+        _p: str, _l: object, today: date | None = None
+    ) -> PipelineResult:
+        raise RuntimeError("parser blew up mid-extraction")
+
+    monkeypatch.setattr("aegis.workers.run_pipeline", boom)
+
+    with pytest.raises(RuntimeError, match="parser blew up"):
+        await parse_document(
+            {
+                "repository": docs_repo,
+                "audit": audit,
+                "llm": object(),
+                "merchants": merchants_repo,
+            },
+            str(row.id),
+            str(fake_pdf),
+        )
+
+    flagged = merchants_repo.get(provisional.id)
+    assert flagged.status == "needs_manual_naming"
+
+    rows = [
+        e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["details"]["reason"] == "parse_exception"
+
+
+async def test_parse_document_cancellation_flags_merchant_and_reraises(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """arq job timeout (CancelledError) path → flag merchant +
+    re-raise the cancellation. Same shape as the exception test but
+    on the BaseException-inheriting cancel path."""
+    import asyncio as _asyncio
+
+    from aegis.merchants.repository import InMemoryMerchantRepository
+
+    docs_repo = InMemoryDocumentRepository()
+    merchants_repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+
+    provisional = merchants_repo.create_provisional()
+    row = docs_repo.create_document(
+        file_hash="t" * 64,
+        byte_size=10,
+        original_filename="timeout.pdf",
+        merchant_id=provisional.id,
+    )
+
+    def cancel(
+        _p: str, _l: object, today: date | None = None
+    ) -> PipelineResult:
+        raise _asyncio.CancelledError()
+
+    monkeypatch.setattr("aegis.workers.run_pipeline", cancel)
+
+    with pytest.raises(_asyncio.CancelledError):
+        await parse_document(
+            {
+                "repository": docs_repo,
+                "audit": audit,
+                "llm": object(),
+                "merchants": merchants_repo,
+            },
+            str(row.id),
+            str(fake_pdf),
+        )
+
+    flagged = merchants_repo.get(provisional.id)
+    assert flagged.status == "needs_manual_naming"
+
+    rows = [
+        e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["details"]["reason"] == "parse_cancelled"
+
+
+async def test_processor_branch_success_flags_provisional_for_manual_naming(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """Processor pipeline (Stripe/Square) doesn't expose an
+    account_holder analogue — even on successful parse, the
+    provisional merchant must transition to needs_manual_naming so
+    the dashboard tells the truth: parse is done, your turn."""
+    from dataclasses import dataclass, field
+    from decimal import Decimal
+
+    from aegis.merchants.repository import InMemoryMerchantRepository
+    from aegis.parser.processor.detect import ProcessorDetection
+    from aegis.parser.processor.validate import ProcessorValidationResult
+
+    docs_repo = InMemoryDocumentRepository()
+    merchants_repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+
+    provisional = merchants_repo.create_provisional()
+    row = docs_repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="stripe.pdf",
+        merchant_id=provisional.id,
+    )
+
+    monkeypatch.setattr(
+        "aegis.workers.detect_processor",
+        lambda _path: ProcessorDetection(
+            brand="stripe", stripe_hits=3, square_hits=0
+        ),
+    )
+
+    @dataclass
+    class _FakeSourcedMoney:
+        value: Decimal
+
+    @dataclass
+    class _FakeSourcedInt:
+        value: int
+
+    @dataclass
+    class _FakeAggregates:
+        gross_volume: _FakeSourcedMoney
+        refunds_total: _FakeSourcedMoney
+        chargebacks_total: _FakeSourcedMoney
+        fees_total: _FakeSourcedMoney
+        payouts_total: _FakeSourcedMoney
+        net_revenue: _FakeSourcedMoney
+        transaction_count: _FakeSourcedInt
+        chargeback_ratio: Decimal
+
+    @dataclass
+    class _FakeProcessorPipelineResult:
+        parse_status: str
+        brand: str
+        extraction: object | None
+        validation: ProcessorValidationResult
+        aggregates: _FakeAggregates | None
+        flags: list[str] = field(default_factory=list)
+
+    def fake_pipeline(
+        _path: object, _bytes: bytes, _llm: object, *, brand: str
+    ) -> _FakeProcessorPipelineResult:
+        return _FakeProcessorPipelineResult(
+            parse_status="proceed",
+            brand=brand,
+            extraction=None,
+            validation=ProcessorValidationResult(passed=True),
+            aggregates=_FakeAggregates(
+                gross_volume=_FakeSourcedMoney(value=Decimal("10000")),
+                refunds_total=_FakeSourcedMoney(value=Decimal("0")),
+                chargebacks_total=_FakeSourcedMoney(value=Decimal("0")),
+                fees_total=_FakeSourcedMoney(value=Decimal("290")),
+                payouts_total=_FakeSourcedMoney(value=Decimal("9710")),
+                net_revenue=_FakeSourcedMoney(value=Decimal("9710")),
+                transaction_count=_FakeSourcedInt(value=30),
+                chargeback_ratio=Decimal("0"),
+            ),
+        )
+
+    monkeypatch.setattr("aegis.workers.run_processor_pipeline", fake_pipeline)
+
+    await parse_document(
+        {
+            "repository": docs_repo,
+            "audit": audit,
+            "llm": object(),
+            "merchants": merchants_repo,
+        },
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    flagged = merchants_repo.get(provisional.id)
+    assert flagged.status == "needs_manual_naming"
+
+    rows = [
+        e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["details"]["reason"] == "processor_branch"
+    assert rows[0]["details"]["source_document_id"] == str(row.id)
+
+
 # ---------------------------------------------------------------------------
 # Cost-tracking wrap (mp Phase 11 #2): when the worker receives a real
 # BedrockClient (production), it gets wrapped in CostTrackingBedrockClient
