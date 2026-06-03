@@ -3,19 +3,15 @@
 {% block title %}Intake — AEGIS{% endblock %}
 
 {% block deck %}
-<header class="deck">
-  <h1>Intake<em> · new merchant + statements</em></h1>
-  <div class="meta">
-    6 required fields &nbsp;·&nbsp; everything else editable on the merchant page
-  </div>
-  <div class="actions">
-    <a class="btn ghost" href="/ui/merchants">Cancel</a>
-  </div>
-</header>
+{% set title = "Intake" %}
+{% set subtitle = "· new merchant + statements" %}
+{% set meta = "6 required fields  ·  everything else editable on the merchant page" %}
+{% set actions = [{"label": "Cancel", "href": "/ui/merchants", "variant": "ghost"}] %}
+{% include "_page_header.html.j2" %}
 {% endblock %}
 
 {% block body %}
-<section class="body cols-1" style="max-width:920px;margin:0 auto">
+<section class="body cols-1">
   <div>
     {% if error %}
       <div class="form-error">{{ error }}</div>
