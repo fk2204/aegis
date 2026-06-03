@@ -863,6 +863,19 @@ def _count_mca_positions(classified: list[ClassifiedTransaction]) -> int:
 
 
 def _row_to_document(row: dict[str, Any]) -> DocumentRow:
+    # The four PDF-retention columns (chunk B / migration 033) were
+    # added to ``DocumentRow`` and to ``persist_storage_metadata`` but
+    # were silently absent from this helper until 2026-06-03 — the
+    # operator hit a 404 on the first live chunk-C view-route call
+    # because every Supabase fetch through ``get_document`` /
+    # ``find_by_hash`` / ``list_documents`` / ``create_document`` was
+    # stripping ``storage_path`` (and the other three columns), so the
+    # route's ``doc.storage_path is None`` check fired even on rows
+    # whose DB state had the path populated. ``list_retention_expired``
+    # uses the separate ``_doc_row_from_db`` helper which has always
+    # hydrated these columns correctly; the duplication-between-helpers
+    # is what hid the gap. See [[project-in-memory-vs-supabase-test-gap]]
+    # for the test-divergence class this bug exposed.
     return DocumentRow(
         id=UUID(row["id"]),
         file_hash=row["file_hash"],
@@ -878,6 +891,12 @@ def _row_to_document(row: dict[str, Any]) -> DocumentRow:
         uploaded_at=_parse_dt(row["uploaded_at"]),
         parsed_at=_parse_dt(row["parsed_at"]) if row.get("parsed_at") else None,
         uploaded_by=row.get("uploaded_by") or "system",
+        storage_path=row.get("storage_path"),
+        sha256_original=row.get("sha256_original"),
+        encryption_key_version=row.get("encryption_key_version"),
+        retention_until=(
+            _parse_dt(row["retention_until"]) if row.get("retention_until") else None
+        ),
     )
 
 
