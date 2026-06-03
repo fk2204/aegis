@@ -518,6 +518,18 @@
   gap: 18px;
   margin-bottom: 10px;
 }
+/* Wave 1 fix #1 — attention-card collision (Today + Review queues).
+ * Pre-fix bug: .card-title is a flex child of .card-head but lacked
+ * min-width:0, so its intrinsic content width (long merchant names)
+ * forced it to stay at that width, pushing .card-meta past the card's
+ * right edge. min-width:0 lets the flex item shrink; overflow handling
+ * on the inner <a> and .card-sub provides graceful ellipsis. .card-meta
+ * already had flex-shrink:0 (it claims its needed width); this fix is
+ * solely on the left-side title block. */
+.dossier-page .attention-card .card-title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
 .dossier-page .attention-card .card-title a {
   font-family: var(--serif);
   font-weight: 500;
@@ -525,6 +537,10 @@
   letter-spacing: -0.01em;
   color: var(--ink);
   border-bottom: 0;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dossier-page .attention-card .card-title a:hover { color: var(--accent); }
 .dossier-page .attention-card .card-sub {
@@ -535,6 +551,9 @@
   text-transform: uppercase;
   color: var(--ink-3);
   margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dossier-page .attention-card .card-score {
   font-family: var(--serif);

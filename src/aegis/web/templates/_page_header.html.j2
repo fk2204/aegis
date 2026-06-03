@@ -1,0 +1,40 @@
+{#
+  Shared page header — Wave 1 of the UI redesign (2026-06-03).
+  Tool pages (Today, Deals, Merchants list, Funders, Upload, Intake,
+  Review Queue) replace their inline .deck markup with this include
+  during Wave 2. The dossier (merchant_detail_dossier.html.j2) keeps
+  its bespoke .masthead since it carries the editorial 92px scale.
+
+  Renders the existing .deck structure exactly — no new CSS needed
+  (the `.deck` / `.deck h1` / `.deck h1 em` / `.deck .meta` /
+  `.deck .actions` rules in aegis-tool.css already style this shape).
+  This partial only centralizes the markup.
+
+  Inputs (all required unless marked optional):
+    title       — string, page title (becomes <h1>)
+    subtitle    — string, optional em-tagged subtitle inside h1
+    meta        — string, optional small-caps meta line on the right
+    actions     — list of {label, href, variant?} dicts, optional;
+                  variant is one of "primary" | "ghost" | None (default
+                  is the existing .btn behavior — no special class)
+
+  Example caller (Wave 2 form to adopt):
+    {% include "_page_header.html.j2" with context %}
+    where the calling template has set:
+      {% set title = "Today" %}
+      {% set subtitle = "· attention queue" %}
+      {% set meta = now %}
+      {% set actions = [{"label": "Upload PDF", "href": "/ui/upload",
+                         "variant": "primary"}] %}
+#}
+<header class="deck">
+  <h1>{{ title }}{% if subtitle %} <em>{{ subtitle }}</em>{% endif %}</h1>
+  {% if meta %}<div class="meta">{{ meta }}</div>{% endif %}
+  {% if actions %}
+    <div class="actions">
+      {% for a in actions %}
+        <a class="btn{% if a.variant %} {{ a.variant }}{% endif %}" href="{{ a.href }}">{{ a.label }}</a>
+      {% endfor %}
+    </div>
+  {% endif %}
+</header>

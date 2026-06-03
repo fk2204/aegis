@@ -12,38 +12,15 @@
  * evidence. Single-family serif keeps the editorial coherence.
  */
 
-.dossier-page {
-  /* Commera brand palette — Pale Sage + Deep Forest. The dossier
-   * surfaces share these tokens with commerafunding.com so the
-   * underwriting console and the customer site read as one brand. */
-  --paper:        #FAFAF8;   /* Commera bg-primary — pale cream */
-  --paper-2:      #F0F5F2;   /* Commera bg-muted — light sage tint */
-  --paper-deep:   #E8EDE9;   /* deep sage edge */
-  --ink:          #2D5A47;   /* Commera primary — deep forest, used for headings */
-  --ink-2:        #4A6B5E;   /* Commera text-body — medium forest grey */
-  --ink-3:        #7A8E82;   /* Commera text-muted — sage grey */
-  --rule:         #D1DDD6;   /* Commera border — light sage */
-  --rule-soft:    #E8EDE9;   /* Commera border-subtle — very light sage */
-  --gild:         #92400E;   /* warm amber, kept for review/warning emphasis */
-
-  --sage:         #A8D5BA;   /* Commera secondary — bright sage, used as visible accent */
-  --sage-deep:    #85C6A0;   /* Commera secondary-dark */
-
-  --decline:      #a72f24;
-  --decline-soft: #f0ddd8;
-  --review:       #92400E;   /* Commera amber-text-dark */
-  --review-soft:  #FEF3C7;   /* Commera amber-bg */
-  --approve:      #2D5A47;   /* matches brand primary — clean clear signal */
-  --approve-soft: #D8E3D8;   /* warm sage */
-  --accent:       #1F3E32;   /* Commera accent-dark — link emphasis */
-
-  /* Typography — Commera-matched: Poppins (display) + Inter (body).
-   * The --serif variable name is retained for backward-compat with every
-   * existing selector; it now resolves to Poppins. --mono kept on Inter
-   * so any "mono" text on the page is still Commera body. */
-  --serif:  "Poppins", system-ui, "Segoe UI", Roboto, sans-serif;
-  --mono:   "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
-}
+/* Token definition block was moved to aegis-system.css (loaded FIRST
+ * by base.html.j2 as of Wave 1 of the UI redesign, 2026-06-03).
+ * Every `var(--paper)` / `var(--ink)` / `var(--sage)` / etc. reference
+ * in the selectors below resolves to byte-identical values via the
+ * cascade — aegis-system.css uses the same `.dossier-page` selector
+ * to scope tokens. See aegis-system.css for the authoritative palette,
+ * typography family, AND the new Wave-1 additions (status tones, type
+ * scale, spacing scale, radii, container width) that future code
+ * adopts. No selector body in THIS file changed during the move. */
 
 /* Page substrate — flat brand cream. (Was a dotted "paper grain" via
  * radial gradients; dropped because it read as visual noise next to
