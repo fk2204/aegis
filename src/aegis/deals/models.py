@@ -104,9 +104,11 @@ class DealRow(_StrictModel):
     document_id: UUID
     created_at: datetime
 
-    # Convenience joins (read-only)
+    # Convenience joins (read-only). ``state`` is nullable to mirror
+    # ``MerchantRow.state`` post-migration-034 — an auto-finalized
+    # merchant can sit without state until operator edits.
     business_name: str = Field(min_length=1)
-    state: str = Field(min_length=2, max_length=2)
+    state: str | None = Field(default=None, min_length=2, max_length=2)
     parse_status: ParseStatus
 
     # Optional analytics surface. None when the document has not been

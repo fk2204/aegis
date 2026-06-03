@@ -107,7 +107,17 @@ def update_merchant(
     return saved
 
 
-def _enforce_state_served(state: str) -> None:
+def _enforce_state_served(state: str | None) -> None:
+    # The bearer /merchants API path is for operator-curated merchants —
+    # state is required here (provisional/auto-created merchants come
+    # from the dashboard /ui/upload branch, not this route). Migration
+    # 034 made the column nullable in the DB; this validator is the
+    # contract boundary for the API path.
+    if state is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="state is required on /merchants create/update",
+        )
     try:
         validate_state_served(state)
     except StateNotServed as exc:

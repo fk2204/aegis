@@ -264,6 +264,18 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='documents' "
         "AND column_name='storage_path'"
     ),
+    "034_merchants_provisional.sql": (
+        # status is the column added by 034. Probing the column rather
+        # than the partial index for the same reason 032 does: index
+        # surfacing through Supabase's information_schema view varies
+        # by role context, but column presence is the stable signal.
+        # If status exists, the three NULL-relaxations and the
+        # finalized-has-business-name CHECK landed in the same
+        # BEGIN/COMMIT.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='status'"
+    ),
 }
 
 

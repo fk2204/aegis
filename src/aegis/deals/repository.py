@@ -98,7 +98,12 @@ class InMemoryDealRepository:
                 # is ON DELETE SET NULL. Skip — there's no deal without
                 # a merchant.
                 continue
-            if state is not None and merchant.state.upper() != state.upper():
+            if state is not None and (
+                merchant.state is None
+                or merchant.state.upper() != state.upper()
+            ):
+                # A state-less merchant never matches a state filter
+                # (auto-finalized merchants without state, post-034).
                 continue
 
             analysis = self._documents.get_analysis(doc.id)
@@ -109,7 +114,7 @@ class InMemoryDealRepository:
                     document_id=doc.id,
                     created_at=doc.uploaded_at,
                     business_name=merchant.business_name,
-                    state=merchant.state.upper(),
+                    state=merchant.state.upper() if merchant.state else None,
                     parse_status=doc.parse_status,
                     fraud_score=doc.fraud_score,
                     # ``score_recommendation`` lives in audit_log / a cached
@@ -143,7 +148,7 @@ class InMemoryDealRepository:
             document_id=doc.id,
             created_at=doc.uploaded_at,
             business_name=merchant.business_name,
-            state=merchant.state.upper(),
+            state=merchant.state.upper() if merchant.state else None,
             parse_status=doc.parse_status,
             fraud_score=doc.fraud_score,
             score_recommendation=_recommendation_from_analysis(analysis),

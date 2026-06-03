@@ -471,6 +471,7 @@ def test_merchant_edit_submit_updates(
     merchant: MerchantRow,
     merchant_repo: InMemoryMerchantRepository,
 ) -> None:
+    assert merchant.state is not None  # fixture invariant
     resp = client.post(
         f"/ui/merchants/{merchant.id}/edit",
         data={
