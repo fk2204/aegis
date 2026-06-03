@@ -3,16 +3,14 @@
 {% block title %}AEGIS — Today{% endblock %}
 
 {% block deck %}
-<header class="deck">
-  <h1>Today<em> · Underwriting desk</em></h1>
-  <div class="meta">
-    {{ merchant_total }} merchant{{ '' if merchant_total == 1 else 's' }} &nbsp;·&nbsp; {{ in_pipeline }} in pipeline
-  </div>
-  <div class="actions">
-    <a class="btn" href="/ui/upload">Upload PDF</a>
-    <a class="btn primary" href="/ui/intake">+ New deal</a>
-  </div>
-</header>
+{% set title = "Today" %}
+{% set subtitle = " · Underwriting desk" %}
+{% set meta %}{{ merchant_total }} merchant{{ '' if merchant_total == 1 else 's' }} &nbsp;·&nbsp; {{ in_pipeline }} in pipeline{% endset %}
+{% set actions = [
+  {"label": "Upload PDF", "href": "/ui/upload"},
+  {"label": "+ New deal", "href": "/ui/intake", "variant": "primary"},
+] %}
+{% include "_page_header.html.j2" %}
 
 <section class="strip">
   <div class="cell">
