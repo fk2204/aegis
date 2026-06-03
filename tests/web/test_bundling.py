@@ -169,6 +169,62 @@ def test_no_analyses_returns_empty() -> None:
     assert _collect_analyzed_for_merchant(repo, uuid4()) == []
 
 
+def test_bundle_key_merges_bank_name_spelling_variants() -> None:
+    """Regression: VU Development 2026-06 had three statements printed
+    'Bank of America, N.A.' and one printed 'Bank of America' on the
+    same account_last4 ('7719'). Pre-normalization the bundler split
+    these into two bundles and the singleton was dropped from scoring,
+    losing the most-recent month. After normalization the four roll
+    into one bundle."""
+    repo = InMemoryDocumentRepository()
+    merchant_id = uuid4()
+    for start, bank in (
+        (date(2026, 2, 1), "Bank of America, N.A."),
+        (date(2026, 3, 1), "Bank of America, N.A."),
+        (date(2026, 4, 1), "Bank of America, N.A."),
+        (date(2026, 5, 1), "Bank of America"),
+    ):
+        _seed(
+            repo, merchant_id=merchant_id, bank_name=bank,
+            account_last4="7719", period_start=start,
+            period_end=start.replace(day=28),
+        )
+
+    items = _collect_analyzed_for_merchant(repo, merchant_id, window=999)
+    assert len(items) == 4
+
+    keys = _bundle_keys_for_merchant(
+        [(d, repo._analyses[d.id]) for d in repo._docs.values() if d.merchant_id == merchant_id]
+    )
+    assert len(keys) == 1
+    assert keys[0][0] == ("bank of america", "7719")
+    assert keys[0][1] == 4
+
+
+def test_bundle_key_normalization_handles_national_association_suffix() -> None:
+    """Comprehensive suffix coverage: '... N. A.', '... N.A.', and
+    '... National Association' all collapse to the same key."""
+    repo = InMemoryDocumentRepository()
+    merchant_id = uuid4()
+    for i, (start, bank) in enumerate((
+        (date(2026, 2, 1), "Bank of America N.A."),
+        (date(2026, 3, 1), "Bank of America, N. A."),
+        (date(2026, 4, 1), "Bank of America, National Association"),
+    )):
+        _seed(
+            repo, merchant_id=merchant_id, bank_name=bank,
+            account_last4="7719", period_start=start,
+            period_end=start.replace(day=28),
+            uploaded_offset_days=10 - i,
+        )
+
+    keys = _bundle_keys_for_merchant(
+        [(d, repo._analyses[d.id]) for d in repo._docs.values() if d.merchant_id == merchant_id]
+    )
+    assert len(keys) == 1
+    assert keys[0][0] == ("bank of america", "7719")
+
+
 def test_bundle_keys_for_merchant_counts_and_orders_by_population() -> None:
     """Most-populated bundle ranks first; ties broken by latest period_end."""
     repo = InMemoryDocumentRepository()
@@ -192,15 +248,18 @@ def test_bundle_keys_for_merchant_counts_and_orders_by_population() -> None:
     keys = _bundle_keys_for_merchant(
         [(d, repo._analyses[d.id]) for d in repo._docs.values() if d.merchant_id == merchant_id]
     )
-    assert keys[0][0] == ("Chase", "1234")
+    # Bundle keys are normalized (lowercased + suffix-stripped) so the
+    # same account never splits across spelling variants. UI labels
+    # still come from the raw analysis.bank_name.
+    assert keys[0][0] == ("chase", "1234")
     assert keys[0][1] == 3
-    assert keys[1][0] == ("Wells Fargo", "9999")
+    assert keys[1][0] == ("wells fargo", "9999")
     assert keys[1][1] == 1
     # And the collector's default bundle is also Chase.
     assert len(all_items) >= 1
     assert _select_default_bundle(
         [(d, repo._analyses[d.id]) for d in repo._docs.values() if d.merchant_id == merchant_id]
-    ) == ("Chase", "1234")
+    ) == ("chase", "1234")
 
 
 def test_window_cap_applies_within_a_bundle() -> None:

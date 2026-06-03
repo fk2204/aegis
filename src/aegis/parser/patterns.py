@@ -931,8 +931,19 @@ def _unreconciled_internal_transfer(
 
     if not unmatched_ids:
         return None
-    # Severity scales with count of unmatched legs.
-    severity = min(40, 15 + 5 * (len(unmatched_ids) - 1))
+    # True single-statement view — no transfer-IN legs in the bundle at
+    # all. The docstring promised "medium severity (15) so the operator
+    # can sanity-check" for this case, but the count-scaling escalator
+    # was being applied even when ``ins`` was empty (verified on VU
+    # Development 2026-06: 6-8 unmatched legs per single-account doc
+    # producing severity=40 = the maximum). When we never had an IN
+    # side to fail against, hold severity at the promised 15 and leave
+    # bundle-mode escalation (Phase 2D cross-account stitching) to do
+    # the real reconciliation.
+    if not ins:
+        severity = 15
+    else:
+        severity = min(40, 15 + 5 * (len(unmatched_ids) - 1))
     return Pattern(
         code="unreconciled_internal_transfer",
         severity=severity,

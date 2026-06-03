@@ -2887,9 +2887,47 @@ _SCORE_WINDOW_MONTHS: int = 3
 BundleKey = tuple[str | None, str | None]
 
 
+# Trailing suffixes that distinguish one printed bank-name variant from
+# another (e.g. "Bank of America" vs "Bank of America, N.A.") without
+# representing a different institution. Stripped during bundle keying so
+# the same account at the same bank groups under one bundle regardless
+# of which suffix the statement happened to print this month.
+_BANK_NAME_SUFFIXES = (
+    ", n. a.",
+    ", n.a.",
+    " n.a.",
+    ", national association",
+)
+
+
+def _normalize_bank_name(name: str | None) -> str | None:
+    """Lowercase, strip, drop trailing institution-type suffixes.
+
+    Used only for bundle keying — UI label rendering reads the raw,
+    unnormalized ``analysis.bank_name`` so operators still see "Bank of
+    America, N.A." in the picker.
+    """
+    if name is None:
+        return None
+    s = name.strip().lower()
+    if not s:
+        return None
+    for suffix in _BANK_NAME_SUFFIXES:
+        if s.endswith(suffix):
+            s = s[: -len(suffix)].rstrip(", ")
+            break
+    return s.strip() or None
+
+
 def _bundle_key(analysis: AnalysisRow) -> BundleKey:
-    """The (bank_name, account_last4) key used to group statements into bundles."""
-    return (analysis.bank_name, analysis.account_last4)
+    """The (normalized bank_name, account_last4) key used to group statements.
+
+    Verified VU Development 2026-06: three docs printed
+    "Bank of America, N.A." and one printed "Bank of America" with the
+    same account_last4. Pre-normalization the singleton was dropped from
+    the default bundle.
+    """
+    return (_normalize_bank_name(analysis.bank_name), analysis.account_last4)
 
 
 def _bundle_keys_for_merchant(
@@ -2933,8 +2971,15 @@ def _filter_to_bundle(
     items: list[tuple[DocumentRow, AnalysisRow]],
     bundle: BundleKey,
 ) -> list[tuple[DocumentRow, AnalysisRow]]:
-    """Keep only items whose ``(bank_name, account_last4)`` matches ``bundle``."""
-    return [(d, a) for d, a in items if _bundle_key(a) == bundle]
+    """Keep only items whose ``(bank_name, account_last4)`` matches ``bundle``.
+
+    Normalizes the incoming ``bundle`` so callers can pass raw
+    ``(bank_name, last4)`` tuples without first running them through
+    ``_normalize_bank_name`` themselves.
+    """
+    bank, last4 = bundle
+    normalized = (_normalize_bank_name(bank), last4)
+    return [(d, a) for d, a in items if _bundle_key(a) == normalized]
 
 
 def _bundle_to_query(bundle: BundleKey) -> str:
@@ -2956,7 +3001,9 @@ def _parse_bundle_query(value: str | None) -> BundleKey | None:
     if len(parts) != 2:
         return None
     bank, last4 = parts
-    return (bank or None, last4 or None)
+    # Normalize so an old bookmark with "Bank of America, N.A.|7719"
+    # resolves to the same bundle as the new "bank of america|7719".
+    return (_normalize_bank_name(bank or None), last4 or None)
 
 
 def _build_bundle_summaries(

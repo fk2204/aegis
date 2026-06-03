@@ -181,9 +181,16 @@ def test_multi_month_uses_latest_for_current_state() -> None:
     assert out.payroll_detected is False
 
 
-def test_multi_month_validation_passed_only_when_every_doc_passed() -> None:
-    """If any month is manual_review, validation_passed flips off so the
-    scorer knows the window includes unreconciled statements."""
+def test_multi_month_validation_passed_when_docs_have_analyses() -> None:
+    """``parse_status="manual_review"`` does NOT fail validation: it means
+    classification wanted operator review, NOT that reconciliation failed.
+    Every item in the multi-month builder already has an analysis row
+    attached (the collector filters out docs without one), so the math
+    cleared the validation gate. Regression: prior code flipped
+    validation_passed=False on manual_review, which fired
+    ``validation_failed_manual_review_required`` as a hard decline on
+    VU Development (2026-06) even though revenue was correctly extracted.
+    """
     items = [
         (_doc(parse_status="proceed"), _analysis(
             period_start=date(2026, 3, 1), period_end=date(2026, 3, 31),
@@ -193,9 +200,55 @@ def test_multi_month_validation_passed_only_when_every_doc_passed() -> None:
             period_start=date(2026, 2, 1), period_end=date(2026, 2, 28),
             true_revenue=Decimal("30000"),
         )),
+        (_doc(parse_status="review"), _analysis(
+            period_start=date(2026, 1, 1), period_end=date(2026, 1, 31),
+            true_revenue=Decimal("30000"),
+        )),
+    ]
+    out = _score_input_multi_month(_merchant(), items)
+    assert out.validation_passed is True
+
+
+def test_multi_month_validation_passed_false_on_real_failure_status() -> None:
+    """Only truly-failed states (``error``, ``pending``) flip validation
+    off. Defensive: such docs shouldn't reach the multi-month builder
+    in practice (they have no analysis row), but if a test seeds one
+    in, surface the failure."""
+    items = [
+        (_doc(parse_status="proceed"), _analysis(
+            period_start=date(2026, 3, 1), period_end=date(2026, 3, 31),
+            true_revenue=Decimal("30000"),
+        )),
+        (_doc(parse_status="error"), _analysis(
+            period_start=date(2026, 2, 1), period_end=date(2026, 2, 28),
+            true_revenue=Decimal("30000"),
+        )),
     ]
     out = _score_input_multi_month(_merchant(), items)
     assert out.validation_passed is False
+
+
+def test_multi_month_lowest_balance_picks_worst_month() -> None:
+    """``lowest_balance`` reflects the worst observed month across the
+    window, not the average. Regression: prior code took the mean which
+    masked near-zero liquidity events behind quiet averages (VU
+    Development 2026-06: mean=$162K hid min=$3,257)."""
+    items = [
+        (_doc(), _analysis(
+            period_start=date(2026, 3, 1), period_end=date(2026, 3, 31),
+            true_revenue=Decimal("30000"), lowest=Decimal("327000.00"),
+        )),
+        (_doc(), _analysis(
+            period_start=date(2026, 2, 1), period_end=date(2026, 2, 28),
+            true_revenue=Decimal("30000"), lowest=Decimal("5725.55"),
+        )),
+        (_doc(), _analysis(
+            period_start=date(2026, 1, 1), period_end=date(2026, 1, 31),
+            true_revenue=Decimal("30000"), lowest=Decimal("3256.76"),
+        )),
+    ]
+    out = _score_input_multi_month(_merchant(), items)
+    assert out.lowest_balance == Decimal("3256.76")
 
 
 def test_multi_month_single_item_is_equivalent_to_single_month() -> None:
