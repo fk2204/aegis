@@ -527,6 +527,13 @@ def _compute_merchant_tier(
     missing letter must never block the queue render. Unforeseen
     failures log a structured WARN so the silence isn't total.
     """
+    # Migration 034 guard: non-finalized merchants (provisional /
+    # needs_manual_naming) carry a placeholder business_name. Running
+    # score_deal would invoke OFAC against the placeholder and write a
+    # spurious compliance record. Skip — tier=None reads the same as
+    # "not enough data yet" in the existing renderers.
+    if not merchant.is_finalized:
+        return None
     try:
         items = _collect_analyzed_for_merchant(docs, merchant.id, bundle=None)
         if not items:
@@ -1726,6 +1733,26 @@ async def merchant_match(
     except MerchantNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
+    # Migration 034 guard — same shape as the no-document branch below.
+    # Non-finalized merchants carry a placeholder business_name; scoring
+    # them would invoke OFAC against the placeholder. Render the panel
+    # with ``missing='not_finalized'`` so existing template wiring
+    # surfaces "merchant not ready" without a special UI chunk.
+    if not merchant.is_finalized:
+        return templates.TemplateResponse(
+            request,
+            "merchant_match.html.j2",
+            {
+                "merchant": merchant,
+                "missing": "not_finalized",
+                "score_result": None,
+                "matches": [],
+                "score_window": None,
+                "preselect_funder_id": None,
+                "preselect_banner": None,
+            },
+        )
+
     items = _collect_analyzed_for_merchant(docs, merchant_id)
     if not items:
         return templates.TemplateResponse(
@@ -1854,6 +1881,17 @@ async def merchant_submit_to_funders(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="no funders selected",
+        )
+
+    # Migration 034 guard — submission to funders requires a real,
+    # named merchant. Refuse on provisional / needs_manual_naming.
+    if not merchant.is_finalized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "merchant is not finalized — name the merchant via intake "
+                "before submitting to funders"
+            ),
         )
 
     items = _collect_analyzed_for_merchant(docs, merchant_id)
@@ -2372,7 +2410,11 @@ async def merchant_detail(
         pattern_cards = list(
             build_pattern_cards(pattern_analysis, latest_transactions)
         )
-        if items:
+        # Migration 034 — scoring requires a finalized merchant.
+        # Skip the score panel + statement_coverage build for
+        # provisional / needs_manual_naming; the dossier still
+        # renders, just without the score-derived sections.
+        if items and merchant.is_finalized:
             score_input = _score_input_multi_month(
                 merchant, items, pattern_analysis=pattern_analysis
             )
@@ -2399,7 +2441,18 @@ async def merchant_detail(
             }
 
     state_tier = _state_tier(merchant.state)
-    ofac_status, ofac_match = _ofac_ribbon_status(ofac, merchant.business_name)
+    # OFAC screening is REGULATORY — a screening row written for a
+    # placeholder business name ("(awaiting parse)") would fabricate a
+    # compliance artifact ("we screened (awaiting parse)") that future
+    # audits could not distinguish from a real screening. Gate on
+    # ``is_finalized`` so OFAC fires only on real names. Non-finalized
+    # merchants surface ``ofac_status='not_consulted'`` in the ribbon.
+    if merchant.is_finalized:
+        ofac_status, ofac_match = _ofac_ribbon_status(
+            ofac, merchant.business_name
+        )
+    else:
+        ofac_status, ofac_match = ("not_consulted", None)
 
     from aegis.api.routes.findings import _compute_trend
 
@@ -2572,7 +2625,9 @@ def _build_pdf_dossier_context(
         )
         pattern_cards = list(build_pattern_cards(pattern_analysis, latest_transactions))
 
-        if items:
+        # Migration 034 — same is_finalized scoring gate as the
+        # matched-funders dossier branch above.
+        if items and merchant.is_finalized:
             score_input = _score_input_multi_month(
                 merchant, items, pattern_analysis=pattern_analysis
             )
@@ -2615,7 +2670,15 @@ def _build_pdf_dossier_context(
             "verified": getattr(state_reg, "verified_date", None),
         }
 
-    ofac_status_raw, ofac_match = _ofac_ribbon_status(ofac, merchant.business_name)
+    # Same is_finalized OFAC gate as the matched-funders dossier above —
+    # never screen a placeholder name. Non-finalized merchants render
+    # with the "pending" ribbon (the existing "not_consulted" arm).
+    if merchant.is_finalized:
+        ofac_status_raw, ofac_match = _ofac_ribbon_status(
+            ofac, merchant.business_name
+        )
+    else:
+        ofac_status_raw, ofac_match = ("not_consulted", None)
     if ofac_status_raw == "checked":
         ofac_dossier_status = "match" if ofac_match else "clean"
     elif ofac_status_raw == "stale":
@@ -3005,11 +3068,14 @@ def _score_input_from_dashboard(
     real submission ships.
     """
     monthly = _project_monthly(analysis.true_revenue, analysis.statement_days)
+    # Same caller-gated contract as score_input_multi_month — see the
+    # note in scoring/multi_month.py. Empty string is the documented
+    # fallback for callers that lose track of the finalized check.
     return ScoreInput(
         merchant_id=merchant.id,
         business_name=merchant.business_name,
         owner_name=merchant.owner_name,
-        state=merchant.state.upper(),
+        state=(merchant.state or "").upper(),
         industry_naics=merchant.industry_naics,
         industry_risk_tier=merchant.industry_risk_tier,
         time_in_business_months=merchant.time_in_business_months,
@@ -3432,12 +3498,23 @@ def _entity_type_or_none(value: str) -> EntityType | None:
     return None
 
 
-def _state_tier(state: str) -> int | str:
+def _state_tier(state: str | None) -> int | str:
     """Resolve the state regulation tier for the ribbon.
 
-    Returns 1/2/3 for served states; "unserved" if the state isn't in the
-    served set. Pure read of ``STATES`` — no side effects.
+    Returns 1/2/3 for served states; ``"unserved"`` if the state isn't
+    in the served set; ``"unknown"`` if ``state`` itself is ``None``.
+
+    Pure read of ``STATES`` — no side effects.
+
+    The ``None`` case lands when an auto-finalized merchant has no
+    state yet (parser doesn't extract address; operator sets state via
+    edit). ``"unknown"`` is distinct from ``"unserved"`` — unserved is a
+    real state AEGIS chose not to fund in; unknown is "we don't yet
+    know what state this merchant is in." The dossier renders both as
+    "—" but downstream code (compliance / scoring) can distinguish.
     """
+    if state is None:
+        return "unknown"
     reg = STATES.get(state.upper())
     if reg is None:
         return "unserved"

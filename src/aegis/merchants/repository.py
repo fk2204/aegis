@@ -27,6 +27,16 @@ class MerchantConflictError(ValueError):
     """Raised when a uniqueness constraint would be violated."""
 
 
+# Placeholder ``business_name`` written by ``create_provisional`` and
+# overwritten by ``finalize_provisional`` once the worker has read
+# ``statement.account_holder``. Keeps ``business_name`` non-null at the
+# type level so the slugify / dossier / sort cascade doesn't need
+# None-guards. The OFAC + scoring paths are status-gated separately
+# (see the ``is_finalized`` checks in ``web/router.py``) so this
+# placeholder never reaches a regulatory or scoring surface.
+PROVISIONAL_BUSINESS_NAME_PLACEHOLDER = "(awaiting parse)"
+
+
 class MerchantRepository(Protocol):
     def get(self, merchant_id: UUID) -> MerchantRow: ...
     def find_by_close_lead_id(
@@ -37,6 +47,44 @@ class MerchantRepository(Protocol):
     def count_total(self) -> int: ...
     def upsert(self, merchant: MerchantRow) -> MerchantRow: ...
     def delete(self, merchant_id: UUID) -> None: ...
+
+    # Migration 034 — merchant-from-statement flow ---------------------------
+
+    def create_provisional(self) -> MerchantRow:
+        """Insert a fresh row with ``status='provisional'`` and NULL
+        ``business_name`` / ``owner_name`` / ``state``. Used by the
+        dashboard ``/ui/upload`` auto-create branch when the operator
+        uploads without picking a merchant.
+        """
+
+    def finalize_provisional(
+        self, *, merchant_id: UUID, business_name: str
+    ) -> int:
+        """Transition ``provisional`` or ``needs_manual_naming`` →
+        ``finalized``, setting ``business_name``. ``owner_name`` and
+        ``state`` are intentionally NOT touched (see migration 034 +
+        design doc §10 confirmed decision 1).
+
+        Idempotent: filtered on ``status IN ('provisional',
+        'needs_manual_naming')`` so re-parses, operator-manual
+        finalizations, and concurrent paths each see at most one
+        successful UPDATE. Returns the rowcount so the worker can
+        gate its ``merchant.finalized`` audit row on observed change
+        (operator-required — false audit rows are unacceptable).
+        """
+
+    def mark_needs_manual_naming(self, *, merchant_id: UUID) -> int:
+        """Transition ``provisional`` → ``needs_manual_naming``. Used by
+        the worker when parse-completion can't auto-name (blank
+        ``account_holder``), when the parse raised, when the parse
+        was cancelled (arq timeout), and when the processor branch
+        succeeds (no ``account_holder`` analogue today).
+
+        Idempotent: filtered on ``status='provisional'`` so an
+        already-finalized merchant or an already-needs-naming row is
+        a no-op. Returns the rowcount; the worker gates its audit
+        row on observed change.
+        """
 
 
 class InMemoryMerchantRepository:
@@ -99,6 +147,55 @@ class InMemoryMerchantRepository:
 
     def delete(self, merchant_id: UUID) -> None:
         self._by_id.pop(merchant_id, None)
+
+    # Migration 034 — merchant-from-statement flow ---------------------------
+
+    def create_provisional(self) -> MerchantRow:
+        now = datetime.now(UTC)
+        row = MerchantRow(
+            id=uuid4(),
+            status="provisional",
+            business_name=PROVISIONAL_BUSINESS_NAME_PLACEHOLDER,
+            owner_name=None,
+            state=None,
+            created_at=now,
+            updated_at=now,
+        )
+        self._by_id[row.id] = row
+        return row
+
+    def finalize_provisional(
+        self, *, merchant_id: UUID, business_name: str
+    ) -> int:
+        existing = self._by_id.get(merchant_id)
+        if existing is None:
+            return 0
+        if existing.status not in ("provisional", "needs_manual_naming"):
+            return 0
+        updated = existing.model_copy(
+            update={
+                "status": "finalized",
+                "business_name": business_name,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._by_id[merchant_id] = updated
+        return 1
+
+    def mark_needs_manual_naming(self, *, merchant_id: UUID) -> int:
+        existing = self._by_id.get(merchant_id)
+        if existing is None:
+            return 0
+        if existing.status != "provisional":
+            return 0
+        updated = existing.model_copy(
+            update={
+                "status": "needs_manual_naming",
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._by_id[merchant_id] = updated
+        return 1
 
 
 class SupabaseMerchantRepository:
@@ -184,16 +281,77 @@ class SupabaseMerchantRepository:
             "id", str(merchant_id)
         ).execute()
 
+    # Migration 034 — merchant-from-statement flow ---------------------------
+
+    def create_provisional(self) -> MerchantRow:
+        # Placeholder business_name (non-null at the type level — see
+        # PROVISIONAL_BUSINESS_NAME_PLACEHOLDER for why). owner_name and
+        # state stay NULL until operator edits or — in owner_name's case
+        # — never (account_holder is the business, not the human owner).
+        # No email / phone / intake fields written.
+        payload: dict[str, Any] = {
+            "status": "provisional",
+            "business_name": PROVISIONAL_BUSINESS_NAME_PLACEHOLDER,
+        }
+        result = (
+            get_supabase()
+            .table("merchants")
+            .insert(payload)
+            .execute()
+        )
+        if not result.data:
+            raise RuntimeError("supabase.insert returned no row")
+        return _row_to_merchant(cast(dict[str, Any], result.data[0]))
+
+    def finalize_provisional(
+        self, *, merchant_id: UUID, business_name: str
+    ) -> int:
+        # Filtered on the two in-flux statuses so a row already
+        # finalized (operator manual edit) or any other state never
+        # gets silently overwritten. Returns the rowcount via the
+        # length of result.data (PostgREST returns the updated rows
+        # by default).
+        result = (
+            get_supabase()
+            .table("merchants")
+            .update({"status": "finalized", "business_name": business_name})
+            .eq("id", str(merchant_id))
+            .in_("status", ["provisional", "needs_manual_naming"])
+            .execute()
+        )
+        return len(result.data or [])
+
+    def mark_needs_manual_naming(self, *, merchant_id: UUID) -> int:
+        # Filtered on status='provisional' so an already-needs-naming
+        # or already-finalized row is a true no-op (rowcount 0). The
+        # worker uses the returned count to gate its audit row so a
+        # false claim of state change never lands.
+        result = (
+            get_supabase()
+            .table("merchants")
+            .update({"status": "needs_manual_naming"})
+            .eq("id", str(merchant_id))
+            .eq("status", "provisional")
+            .execute()
+        )
+        return len(result.data or [])
+
 
 def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
+    # Migration 034 made owner_name / state nullable; business_name
+    # stays NOT NULL (provisional rows carry a placeholder string per
+    # the model docstring). ``status`` defaults to ``'finalized'`` for
+    # safety against a pre-034 read (replica, restored backup) — matches
+    # the DB DEFAULT on the column.
     from decimal import Decimal as _Decimal
 
     return MerchantRow(
         id=UUID(row["id"]),
+        status=row.get("status") or "finalized",
         business_name=row["business_name"],
         dba=row.get("dba"),
-        owner_name=row["owner_name"],
-        state=row["state"],
+        owner_name=row.get("owner_name"),
+        state=row.get("state"),
         industry_naics=row.get("industry_naics"),
         industry_risk_tier=row.get("industry_risk_tier"),
         time_in_business_months=row.get("time_in_business_months"),
@@ -254,10 +412,11 @@ def _parse_dt(value: object) -> datetime | None:
 def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "id": str(m.id),
+        "status": m.status,
         "business_name": m.business_name,
         "dba": m.dba,
         "owner_name": m.owner_name,
-        "state": m.state.upper(),
+        "state": m.state.upper() if m.state else None,
         "industry_naics": m.industry_naics,
         "industry_risk_tier": m.industry_risk_tier,
         "time_in_business_months": m.time_in_business_months,
@@ -281,6 +440,7 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
 
 
 __all__ = [
+    "PROVISIONAL_BUSINESS_NAME_PLACEHOLDER",
     "InMemoryMerchantRepository",
     "MerchantConflictError",
     "MerchantNotFoundError",

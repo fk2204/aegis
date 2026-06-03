@@ -137,7 +137,7 @@ class ComplianceRibbon(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    state_tier: int | Literal["unserved"]
+    state_tier: int | Literal["unserved", "unknown"]
     ofac_status: Literal["checked", "stale", "unavailable", "not_consulted"]
     ofac_match: bool | None
     is_renewal: bool
@@ -232,7 +232,16 @@ def build_merchant_findings(
     latest_doc = all_docs[0] if all_docs else None
     latest_analysis = docs.get_analysis(latest_doc.id) if latest_doc else None
 
-    if score_result is None and latest_doc is not None and latest_analysis is not None:
+    # Migration 034 — scoring + OFAC only fire for finalized merchants.
+    # See aegis.merchants.repository for the placeholder business_name
+    # context; running OFAC against the placeholder would fabricate a
+    # compliance record.
+    if (
+        score_result is None
+        and latest_doc is not None
+        and latest_analysis is not None
+        and merchant.is_finalized
+    ):
         from aegis.web.router import _score_input_from_dashboard
 
         try:
@@ -259,13 +268,16 @@ def build_merchant_findings(
 
     trend = _compute_trend(all_docs, docs)
 
-    state_tier_val: int | Literal["unserved"]
-    reg = STATES.get(merchant.state.upper())
-    state_tier_val = "unserved" if reg is None else int(reg.tier)
+    state_tier_val: int | Literal["unserved", "unknown"]
+    if merchant.state is None:
+        state_tier_val = "unknown"
+    else:
+        reg = STATES.get(merchant.state.upper())
+        state_tier_val = "unserved" if reg is None else int(reg.tier)
 
     ofac_status: Literal["checked", "stale", "unavailable", "not_consulted"]
     ofac_match: bool | None = None
-    if ofac is None:
+    if ofac is None or not merchant.is_finalized:
         ofac_status = "not_consulted"
     else:
         try:

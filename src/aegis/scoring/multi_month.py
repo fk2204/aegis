@@ -81,11 +81,19 @@ def score_input_multi_month(
     # values when available. AnalysisRow may not yet carry them (storage
     # round-trip lands in a separate migration); fall back to None.
     latest = latest_analysis
+    # Callers gate this builder on ``merchant.is_finalized`` (the OFAC
+    # + scoring guard added with migration 034). A finalized merchant
+    # typically has a state set, but state stays nullable post-034 even
+    # on finalized rows — the parser doesn't extract address, so an
+    # auto-finalized merchant may still have ``state=None`` until the
+    # operator edits. Empty string falls through cleanly: the downstream
+    # ``score_deal`` reads STATES.get(state.upper()) which returns None
+    # for unknown keys and routes to the "unserved" tier.
     return ScoreInput(
         merchant_id=merchant.id,
         business_name=merchant.business_name,
         owner_name=merchant.owner_name,
-        state=merchant.state.upper(),
+        state=(merchant.state or "").upper(),
         industry_naics=merchant.industry_naics,
         industry_risk_tier=merchant.industry_risk_tier,
         time_in_business_months=merchant.time_in_business_months,
