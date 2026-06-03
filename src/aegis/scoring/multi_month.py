@@ -118,14 +118,19 @@ def score_input_multi_month(
         statement_days=summed_days,
         fraud_score=max((d.fraud_score or 0) for d in docs_list),
         eof_markers=1,
-        # validation_passed signals whether the parser's extraction +
-        # reconciliation gate cleared. `manual_review` means the
-        # classifier flagged uncertainty, NOT that reconciliation
-        # failed — an analysis row only exists for docs whose math
-        # validated. Only true validation failures (no analysis row
-        # would exist) should fail this gate; here every doc in
-        # `docs_list` has been collected with its analysis already
-        # attached, so the per-doc parse_status check is permissive.
+        # validation_passed: did the parser's EXTRACTION + RECONCILIATION
+        # gate clear cleanly? Hard rule for future contributors:
+        # ``parse_status="manual_review"`` means the CLASSIFIER asked for
+        # human eyes (low-confidence categorization on at least one row);
+        # it is NOT a validation failure and MUST NOT auto-decline.
+        # Reconciliation failures route a document to
+        # ``parse_status="error"`` with NO analysis row, so any item
+        # that reaches this aggregator already passed reconciliation by
+        # construction (``_collect_analyzed_for_merchant`` filters out
+        # docs without an analysis). The permissive list below is the
+        # codified semantic — do not narrow it without re-reading
+        # ``ParseStatus`` in ``aegis.storage`` and the architecture
+        # rule on parser status semantics.
         validation_passed=all(
             d.parse_status in ("proceed", "review", "manual_review")
             for d in docs_list

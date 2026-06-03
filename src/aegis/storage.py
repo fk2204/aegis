@@ -41,6 +41,27 @@ from aegis.parser.pipeline import PipelineResult
 _log = get_logger(__name__)
 
 ParseStatus = Literal["pending", "proceed", "review", "manual_review", "error"]
+"""Document parse-pipeline status. Underwriting semantics per value:
+
+* ``pending``      — ingest accepted, parse not yet attempted. NOT scoreable.
+* ``proceed``      — extraction + reconciliation + classification all clean.
+* ``review``       — parser surfaces flags the operator should look at; the
+                     underlying data is reliable. Scoreable.
+* ``manual_review`` — extraction + reconciliation PASSED but classification
+                     confidence on at least one row fell below the floor.
+                     **Underwrite-able; NOT a decline trigger.** The
+                     downstream scoring layer treats this as
+                     ``validation_passed=True``. Re-introducing a
+                     ``manual_review → hard decline`` link is a known
+                     regression class — see
+                     ``aegis.scoring.multi_month.score_input_multi_month``.
+* ``error``        — extraction or reconciliation HARD-failed; no analysis
+                     row is written. NOT scoreable.
+
+The same ``Literal`` alias lives in ``aegis.deals.models`` and
+``aegis.parser.pipeline`` (narrower subset on the latter — only the
+parser-emitted outcomes); changing the values here must keep those in
+sync."""
 
 
 # Errors -----------------------------------------------------------------------
