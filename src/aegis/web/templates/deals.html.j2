@@ -3,16 +3,14 @@
 {% block title %}Deals — AEGIS{% endblock %}
 
 {% block deck %}
-<header class="deck">
-  <h1>Deals<em> · pipeline</em></h1>
-  <div class="meta">
-    {{ rows|length }} deal{{ '' if rows|length == 1 else 's' }} &nbsp;·&nbsp; merchant × latest doc
-  </div>
-  <div class="actions">
-    <a class="btn" href="/ui/upload">Upload PDF</a>
-    <a class="btn primary" href="/ui/intake">+ New deal</a>
-  </div>
-</header>
+{% set title = "Deals" %}
+{% set subtitle = "· pipeline" %}
+{% set meta = (rows|length ~ " deal" ~ ("" if rows|length == 1 else "s") ~ "  ·  merchant × latest doc") %}
+{% set actions = [
+  {"label": "Upload PDF", "href": "/ui/upload"},
+  {"label": "+ New deal", "href": "/ui/intake", "variant": "primary"}
+] %}
+{% include "_page_header.html.j2" %}
 {% endblock %}
 
 {% block body %}
@@ -30,6 +28,7 @@
       <table class="queue">
         <thead>
           <tr>
+            <th>Status</th>
             <th>Merchant</th>
             <th>State</th>
             <th>Latest upload</th>
@@ -42,6 +41,15 @@
           {% for r in rows %}
             {# tag-{{ status }} kept on a hidden span for back-compat with tests #}
             <tr onclick="window.location.href='/ui/merchants/{{ r.merchant_id }}'">
+              <td>
+                {# Merchant status chip: r.merchant.status not threaded through
+                   list_deals route yet (router.py:1041) — see Wave 2.2 report
+                   follow-up. Renders em-dash placeholder until the route adds
+                   `status` (and optional `needs_manual_naming_reason`) to the
+                   row dict, at which point this block becomes an
+                   {% include "_status_chip.html.j2" %} call. #}
+                <span class="mono-cell">—</span>
+              </td>
               <td class="merchant">
                 <a href="/ui/merchants/{{ r.merchant_id }}">{{ r.business_name }}</a>
                 <span class="sub">{{ r.merchant_id|string|truncate(8, True, '') }}</span>
@@ -49,15 +57,27 @@
               <td class="mono-cell">{{ r.state }}</td>
               <td class="mono-cell">{{ r.uploaded_at }}</td>
               <td>
-                {% set _cls = {'proceed':'pos','review':'warn','manual_review':'bad','error':'bad','pending':'','no_upload':''}.get(r.parse_status, '') %}
-                <span class="chip {{ _cls }} tag-{{ r.parse_status }}">{{ r.parse_status }}</span>
+                {# tag-{{ parse_status }} kept on a hidden span for back-compat with tests #}
+                {% set _parse_tone = {
+                  'proceed': 'good',
+                  'review': 'warn',
+                  'manual_review': 'warn',
+                  'pending': 'warn',
+                  'error': 'bad',
+                }.get(r.parse_status, 'neutral') %}
+                {% with tone = _parse_tone, label = r.parse_status %}
+                  {% include "_status_chip.html.j2" %}
+                {% endwith %}
+                <span class="tag-{{ r.parse_status }}" hidden></span>
               </td>
               <td class="score {% if r.fraud_score is number and r.fraud_score >= 65 %}bad{% elif r.fraud_score is number and r.fraud_score >= 35 %}warn{% elif r.fraud_score is number %}calm{% endif %}">
                 {% if r.fraud_score is number %}{{ r.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
               </td>
               <td>
                 {% if r.tier_proxy %}
-                  <span class="tier-chip tier-{{ r.tier_proxy }}">{{ r.tier_proxy }}</span>
+                  {% with tier = r.tier_proxy %}
+                    {% include "_tier_badge.html.j2" %}
+                  {% endwith %}
                 {% else %}
                   <span class="mono-cell">—</span>
                 {% endif %}
