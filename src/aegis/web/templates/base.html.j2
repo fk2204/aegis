@@ -22,24 +22,33 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Poppins:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=10">
-  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=13">
+  {# UI redesign Wave 1 (2026-06-03) — aegis-system.css loaded FIRST so
+     dossier + tool inherit canonical tokens. Token-definition block
+     moved out of aegis-dossier.css into system; computed values
+     identical. v queries bumped to bust browser cache after the move. #}
+  <link rel="stylesheet" href="/ui/static/aegis-system.css?v=1">
+  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=11">
+  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=14">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   <script src="/ui/static/evidence_copy.js?v=1" defer></script>
 </head>
 <body class="dossier-page body-root">
 
-{# === compact topstrip — same chrome as the merchant dossier === #}
+{# === compact topstrip — same chrome as the merchant dossier ===
+   Wave 1: nav-active highlight moved from inline style
+   `style="color:#fff;font-weight:600"` to `class="is-active"`
+   (rule in aegis-system.css). Same computed result for the active
+   link; existing render for inactive links unchanged. #}
 <div class="topstrip">
   <div class="links">
     {% set _active = active|default('') %}
-    <a href="/ui/"          {% if _active == 'Today'     %}style="color:#fff;font-weight:600"{% endif %}>Today</a>
-    <a href="/ui/deals"     {% if _active == 'Deals'     %}style="color:#fff;font-weight:600"{% endif %}>Deals</a>
-    <a href="/ui/merchants" {% if _active == 'Merchants' %}style="color:#fff;font-weight:600"{% endif %}>Merchants</a>
-    <a href="/ui/funders"   {% if _active == 'Funders'   %}style="color:#fff;font-weight:600"{% endif %}>Funders</a>
-    <a href="/ui/upload"    {% if _active == 'Upload'    %}style="color:#fff;font-weight:600"{% endif %}>Upload</a>
-    <a href="/ui/intake"    {% if _active == 'Intake'    %}style="color:#fff;font-weight:600"{% endif %}>Intake</a>
-    <a href="/ui/review"    {% if _active == 'Review'    %}style="color:#fff;font-weight:600"{% endif %}>Review queue</a>
+    <a href="/ui/"          {% if _active == 'Today'     %}class="is-active"{% endif %}>Today</a>
+    <a href="/ui/deals"     {% if _active == 'Deals'     %}class="is-active"{% endif %}>Deals</a>
+    <a href="/ui/merchants" {% if _active == 'Merchants' %}class="is-active"{% endif %}>Merchants</a>
+    <a href="/ui/funders"   {% if _active == 'Funders'   %}class="is-active"{% endif %}>Funders</a>
+    <a href="/ui/upload"    {% if _active == 'Upload'    %}class="is-active"{% endif %}>Upload</a>
+    <a href="/ui/intake"    {% if _active == 'Intake'    %}class="is-active"{% endif %}>Intake</a>
+    <a href="/ui/review"    {% if _active == 'Review'    %}class="is-active"{% endif %}>Review queue</a>
   </div>
   <div class="view-toggle">
     <span style="color:var(--sage)">aegis · {{ now|default('') }}</span>

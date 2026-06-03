@@ -1,0 +1,144 @@
+/* AEGIS — design system (Wave 1, dashboard UI redesign 2026-06-03).
+ *
+ * Source of truth for tokens. Loaded FIRST by base.html.j2 so that
+ * aegis-dossier.css and aegis-tool.css read these definitions via the
+ * cascade. The token definition block previously lived inside
+ * aegis-dossier.css (the `.dossier-page { --paper: ...; }` block on
+ * pre-refactor lines 15-46); it moved here unchanged so every existing
+ * `var(--token)` reference in the other two files resolves identically.
+ *
+ * Token contract — Wave 1 verification gate:
+ *   Every name + value below was previously defined in aegis-dossier.css.
+ *   The :15-46 block was deleted from that file in the same commit.
+ *   Computed styles on every page must match pre-Wave-1 exactly except
+ *   for the two intentional fixes documented at the end of this file.
+ *
+ * What's NEW in Wave 1 (additions; do NOT change computed styles for
+ * any existing selector since nothing references them yet):
+ *   - --status-good / --status-warn / --status-bad / --status-info
+ *     and their *-soft variants: canonical alias names for the existing
+ *     approve / review / decline / accent tokens. Wave 2 templates
+ *     adopt these; Wave 1 only defines them.
+ *   - --fs-* typography scale: 7 named sizes covering the legitimate
+ *     uses. Wave 2 adoption.
+ *   - --s-* spacing scale: 8 snapped steps. Wave 2 adoption.
+ *   - --r-* radius tokens. Wave 2 adoption.
+ *   - --w-page: container width constant (1800px, matches every existing
+ *     .deck / .strip / .masthead / .sheet / .attention-list max-width).
+ *
+ * What's NOT in this file:
+ *   - Component primitives (.page, .table-data, .form-stack etc. from
+ *     the design doc) — they ship in Wave 2 along with the per-page
+ *     adoption work. Wave 1 is token-fold only.
+ */
+
+/* ===================================================================
+ * EXISTING TOKENS — moved verbatim from aegis-dossier.css :15-46.
+ * Every value must be byte-identical to the pre-refactor source.
+ * =================================================================== */
+
+.dossier-page {
+  /* Commera brand palette — Pale Sage + Deep Forest. The dossier
+   * surfaces share these tokens with commerafunding.com so the
+   * underwriting console and the customer site read as one brand. */
+  --paper:        #FAFAF8;   /* Commera bg-primary — pale cream */
+  --paper-2:      #F0F5F2;   /* Commera bg-muted — light sage tint */
+  --paper-deep:   #E8EDE9;   /* deep sage edge */
+  --ink:          #2D5A47;   /* Commera primary — deep forest, used for headings */
+  --ink-2:        #4A6B5E;   /* Commera text-body — medium forest grey */
+  --ink-3:        #7A8E82;   /* Commera text-muted — sage grey */
+  --rule:         #D1DDD6;   /* Commera border — light sage */
+  --rule-soft:    #E8EDE9;   /* Commera border-subtle — very light sage */
+  --gild:         #92400E;   /* warm amber, kept for review/warning emphasis */
+
+  --sage:         #A8D5BA;   /* Commera secondary — bright sage, used as visible accent */
+  --sage-deep:    #85C6A0;   /* Commera secondary-dark */
+
+  --decline:      #a72f24;
+  --decline-soft: #f0ddd8;
+  --review:       #92400E;   /* Commera amber-text-dark */
+  --review-soft:  #FEF3C7;   /* Commera amber-bg */
+  --approve:      #2D5A47;   /* matches brand primary — clean clear signal */
+  --approve-soft: #D8E3D8;   /* warm sage */
+  --accent:       #1F3E32;   /* Commera accent-dark — link emphasis */
+
+  /* Typography — Commera-matched: Poppins (display) + Inter (body).
+   * The --serif variable name is retained for backward-compat with every
+   * existing selector; it now resolves to Poppins. --mono kept on Inter
+   * so any "mono" text on the page is still Commera body. */
+  --serif:  "Poppins", system-ui, "Segoe UI", Roboto, sans-serif;
+  --mono:   "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
+
+  /* ===================================================================
+   * NEW TOKENS — Wave 1 additions. UNUSED by any existing selector;
+   * defined here so Wave 2's templates and partials can adopt them.
+   * =================================================================== */
+
+  /* Status tones — canonical alias names for the existing semantic
+   * colors. New code uses --status-* ; legacy --approve / --review /
+   * --decline / --accent stay live for backward compatibility.
+   * Wave 2 templates can pick either; the design doc's eventual
+   * sweep (backlog: project-chip-canonical-name-sweep) migrates
+   * everything to --status-* . */
+  --status-good:      var(--approve);
+  --status-good-soft: var(--approve-soft);
+  --status-warn:      var(--review);
+  --status-warn-soft: var(--review-soft);
+  --status-bad:       var(--decline);
+  --status-bad-soft:  var(--decline-soft);
+  --status-info:      var(--accent);
+  --status-neutral:   var(--ink-3);
+
+  /* Typography scale — 7 sizes covering the legitimate uses surfaced
+   * by the audit (caption labels, body, card titles, page h1, dossier
+   * masthead). Wave 1 adds only the scale; selectors keep their
+   * hardcoded sizes until Wave 2 adopts. */
+  --fs-caption:    10.5px;  /* uppercase labels, table headers, chip text */
+  --fs-body-sm:    11.5px;  /* table cells, meta lines */
+  --fs-body:       13px;    /* running body */
+  --fs-body-lg:    14px;    /* form inputs, queue table rows */
+  --fs-title-sm:   18px;    /* card titles */
+  --fs-title:      24px;    /* page section h2 */
+  --fs-display:    42px;    /* tool-page .deck h1 */
+  --fs-display-xl: 92px;    /* dossier .masthead h1 (editorial scale) */
+
+  /* Spacing scale — snapped to a 4px base. Replaces ad-hoc 18/20/28
+   * mid-values in future code. */
+  --s-1:  4px;
+  --s-2:  8px;
+  --s-3:  12px;
+  --s-4:  16px;
+  --s-6:  24px;
+  --s-8:  32px;
+  --s-12: 48px;
+  --s-14: 56px;   /* horizontal page padding (existing .deck / .strip / .masthead value) */
+
+  /* Radii. */
+  --r-sm:   2px;
+  --r-md:   6px;
+  --r-pill: 999px;
+
+  /* Page container width — matches every existing max-width:1800px
+   * usage. Wave 2 .page primitive will reference this. */
+  --w-page: 1800px;
+}
+
+/* ===================================================================
+ * NEW UTILITY — nav-active state (Wave 1 fix #2).
+ *
+ * Previously inline in base.html.j2 :36-42 as:
+ *   style="color:#fff;font-weight:600"
+ *
+ * Replaced by:
+ *   <a class="is-active">…</a>
+ *
+ * The existing .topstrip .links a selector (aegis-dossier.css :117)
+ * provides the base color/typography; this rule applies only the
+ * highlight that was inline. Computed result for the active link must
+ * match the pre-Wave-1 inline-styled link byte-for-byte.
+ * =================================================================== */
+
+.dossier-page .topstrip .links a.is-active {
+  color: #fff;
+  font-weight: 600;
+}

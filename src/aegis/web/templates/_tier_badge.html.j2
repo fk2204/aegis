@@ -1,0 +1,30 @@
+{#
+  Shared tier badge — Wave 1 of the UI redesign (2026-06-03).
+
+  Unifies the three legacy tier-rendering systems (.tier-chip on Deals
+  table, .card-tier on Today/Review attention cards, .paper-grade on
+  the dossier verdict section). Wave 2 templates can adopt this
+  partial; the legacy classes keep rendering unchanged until the
+  backlog sweep migrates callers.
+
+  This Wave-1 version renders as the existing .card-tier shape so the
+  attention-card-card-meta context already styles it correctly. Wave 2
+  may introduce a leaner .tier class with modifier --A / --B / --C /
+  --D / --F if the bespoke per-context styling needs to consolidate;
+  for now, the safest move is to reuse what's already styled.
+
+  Inputs:
+    tier  — string, one of "A" | "B" | "C" | "D" | "F" | None
+            (lowercased and used as the modifier class)
+    label — optional string under the tier letter (default "tier")
+
+  Examples:
+    {% include "_tier_badge.html.j2" with context %}  → "B tier"
+    where caller sets `tier = "B"`.
+
+  Behavior on tier=None: renders nothing. The calling template
+  decides whether an absent tier shows a placeholder.
+#}
+{%- if tier -%}
+<span class="card-tier tier-{{ tier|lower }}" title="Deal tier from score_deal">{{ tier }}<span class="card-tier-label">{{ label|default('tier') }}</span></span>
+{%- endif -%}

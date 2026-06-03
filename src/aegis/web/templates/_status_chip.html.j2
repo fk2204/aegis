@@ -1,0 +1,41 @@
+{#
+  Shared status chip — Wave 1 of the UI redesign (2026-06-03).
+
+  Single chip system that supersedes the four overlapping families
+  currently in use (.tag with pos/neg/warn, .chip with pos/warn/bad,
+  .pill with ok/bad/warn, .fraud-chip). Wave 2 templates can adopt
+  this partial directly; the legacy classes continue to render
+  unchanged until a future sweep (backlog item:
+  project-chip-canonical-name-sweep) migrates all callers.
+
+  This partial renders as a <span class="chip {{ tone-class }}"> so
+  it reuses the existing .chip styling in aegis-tool.css :297-332.
+  The tone mapping uses the LEGACY .chip variant names so the visual
+  is identical to what's already on the page; the SEMANTIC name lives
+  in the `tone` input.
+
+  Inputs:
+    tone  — one of: "good" | "warn" | "bad" | "info" | "neutral"
+            (canonical names; mapped to legacy .chip class below)
+    label — the chip's visible text (string, required)
+    title — optional tooltip text (string, optional)
+
+  Tone → legacy class mapping (Wave 1; identical computed styles):
+    good    → .chip.pos       (uses --approve)
+    warn    → .chip.warn      (uses --review)
+    bad     → .chip.bad       (uses --decline)
+    info    → .chip.info      (uses --accent)
+    neutral → .chip (no variant; uses --ink-3 via base style)
+
+  Reason-aware variants (e.g. merchant.needs_manual_naming) belong
+  in the calling template — pass `label` constructed from the audit
+  details `reason` so the operator sees the specific cause.
+#}
+{%- set _tone_class = {
+    "good": "pos",
+    "warn": "warn",
+    "bad": "bad",
+    "info": "info",
+    "neutral": ""
+}.get(tone, "") -%}
+<span class="chip{% if _tone_class %} {{ _tone_class }}{% endif %}"{% if title %} title="{{ title }}"{% endif %}>{{ label }}</span>
