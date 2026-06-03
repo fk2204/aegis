@@ -3,18 +3,16 @@
 {% block title %}Manual review — AEGIS{% endblock %}
 
 {% block deck %}
-<header class="deck">
-  <h1>Review<em> · manual queue</em></h1>
-  <div class="meta">
-    {{ cards|length }} document{{ '' if cards|length == 1 else 's' }} &nbsp;·&nbsp; parse_status = manual_review
-    {% if cards|length >= queue_capacity %}
-      &nbsp;·&nbsp;<span style="color:var(--decline)">at display cap ({{ queue_capacity }}) — drain before reviewing further</span>
-    {% endif %}
-  </div>
-  <div class="actions">
-    <a class="btn primary" href="/ui/upload">+ Re-upload</a>
-  </div>
-</header>
+{# UI redesign Wave 2.8 (2026-06-03) — adopt the shared _page_header
+   partial so the .deck markup lives in one place. Meta carries the
+   queue count plus an inline color span when at display cap; the
+   {% set %} capture preserves the span markup as a Markup-safe
+   string under Jinja autoescape. #}
+{% set title = "Review" %}
+{% set subtitle = "· manual queue" %}
+{% set meta %}{{ cards|length }} document{{ '' if cards|length == 1 else 's' }} &nbsp;·&nbsp; parse_status = manual_review{% if cards|length >= queue_capacity %} &nbsp;·&nbsp;<span style="color:var(--decline)">at display cap ({{ queue_capacity }}) — drain before reviewing further</span>{% endif %}{% endset %}
+{% set actions = [{"label": "+ Re-upload", "href": "/ui/upload", "variant": "primary"}] %}
+{% include "_page_header.html.j2" %}
 {% endblock %}
 
 {% block body %}
@@ -38,9 +36,11 @@
                   {% if c.fraud_score is number %}{{ c.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
                   <span class="card-score-label">fraud</span>
                 </div>
-                {% if c.tier %}
-                  <span class="card-tier tier-{{ c.tier|lower }}" title="Deal tier from score_deal on the merchant's analyzed documents">{{ c.tier }}<span class="card-tier-label">tier</span></span>
-                {% endif %}
+                {# Wave 2.8 — _tier_badge replaces the inline card-tier
+                   span. Same computed markup (.card-tier.tier-X with
+                   inner .card-tier-label) so card-meta styling is
+                   unchanged. #}
+                {% with tier = c.tier %}{% include "_tier_badge.html.j2" %}{% endwith %}
               </div>
             </header>
 
