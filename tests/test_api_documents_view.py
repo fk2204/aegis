@@ -397,6 +397,91 @@ def test_500_when_sha256_mismatch_with_valid_gcm_tag(
     assert "document.original_viewed" not in _actions_for(audit, document_id)
 
 
+def test_500_when_storage_path_set_but_key_version_null(
+    client: TestClient,
+    docs: InMemoryDocumentRepository,
+    audit: InMemoryAuditLog,
+) -> None:
+    """``storage_path`` populated but ``encryption_key_version IS NULL``
+    is a CORRUPT INVARIANT — the blob exists in Supabase Storage but
+    there's no record of which key sealed it, so the PDF is
+    undecryptable.
+
+    Chunk-B's ``persist_storage_metadata`` writes all four retention
+    columns atomically, so this state should be structurally
+    unreachable in practice. If it ever fires, route it to the
+    integrity-failed alert instead of a quiet 404/no_storage_path
+    that the operator could dismiss as a missing upload.
+    """
+    document_id, _ = _seed_stored_document(docs)
+    # Mirror the corrupt state: blob persisted, key version cleared.
+    row = docs.get_document(document_id)
+    row.encryption_key_version = None
+
+    response = client.get(
+        f"/api/documents/{document_id}/original",
+        headers=_sso(_VALID_EMAIL),
+    )
+
+    assert response.status_code == 500
+    entry = _last_entry_for(
+        audit, document_id, "document.original_viewed_integrity_failed"
+    )
+    assert entry["details"]["reason"] == "missing_key_version"
+    assert entry["details"]["storage_path"] is not None
+    # No quiet 404 / success rows on this path.
+    actions = _actions_for(audit, document_id)
+    assert actions == ["document.original_viewed_integrity_failed"]
+    assert "document.original_viewed_denied" not in actions
+
+
+def test_500_when_storage_download_fails(
+    client: TestClient,
+    docs: InMemoryDocumentRepository,
+    audit: InMemoryAuditLog,
+) -> None:
+    """Supabase Storage download raises ``StorageError`` (404 on the
+    blob, transient transport failure, auth blip) → 500 +
+    integrity_failed (reason=storage_download_failed).
+
+    Most likely runtime failure of this route — exercised here by
+    pointing ``storage_path`` at a path the in-memory backend never
+    saw, so ``download()`` raises ``StorageError("blob not found ...")``.
+    Owned by this chunk (not chunk E) because the route is the layer
+    that maps ``StorageError`` to the integrity-failed audit shape.
+    """
+    row = docs.create_document(
+        file_hash="b" * 64,
+        byte_size=1024,
+        original_filename="ghost.pdf",
+        uploaded_by="test",
+    )
+    ghost_path = "ghost/never-uploaded.pdf.enc"
+    docs.persist_storage_metadata(
+        row.id,
+        storage_path=ghost_path,
+        sha256_original="b" * 64,
+        encryption_key_version=1,
+        retention_until=datetime.now(UTC) + timedelta(days=7 * 365),
+    )
+
+    response = client.get(
+        f"/api/documents/{row.id}/original",
+        headers=_sso(_VALID_EMAIL),
+    )
+
+    assert response.status_code == 500
+    entry = _last_entry_for(
+        audit, row.id, "document.original_viewed_integrity_failed"
+    )
+    assert entry["details"]["reason"] == "storage_download_failed"
+    assert entry["details"]["storage_path"] == ghost_path
+    assert "error_type" in entry["details"]  # surfaced for postmortem
+    # Same alert-friendly invariant as the other integrity paths:
+    # NO success row was written on the failure branch.
+    assert "document.original_viewed" not in _actions_for(audit, row.id)
+
+
 # ---------------------------------------------------------------------------
 # Static guard — chunk-A invariant must still cover this route's source
 # ---------------------------------------------------------------------------

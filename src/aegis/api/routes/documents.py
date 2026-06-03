@@ -101,9 +101,17 @@ async def get_original_pdf(
       ``document.original_viewed_denied`` (reason ``no_storage_path``)
       so the operator can see why the link 404s; the missing-doc case
       does not (no subject row to attach the trace to).
-    * 500 — integrity failure. Three sub-cases, all audited as
+    * 500 — integrity failure. Four sub-cases, all audited as
       ``document.original_viewed_integrity_failed``:
 
+        - ``missing_key_version``: ``storage_path`` is populated but
+          ``encryption_key_version IS NULL``. The blob exists in
+          Supabase Storage but no record of which key sealed it —
+          the PDF is undecryptable. This is a CORRUPT INVARIANT
+          (chunk-B's ``persist_storage_metadata`` writes all four
+          retention columns atomically; this state should be
+          structurally unreachable), so it must fire the integrity
+          alert rather than hide as a quiet 404.
         - ``decrypt_invalid_tag``: AES-GCM rejects the tag. Wrong key,
           ciphertext tampered, or blob bit-flipped in storage.
         - ``sha256_mismatch``: GCM tag verified, but the plaintext's
@@ -154,7 +162,7 @@ async def get_original_pdf(
             detail="Document not found",
         ) from exc
 
-    if doc.storage_path is None or doc.encryption_key_version is None:
+    if doc.storage_path is None:
         audit.record(
             actor=actor,
             actor_email=operator_email,
@@ -166,6 +174,31 @@ async def get_original_pdf(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Document has no stored original",
+        )
+
+    # Distinct from no_storage_path: the blob is on Supabase Storage
+    # but ``encryption_key_version IS NULL`` means we have no record
+    # of which key sealed it. Chunk-B's ``persist_storage_metadata``
+    # writes all four retention columns atomically, so this branch
+    # should be structurally unreachable; if it ever fires, it's a
+    # corrupt invariant — surface it as an integrity failure so the
+    # alert fires, not as a quiet 404 the operator dismisses as a
+    # missing upload.
+    if doc.encryption_key_version is None:
+        audit.record(
+            actor=actor,
+            actor_email=operator_email,
+            action="document.original_viewed_integrity_failed",
+            subject_type="document",
+            subject_id=document_id,
+            details={
+                "reason": "missing_key_version",
+                "storage_path": doc.storage_path,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Integrity check failed",
         )
 
     # Layer 4: storage download. Failure here is rare (the storage_path
