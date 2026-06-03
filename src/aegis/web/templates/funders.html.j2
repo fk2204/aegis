@@ -3,15 +3,11 @@
 {% block title %}Funders — AEGIS{% endblock %}
 
 {% block deck %}
-<header class="deck">
-  <h1>Funders<em> · criteria</em></h1>
-  <div class="meta">
-    {{ funders|length }} funder{{ '' if funders|length == 1 else 's' }} &nbsp;·&nbsp; click row → full guideline
-  </div>
-  <div class="actions">
-    <a class="btn primary" href="/ui/funders/import">+ Import PDF</a>
-  </div>
-</header>
+{% set title = "Funders" %}
+{% set subtitle = "· criteria" %}
+{% set meta = (funders|length|string) ~ " funder" ~ ("" if funders|length == 1 else "s") ~ " · click row → full guideline" %}
+{% set actions = [{"label": "+ Import PDF", "href": "/ui/funders/import", "variant": "primary"}] %}
+{% include "_page_header.html.j2" %}
 {% endblock %}
 
 {% block body %}
@@ -51,9 +47,9 @@
               <td class="mono-cell" style="text-align:right">{{ f.max_positions if f.max_positions is not none else '—' }}</td>
               <td>
                 {% if f.accepts_stacking %}
-                  <span class="chip pos">yes</span>
+                  {% with tone="good", label="yes" %}{% include "_status_chip.html.j2" %}{% endwith %}
                 {% else %}
-                  <span class="chip bad">no</span>
+                  {% with tone="bad", label="no" %}{% include "_status_chip.html.j2" %}{% endwith %}
                 {% endif %}
               </td>
               <td class="mono-cell">
