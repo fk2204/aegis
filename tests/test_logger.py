@@ -51,6 +51,28 @@ def test_short_digit_run_is_left_alone() -> None:
     assert "5" in masked and "17" in masked and "42" in masked
 
 
+def test_uuid_with_all_digit_tail_is_not_masked() -> None:
+    """A uuid4 whose 12-char tail (or any other segment) happens to be all
+    decimal digits must NOT be rewritten by ``_BARE_LONG_DIGITS_RE``.
+
+    Without this guard, ~0.3% of uuid4 strings get a ``***`` substituted
+    into their tail when they pass through ``_mask_value`` — which silently
+    corrupts ``audit_log.details.decision_id`` and reproduces as the flake
+    ``tests/test_snapshot.py::test_write_appends_row_and_records_audit``
+    failing at ``entry["details"]["decision_id"] == str(decision_id)``.
+    """
+    uuid_with_digit_tail = "a1b2c3d4-e5f6-4123-9234-123456789012"
+    assert _mask_string_for_test(uuid_with_digit_tail) == uuid_with_digit_tail
+    # Embedded in a longer message: the UUID stays intact.
+    msg = f"recorded decision_id={uuid_with_digit_tail} for deal x"
+    assert uuid_with_digit_tail in _mask_string_for_test(msg)
+    # A real bare digit run alongside a UUID is still masked.
+    mixed = f"uuid {uuid_with_digit_tail} acct 9876543210"
+    masked_mixed = _mask_string_for_test(mixed)
+    assert uuid_with_digit_tail in masked_mixed
+    assert "9876543210" not in masked_mixed
+
+
 def test_pii_key_in_extra_is_masked() -> None:
     f = PiiMaskingFilter()
     rec = _record("ok", owner_name="Alice Doe", merchant_id="m-123")

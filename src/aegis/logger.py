@@ -87,6 +87,16 @@ _SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _EIN_RE = re.compile(r"\b\d{2}-\d{7}\b")
 # Bare 9-16 digit runs catch raw account/SSN/EIN without separators.
 _BARE_LONG_DIGITS_RE = re.compile(r"\b\d{9,16}\b")
+# UUID shape (8-4-4-4-12 hex). Used to *protect* UUID substrings from the
+# bare-long-digits mask: a uuid4 whose 12-char tail (or any other segment)
+# happens to be all decimal digits would otherwise get its tail rewritten
+# to ``***``. That mangles audit_log.details.decision_id — the link
+# between an audit row and the decision row it pairs with — every ~0.3% of
+# uuid4 values (intermittent test flake; silent production audit-trail
+# corruption).
+_UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
 
 
 def _mask_value(value: object) -> object:
@@ -112,8 +122,32 @@ def _mask_string(text: str) -> str:
     out = _SSN_RE.sub(_MASK, out)
     out = _EIN_RE.sub(_MASK, out)
     out = _PHONE_RE.sub(_MASK, out)
-    out = _BARE_LONG_DIGITS_RE.sub(_MASK, out)
+    out = _mask_bare_long_digits(out)
     return out
+
+
+def _mask_bare_long_digits(text: str) -> str:
+    """Apply ``_BARE_LONG_DIGITS_RE`` but skip runs inside a UUID.
+
+    UUID hex segments are not PII — they are opaque identifiers. The
+    bare-digit mask exists to catch raw account/SSN/EIN runs, not to
+    rewrite uuid4 strings whose segments happen to be all decimal
+    digits. Without this guard, ~0.3 % of uuid4 values get a ``***``
+    substituted into their tail, which silently corrupts audit_log
+    details (e.g. ``decision_id``).
+    """
+    uuid_spans = [m.span() for m in _UUID_RE.finditer(text)]
+    if not uuid_spans:
+        return _BARE_LONG_DIGITS_RE.sub(_MASK, text)
+
+    def _replace(m: re.Match[str]) -> str:
+        start, end = m.span()
+        for u_start, u_end in uuid_spans:
+            if start >= u_start and end <= u_end:
+                return m.group(0)
+        return _MASK
+
+    return _BARE_LONG_DIGITS_RE.sub(_replace, text)
 
 
 class PiiMaskingFilter(logging.Filter):
