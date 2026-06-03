@@ -426,13 +426,24 @@ def _avg_daily_balance(
 
 
 def _true_revenue(transactions: list[ClassifiedTransaction]) -> _Sourced:
-    """Deposits net of transfers and chargebacks. Source ids = contributing rows.
+    """Positive deposit stream minus positive transfer/chargeback credits.
 
-    Excluded categories (transfer, chargeback) are subtracted by their
-    *absolute* amount regardless of sign. A chargeback posted as ``-$X``
-    already debits the deposit history, so revenue must be reduced by
-    ``$X`` either way — otherwise debit-side chargebacks are silently
-    ignored.
+    Revenue counts ONLY positive credits from ``_REVENUE_INCLUDED``. From
+    ``_REVENUE_EXCLUDED`` (``transfer``, ``chargeback``) we subtract ONLY
+    positive amounts:
+
+      * ``+$X transfer`` — owner moved money INTO the account; looks like
+        a deposit but isn't revenue. Subtract.
+      * ``+$X chargeback`` — credit-side reversal of a prior deposit.
+        Subtract so the original deposit doesn't outlive the reversal.
+      * ``-$X transfer`` — owner moved money OUT of the account. Already
+        absent from the positive revenue stream — do NOT subtract again.
+      * ``-$X chargeback`` — debit-side chargeback fee. Same logic as
+        above. The fee never inflated revenue; subtracting it would
+        double-count as a revenue reduction.
+
+    Prior implementation subtracted ``abs(t.amount)`` regardless of sign,
+    which over-penalized any merchant with outbound intra-bank transfers.
     """
     total = Decimal("0")
     sources: list[UUID] = []
@@ -440,12 +451,8 @@ def _true_revenue(transactions: list[ClassifiedTransaction]) -> _Sourced:
         if t.category in _REVENUE_INCLUDED and t.amount > 0:
             total += t.amount
             sources.append(t.id)
-        elif t.category in _REVENUE_EXCLUDED:
-            # Subtract owner transfers / chargebacks regardless of sign:
-            # a +$X transfer-credit and a -$X chargeback-debit both
-            # represent non-revenue activity to remove from the deposit
-            # stream.
-            total -= abs(t.amount)
+        elif t.category in _REVENUE_EXCLUDED and t.amount > 0:
+            total -= t.amount
             sources.append(t.id)
     return _Sourced(value=total.quantize(Decimal("0.01")), source_ids=sources)
 
