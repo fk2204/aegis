@@ -1,6 +1,6 @@
 """Auth dependencies.
 
-Two surfaces:
+Three surfaces:
 
 1. ``require_bearer`` — constant-time compare against ``API_BEARER_TOKEN``.
    Used by the operator-facing API routes (/upload, /merchants, /deals,
@@ -9,6 +9,10 @@ Two surfaces:
    but scoped to ``CLOSE_CALLBACK_TOKEN``. Used only by the
    ``/api/close-callback/*`` router so the Close-side trigger gets its
    own token that rotates independently from the operator API key.
+3. ``require_sso_user_email`` — Cloudflare Access SSO identity from
+   the ``cf-access-authenticated-user-email`` header. Used by the
+   PDF view route (chunk C). 401 if the header is absent; route-level
+   ACL gates the returned email.
 
 /healthz is the only route that does NOT depend on either of these.
 """
@@ -16,11 +20,13 @@ Two surfaces:
 from __future__ import annotations
 
 import hmac
+from typing import Annotated
 
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 
 from aegis.config import get_settings
 from aegis.logger import get_logger
+from aegis.ops.operators import resolve_operator_email
 
 _log = get_logger(__name__)
 
@@ -166,9 +172,47 @@ def _reset_close_callback_warning_latch() -> None:
     _close_callback_token_warning_emitted = False
 
 
+# ---------------------------------------------------------------------------
+# Cloudflare-Access SSO identity (PDF view route — chunk C)
+# ---------------------------------------------------------------------------
+
+
+async def require_sso_user_email(
+    operator_email: Annotated[str | None, Depends(resolve_operator_email)],
+) -> str:
+    """FastAPI dependency: returns the Cloudflare-Access SSO operator
+    email, or 401 if the upstream header is absent / unparseable.
+
+    Composes ``resolve_operator_email`` (which reads
+    ``cf-access-authenticated-user-email`` and returns ``None`` when
+    missing). Routes that REQUIRE an SSO identity use this; routes that
+    treat SSO as optional context (audit attribution on a bearer-
+    authenticated path) keep depending on ``resolve_operator_email``
+    directly.
+
+    Trust boundary: the header is set by Cloudflare Access AFTER the
+    upstream JWT verification. AEGIS does not re-verify the JWT — the
+    Cloudflare Tunnel is the security boundary that proves the request
+    came from an Access-authenticated browser session. Route-level ACL
+    (e.g. domain check) gates the returned email; this dependency only
+    asserts that SOME SSO identity is present.
+
+    The 401 response intentionally carries a neutral detail string so an
+    unauthenticated probe doesn't learn whether SSO is even expected
+    on the route.
+    """
+    if operator_email is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO authentication required",
+        )
+    return operator_email
+
+
 __all__ = [
     "require_bearer",
     "require_close_callback_bearer",
+    "require_sso_user_email",
     "warn_if_bearer_unconfigured",
     "warn_if_close_callback_token_unconfigured",
 ]
