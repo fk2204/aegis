@@ -15,8 +15,17 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Poppins:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=10">
-  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=12">
+  {# UI redesign Wave 1 hotfix (2026-06-03) — this template is the only
+     page that does NOT extend base.html.j2, so the base's Wave-1 link
+     update didn't propagate here. Without aegis-system.css loaded,
+     `var(--ink)`, `var(--paper)`, `var(--sage)` etc. inside the
+     dossier and tool selectors resolve to invalid fallback (the token
+     block was moved out of aegis-dossier.css :15-46 by Wave 1) and the
+     page renders unstyled. Same load order as base.html.j2: system first,
+     then dossier, then tool. ?v= bumps to match base. #}
+  <link rel="stylesheet" href="/ui/static/aegis-system.css?v=1">
+  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=11">
+  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=14">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   <script src="/ui/static/evidence_copy.js?v=1" defer></script>
 </head>
