@@ -33,7 +33,10 @@ from typing import Any, cast
 from supabase import create_client
 
 from aegis.config import get_settings
-from aegis.parser.tampering import evaluate_tampering_from_scores
+from aegis.parser.tampering import (
+    TamperingEvaluation,
+    evaluate_tampering,
+)
 
 
 @dataclass
@@ -48,19 +51,37 @@ class _Row:
     would_decline: bool
     branch: str
     metadata_flags: list[str]
+    math_failures: list[str]
+    contributing_failures: list[str]
+    rationale: str
 
 
-_STRONG = 50
+_MATH_FLAG_PREFIX = "[MATH] "
 _MEDIUM_FLOOR = 25
 _MEDIUM_CEIL = 49
-_MATH_CORROB = 55
 
 
-def _branch_label(metadata_score: int, math_score: int) -> str:
-    if metadata_score >= _STRONG:
-        return "strong_metadata"
-    if _MEDIUM_FLOOR <= metadata_score <= _MEDIUM_CEIL and math_score >= _MATH_CORROB:
-        return "medium_corroborated"
+def _math_failures_from_all_flags(all_flags: list[str]) -> list[str]:
+    """Reconstruct the exact ``validation.failures`` list from the
+    persisted ``documents.all_flags`` array.
+
+    ``pipeline._collect_flags`` tags every validation failure with the
+    ``[MATH]`` prefix; stripping it recovers the original failure code
+    (e.g. ``reconciliation_failed_period: expected X got Y``). Using
+    these instead of the math_score int gives the backfill the SAME
+    inputs the live parse-time rule received."""
+    return [
+        f[len(_MATH_FLAG_PREFIX):]
+        for f in all_flags
+        if f.startswith(_MATH_FLAG_PREFIX)
+    ]
+
+
+def _branch_label(evaluation: TamperingEvaluation, metadata_score: int) -> str:
+    """Label includes a fourth ``medium_uncorroborated`` bucket (medium
+    metadata that the rule did NOT fire on) for informational review."""
+    if evaluation.fires:
+        return evaluation.branch
     if _MEDIUM_FLOOR <= metadata_score <= _MEDIUM_CEIL:
         return "medium_uncorroborated"
     return "below_thresholds"
@@ -80,7 +101,8 @@ def main(limit: int | None) -> int:
         sb.table("documents")
         .select(
             "id,original_filename,merchant_id,fraud_score,"
-            "fraud_score_breakdown,metadata_flags,parse_status,uploaded_at"
+            "fraud_score_breakdown,metadata_flags,all_flags,"
+            "parse_status,uploaded_at"
         )
         .order("uploaded_at", desc=True)
     )
@@ -101,9 +123,21 @@ def main(limit: int | None) -> int:
         metadata_score = int(breakdown.get("metadata_score") or 0)
         math_score = int(breakdown.get("math_score") or 0)
         patterns_score = int(breakdown.get("patterns_score") or 0)
-        would = evaluate_tampering_from_scores(
-            metadata_score=metadata_score, math_score=math_score
+
+        # Pull the EXACT validation-failure list back from
+        # documents.all_flags (each tagged "[MATH] <failure_code>" by
+        # pipeline._collect_flags). The backfill then calls the same
+        # evaluate_tampering function the live parse-time rule used,
+        # not the coarser score-only path — see the script header for
+        # the fidelity contract.
+        all_flags = [str(f) for f in (d.get("all_flags") or [])]
+        math_failures = _math_failures_from_all_flags(all_flags)
+        evaluation = evaluate_tampering(
+            metadata_score=metadata_score,
+            math_score=math_score,
+            validation_failures=math_failures,
         )
+
         rows.append(
             _Row(
                 document_id=str(d["id"]),
@@ -113,11 +147,14 @@ def main(limit: int | None) -> int:
                 metadata_score=metadata_score,
                 math_score=math_score,
                 patterns_score=patterns_score,
-                would_decline=would,
-                branch=_branch_label(metadata_score, math_score),
+                would_decline=evaluation.fires,
+                branch=_branch_label(evaluation, metadata_score),
                 metadata_flags=[
                     str(f) for f in (d.get("metadata_flags") or [])
                 ],
+                math_failures=math_failures,
+                contributing_failures=list(evaluation.contributing_failures),
+                rationale=evaluation.rationale,
             )
         )
 
@@ -155,8 +192,13 @@ def main(limit: int | None) -> int:
                 f"{row.patterns_score:>4d}  {row.fraud_score:>3d}  "
                 f"{row.original_filename}"
             )
+            print(f"    rationale: {row.rationale}")
             if row.metadata_flags:
-                print(f"    metadata_flags: {row.metadata_flags}")
+                print(f"    metadata_flags:        {row.metadata_flags}")
+            if row.math_failures:
+                print(f"    math_failures (all):   {row.math_failures}")
+            if row.contributing_failures:
+                print(f"    contributing_failures: {row.contributing_failures}")
             print()
 
     if medium_uncorr:
