@@ -3,19 +3,17 @@
 {% block title %}Upload statements — AEGIS{% endblock %}
 
 {% block deck %}
-<header class="deck">
-  <h1>Upload<em> · bank statements</em></h1>
-  <div class="meta">
-    PDF only &nbsp;·&nbsp; per-file 25 MB &nbsp;·&nbsp; SHA-256 deduped
-  </div>
-  <div class="actions">
-    <a class="btn" href="/ui/deals">Deals →</a>
-  </div>
-</header>
+{% set title = "Upload" %}
+{% set subtitle = "· bank statements" %}
+{% set meta = "PDF only · per-file 25 MB · SHA-256 deduped" %}
+{% set actions = [
+  {"label": "Deals →", "href": "/ui/deals"},
+] %}
+{% include "_page_header.html.j2" %}
 {% endblock %}
 
 {% block body %}
-<section class="body cols-1" style="max-width:920px;margin:0 auto">
+<section class="body cols-1">
   <div>
 
     {% if error %}
@@ -33,7 +31,11 @@
         <label>Merchant</label>
         <select name="merchant_id">
           <option value="">(no merchant — orphan upload, link later)</option>
-          {% for m in merchants %}
+          {# Filter to finalized merchants only. Provisional and
+             needs_manual_naming merchants are blocked from the route
+             at router.py:530-535 (migration 034 guard) — surfacing
+             them in the dropdown would only produce 403s on submit. #}
+          {% for m in merchants if m.is_finalized %}
             <option value="{{ m.id }}">{{ m.business_name }} ({{ m.state }})</option>
           {% endfor %}
         </select>
@@ -111,12 +113,13 @@
               <td class="mono-cell">{{ r.filename }}</td>
               <td>
                 {% if r.status == 'ok' %}
-                  <span class="chip pos">ok</span>
+                  {% set tone = "good" %}{% set label = "OK" %}
                 {% elif r.status == 'duplicate' %}
-                  <span class="chip warn">duplicate</span>
+                  {% set tone = "warn" %}{% set label = "DUPLICATE" %}
                 {% else %}
-                  <span class="chip bad">error</span>
+                  {% set tone = "bad" %}{% set label = "ERROR" %}
                 {% endif %}
+                {% include "_status_chip.html.j2" %}
               </td>
               <td class="flags">{{ r.detail }}</td>
               <td class="mono-cell">{% if r.document_id %}{{ r.document_id[:8] }}…{% else %}—{% endif %}</td>
