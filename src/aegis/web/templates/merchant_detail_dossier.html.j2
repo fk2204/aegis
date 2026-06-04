@@ -231,7 +231,12 @@
                 Recommend <em>manager sign-off</em> before submission &mdash; full revenue base supports the requested advance, but the soft concerns below warrant a sized-down counter.
               {% else %}
                 {% if score_result.hard_decline_reasons %}
-                  Hard decline driven by: <span class="accent">{{ score_result.hard_decline_reasons[:2]|join(', ') }}{% if score_result.hard_decline_reasons|length > 2 %} <details class="reasons-more"><summary>and {{ score_result.hard_decline_reasons|length - 2 }} more</summary><span class="reasons-more-extras">, {{ score_result.hard_decline_reasons[2:]|join(', ') }}</span></details>{% endif %}</span>.
+                  {# Summary preview shows the humanized TITLE of each top-2
+                     reason. The full description renders below in the
+                     detailed Hard Declines list. Same humanizer source
+                     (`_pattern_cards.HARD_DECLINE_COPY`); titles only here
+                     so the summary stays a one-line lede. #}
+                  Hard decline driven by: <span class="accent">{% for reason in score_result.hard_decline_reasons[:2] %}{{ (reason|humanize_hard_decline).title }}{% if not loop.last %}, {% endif %}{% endfor %}{% if score_result.hard_decline_reasons|length > 2 %} <details class="reasons-more"><summary>and {{ score_result.hard_decline_reasons|length - 2 }} more</summary><span class="reasons-more-extras">, {% for reason in score_result.hard_decline_reasons[2:] %}{{ (reason|humanize_hard_decline).title }}{% if not loop.last %}, {% endif %}{% endfor %}</span></details>{% endif %}</span>.
                 {% endif %}
               {% endif %}
             </p>
