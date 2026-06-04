@@ -1,0 +1,36 @@
+{#
+  Shared compact topstrip — Wave 2.4 of the UI redesign (2026-06-03).
+
+  Extracted from base.html.j2 so the dossier (which intentionally does
+  NOT extend base) can include the same nav row instead of hand-
+  maintaining its own copy. Before this partial existed the dossier's
+  inline topstrip had diverged from base — missing the Intake link.
+
+  Same chrome as before: <div class="topstrip"> with seven links on
+  the left and a small view-toggle span on the right. The active link
+  is styled via `class="is-active"` (rule in aegis-system.css); inactive
+  links render unchanged.
+
+  Inputs (all optional):
+    active — one of "Today" | "Deals" | "Merchants" | "Funders"
+             | "Upload" | "Intake" | "Review"; the matching link gets
+             `class="is-active"`. Pages that do not highlight any nav
+             (e.g. the dossier) simply omit `active`.
+    now    — display string for the right-hand view-toggle span. Same
+             default convention as base.html.j2 (falls back to '').
+#}
+<div class="topstrip">
+  <div class="links">
+    {% set _active = active|default('') %}
+    <a href="/ui/"          {% if _active == 'Today'     %}class="is-active"{% endif %}>Today</a>
+    <a href="/ui/deals"     {% if _active == 'Deals'     %}class="is-active"{% endif %}>Deals</a>
+    <a href="/ui/merchants" {% if _active == 'Merchants' %}class="is-active"{% endif %}>Merchants</a>
+    <a href="/ui/funders"   {% if _active == 'Funders'   %}class="is-active"{% endif %}>Funders</a>
+    <a href="/ui/upload"    {% if _active == 'Upload'    %}class="is-active"{% endif %}>Upload</a>
+    <a href="/ui/intake"    {% if _active == 'Intake'    %}class="is-active"{% endif %}>Intake</a>
+    <a href="/ui/review"    {% if _active == 'Review'    %}class="is-active"{% endif %}>Review queue</a>
+  </div>
+  <div class="view-toggle">
+    <span style="color:var(--sage)">aegis · {{ now|default('') }}</span>
+  </div>
+</div>
