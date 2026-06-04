@@ -419,6 +419,10 @@ def _build_attention_groups(
                 "merchant_state": merchant.state if merchant else None,
                 "merchant_naics": merchant.industry_naics if merchant else None,
                 "requested_amount": merchant.requested_amount if merchant else None,
+                # Migration 034 status — None for the unlinked "—"
+                # bucket and for missing-merchant cards (deleted), so
+                # the template can guard with a simple truthiness test.
+                "merchant_status": merchant.status if merchant else None,
                 "documents": [],
                 "_seen_flags": [],
             }
@@ -465,6 +469,7 @@ def _build_attention_groups(
                 flags=categorize_flags(
                     g["_seen_flags"], pattern_index=pattern_index
                 ),
+                merchant_status=g["merchant_status"],
             )
         )
     return out
@@ -652,6 +657,10 @@ def _build_review_queue_cards(
                 requested_amount=merchant.requested_amount if merchant else None,
                 tier=tier,
                 flags=categorize_flags(raw_flags, pattern_index=pattern_index),
+                # Migration 034 — surface lifecycle status for the
+                # status chip. ``None`` for orphan-merchant docs so
+                # the template's truthy guard short-circuits cleanly.
+                merchant_status=merchant.status if merchant else None,
             )
         )
     return cards
@@ -1043,6 +1052,13 @@ async def list_deals(
                 "merchant_id": str(m.id),
                 "business_name": m.business_name,
                 "state": m.state,
+                # Migration 034 — merchant lifecycle status. Surfaced
+                # in the Deals table row so the template can render a
+                # "provisional" / "needs naming" status chip next to
+                # placeholder business_names. Stays a plain string so
+                # the existing parse_status chip macro can consume it
+                # without any model-class round-trip.
+                "status": m.status,
                 "uploaded_at": (
                     latest_doc.uploaded_at.strftime("%Y-%m-%d") if latest_doc else "—"
                 ),

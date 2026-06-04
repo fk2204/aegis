@@ -148,6 +148,36 @@
   </div>
 
   <aside>
+    {# Right-rail nav (2026-06-04 reskin). Previously this surface used
+       the .feed/.event/.t markup, which made it read as an activity-
+       log feed even after the prior round labeled it "Jump to". The
+       operator's note: it still looks like a log near the top, and
+       Day's log already lives at the page bottom. Reskin as a quiet
+       side-nav: muted small caps heading, low-prominence link list,
+       no per-row separators, no timestamp-style "→" markers — so it
+       stops competing for attention and stops reading as a feed. #}
+    <header class="sect-head">
+      <h2>Shortcuts</h2>
+      <div class="rule"></div>
+      <div class="meta">jump to</div>
+    </header>
+    <nav class="jump-nav" aria-label="Shortcuts">
+      <a class="jump-nav__link" href="/ui/upload"><span class="jump-nav__label">Upload</span><span class="jump-nav__sub">bank statement (PDF)</span></a>
+      <a class="jump-nav__link" href="/ui/intake"><span class="jump-nav__label">Intake</span><span class="jump-nav__sub">new merchant</span></a>
+      <a class="jump-nav__link" href="/ui/deals"><span class="jump-nav__label">Deals</span><span class="jump-nav__sub">live pipeline</span></a>
+      <a class="jump-nav__link" href="/ui/merchants"><span class="jump-nav__label">Merchants</span><span class="jump-nav__sub">directory</span></a>
+      <a class="jump-nav__link" href="/ui/funders"><span class="jump-nav__label">Funders</span><span class="jump-nav__sub">criteria + matching</span></a>
+      <a class="jump-nav__link" href="/ui/review"><span class="jump-nav__label">Review</span><span class="jump-nav__sub">manual queue</span></a>
+    </nav>
+  </aside>
+
+</section>
+
+{# Day's log — full-width, page bottom. Low-priority surface; sits
+   below the main two-column body so the attention queue and pipeline
+   funnel claim the prime real estate at the top. #}
+<section class="body" style="margin-top:var(--s-section-gap)">
+  <div>
     <header class="sect-head">
       <h2>Day's log</h2>
       <div class="rule"></div>
@@ -167,20 +197,6 @@
         {% endfor %}
       {% endif %}
     </div>
-
-    <header class="sect-head" style="margin-top:28px">
-      <h2>Jump to</h2>
-      <div class="rule"></div>
-    </header>
-    <div class="feed">
-      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/upload"><strong>Upload</strong> bank statement (PDF)</a></div></div>
-      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/intake"><strong>Intake</strong> new merchant</a></div></div>
-      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/deals"><strong>Deals</strong> live pipeline</a></div></div>
-      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/merchants"><strong>Merchants</strong> directory</a></div></div>
-      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/funders"><strong>Funders</strong> criteria + matching</a></div></div>
-      <div class="event"><div class="t">→</div><div class="txt"><a href="/ui/review"><strong>Review</strong> manual queue</a></div></div>
-    </div>
-  </aside>
-
+  </div>
 </section>
 {% endblock %}

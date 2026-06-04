@@ -142,3 +142,567 @@
   color: #fff;
   font-weight: 600;
 }
+
+/* ===================================================================
+ * WAVE 1.5 UTILITIES — primitives referenced by the Wave 2 templates
+ * (Today, Deals, Review, Funder Detail, Document Detail, Merchants,
+ * Funders, Upload, Intake) but not yet defined. Added 2026-06-03
+ * so existing templates render cleanly and future page authors have
+ * a consistent vocabulary.
+ *
+ * All selectors scoped under .dossier-page (same convention as
+ * aegis-dossier.css + aegis-tool.css) so nothing leaks outside the
+ * operator console.
+ * =================================================================== */
+
+/* --- .num — numeric cell style ------------------------------------
+ * aegis-dossier.css :76 already declares `.dossier-page .num` with
+ * mono font + tabular-nums; this rule LAYERS the alignment + baseline
+ * behavior needed when .num is used on table cells/headers. Loaded
+ * AFTER aegis-dossier.css's :76 rule via base.html.j2's link order,
+ * so the additions stack with — they don't fight — the existing
+ * declaration. (Layered, not duplicated: text-align here, font there.) */
+.dossier-page table.queue thead th.num,
+.dossier-page table.queue tbody td.num,
+.dossier-page table th.num,
+.dossier-page table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums lining-nums;
+  vertical-align: baseline;
+}
+
+/* --- .btn.is-disabled — disabled state modifier on the existing btn
+ *
+ * aegis-tool.css :904 declares the .btn base. This modifier dims it
+ * and turns off pointer/hover so a server-rendered "disabled" link
+ * (or <button disabled>) looks visibly inert. The brand palette is
+ * preserved — we use the muted ink tones already in tokens. */
+.dossier-page .btn.is-disabled,
+.dossier-page button.btn.is-disabled,
+.dossier-page button.btn[disabled],
+.dossier-page button.btn:disabled,
+.dossier-page .btn[aria-disabled="true"] {
+  color: var(--ink-3);
+  background: var(--paper-2);
+  border-color: var(--rule);
+  border-bottom-color: var(--rule);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.dossier-page .btn.is-disabled:hover,
+.dossier-page button.btn.is-disabled:hover,
+.dossier-page button.btn[disabled]:hover,
+.dossier-page button.btn:disabled:hover,
+.dossier-page .btn[aria-disabled="true"]:hover {
+  background: var(--paper-2);
+  color: var(--ink-3);
+  transform: none;
+}
+
+/* --- Table column utilities — column-level width hints ------------
+ * Applied to <th> or <td> in any queue/data table to give the
+ * audit-log + activity-feed columns predictable widths. Widths are
+ * proportional, not absolute pixels, so they scale with the page
+ * container. Use .cell--truncate on the same cell to elide overflow.
+ *
+ * Sized for the audit-log shape:  date | actor | action detail | doc
+ */
+.dossier-page table .col-date {
+  width: 12ch;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.dossier-page table .col-actor {
+  width: 18ch;
+  white-space: nowrap;
+}
+.dossier-page table .col-detail {
+  width: auto;             /* claim the slack */
+  min-width: 0;            /* let the truncation utility shrink it */
+}
+.dossier-page table .col-doc {
+  width: 12ch;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--fs-body-sm);
+  color: var(--ink-3);
+}
+
+/* --- .cell--truncate — single-cell overflow ellipsis -------------- */
+.dossier-page .cell--truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 0;            /* required for ellipsis inside a flex/grid cell */
+}
+.dossier-page td.cell--truncate,
+.dossier-page th.cell--truncate {
+  max-width: 1px;          /* table-cell pattern: 1px + table layout
+                              auto + the surrounding col width hint
+                              produces a predictable ellipsis. */
+}
+
+/* --- .input--uppercase — uppercase form input modifier ----------- */
+.dossier-page input[type=text].input--uppercase,
+.dossier-page input[type=email].input--uppercase,
+.dossier-page .input--uppercase {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.dossier-page .input--uppercase::placeholder {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* --- .field--checkbox — checkbox-row form-field modifier ---------
+ * Overrides the default vertical .field stack so the checkbox sits
+ * to the LEFT of the label on one row. Keeps the small-caps label
+ * styling from .field label but unsets the column flex direction. */
+.dossier-page .field.field--checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--s-2);
+}
+.dossier-page .field.field--checkbox label {
+  text-transform: none;       /* the visible legend is a sentence-case
+                                 statement (e.g. "Renewal deal") rather
+                                 than a small-caps category label. */
+  letter-spacing: 0;
+  font-family: var(--serif);
+  font-size: var(--fs-body-lg);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.dossier-page .field.field--checkbox input[type=checkbox] {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--ink);
+}
+
+/* ===================================================================
+ * WAVE 3 — PRESTIGE POLISH (token-level, 2026-06-03)
+ *
+ * BEFORE: cards sat on hard 1px ink-toned rules with no elevation, no
+ * shadow, no corner radius. Section heads relied on a 2px ink underline
+ * for separation, which read as a hard gridline rather than a calm
+ * editorial divider. Tables had zebra-free rows separated by 1px
+ * rule-soft lines — readable but visually flat. Chips and tags sat
+ * on the same flat plane as the surface, with no depth cue.
+ *
+ * AFTER: cards layer above the cream substrate via a subtle ambient
+ * shadow + 6px corner radius (--r-md). Section heads keep the editorial
+ * ink underline but it's now 1px sage-soft with calmer letter-spacing
+ * — confident hierarchy via type + weight, not heavy ruling. Tables
+ * pick up a very-low-contrast zebra (rgba ink @ 2%) so rows scan as
+ * groups without screaming stripes. The page substrate stays the same
+ * Commera cream; no new palette tokens.
+ *
+ * Polish vectors hit:
+ *   1. Layered surfaces — cards: --shadow-card; surfaces stack above
+ *      paper rather than sit flat.
+ *   2. Generous whitespace — section heads get +8px bottom margin via
+ *      the new --s-section-gap token, .deck padding bumps from 18px to
+ *      24px top.
+ *   3. Light tables — zebra at 2% ink (--row-tint), header weight 500.
+ *   4. Confident type — section h2 letter-spacing tightens (-0.012em).
+ *   5. Calm color — borders fade to --rule-soft on ambient surfaces;
+ *      ink-toned 1px rules stay only where they earn attention.
+ *   6. Crisp micro-detail — tabular-nums on every number-bearing cell.
+ *
+ * Polish is APPLIED at the system layer so it inherits to every page
+ * that uses the .deck / .sect-head / .panel / .attention-card / .table
+ * primitives. The dossier page (which has bespoke .masthead, .section
+ * editorial styling) is untouched — its editorial scale stays
+ * deliberate, not propagated.
+ * =================================================================== */
+
+.dossier-page {
+  /* Ambient elevation — sized so cards read as "lifted off the paper"
+   * but never as "drop-shadowed". Two layered shadows: a tight 1px for
+   * the edge definition, a soft 8px for the ambient lift. */
+  --shadow-card:
+      0 1px 0 rgba(45, 90, 71, 0.04),
+      0 6px 18px -8px rgba(45, 90, 71, 0.10);
+  --shadow-card-hover:
+      0 1px 0 rgba(45, 90, 71, 0.06),
+      0 10px 24px -10px rgba(45, 90, 71, 0.14);
+
+  /* Row tint — extremely low-contrast zebra for data tables.
+   * 2% ink-on-paper reads as "this row is grouped" without claiming
+   * attention. Hover bumps to 4%. */
+  --row-tint:        rgba(45, 90, 71, 0.018);
+  --row-tint-hover:  rgba(45, 90, 71, 0.045);
+
+  /* Section gap — extra breathing space between major sections
+   * inside .body grids. Replaces ad-hoc style="margin-top:32px"
+   * uses in Wave 2 templates. */
+  --s-section-gap: 40px;
+
+  /* Button elevation — neutral ink-toned shadows so primary buttons
+   * read as discrete, lifted-off-the-paper affordances. Three states:
+   *   rest  — crisp 1px keyline + 1-2px ambient lift + 4px soft halo
+   *           (button is a discrete element, sits ABOVE the page)
+   *   hover — deeper ambient + wider halo (+ template lifts via
+   *           translateY(-1px) — same direction, more presence)
+   *   press — shadow collapses to inset 1px (button "pressed in")
+   *
+   * No new palette tokens — every rgba uses the existing --ink hue
+   * (45, 90, 71) so the chromatic envelope stays forest/sage only.
+   *
+   * Wave 3.2 (2026-06-03): bumped rest + hover so primary reads as
+   * "funded-product" affordance. Keyline 0.10→0.16 (crisper edge
+   * definition on cream); ambient halo extended (6→10px, 14→22px on
+   * hover) so the button reads as floating off the page rather than
+   * just edge-shadowed. Press tightened so the click feels mechanical. */
+  --shadow-btn:
+      0 1px 0 rgba(45, 90, 71, 0.16),
+      0 1px 2px rgba(45, 90, 71, 0.10),
+      0 4px 10px -3px rgba(45, 90, 71, 0.18);
+  --shadow-btn-hover:
+      0 1px 0 rgba(45, 90, 71, 0.20),
+      0 3px 6px rgba(45, 90, 71, 0.12),
+      0 10px 22px -6px rgba(45, 90, 71, 0.28);
+  --shadow-btn-press:
+      inset 0 2px 3px rgba(45, 90, 71, 0.22),
+      0 1px 0 rgba(45, 90, 71, 0.10);
+}
+
+/* --- DECK — page-title bar polish --------------------------------
+ * Increase top padding 18 → 24 so the title doesn't crowd the
+ * topstrip; preserve the existing baseline border rule but soften
+ * its color from ink to a lighter ink-2 mix so it reads as
+ * "section boundary" rather than "hard divider". The 42px display
+ * scale on h1 stays — that's the deliberate brand voice. */
+.dossier-page .deck {
+  padding-top: 24px;
+  padding-bottom: 18px;
+  border-bottom-color: color-mix(in oklch, var(--ink) 60%, var(--rule));
+}
+
+/* --- SECTION HEAD — calmer rule, tighter scale ---------------------
+ * The Wave 2 sect-head was a 2px ink underline. That's the right call
+ * on dense data dashboards, but it competes for attention with the
+ * cards below. Replace with a 1px sage-soft underline + a sliver of
+ * ink color on the heading itself — hierarchy via type weight + color,
+ * not heavy ruling. */
+.dossier-page .sect-head {
+  border-bottom-width: 1px;
+  border-bottom-color: color-mix(in oklch, var(--sage-deep) 35%, var(--rule));
+  padding-bottom: 10px;
+  margin-bottom: var(--s-2);
+}
+.dossier-page .sect-head h2 {
+  letter-spacing: 0.20em;        /* slight tightening from 0.22em */
+  color: var(--ink);
+  font-weight: 500;
+}
+
+/* --- PANELS — soft-borders + ambient shadow ---------------------- */
+.dossier-page .panel {
+  border-color: var(--rule);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;              /* clip panel-head bg to the radius */
+}
+.dossier-page .panel-head {
+  border-bottom-color: color-mix(in oklch, var(--rule) 70%, var(--paper-2));
+}
+
+/* --- ATTENTION CARDS — soft border, ambient elevation -----------
+ * The chunk-B card had a flat 1px ink-toned border with a colored
+ * left band. Keep the colored band — it's the band-decline / band-
+ * review signal — but soften the ambient border and add the same
+ * ambient shadow as panels. Cards now read as "lifted off the
+ * paper" rather than "drawn on top". Hover lifts slightly. */
+.dossier-page .attention-card {
+  border-color: var(--rule);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-card);
+  padding: 16px 20px 18px;       /* generous, was 14px 18px */
+  transition: box-shadow .18s ease, transform .18s ease;
+}
+.dossier-page .attention-card:hover {
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-1px);
+}
+/* Override the left-band rule width so it reads cleanly on the new
+ * rounded corners — 4px keyline rather than 3px, since the radius
+ * eats a sliver of the band. */
+.dossier-page .attention-card {
+  border-left-width: 4px;
+}
+.dossier-page .attention-cards {
+  gap: 16px;                     /* was 14px — extra breathing */
+}
+
+/* --- DATA TABLES — zebra + crisp numerics ------------------------
+ * Layer 1: low-contrast zebra so groups of rows scan as a band rather
+ * than a stripe. Applied with :nth-child rather than tbody-wide so the
+ * stripe travels with row order even after htmx swaps. */
+.dossier-page table.queue tbody tr:nth-child(2n + 1):not(:hover) {
+  background: var(--row-tint);
+}
+.dossier-page table.queue tbody tr:hover:not(.no-click) {
+  background: var(--row-tint-hover);
+}
+/* Numbers everywhere on data tables read in tabular-nums; the .num
+ * column utility above handles the alignment, this rule cements the
+ * font-feature on the whole tbody. Cheap, no visual cost on text. */
+.dossier-page table.queue tbody {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- BUTTONS — contemporary fintech modernization (Wave 3.1) -----
+ *
+ * Brief: "funded-product" feel — cleaner fill, subtle inset highlight,
+ * distinct rest shadow, deliberate hover lift, confident press state.
+ * Palette stays forest/sage; new elevation comes from neutral ink-toned
+ * --shadow-btn tokens above.
+ *
+ * Primary (.btn.primary):
+ *   - Fill stays --ink (deep forest #2D5A47) — already the cleanest
+ *     saturated panel in the palette; no new color introduced.
+ *   - Border drops to transparent — the deep ink fill is its own edge.
+ *     The 2px ink underline from base .btn becomes redundant on a
+ *     filled button and reads as a heavy footer, so we square it off.
+ *   - Inset top highlight via inset 0 1px 0 rgba(paper @ 8%) gives the
+ *     surface a tiny dimensional cue without going glossy.
+ *   - --shadow-btn rest shadow makes the button sit ABOVE the page.
+ *   - Padding 8/14 → 9/18 (more presence, doesn't dominate).
+ *   - Letter-spacing stays 0.16em (brand voice).
+ *
+ * Hover:
+ *   - background shifts ink → ink-2 (slight warmth, signals interactive)
+ *   - --shadow-btn-hover (deeper ambient)
+ *   - !important translateY because the base .btn:hover already does
+ *     translateY(-1px); we want the SAME direction, just emphasized
+ *     by the shadow change — so we don't override transform here.
+ *
+ * Press (.primary:active):
+ *   - Shadow collapses to inset (button "presses in")
+ *   - transform: translateY(0) cancels the hover lift, giving tactile
+ *     feedback that the click registered.
+ *
+ * Secondary / outline (.btn without .primary):
+ *   - Lower-intensity version: same --shadow-btn at half opacity feel
+ *     via the existing 1px ink border + a lighter ambient shadow.
+ *   - We layer onto the existing base.btn declaration in aegis-tool.css
+ *     :904; that base declares the 2px ink underline. We leave the
+ *     underline intact (it's the secondary's signature) and only ADD
+ *     the ambient shadow + press refinements.
+ */
+
+/* PRIMARY — filled, lifted, dimensional (Wave 3.2)
+ *
+ * Brief: "more contemporary fintech feel. Cleaner fill, slightly more
+ * presence, funded-product button — not a default form button."
+ *
+ * What landed:
+ *   - Padding 9/18 → 10/22. Generous presence without dominating; the
+ *     letter-spacing 0.16em + uppercase mono is already confident, the
+ *     extra horizontal room lets the type breathe.
+ *   - Border collapses to the same --ink as the fill, so the button
+ *     reads as a SOLID PANEL not a bordered shape. The 2px ink
+ *     underline from base .btn becomes redundant on a filled button
+ *     and reads as a heavy footer — squared to 1px.
+ *   - Rest shadow is the new deeper --shadow-btn (crisper 1px keyline
+ *     + extended ambient halo) so the panel sits clearly ABOVE the
+ *     cream substrate.
+ *   - Two inset highlights stack for dimensionality:
+ *       inset 0  1px 0 — top sheen (paper @ 14%, was 8%)
+ *       inset 0 -1px 0 — bottom inner shadow (black @ 14%) — gives the
+ *                        bottom edge a sub-pixel "seated" cue so the
+ *                        button reads as a physical surface, not a flat
+ *                        color rectangle. No gradient, no gloss — just
+ *                        a 1px light edge on top and a 1px dark edge on
+ *                        the bottom, the way real injection-molded
+ *                        controls catch light. */
+.dossier-page .btn.primary,
+.dossier-page button.btn.primary,
+.dossier-page .btn.btn-primary {
+  border-color: var(--ink);
+  border-bottom-width: 1px;
+  border-radius: var(--r-sm);
+  padding: 10px 22px;
+  box-shadow:
+      inset 0  1px 0 rgba(250, 250, 248, 0.14),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.14),
+      var(--shadow-btn);
+}
+.dossier-page .btn.primary:hover,
+.dossier-page button.btn.primary:hover,
+.dossier-page .btn.btn-primary:hover {
+  background: var(--ink-2);
+  color: var(--paper);
+  box-shadow:
+      inset 0  1px 0 rgba(250, 250, 248, 0.18),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.12),
+      var(--shadow-btn-hover);
+}
+.dossier-page .btn.primary:active,
+.dossier-page button.btn.primary:active,
+.dossier-page .btn.btn-primary:active {
+  background: var(--ink);
+  transform: translateY(0);
+  /* Press: hover lift gone, inner dark cue swaps direction to "seated
+   * deeper into the page" — the cleanest tactile cue without changing
+   * the chromatic envelope. */
+  box-shadow:
+      inset 0  1px 0 rgba(0, 0, 0, 0.18),
+      inset 0 -1px 0 rgba(250, 250, 248, 0.04),
+      var(--shadow-btn-press);
+}
+
+/* SECONDARY / OUTLINE — same elevation rhythm, restrained intensity (Wave 3.2)
+ *
+ * Targets the plain .btn (no .primary, no .danger, no .ghost, no
+ * .is-disabled). The secondary carries the same modernization vector
+ * as primary — discrete affordance, lifted off the page, tactile press
+ * — but at lower visual weight so it never competes with primary for
+ * attention.
+ *
+ * What landed:
+ *   - Padding 8/16 → 9/18 (proportional bump; presence without
+ *     dominating). Primary stays a step ahead at 10/22.
+ *   - Rest shadow gains a true 1px ambient keyline + a 6px soft halo
+ *     so the cream button reads as a discrete element on cream paper.
+ *     Without this lift, secondaries on cream pages have always read
+ *     as "drawn lines" rather than "physical chips".
+ *   - Subtle inset top sheen (ink @ 2.5%) — barely visible, but gives
+ *     the cream surface the same dimensional cue as primary at a
+ *     fraction of the strength.
+ *   - The existing 1px ink border + 2px ink underline from base .btn
+ *     stays — that's the secondary's signature on a cream page; we
+ *     ADD elevation, we don't remove the keyline.
+ *   - Hover deepens ambient + lifts via the base translateY(-1px);
+ *     press collapses to the shared --shadow-btn-press inset cue. */
+.dossier-page .btn:not(.primary):not(.btn-primary):not(.danger):not(.ghost):not(.is-disabled):not([disabled]):not(:disabled):not([aria-disabled="true"]),
+.dossier-page button.btn:not(.primary):not(.btn-primary):not(.danger):not(.ghost):not(.is-disabled):not([disabled]):not(:disabled):not([aria-disabled="true"]) {
+  border-radius: var(--r-sm);
+  padding: 9px 18px;
+  box-shadow:
+      inset 0 1px 0 rgba(45, 90, 71, 0.025),
+      0 1px 0 rgba(45, 90, 71, 0.10),
+      0 1px 2px rgba(45, 90, 71, 0.06),
+      0 3px 8px -2px rgba(45, 90, 71, 0.12);
+}
+.dossier-page .btn:not(.primary):not(.btn-primary):not(.danger):not(.ghost):not(.is-disabled):not([disabled]):not(:disabled):not([aria-disabled="true"]):hover,
+.dossier-page button.btn:not(.primary):not(.btn-primary):not(.danger):not(.ghost):not(.is-disabled):not([disabled]):not(:disabled):not([aria-disabled="true"]):hover {
+  box-shadow:
+      inset 0 1px 0 rgba(45, 90, 71, 0.04),
+      0 1px 0 rgba(45, 90, 71, 0.14),
+      0 2px 4px rgba(45, 90, 71, 0.08),
+      0 6px 14px -3px rgba(45, 90, 71, 0.18);
+}
+.dossier-page .btn:not(.primary):not(.btn-primary):not(.danger):not(.ghost):not(.is-disabled):not([disabled]):not(:disabled):not([aria-disabled="true"]):active,
+.dossier-page button.btn:not(.primary):not(.btn-primary):not(.danger):not(.ghost):not(.is-disabled):not([disabled]):not(:disabled):not([aria-disabled="true"]):active {
+  transform: translateY(0);
+  box-shadow: var(--shadow-btn-press);
+}
+
+/* DISABLED — guarantee the modernization does NOT leak in.
+ * A disabled button must read calmly muted, not "lifted-and-disabled".
+ * Override box-shadow to none and cancel any hover lift. This rule
+ * intentionally appears AFTER the secondary block so it wins via
+ * source order on the shared :not() selector. The Wave 2 .is-disabled
+ * block at :180-200 already handles color/opacity; we add ONLY the
+ * shadow + transform cancellation here. */
+.dossier-page .btn.is-disabled,
+.dossier-page button.btn.is-disabled,
+.dossier-page button.btn[disabled],
+.dossier-page button.btn:disabled,
+.dossier-page .btn[aria-disabled="true"] {
+  box-shadow: none;
+  transform: none;
+}
+.dossier-page .btn.is-disabled:hover,
+.dossier-page button.btn.is-disabled:hover,
+.dossier-page button.btn[disabled]:hover,
+.dossier-page button.btn:disabled:hover,
+.dossier-page .btn[aria-disabled="true"]:hover,
+.dossier-page .btn.is-disabled:active,
+.dossier-page button.btn.is-disabled:active,
+.dossier-page button.btn[disabled]:active,
+.dossier-page button.btn:disabled:active,
+.dossier-page .btn[aria-disabled="true"]:active {
+  box-shadow: none;
+  transform: none;
+}
+
+/* --- CHIPS — baseline alignment + softer corners ----------------
+ * Chips were sharp-cornered rectangles. Slight 2px radius reads as
+ * "tag" rather than "label box". Vertical-align baseline ensures
+ * they sit on the same baseline as adjacent text — small fix, big
+ * payoff when chips wrap inline with sentences. */
+.dossier-page .chip {
+  border-radius: var(--r-sm);
+  vertical-align: baseline;
+}
+
+/* --- TIER CHIP / CARD-TIER — refined corner, balanced weight --- */
+.dossier-page .attention-card .card-tier {
+  border-radius: var(--r-sm);
+  box-shadow: 0 1px 0 rgba(45, 90, 71, 0.04);
+}
+
+/* --- BODY GRID — extra section gap on multi-section pages ------ */
+.dossier-page .body {
+  gap: var(--s-section-gap);
+}
+
+/* --- TODAY: RIGHT-RAIL SHORTCUTS (Jump-to nav) ------------------
+ * The right rail on Today previously used the .feed/.event markup
+ * (timestamp-slot "→" + serif copy). That made the panel read as
+ * an activity-log feed even after relabeling — the operator flagged
+ * it as a Day's-log lookalike competing for attention near the top.
+ *
+ * Resolution: a quiet side-nav block. Small-caps section head is
+ * the same .sect-head used elsewhere; the nav itself drops the feed
+ * grid (52px timestamp slot + serif body) for a clean two-line
+ * link list — label + sub. No per-row separators, no chronological
+ * cues, no shadow elevation, no underline. The rail now reads as
+ * "navigation" at a glance and recedes when the operator is looking
+ * at the attention queue in the primary column.
+ *
+ * Hover: label shifts from ink-2 to accent (sage-deep); the whole
+ * link gets a sage-tinted paper-2 background so the affordance is
+ * obvious without the link looking like a button. */
+.dossier-page .jump-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 12px;
+}
+.dossier-page .jump-nav__link {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  border-bottom: 0;             /* override .dossier-page a default rule */
+  background: transparent;
+  transition: background-color .14s ease, color .14s ease;
+}
+.dossier-page .jump-nav__link:hover {
+  background: color-mix(in oklch, var(--sage) 12%, var(--paper-2));
+}
+.dossier-page .jump-nav__label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+.dossier-page .jump-nav__link:hover .jump-nav__label {
+  color: var(--accent);
+}
+.dossier-page .jump-nav__sub {
+  font-family: var(--serif);
+  font-size: 12.5px;
+  color: var(--ink-3);
+  letter-spacing: -0.003em;
+  line-height: 1.35;
+}
+

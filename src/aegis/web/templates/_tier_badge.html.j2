@@ -17,14 +17,24 @@
     tier  — string, one of "A" | "B" | "C" | "D" | "F" | None
             (lowercased and used as the modifier class)
     label — optional string under the tier letter (default "tier")
+    title — optional hover tooltip. Defaults to the legacy phrasing
+            "Deal tier from score_deal" so existing call sites read
+            identically. Pass an empty string ("") to suppress the
+            attribute entirely.
 
   Examples:
     {% include "_tier_badge.html.j2" with context %}  → "B tier"
     where caller sets `tier = "B"`.
 
+    {# Custom tooltip — e.g. Today queue's worst-document phrasing #}
+    {% set tier = "C" %}
+    {% set title = "Deal tier from worst-scoring document" %}
+    {% include "_tier_badge.html.j2" with context %}
+
   Behavior on tier=None: renders nothing. The calling template
   decides whether an absent tier shows a placeholder.
 #}
+{%- set _tier_title = title if title is defined else 'Deal tier from score_deal' -%}
 {%- if tier -%}
-<span class="card-tier tier-{{ tier|lower }}" title="Deal tier from score_deal">{{ tier }}<span class="card-tier-label">{{ label|default('tier') }}</span></span>
+<span class="card-tier tier-{{ tier|lower }}"{% if _tier_title %} title="{{ _tier_title }}"{% endif %}>{{ tier }}<span class="card-tier-label">{{ label|default('tier') }}</span></span>
 {%- endif -%}
