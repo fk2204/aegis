@@ -150,6 +150,26 @@ class Settings(BaseSettings):
     # corpus + token-cost data validates the per-deal savings.
     aegis_parser_page_routing: bool = False
 
+    # Tampering composition rule mode. The rule itself
+    # (``aegis.parser.tampering.evaluate_tampering``) always runs and
+    # always writes an audit row when it fires:
+    #
+    #   * ``"shadow"`` (default) — audit row ``tampering_would_decline``;
+    #     ``tampering_confirmed`` stays False at score time. Lets the
+    #     operator measure real true-positive / false-positive behavior
+    #     on the live corpus before any applicant gets rejected by it.
+    #
+    #   * ``"live"`` — audit row ``tampering_decline_applied``; the
+    #     multi_month builder re-evaluates from the persisted
+    #     fraud_score_breakdown and sets ``tampering_confirmed=True``,
+    #     which surfaces ``bank_statement_tampering_confirmed`` as a
+    #     hard decline via ``score.py``.
+    #
+    # See docs/AEGIS_MASTER_PLAN.md §19 task 3 and the catalog at
+    # docs/FRAUD_SIGNAL_CATALOG.md for the composition rule and the
+    # operator's risk-policy decision (2026-06-04).
+    aegis_tampering_decline_mode: Literal["shadow", "live"] = "shadow"
+
     # ------------------------------------------------------------------
     # PDF retention redesign (chunk A) — see docs/PDF_RETENTION_DESIGN.md
     # ------------------------------------------------------------------

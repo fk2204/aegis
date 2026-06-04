@@ -73,6 +73,7 @@ from aegis.parser.processor import (
     detect_processor,
     run_processor_pipeline,
 )
+from aegis.parser.tampering import TamperingEvaluation
 from aegis.storage import DocumentNotFoundError, DocumentRepository
 
 _log = get_logger(__name__)
@@ -271,6 +272,22 @@ async def parse_document(
             "flag_count": len(result.all_flags),
         },
     )
+
+    # Tampering composition (operator policy 2026-06-04). The pipeline
+    # has already evaluated the rule; the worker writes one audit row
+    # when it fires. ``shadow`` (default) reports what WOULD decline so
+    # the operator can review the matrix before any applicant gets
+    # rejected; ``live`` reports what DID decline. The scoring layer
+    # consumes the same evaluation via ``score_input_multi_month``.
+    if (
+        result.tampering_evaluation is not None
+        and result.tampering_evaluation.fires
+    ):
+        _audit_tampering_evaluation(
+            audit=audit,
+            document_id=document_id,
+            evaluation=result.tampering_evaluation,
+        )
 
     # Re-fetch the doc row — persist_parse_result associates merchant_id
     # if it wasn't already set. Both downstream concerns read it.
@@ -506,6 +523,48 @@ async def _run_processor_branch(
 # branch success). Both are rowcount-gated on the audit emission so a
 # false "this changed" row never lands.
 # ===========================================================================
+
+
+def _audit_tampering_evaluation(
+    *,
+    audit: AuditLog,
+    document_id: UUID,
+    evaluation: TamperingEvaluation,
+) -> None:
+    """Write one audit row reflecting the tampering composition outcome.
+
+    Action depends on the configured mode:
+
+    * ``shadow`` (default) — ``tampering_would_decline``. The deal still
+      scores as if the rule did not exist; this is a measurement-only
+      surface for the operator to inspect the matrix before flipping to
+      live decline.
+    * ``live`` — ``tampering_decline_applied``. The score path will
+      surface ``bank_statement_tampering_confirmed`` as a hard decline.
+
+    Mode is read on every parse so the operator can flip with a
+    systemd-unit env change + restart, without a code deploy.
+    """
+    mode = get_settings().aegis_tampering_decline_mode
+    action = (
+        "tampering_would_decline"
+        if mode == "shadow"
+        else "tampering_decline_applied"
+    )
+    audit.record(
+        actor="worker",
+        action=action,
+        subject_type="document",
+        subject_id=document_id,
+        details={
+            "mode": mode,
+            "branch": evaluation.branch,
+            "metadata_score": evaluation.metadata_score,
+            "math_score": evaluation.math_score,
+            "contributing_failures": list(evaluation.contributing_failures),
+            "rationale": evaluation.rationale,
+        },
+    )
 
 
 def _finalize_or_flag_merchant_from_statement(

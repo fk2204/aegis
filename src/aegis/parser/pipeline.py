@@ -65,6 +65,7 @@ from aegis.parser.page_router import (
     summarize,
 )
 from aegis.parser.patterns import PatternAnalysis, analyze_patterns
+from aegis.parser.tampering import TamperingEvaluation, evaluate_tampering
 from aegis.parser.validate import validate_extraction
 
 _log = get_logger(__name__)
@@ -134,6 +135,13 @@ class PipelineResult:
     # Persisted on analyses.monthly_breakdown for renewal-merchant
     # month-over-month deltas. Decimals stored as strings for jsonb.
     monthly_breakdown: list[dict[str, str]] = field(default_factory=list)
+    # Tampering composition evaluation — see
+    # ``aegis.parser.tampering.evaluate_tampering``. None for pipeline
+    # paths that short-circuit before metadata + math signals are
+    # available (e.g. page-router low-confidence early exit). The
+    # worker writes the shadow / live audit row when this is set and
+    # ``tampering_evaluation.fires`` is True.
+    tampering_evaluation: TamperingEvaluation | None = None
 
 
 def run_pipeline(
@@ -262,6 +270,16 @@ def run_pipeline(
         metadata.fraud_score, math_score, patterns_score_with_bump
     )
 
+    # Tampering composition (operator policy 2026-06-04): runs on every
+    # parse, attached to the result; the worker decides whether to gate
+    # (live mode) or just audit (shadow mode). Pure function over the
+    # already-computed scores + validation failures.
+    tampering_eval = evaluate_tampering(
+        metadata_score=metadata.fraud_score,
+        math_score=math_score,
+        validation_failures=list(validation.failures),
+    )
+
     parse_status = _decide(metadata, fraud_score, validation, confidence_failures)
 
     all_flags = _collect_flags(metadata, validation, patterns, compound_flags)
@@ -288,6 +306,7 @@ def run_pipeline(
         avg_classification_confidence=avg_conf,
         classification_confidence_by_category=per_cat_conf,
         monthly_breakdown=aggregate_result.monthly_breakdown,
+        tampering_evaluation=tampering_eval,
     )
 
 

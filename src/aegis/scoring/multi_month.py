@@ -29,8 +29,10 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+from aegis.config import get_settings
 from aegis.merchants.models import MerchantRow
 from aegis.parser.patterns import PatternAnalysis
+from aegis.parser.tampering import evaluate_tampering_from_scores
 from aegis.scoring.models import ScoreInput
 from aegis.storage import AnalysisRow, DocumentRow
 
@@ -40,6 +42,29 @@ def _project_monthly(period_revenue: Decimal, statement_days: int) -> Decimal:
         return Decimal("0.00")
     return (period_revenue / Decimal(statement_days) * Decimal(30)).quantize(
         Decimal("0.01")
+    )
+
+
+def _tampering_confirmed_for_window(latest_doc: DocumentRow) -> bool:
+    """Live-mode tampering re-evaluation from the persisted scores.
+
+    Reads ``metadata_score`` and ``math_score`` from the latest
+    document's ``fraud_score_breakdown`` (always written by
+    ``parser.pipeline._fraud_score``) and applies the coarser score-
+    only rule from ``aegis.parser.tampering``. In shadow mode the rule
+    is short-circuited to False so the deal scores exactly as it did
+    before the composition shipped — the parse-time audit row is the
+    only signal the operator sees.
+
+    Strict bool: ``score.py`` reads this as a hard-decline trigger,
+    so anything other than True must read as False.
+    """
+    if get_settings().aegis_tampering_decline_mode != "live":
+        return False
+    breakdown = latest_doc.fraud_score_breakdown or {}
+    return evaluate_tampering_from_scores(
+        metadata_score=int(breakdown.get("metadata_score", 0)),
+        math_score=int(breakdown.get("math_score", 0)),
     )
 
 
@@ -59,7 +84,7 @@ def score_input_multi_month(
     if not items:
         raise ValueError("score_input_multi_month requires at least one analysis")
 
-    _latest_doc, latest_analysis = items[0]
+    latest_doc, latest_analysis = items[0]
     analyses = [a for _, a in items]
     docs_list = [d for d, _ in items]
     n = Decimal(len(items))
@@ -174,7 +199,7 @@ def score_input_multi_month(
             if pattern_analysis is not None
             else bool(getattr(latest, "unauthorized_withdrawal_dispute", False))
         ),
-        tampering_confirmed=bool(getattr(latest, "tampering_confirmed", False)),
+        tampering_confirmed=_tampering_confirmed_for_window(latest_doc),
         ai_generated_score=(
             pattern_analysis.ai_generated_score
             if pattern_analysis is not None

@@ -13,6 +13,8 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
+
 from aegis.merchants.models import MerchantRow
 from aegis.scoring.multi_month import (
     detect_missing_months,
@@ -23,7 +25,12 @@ from aegis.scoring.multi_month import (
 from aegis.storage import AnalysisRow, DocumentRow
 
 
-def _doc(*, parse_status: str = "proceed", fraud_score: int = 5) -> DocumentRow:
+def _doc(
+    *,
+    parse_status: str = "proceed",
+    fraud_score: int = 5,
+    fraud_score_breakdown: dict[str, int] | None = None,
+) -> DocumentRow:
     return DocumentRow(
         id=uuid4(),
         file_hash="a" * 64,
@@ -32,6 +39,7 @@ def _doc(*, parse_status: str = "proceed", fraud_score: int = 5) -> DocumentRow:
         parse_status=parse_status,
         fraud_score=fraud_score,
         uploaded_at=datetime.now(UTC),
+        fraud_score_breakdown=fraud_score_breakdown or {},
     )
 
 
@@ -249,6 +257,113 @@ def test_multi_month_lowest_balance_picks_worst_month() -> None:
     ]
     out = _score_input_multi_month(_merchant(), items)
     assert out.lowest_balance == Decimal("3256.76")
+
+
+def test_multi_month_tampering_shadow_mode_never_confirms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shadow mode (default) keeps tampering_confirmed=False even when
+    the latest doc's persisted scores would fire the live rule.
+    Operator chose shadow specifically to NOT bite live applicants."""
+    from aegis.config import get_settings
+
+    monkeypatch.setenv("AEGIS_TAMPERING_DECLINE_MODE", "shadow")
+    get_settings.cache_clear()
+    try:
+        items = [
+            (
+                _doc(fraud_score_breakdown={"metadata_score": 75, "math_score": 0}),
+                _analysis(
+                    period_start=date(2026, 3, 1),
+                    period_end=date(2026, 3, 31),
+                    true_revenue=Decimal("30000"),
+                ),
+            ),
+        ]
+        out = _score_input_multi_month(_merchant(), items)
+        assert out.tampering_confirmed is False
+    finally:
+        get_settings.cache_clear()
+
+
+def test_multi_month_tampering_live_mode_strong_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live mode + metadata_score >= 50 → tampering_confirmed=True.
+    score.py downstream will surface bank_statement_tampering_confirmed
+    as a hard decline."""
+    from aegis.config import get_settings
+
+    monkeypatch.setenv("AEGIS_TAMPERING_DECLINE_MODE", "live")
+    get_settings.cache_clear()
+    try:
+        items = [
+            (
+                _doc(fraud_score_breakdown={"metadata_score": 75, "math_score": 0}),
+                _analysis(
+                    period_start=date(2026, 3, 1),
+                    period_end=date(2026, 3, 31),
+                    true_revenue=Decimal("30000"),
+                ),
+            ),
+        ]
+        out = _score_input_multi_month(_merchant(), items)
+        assert out.tampering_confirmed is True
+    finally:
+        get_settings.cache_clear()
+
+
+def test_multi_month_tampering_live_mode_medium_corroborated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live mode + medium metadata + math_score>=55 (critical failure
+    at parse time) → tampering_confirmed=True."""
+    from aegis.config import get_settings
+
+    monkeypatch.setenv("AEGIS_TAMPERING_DECLINE_MODE", "live")
+    get_settings.cache_clear()
+    try:
+        items = [
+            (
+                _doc(fraud_score_breakdown={"metadata_score": 35, "math_score": 55}),
+                _analysis(
+                    period_start=date(2026, 3, 1),
+                    period_end=date(2026, 3, 31),
+                    true_revenue=Decimal("30000"),
+                ),
+            ),
+        ]
+        out = _score_input_multi_month(_merchant(), items)
+        assert out.tampering_confirmed is True
+    finally:
+        get_settings.cache_clear()
+
+
+def test_multi_month_tampering_live_mode_medium_alone_doesnt_fire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """VU-shaped: live mode + medium metadata + math_score=0 (no
+    corroboration) → tampering_confirmed=False. The owner-saved-in-
+    Preview case must NOT auto-decline even in live mode."""
+    from aegis.config import get_settings
+
+    monkeypatch.setenv("AEGIS_TAMPERING_DECLINE_MODE", "live")
+    get_settings.cache_clear()
+    try:
+        items = [
+            (
+                _doc(fraud_score_breakdown={"metadata_score": 35, "math_score": 0}),
+                _analysis(
+                    period_start=date(2026, 3, 1),
+                    period_end=date(2026, 3, 31),
+                    true_revenue=Decimal("30000"),
+                ),
+            ),
+        ]
+        out = _score_input_multi_month(_merchant(), items)
+        assert out.tampering_confirmed is False
+    finally:
+        get_settings.cache_clear()
 
 
 def test_multi_month_single_item_is_equivalent_to_single_month() -> None:
