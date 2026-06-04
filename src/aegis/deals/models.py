@@ -126,7 +126,16 @@ class DealRow(_StrictModel):
 
     @field_validator("state")
     @classmethod
-    def _normalize_state(cls, v: str) -> str:
+    def _normalize_state(cls, v: str | None) -> str | None:
+        # ``state`` is nullable per the field declaration above. Pre-fix
+        # the validator's type was ``str`` and called ``v.upper()``
+        # directly, so any state=None input AttributeError'd before the
+        # field's own None-allowance had a chance to apply. The mapper
+        # at ``deals/repository.py:_row_to_deal`` and any other caller
+        # that passes the nullable state through must round-trip
+        # unchanged.
+        if v is None:
+            return None
         return v.upper()
 
 

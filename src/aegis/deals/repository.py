@@ -254,13 +254,24 @@ def _row_to_deal(row: dict[str, Any]) -> DealRow:
     document_id = UUID(row["id"])
     merchant_id = UUID(row["merchant_id"])
 
+    # ``DealRow.state`` is ``str | None``. Migration 034 made
+    # ``merchants.state`` nullable so auto-finalized merchants without an
+    # extracted address can land in a valid finalized state — the
+    # in-memory variant mirrors the same None pass-through (see line 117
+    # of this file). Without this guard ``str(None).upper()`` produces
+    # the literal ``"NONE"`` which fails Pydantic's 2-char state
+    # validator and 500s every Deals-list / Deal-detail render that
+    # touches a state-less merchant.
+    raw_state = merchant_block.get("state")
+    state = str(raw_state).upper() if raw_state else None
+
     return DealRow(
         deal_id=format_deal_id(merchant_id, document_id),
         merchant_id=merchant_id,
         document_id=document_id,
         created_at=_parse_dt(row["uploaded_at"]),
         business_name=merchant_block["business_name"],
-        state=str(merchant_block["state"]).upper(),
+        state=state,
         parse_status=row["parse_status"],
         fraud_score=row.get("fraud_score"),
         score_recommendation=None,
