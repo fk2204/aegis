@@ -18,13 +18,38 @@ The dashboard renders a card per pattern with:
 (``_stacking_card.html.j2``) that breaks down per-position daily
 equivalents. Including it twice would double-count visually.
 
-``recent_account_opening`` is also excluded — it's already shown as a
-hard-decline reason on the score breakdown panel and has no
-transaction-level drill-down to add.
+Additionally, when a hard-decline reason is attached for the same fact a
+pattern card would describe (the Phase 9 rules
+``acceleration_clause_triggered`` and ``unauthorized_withdrawal_dispute``
+fire BOTH as a pattern severity contributor AND as their own
+hard-decline line), the pattern card is suppressed via the
+``hard_declined_codes`` filter on ``build_pattern_cards``. The
+hard-decline list at the top of the verdict carries the now-humanized
+copy (via ``HARD_DECLINE_COPY``) and the worker reads the same fact
+once, not twice. The signal still fires for scoring; only the duplicate
+DISPLAY card is suppressed.
+
+This module also carries operator-facing copy for two adjacent signal
+surfaces:
+
+* ``HARD_DECLINE_COPY`` — humanizes the raw ``ScoreResult.hard_decline_reasons``
+  strings that ``score.py:_check_hard_declines`` emits, so the verdict's
+  hard-decline list reads as worker-language sentences rather than raw
+  identifier blobs like ``acceleration_clause_triggered: …``.
+* ``SOFT_CONCERN_COPY`` — same treatment for ``ScoreResult.soft_concerns``,
+  including the soft-score-only codes ``ai_generated_statement_*``,
+  ``customer_concentration_severe``, ``payroll_absent_high_revenue``,
+  etc. that never reach the pattern-card surface (they're score-only,
+  not ``Pattern(...)`` emissions).
+
+The two adjacent maps are intentionally co-located with ``PATTERN_COPY``
+because all three feed the same dossier verdict / findings layout and
+share the same "worker-readable language" discipline.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Final
 from uuid import UUID
@@ -261,6 +286,26 @@ _RENDERED_ELSEWHERE: Final[frozenset[str]] = frozenset({
 })
 
 
+# Pattern codes that ALSO surface as a hard-decline reason on the same
+# dossier (Phase 9 dual-tier signals, v2 catalog Bucket B.7). When the
+# scorer attaches the equivalent hard-decline reason, the pattern card
+# is suppressed at the DISPLAY layer so the worker sees one
+# authoritative line — the hard-decline reason — instead of the same
+# fact in a "soft severity" pattern card AND a "decline" verdict line.
+# The pattern itself still fires (severity still flows into
+# ``patterns.fraud_score`` upstream). This map answers "if I see this
+# hard-decline reason on the deal, which pattern card should I suppress
+# below?".
+PATTERN_CODE_BY_HARD_DECLINE_REASON: Final[dict[str, str]] = {
+    "acceleration_clause_triggered": "acceleration_clause_triggered",
+    # Score-side reason carries an ``_active`` suffix
+    # (``score.py:197``) where the pattern code does not — same fact,
+    # different name. Mapped explicitly here so the suppression bridges
+    # the naming gap (v2 catalog Bucket B.7).
+    "unauthorized_withdrawal_dispute_active": "unauthorized_withdrawal_dispute",
+}
+
+
 @dataclass(frozen=True)
 class PatternCard:
     code: str
@@ -272,9 +317,39 @@ class PatternCard:
     source_transactions: list[ClassifiedTransaction]
 
 
+def _hard_declined_pattern_codes(
+    hard_decline_reasons: list[str] | None,
+) -> frozenset[str]:
+    """Translate the verdict's hard-decline reason list into the set of
+    pattern codes whose display card should be suppressed.
+
+    The hard-decline list may carry detail after the code
+    (``acceleration_clause_triggered: OnDeck …``); the lookup key is the
+    bare code prefix. The ``PATTERN_CODE_BY_HARD_DECLINE_REASON`` map
+    also bridges the ``_active`` suffix between
+    ``unauthorized_withdrawal_dispute_active`` (scorer) and
+    ``unauthorized_withdrawal_dispute`` (pattern).
+
+    Returns an empty frozenset when no reasons are passed — i.e. cards
+    render unchanged when there is no decline to anchor them to. This is
+    the right behavior for the ``refer`` and ``approve`` recommendations
+    where the pattern card is the only place the fact surfaces.
+    """
+    if not hard_decline_reasons:
+        return frozenset()
+    suppressed: set[str] = set()
+    for reason in hard_decline_reasons:
+        bare = reason.split(":", 1)[0].strip()
+        mapped = PATTERN_CODE_BY_HARD_DECLINE_REASON.get(bare)
+        if mapped is not None:
+            suppressed.add(mapped)
+    return frozenset(suppressed)
+
+
 def build_pattern_cards(
     pattern_analysis: PatternAnalysis | None,
     transactions: list[ClassifiedTransaction],
+    hard_decline_reasons: list[str] | None = None,
 ) -> list[PatternCard]:
     """Return one card per surfaced pattern, ordered by severity descending.
 
@@ -282,13 +357,25 @@ def build_pattern_cards(
     parser-side new detector doesn't crash the dashboard) — but `make
     check` should catch the omission via the regression test that
     asserts every code in PATTERN_COPY matches an emitted Pattern.
+
+    When ``hard_decline_reasons`` is passed, patterns whose code is
+    already represented as a hard-decline line on the verdict are
+    suppressed here (the worker sees the same fact once, under the
+    decline banner, not duplicated as a soft-severity card below). This
+    closes v2 catalog Bucket B.7 — the dual-tier acceleration / dispute
+    presentation. The underlying scoring is unchanged: the pattern still
+    contributes to ``patterns.fraud_score`` and ``score.py`` still
+    attaches the hard-decline reason. Only the duplicate card is hidden.
     """
     if pattern_analysis is None:
         return []
+    suppressed = _hard_declined_pattern_codes(hard_decline_reasons)
     by_id: dict[UUID, ClassifiedTransaction] = {t.id: t for t in transactions}
     cards: list[PatternCard] = []
     for p in pattern_analysis.patterns:
         if p.code in _RENDERED_ELSEWHERE:
+            continue
+        if p.code in suppressed:
             continue
         copy = PATTERN_COPY.get(p.code)
         if copy is None:
@@ -309,7 +396,460 @@ def build_pattern_cards(
     return cards
 
 
-__all__ = ["PATTERN_COPY", "PatternCard", "build_pattern_cards"]
+# ---------------------------------------------------------------------------
+# Hard-decline and soft-concern humanizers
+#
+# ``score.py`` emits hard-decline reasons and soft concerns as raw
+# identifier strings (``acceleration_clause_triggered``,
+# ``ai_generated_statement_strong``, …). The dossier used to render
+# these verbatim — workers staring at ``customer_concentration_severe``
+# had no operator-language hook telling them what the engine was
+# flagging or why. The two maps + ``humanize_hard_decline`` /
+# ``humanize_soft_concern`` helpers below give the template a one-call
+# path to the same plain-English copy discipline ``PATTERN_COPY``
+# already provides.
+#
+# Every reason / concern code score.py emits MUST have an entry here —
+# the regression tests below assert it. Adding a new score-side code
+# without registering its copy raises the test, the same way the
+# pattern-card regression test catches new ``Pattern(code=...)``
+# additions.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class HumanReason:
+    """Renderable shape for a single hard-decline reason or soft concern.
+
+    ``code`` is the bare identifier (no detail tail), ``title`` is the
+    short worker-facing phrase that opens the line, and ``description``
+    is the one-sentence rationale that follows. ``detail`` carries the
+    optional value tail the scorer attached (``: 2 EOF markers``,
+    ``: score=42``, …) verbatim, so the worker sees the concrete number
+    that fired alongside the humanized copy.
+
+    ``confidence`` mirrors the v2 catalog tags — ``confident`` for copy
+    that maps cleanly to the engine logic, ``best_guess`` for copy
+    drafted from the catalog but not operator-reviewed yet. Surfaces
+    only in the catalog doc and tests; not rendered on the dossier.
+    """
+
+    code: str
+    title: str
+    description: str
+    detail: str = ""
+    confidence: str = "confident"
+
+
+# Hard-decline reason -> humanized copy. Codes are the BARE identifier
+# (no ``: …`` tail). The scorer emits a handful with an interpolated
+# value tail; the humanizer parses that off and surfaces it as
+# ``HumanReason.detail`` so the worker sees both the rationale and the
+# concrete number that triggered.
+HARD_DECLINE_COPY: Final[dict[str, HumanReason]] = {
+    "ofac_sanctions_match": HumanReason(
+        code="ofac_sanctions_match",
+        title="OFAC sanctions match",
+        description=(
+            "Merchant or owner name matched the Treasury SDN list. Federal "
+            "prohibition on funding; matched name and SDN UID below. File "
+            "the Initial Report of Blocked Property within 10 business days."
+        ),
+    ),
+    "stacking_exceeds_limit": HumanReason(
+        code="stacking_exceeds_limit",
+        title="Stacking exceeds limit",
+        description=(
+            "Active MCA position count is over AEGIS's tolerance. The deal "
+            "cannot be stacked on top of the existing book."
+        ),
+    ),
+    "debt_to_revenue_exceeds_40pct": HumanReason(
+        code="debt_to_revenue_exceeds_40pct",
+        title="Debt-to-revenue exceeds 40%",
+        description=(
+            "Existing MCA debt service consumes more than 40% of monthly "
+            "revenue. Adding another payment is structurally unsupportable."
+        ),
+    ),
+    "fraud_score_critical": HumanReason(
+        code="fraud_score_critical",
+        title="Fraud score critical",
+        description=(
+            "Composite fraud score (metadata + math + patterns) crossed the "
+            "auto-decline threshold of 70. Tampering or fabrication signals "
+            "dominate the deal; see the pattern findings below for the "
+            "constituent flags."
+        ),
+    ),
+    "incremental_pdf_saves": HumanReason(
+        code="incremental_pdf_saves",
+        title="Incremental PDF saves",
+        description=(
+            "The bank-statement PDF carries more than one %%EOF marker. "
+            "Someone saved the file after the bank's original export — "
+            "either a legitimate viewer re-save (Adobe / Preview) or an "
+            "edit. Combined with other tampering signals, treat as decline."
+        ),
+    ),
+    "revenue_below_minimum": HumanReason(
+        code="revenue_below_minimum",
+        title="Revenue below minimum",
+        description=(
+            "Monthly revenue is below the AEGIS floor. MCA math doesn't "
+            "work at this revenue scale; the deal cannot be priced."
+        ),
+    ),
+    "industry_excluded": HumanReason(
+        code="industry_excluded",
+        title="Industry excluded",
+        description=(
+            "The merchant's industry sits on Commera's avoid list "
+            "(cannabis, firearms, adult, etc., per the configured roster). "
+            "No funder will accept this NAICS regardless of cashflow."
+        ),
+    ),
+    "days_negative_gt_15": HumanReason(
+        code="days_negative_gt_15",
+        title="More than 15 negative days",
+        description=(
+            "The bank account spent more than two weeks below $0 across "
+            "the statement period. Chronic negative is structural cash "
+            "stress, not a one-off processing accident."
+        ),
+    ),
+    "nsf_count_gte_10": HumanReason(
+        code="nsf_count_gte_10",
+        title="10 or more NSF events",
+        description=(
+            "10+ non-sufficient-funds fees in the period. Bouncing payments "
+            "at this rate is auto-decline territory — no funder takes this "
+            "level of NSF history."
+        ),
+    ),
+    "returned_ach_gt_5": HumanReason(
+        code="returned_ach_gt_5",
+        title="More than 5 returned ACHs",
+        description=(
+            "More than five returned ACH debits in the period. Bouncing "
+            "ACHs at this rate prevents any new funder from establishing "
+            "daily holdbacks."
+        ),
+    ),
+    "tib_under_3_months": HumanReason(
+        code="tib_under_3_months",
+        title="Business under 3 months old",
+        description=(
+            "Time in business is below the 3-month floor. No funding "
+            "appetite without operating history; revisit when the merchant "
+            "has at least three months of statements."
+        ),
+    ),
+    "validation_failed_manual_review_required": HumanReason(
+        code="validation_failed_manual_review_required",
+        title="Validation failed — manual review",
+        description=(
+            "Deterministic math gate did not reconcile (period totals, "
+            "daily-balance walk, or intraday running-balance failed). The "
+            "extraction is unusable as-is; the deal cannot proceed until "
+            "the statement is re-parsed or re-uploaded."
+        ),
+    ),
+    "prior_default": HumanReason(
+        code="prior_default",
+        title="Defaulted on prior MCA",
+        description=(
+            "On a renewal: the merchant defaulted on a previous AEGIS-routed "
+            "advance. Repeat default risk is outside Commera's appetite."
+        ),
+    ),
+    "dscr_below_1": HumanReason(
+        code="dscr_below_1",
+        title="Debt-service coverage below 1.0",
+        description=(
+            "Existing obligations plus the proposed daily debit exceed "
+            "monthly revenue (DSCR < 1.00). The merchant cannot service "
+            "the new advance even on paper."
+        ),
+    ),
+    "acceleration_clause_triggered": HumanReason(
+        code="acceleration_clause_triggered",
+        title="Funder acceleration on prior MCA",
+        description=(
+            "A recurring MCA position broke and a single debit 5-10x larger "
+            "than the prior median posted to the same payee. The funder "
+            "called the loan after default — outside Commera's risk "
+            "appetite. See the source debits on the stacking card."
+        ),
+    ),
+    "unauthorized_withdrawal_dispute_active": HumanReason(
+        code="unauthorized_withdrawal_dispute_active",
+        title="Active unauthorized-withdrawal dispute",
+        description=(
+            "The merchant successfully reversed a prior funder's MCA debit "
+            "(reversal credit paired to an MCA debit within 14 days at "
+            "near-equal amount). Most funders won't touch a merchant who "
+            "disputed a prior funder; treat as near-decline single-event "
+            "signal."
+        ),
+    ),
+    "bank_statement_tampering_confirmed": HumanReason(
+        code="bank_statement_tampering_confirmed",
+        title="Bank statement tampering confirmed",
+        description=(
+            "Composite forensic signals (font / page-layer / EOF / author) "
+            "indicate the PDF was altered after the bank exported it. The "
+            "extraction cannot be trusted; re-request a fresh export."
+        ),
+        confidence="best_guess",
+    ),
+}
+
+
+# Soft-concern -> humanized copy. The scorer attaches these to the
+# verdict's "soft concerns" list; the dossier renders them as
+# "verify before submission" line items. Codes carry the same value
+# tail discipline as hard declines.
+SOFT_CONCERN_COPY: Final[dict[str, HumanReason]] = {
+    "soft_score_below_threshold": HumanReason(
+        code="soft_score_below_threshold",
+        title="Composite score below tier floor",
+        description=(
+            "The soft-score aggregate landed in F-tier without a single "
+            "hard decline firing — the merchant's profile is weak across "
+            "many small factors rather than failing one big one. Treat as "
+            "decline-equivalent for funder routing."
+        ),
+    ),
+    "missing_time_in_business": HumanReason(
+        code="missing_time_in_business",
+        title="Time in business missing",
+        description=(
+            "Merchant did not supply months in business. Operator must "
+            "confirm with the broker before routing; funder rate cards "
+            "gate on this number."
+        ),
+    ),
+    "missing_credit_score": HumanReason(
+        code="missing_credit_score",
+        title="Credit score missing",
+        description=(
+            "FICO not on file. Most A / B paper funders require it; "
+            "request it from the broker before sending the deal out."
+        ),
+    ),
+    "customer_concentration_severe": HumanReason(
+        code="customer_concentration_severe",
+        title="Operator-flagged customer concentration",
+        description=(
+            "The broker / operator entered a top-customer concentration "
+            "above 60% on the merchant form. See the Customer "
+            "Concentration finding below for the statement-derived view "
+            "of the same fact."
+        ),
+    ),
+    "top_5_expense_concentration": HumanReason(
+        code="top_5_expense_concentration",
+        title="Top-5 expense concentration",
+        description=(
+            "Five payees account for the bulk of the merchant's withdrawals. "
+            "Verify the expense structure — heavy concentration on a few "
+            "vendors implies single-source-of-supply risk."
+        ),
+    ),
+    "payroll_absent_high_revenue": HumanReason(
+        code="payroll_absent_high_revenue",
+        title="Payroll absent at revenue scale",
+        description=(
+            "No payroll-processor activity detected at a revenue level "
+            "where one would be expected. See the Payroll Absent pattern "
+            "finding below for the period and revenue trigger. Confirm "
+            "with the merchant whether workers are 1099 or off-statement."
+        ),
+    ),
+    "ai_generated_statement_strong": HumanReason(
+        code="ai_generated_statement_strong",
+        title="Statement looks AI-generated (strong)",
+        description=(
+            "Composite score ≥85 across three sub-signals: descriptions "
+            "look too-clean, digit-noise (trace IDs / confirmation numbers) "
+            "is low, and round-number deposits dominate. Master plan §6.4 "
+            "forbids auto-decline on this alone; manually request a fresh "
+            "statement export on a screenshare and compare."
+        ),
+        confidence="best_guess",
+    ),
+    "ai_generated_statement_medium": HumanReason(
+        code="ai_generated_statement_medium",
+        title="Statement looks AI-generated (medium)",
+        description=(
+            "Composite score 70-84. Worth a closer look but not a blocker. "
+            "Spot-check 3-5 transaction descriptions against typical "
+            "statements from the same bank — real bank descriptions carry "
+            "inconsistent capitalization and trace IDs."
+        ),
+        confidence="best_guess",
+    ),
+    "ai_generated_statement_weak": HumanReason(
+        code="ai_generated_statement_weak",
+        title="Statement looks AI-generated (weak)",
+        description=(
+            "Composite score 55-69. Often fires on clean modern statement "
+            "formats (some credit unions, online-only banks) that are "
+            "legitimately clean. Note but proceed."
+        ),
+        confidence="best_guess",
+    ),
+}
+
+
+# Strip ``code: …`` -> ``(code, detail_or_empty)``. Mirrors the
+# convention ``_flag_labels._split_code_detail`` already uses for
+# ``[CATEGORY] code: detail`` flags.
+_REASON_DETAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<code>[a-z0-9_+]+)(?:\s*:\s*(?P<detail>.*))?$"
+)
+
+
+def _split_reason(raw: str) -> tuple[str, str]:
+    """Split a raw reason / concern string into (code, detail).
+
+    ``score.py`` emits identifiers like ``acceleration_clause_triggered``
+    bare, OR ``stacking_exceeds_limit: 3 active positions`` with a value
+    tail. The regex tolerates both; falls back to the trimmed input as
+    the code when the regex misses so an unexpected format still renders
+    with the raw string visible.
+    """
+    if not raw:
+        return "", ""
+    stripped = raw.strip()
+    m = _REASON_DETAIL_RE.match(stripped)
+    if m:
+        return m.group("code"), (m.group("detail") or "").strip()
+    return stripped, ""
+
+
+def humanize_hard_decline(raw: str) -> HumanReason:
+    """Return a ``HumanReason`` for a raw hard-decline reason string.
+
+    Unknown codes fall back to a usable shape (raw code as title, raw
+    detail passed through) — same fallback contract ``humanize_flag``
+    uses, so an un-registered code never crashes the dossier.
+    """
+    code, detail = _split_reason(raw)
+    spec = HARD_DECLINE_COPY.get(code)
+    if spec is None:
+        return HumanReason(
+            code=code or "unknown",
+            title=_humanize_unknown_code(code),
+            description=(
+                "No operator copy registered for this hard-decline "
+                "reason. Treat as decline and surface the raw identifier "
+                "below for engineering."
+            ),
+            detail=detail,
+        )
+    return HumanReason(
+        code=spec.code,
+        title=spec.title,
+        description=spec.description,
+        detail=detail,
+        confidence=spec.confidence,
+    )
+
+
+def humanize_soft_concern(raw: str) -> HumanReason:
+    """Return a ``HumanReason`` for a raw soft-concern string.
+
+    Same fallback contract as ``humanize_hard_decline``. Additionally
+    falls back to a prefix lookup for codes carrying a numeric suffix —
+    ``score.py`` emits ``top_5_expense_concentration_{pct}pct`` with the
+    actual percentage baked into the code rather than the detail tail.
+    The prefix lookup pulls the suffix off, surfaces it as
+    ``HumanReason.detail``, and maps the bare prefix to the registered
+    copy so the worker still sees worker-language text.
+    """
+    code, detail = _split_reason(raw)
+    spec = SOFT_CONCERN_COPY.get(code)
+    if spec is not None:
+        return HumanReason(
+            code=spec.code,
+            title=spec.title,
+            description=spec.description,
+            detail=detail,
+            confidence=spec.confidence,
+        )
+    # Prefix fallback — covers the ``top_5_expense_concentration_45pct``
+    # shape where the value is suffixed into the code. Picks the longest
+    # registered prefix that matches so the most specific copy wins.
+    prefix_match = max(
+        (key for key in SOFT_CONCERN_COPY if code.startswith(key + "_")),
+        key=len,
+        default=None,
+    )
+    if prefix_match is not None:
+        spec = SOFT_CONCERN_COPY[prefix_match]
+        suffix = code[len(prefix_match) + 1 :]
+        merged_detail = (
+            f"{suffix}; {detail}".strip("; ") if detail else suffix
+        )
+        return HumanReason(
+            code=spec.code,
+            title=spec.title,
+            description=spec.description,
+            detail=merged_detail,
+            confidence=spec.confidence,
+        )
+    return HumanReason(
+        code=code or "unknown",
+        title=_humanize_unknown_code(code),
+        description="Verify before submission.",
+        detail=detail,
+    )
+
+
+def _humanize_unknown_code(code: str) -> str:
+    """Title-cased fallback for an un-registered reason / concern code.
+
+    ``brand_new_reason`` -> ``Brand new reason``. Used only on the
+    fallback path; registered titles are hand-authored.
+    """
+    if not code:
+        return "(unknown reason)"
+    return code.replace("_", " ").strip().capitalize()
+
+
+def pattern_has_customer_concentration(
+    pattern_analysis: PatternAnalysis | None,
+) -> bool:
+    """Return True iff a ``customer_concentration`` Pattern is emitted.
+
+    Used by the dossier template to suppress the
+    ``soft_signals.customer_concentration`` aggregate-derived card when
+    the richer pattern-card view is already on the page — same fact, two
+    sources (v2 catalog Bucket B.1). The pattern card carries severity
+    banding and the source-row drill-down; the aggregate card carries
+    nothing the pattern card lacks. Keeping the pattern card and
+    suppressing the aggregate card gives the worker the same information
+    without the visual double-render.
+    """
+    if pattern_analysis is None:
+        return False
+    return any(p.code == "customer_concentration" for p in pattern_analysis.patterns)
+
+
+__all__ = [
+    "HARD_DECLINE_COPY",
+    "PATTERN_CODE_BY_HARD_DECLINE_REASON",
+    "PATTERN_COPY",
+    "SOFT_CONCERN_COPY",
+    "HumanReason",
+    "PatternCard",
+    "build_pattern_cards",
+    "humanize_hard_decline",
+    "humanize_soft_concern",
+    "pattern_has_customer_concentration",
+]
 
 
 def _emitted_pattern_codes_from_source() -> frozenset[str]:
