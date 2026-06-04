@@ -3,16 +3,14 @@
 {% block title %}Merchants — AEGIS{% endblock %}
 
 {% block deck %}
-<header class="deck">
-  <h1>Merchants<em> · directory</em></h1>
-  <div class="meta">
-    {{ merchants|length }} merchant{{ '' if merchants|length == 1 else 's' }} &nbsp;·&nbsp; click row → dossier
-  </div>
-  <div class="actions">
-    <a class="btn" href="/ui/upload">Upload PDF</a>
-    <a class="btn primary" href="/ui/intake">+ New merchant</a>
-  </div>
-</header>
+{% set title = "Merchants" %}
+{% set subtitle = "· directory" %}
+{% set meta = (merchants|length|string) ~ " merchant" ~ ('' if merchants|length == 1 else 's') ~ " · click row → dossier" %}
+{% set actions = [
+    {"label": "Upload PDF", "href": "/ui/upload"},
+    {"label": "+ New merchant", "href": "/ui/intake", "variant": "primary"},
+] %}
+{% include "_page_header.html.j2" %}
 {% endblock %}
 
 {% block body %}
@@ -30,6 +28,7 @@
       <table class="queue">
         <thead>
           <tr>
+            <th>Status</th>
             <th>Business</th>
             <th>Owner</th>
             <th>State</th>
@@ -42,6 +41,15 @@
         <tbody>
           {% for m in merchants %}
             <tr onclick="window.location.href='/ui/merchants/{{ m.id }}'">
+              <td>
+                {% if m.is_provisional %}
+                  {% with tone="warn", label="PROVISIONAL" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                {% elif m.needs_manual_naming %}
+                  {% with tone="warn", label="NEEDS NAMING" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                {% else %}
+                  <span class="mono-cell">—</span>
+                {% endif %}
+              </td>
               <td class="merchant">
                 <a href="/ui/merchants/{{ m.id }}">{{ m.business_name }}</a>
                 <span class="sub">{{ m.id|string|truncate(8, True, '') }}</span>
