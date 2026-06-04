@@ -751,7 +751,7 @@ class SupabaseDocumentRepository:
             .execute()
         )
         return [
-            _doc_row_from_db(row)
+            _row_to_document(row)
             for row in cast(list[dict[str, Any]], result.data or [])
         ]
 
@@ -766,41 +766,6 @@ class SupabaseDocumentRepository:
 
 
 # Internal helpers -------------------------------------------------------------
-
-
-def _doc_row_from_db(row: dict[str, Any]) -> DocumentRow:
-    """Project a Supabase ``documents`` row into the ``DocumentRow``
-    model. Used by ``list_retention_expired`` which returns rows
-    rather than dicts so the chunk-E sweep code can stay typed.
-    """
-    return DocumentRow(
-        id=UUID(str(row["id"])),
-        file_hash=str(row["file_hash"]),
-        byte_size=int(row["byte_size"]),
-        original_filename=str(row["original_filename"]),
-        merchant_id=(
-            UUID(str(row["merchant_id"])) if row.get("merchant_id") else None
-        ),
-        parse_status=cast(ParseStatus, row.get("parse_status", "pending")),
-        fraud_score=row.get("fraud_score"),
-        fraud_score_breakdown=row.get("fraud_score_breakdown") or {},
-        all_flags=list(row.get("all_flags") or []),
-        metadata_flags=list(row.get("metadata_flags") or []),
-        error_detail=row.get("error_detail"),
-        uploaded_at=datetime.fromisoformat(row["uploaded_at"]),
-        parsed_at=(
-            datetime.fromisoformat(row["parsed_at"])
-            if row.get("parsed_at") else None
-        ),
-        uploaded_by=str(row.get("uploaded_by") or "system"),
-        storage_path=row.get("storage_path"),
-        sha256_original=row.get("sha256_original"),
-        encryption_key_version=row.get("encryption_key_version"),
-        retention_until=(
-            datetime.fromisoformat(row["retention_until"])
-            if row.get("retention_until") else None
-        ),
-    )
 
 
 def _build_analysis(
@@ -884,19 +849,41 @@ def _count_mca_positions(classified: list[ClassifiedTransaction]) -> int:
 
 
 def _row_to_document(row: dict[str, Any]) -> DocumentRow:
-    # The four PDF-retention columns (chunk B / migration 033) were
-    # added to ``DocumentRow`` and to ``persist_storage_metadata`` but
-    # were silently absent from this helper until 2026-06-03 — the
-    # operator hit a 404 on the first live chunk-C view-route call
-    # because every Supabase fetch through ``get_document`` /
-    # ``find_by_hash`` / ``list_documents`` / ``create_document`` was
-    # stripping ``storage_path`` (and the other three columns), so the
-    # route's ``doc.storage_path is None`` check fired even on rows
-    # whose DB state had the path populated. ``list_retention_expired``
-    # uses the separate ``_doc_row_from_db`` helper which has always
-    # hydrated these columns correctly; the duplication-between-helpers
-    # is what hid the gap. See [[project-in-memory-vs-supabase-test-gap]]
-    # for the test-divergence class this bug exposed.
+    """Project a Supabase ``documents`` row dict into ``DocumentRow``.
+
+    THE single canonical mapper. Two divergent duplicates lived here
+    (``_doc_row_from_db`` at line 771, ``_row_to_document`` here)
+    until 2026-06-04: ``_row_to_document`` was missing the four chunk-B
+    PDF-retention columns (storage_path, sha256_original,
+    encryption_key_version, retention_until) for weeks because the
+    operator's chunk-B fix only patched one of the pair. ``list_retention_expired``
+    used the other helper, which always had them — so pytest passed
+    while production silently 404'd every chunk-C view-route call.
+
+    Consolidation rules (picked from the better-behaved variant in
+    each direction):
+
+    * **Dates** — ``_parse_dt`` handles the ``Z``-suffix ISO strings
+      Supabase actually emits; the bare ``datetime.fromisoformat``
+      that ``_doc_row_from_db`` used worked on Python 3.11+ but is
+      sloppy. ``_parse_dt`` is defensive.
+    * **``parse_status``** — no default. If the column is missing on
+      a row, the schema is wrong and ``KeyError`` should surface it,
+      not a silent fall-through to ``"pending"``.
+    * **Collections** — explicit ``list(...)`` wraps on
+      ``all_flags`` / ``metadata_flags`` because Supabase occasionally
+      returns ``None`` (caught by ``or []``) or other iterable shapes;
+      defensive over Pydantic-coerced.
+    * **Bare-string fields** — let Pydantic coerce. No ``str(...)`` /
+      ``int(...)`` wraps; they hid latent type bugs by silencing
+      validation errors that would have surfaced real problems.
+
+    The test ``tests/storage/test_row_to_document_mapper.py`` exists
+    BECAUSE of the duplicate divergence above — it asserts every field
+    on ``DocumentRow`` is hydrated by this mapper, which catches the
+    "new column added to the model but forgotten in the mapper" bug
+    class at green-test time.
+    """
     return DocumentRow(
         id=UUID(row["id"]),
         file_hash=row["file_hash"],
@@ -906,8 +893,8 @@ def _row_to_document(row: dict[str, Any]) -> DocumentRow:
         parse_status=row["parse_status"],
         fraud_score=row.get("fraud_score"),
         fraud_score_breakdown=row.get("fraud_score_breakdown") or {},
-        all_flags=row.get("all_flags") or [],
-        metadata_flags=row.get("metadata_flags") or [],
+        all_flags=list(row.get("all_flags") or []),
+        metadata_flags=list(row.get("metadata_flags") or []),
         error_detail=row.get("error_detail"),
         uploaded_at=_parse_dt(row["uploaded_at"]),
         parsed_at=_parse_dt(row["parsed_at"]) if row.get("parsed_at") else None,
