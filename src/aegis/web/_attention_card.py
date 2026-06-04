@@ -120,6 +120,12 @@ class AttentionCard:
     doc_count: int
     documents: list[dict[str, Any]]
     flags: CategorizedFlags
+    # Migration 034 — merchant lifecycle status surfaced on the card so
+    # the Today / Review attention queues can render a status chip
+    # ("provisional" / "needs naming") next to non-finalized merchants.
+    # ``None`` for unlinked groups (the "—" bucket) and as a safe
+    # default for legacy call sites that don't thread the value yet.
+    merchant_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +167,12 @@ class ReviewQueueCard:
     tier: str | None
 
     flags: CategorizedFlags
+    # Migration 034 — same as AttentionCard.merchant_status. Surfaced
+    # on the per-document Review Queue card so the worker can tell at
+    # a glance whether the linked merchant is provisional or awaiting
+    # manual naming. Defaults to ``None`` for backward compat with any
+    # builder that doesn't yet thread the field.
+    merchant_status: str | None = None
 
 
 @dataclass(frozen=True)
