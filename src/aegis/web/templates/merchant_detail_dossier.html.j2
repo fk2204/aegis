@@ -50,7 +50,6 @@
    is added in a follow-up CSS unit (flagged for Wave 1.5). #}
 {% set _actions_locked = merchant.status != 'finalized' %}
 {% set _locked_title = 'Available after merchant is finalized' %}
-{% set _locked_btn_style = 'opacity:0.45;cursor:not-allowed' %}
 
 {# === Wave 2.4 merchant-status banner (2026-06-03) ===
    Renders for the two non-final lifecycle states (see
@@ -103,7 +102,7 @@
       <div class="actions">
         {% if intake_docs_uploaded > 0 %}
           {% if _actions_locked %}
-            <span class="btn primary" title="{{ _locked_title }}" aria-disabled="true" style="{{ _locked_btn_style }}">Match funders →</span>
+            <span class="btn primary is-disabled" title="{{ _locked_title }}" aria-disabled="true">Match funders →</span>
           {% else %}
             <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders →</a>
           {% endif %}
@@ -288,7 +287,7 @@
 
             <div class="actions">
               {% if _actions_locked %}
-                <span class="btn primary" title="{{ _locked_title }}" aria-disabled="true" style="{{ _locked_btn_style }}">Match funders</span>
+                <span class="btn primary is-disabled" title="{{ _locked_title }}" aria-disabled="true">Match funders</span>
               {% else %}
                 <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders</a>
               {% endif %}
@@ -704,7 +703,7 @@
         </div>
         <div>
           {% if _actions_locked %}
-            <span class="btn primary" title="{{ _locked_title }}" aria-disabled="true" style="{{ _locked_btn_style }}">Open match panel →</span>
+            <span class="btn primary is-disabled" title="{{ _locked_title }}" aria-disabled="true">Open match panel →</span>
           {% else %}
             <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Open match panel →</a>
           {% endif %}
