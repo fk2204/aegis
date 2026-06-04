@@ -19,7 +19,17 @@ from aegis.api.routes.transactions import router as transactions_router
 from aegis.api.routes.upload import router as upload_router
 from aegis.api.routes.upload import uploads_router
 from aegis.api.routes.webhooks_close import router as webhooks_close_router
-from aegis.web import router as web_router
+
+# Direct submodule attribute access — ``from aegis.web import router``
+# binds to whatever ``aegis.web.router`` resolves to at import time,
+# which races the submodule registration (Python registers
+# ``aegis.web.router`` as an attribute of ``aegis.web`` when the
+# submodule is loaded, potentially overwriting the APIRouter object
+# re-exported from ``aegis/web/__init__.py``). The race surfaced as
+# 7 collection errors in ``tests/web/`` whenever pytest's import
+# order touched the submodule before the package re-export. Direct
+# attribute access on the submodule eliminates the ambiguity.
+from aegis.web.router import router as web_router
 
 ALL_ROUTERS = (
     upload_router,

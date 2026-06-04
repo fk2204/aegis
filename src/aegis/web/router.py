@@ -57,7 +57,18 @@ from aegis.api.deps import (
     get_override_repository,
     get_repository,
 )
-from aegis.api.routes.upload import _make_request_enqueue, persist_pdf_upload
+
+# ``aegis.api.routes.upload`` imported lazily inside ``_persist_uploaded_files``
+# below to break a package-init cycle: ``aegis.api.routes.__init__`` imports
+# ``aegis.web.router`` (to wire the dashboard router), so a module-level
+# import the other direction makes ``aegis.web.router`` depend on
+# ``aegis.api.routes`` finishing first. With the explicit submodule-attribute
+# import in ``aegis.api.routes.__init__`` (post the A.3 router-shadowing fix),
+# the eager path raises ``ImportError: cannot import name 'router' from
+# partially initialized module 'aegis.web.router'`` on certain pytest
+# collection orders. Pre-A.3 the same cycle existed but was silently masked
+# by the import binding to the submodule object instead of the APIRouter.
+# Lazy import + sys.modules caching → zero per-call overhead.
 from aegis.audit import AuditLog
 from aegis.close.orchestration import enqueue_close_orchestration
 from aegis.compliance.overrides import (
@@ -3516,6 +3527,12 @@ async def _persist_uploads(
     bad file doesn't kill 3 good ones. A batch-level error (total cap
     exceeded) short-circuits and returns no results.
     """
+    # Lazy import — see module-top comment for the cycle this avoids.
+    from aegis.api.routes.upload import (
+        _make_request_enqueue,
+        persist_pdf_upload,
+    )
+
     bodies: list[tuple[str, bytes]] = []
     running_total = 0
     for f in files:
