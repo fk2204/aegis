@@ -32,19 +32,19 @@
   capture a Jinja block into a variable and pass it as the input. The
   partial renders the variable's contents inside the same .deck shape.
 
-    {# Capture rich subtitle markup #}
+    -- Capture rich subtitle markup --
     {% set subtitle %}
       · attention queue
       <span class="chip warn">{{ flagged_count }} flagged</span>
     {% endset %}
 
-    {# Capture rich meta markup #}
+    -- Capture rich meta markup --
     {% set meta %}
       {{ rows|length }} rows ·
       <span class="mono-cell">last sync {{ last_sync_at }}</span>
     {% endset %}
 
-    {# Capture a custom actions row (overrides the list-of-dicts form) #}
+    -- Capture a custom actions row (overrides the list-of-dicts form) --
     {% set actions_html %}
       <a class="btn ghost" href="/ui/export">Export CSV</a>
       <button class="btn primary"

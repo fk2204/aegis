@@ -26,7 +26,7 @@
     {% include "_tier_badge.html.j2" with context %}  → "B tier"
     where caller sets `tier = "B"`.
 
-    {# Custom tooltip — e.g. Today queue's worst-document phrasing #}
+    -- Custom tooltip — e.g. Today queue's worst-document phrasing --
     {% set tier = "C" %}
     {% set title = "Deal tier from worst-scoring document" %}
     {% include "_tier_badge.html.j2" with context %}
