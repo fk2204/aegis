@@ -124,16 +124,26 @@
       </tr>
     </table>
 
+    {# Hard-decline + soft-concern lines humanized through the same
+       ``humanize_hard_decline`` / ``humanize_soft_concern`` filters the
+       HTML dossier uses. The raw code stays on ``data-code`` for the
+       audit trail; the PDF reader sees worker-language copy. #}
     {% if score_result.hard_decline_reasons %}
       <h4>Hard declines</h4>
       {% for reason in score_result.hard_decline_reasons %}
-        <p class="reason hard">• {{ reason }}</p>
+        {% set hr = reason|humanize_hard_decline %}
+        <p class="reason hard" data-code="{{ hr.code }}">
+          • <strong>{{ hr.title }}{% if hr.detail %} · {{ hr.detail }}{% endif %}</strong> — {{ hr.description }}
+        </p>
       {% endfor %}
     {% endif %}
     {% if score_result.soft_concerns %}
       <h4>Soft concerns</h4>
       {% for c in score_result.soft_concerns %}
-        <p class="reason soft">• {{ c }}</p>
+        {% set sc = c|humanize_soft_concern %}
+        <p class="reason soft" data-code="{{ sc.code }}">
+          • <strong>{{ sc.title }}{% if sc.detail %} · {{ sc.detail }}{% endif %}</strong> — {{ sc.description }}
+        </p>
       {% endfor %}
     {% endif %}
   {% else %}

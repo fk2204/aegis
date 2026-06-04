@@ -117,7 +117,12 @@ from aegis.web._attention_card import (
     derive_fraud_band,
 )
 from aegis.web._flag_labels import humanize_audit_action, humanize_flag
-from aegis.web._pattern_cards import build_pattern_cards
+from aegis.web._pattern_cards import (
+    build_pattern_cards,
+    humanize_hard_decline,
+    humanize_soft_concern,
+    pattern_has_customer_concentration,
+)
 from aegis.web._slug import slugify
 from aegis.web._soft_signals import parse_soft_signal_flags
 from aegis.web._stacking_card import build_stacking_card
@@ -190,6 +195,14 @@ templates.env.filters["whole_money"] = _whole_money_filter
 templates.env.filters["days_label"] = _days_label_filter
 templates.env.filters["fraud_band"] = _fraud_band
 templates.env.filters["humanize_flag"] = humanize_flag
+# Verdict-section humanizers — added in the dossier signal-legibility
+# consolidation (v2 catalog Bucket B; ``_pattern_cards.py``). Used by
+# merchant_detail_dossier.html.j2 to render the hard-decline and
+# soft-concern lists as worker-language sentences instead of raw
+# identifier strings. Pattern cards already render through their own
+# PATTERN_COPY map; these two close the gap for the verdict section.
+templates.env.filters["humanize_hard_decline"] = humanize_hard_decline
+templates.env.filters["humanize_soft_concern"] = humanize_soft_concern
 
 router = APIRouter(prefix="/ui", tags=["dashboard"])
 
@@ -2409,6 +2422,9 @@ async def merchant_detail(
         if latest_doc is not None
         else None
     )
+    # Held for the post-template ``has_concentration_pattern`` check so
+    # the suppression doesn't re-walk the AnalysisRow cache.
+    pattern_analysis_for_view: Any = None
     if latest_doc is not None and latest_analysis is not None:
         all_items = _collect_analyzed_for_merchant(
             docs, merchant_id, window=999, bundle=None
@@ -2438,9 +2454,7 @@ async def merchant_detail(
         pattern_analysis = _dossier_pattern_analysis(
             latest_analysis, latest_transactions
         )
-        pattern_cards = list(
-            build_pattern_cards(pattern_analysis, latest_transactions)
-        )
+        pattern_analysis_for_view = pattern_analysis
         # Migration 034 — scoring requires a finalized merchant.
         # Skip the score panel + statement_coverage build for
         # provisional / needs_manual_naming; the dossier still
@@ -2470,6 +2484,23 @@ async def merchant_detail(
                 "missing_months": _detect_missing_months(items),
                 "bundle_options": bundle_summaries,
             }
+        # Build pattern cards AFTER scoring runs so we can suppress the
+        # display card for patterns that the scorer already attached as a
+        # hard-decline reason (v2 catalog Bucket B.7 — dual-tier
+        # acceleration / withdrawal-dispute presentation). Cards still
+        # build on the non-finalized branch with ``hard_decline_reasons``
+        # absent — the worker sees every pattern card until scoring
+        # runs.
+        _hard_decline_reasons = (
+            list(score_result.hard_decline_reasons) if score_result else None
+        )
+        pattern_cards = list(
+            build_pattern_cards(
+                pattern_analysis,
+                latest_transactions,
+                hard_decline_reasons=_hard_decline_reasons,
+            )
+        )
 
     state_tier = _state_tier(merchant.state)
     # OFAC screening is REGULATORY — a screening row written for a
@@ -2528,6 +2559,14 @@ async def merchant_detail(
     else:
         ofac_dossier_status = "pending"
 
+    # v2 catalog Bucket B.1 — soft_signals.customer_concentration and a
+    # ``customer_concentration`` Pattern both describe the same fact (top
+    # counterparty share of revenue). When both fire the dossier used to
+    # render two cards side-by-side; suppress the soft-signals one when
+    # the richer pattern card is already on the page.
+    _has_concentration_pattern = pattern_has_customer_concentration(
+        pattern_analysis_for_view
+    )
     return templates.TemplateResponse(
         request,
         template_name,
@@ -2541,6 +2580,7 @@ async def merchant_detail(
             "pattern_cards": pattern_cards,
             "latest_transactions": latest_transactions,
             "soft_signals": soft_signals,
+            "has_concentration_pattern": _has_concentration_pattern,
             "from_intake": from_intake,
             "intake_docs_uploaded": intake_docs_uploaded,
             "intake_docs_failed": intake_docs_failed,
@@ -2635,6 +2675,7 @@ def _build_pdf_dossier_context(
     statement_coverage: dict[str, Any] | None = None
     stacking = None
     pattern_cards: list[Any] = []
+    pattern_analysis_for_view: Any = None
 
     if latest_doc is not None and latest_analysis is not None:
         all_items = _collect_analyzed_for_merchant(
@@ -2654,7 +2695,7 @@ def _build_pdf_dossier_context(
         pattern_analysis = _dossier_pattern_analysis(
             latest_analysis, latest_transactions
         )
-        pattern_cards = list(build_pattern_cards(pattern_analysis, latest_transactions))
+        pattern_analysis_for_view = pattern_analysis
 
         # Migration 034 — same is_finalized scoring gate as the
         # matched-funders dossier branch above.
@@ -2683,6 +2724,21 @@ def _build_pdf_dossier_context(
                 "missing_months": _detect_missing_months(items),
                 "bundle_options": _build_bundle_summaries(bundle_options, active_bundle),
             }
+
+        # Pattern cards built AFTER scoring so dual-tier signals
+        # (acceleration_clause_triggered / unauthorized_withdrawal_dispute)
+        # don't render once as a hard-decline line + once as a soft
+        # severity card. See ``build_pattern_cards.hard_decline_reasons``.
+        _hard_decline_reasons = (
+            list(score_result.hard_decline_reasons) if score_result else None
+        )
+        pattern_cards = list(
+            build_pattern_cards(
+                pattern_analysis,
+                latest_transactions,
+                hard_decline_reasons=_hard_decline_reasons,
+            )
+        )
 
     state_tier = _state_tier(merchant.state)
     state_reg = STATES.get(merchant.state.upper()) if merchant.state else None
@@ -2729,6 +2785,9 @@ def _build_pdf_dossier_context(
         "statement_coverage": statement_coverage,
         "stacking": stacking,
         "pattern_cards": pattern_cards,
+        "has_concentration_pattern": pattern_has_customer_concentration(
+            pattern_analysis_for_view
+        ),
         "state_tier": state_tier_dossier,
         "ofac_status": ofac_dossier_status,
         "ofac_match": ofac_match,

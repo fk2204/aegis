@@ -293,16 +293,25 @@
           </div>
         </div>
 
-        {# Hard declines / soft concerns laid out below the verdict block. #}
+        {# Hard declines / soft concerns laid out below the verdict block.
+           Reasons humanized through ``humanize_hard_decline`` /
+           ``humanize_soft_concern`` (see ``_pattern_cards.HARD_DECLINE_COPY``
+           / ``SOFT_CONCERN_COPY``). The raw identifier still renders as
+           ``data-code`` for the audit CSV + browser-dev-tools query;
+           the human-language title + description sit in front of it so
+           a worker reading the dossier cold doesn't need a glossary
+           tab open. #}
         {% if score_result.hard_decline_reasons or score_result.soft_concerns %}
           <div class="blockers">
             {% if score_result.hard_decline_reasons %}
               <h4 class="bad">Hard declines &mdash; {{ score_result.hard_decline_reasons|length }}</h4>
               <ul>
                 {% for reason in score_result.hard_decline_reasons %}
-                  <li>
-                    <span class="code">{{ reason }}</span>
-                    {% if reason == 'ofac_sanctions_match' and score_result.decline_details.get('ofac_matches') %}
+                  {% set hr = reason|humanize_hard_decline %}
+                  <li data-code="{{ hr.code }}">
+                    <strong>{{ hr.title }}{% if hr.detail %} <span class="qual">· {{ hr.detail }}</span>{% endif %}</strong>
+                    <span class="desc">— {{ hr.description }}</span>
+                    {% if hr.code == 'ofac_sanctions_match' and score_result.decline_details.get('ofac_matches') %}
                       {% for m in score_result.decline_details.get('ofac_matches', []) %}
                         <span class="desc">— matched <strong>{{ m.matched_name }}</strong> on field <em>{{ m.input_field }}</em>{% if m.sdn_uid %} · <a href="https://sanctionssearch.ofac.treas.gov/Details.aspx?id={{ m.sdn_uid }}" target="_blank" rel="noopener">Treasury UID {{ m.sdn_uid }} ↗</a>{% endif %}</span>
                       {% endfor %}
@@ -315,7 +324,11 @@
               <h4 class="warn">Soft concerns &mdash; {{ score_result.soft_concerns|length }}</h4>
               <ul>
                 {% for concern in score_result.soft_concerns %}
-                  <li><span class="code">{{ concern }}</span><span class="desc">— verify before submission</span></li>
+                  {% set sc = concern|humanize_soft_concern %}
+                  <li data-code="{{ sc.code }}">
+                    <strong>{{ sc.title }}{% if sc.detail %} <span class="qual">· {{ sc.detail }}</span>{% endif %}</strong>
+                    <span class="desc">— {{ sc.description }}</span>
+                  </li>
                 {% endfor %}
               </ul>
             {% endif %}
@@ -538,10 +551,22 @@
           </div>
         {% endif %}
 
-        {# soft signals — concentration / payroll / NSF overlap #}
+        {# soft signals — concentration / payroll / NSF overlap.
+
+           ``soft_signals.customer_concentration`` is sourced from the
+           ``aggregate.py``-emitted ``top_counterparty_concentration:`` flag
+           and is the SAME underlying fact the ``customer_concentration``
+           Pattern detector emits. When both fire the dossier used to
+           render two cards (v2 catalog Bucket B.1). Suppress the
+           soft-signals one when the Pattern card is already on the page
+           — the pattern card carries severity banding + source-row
+           drill-down + the same top_payee + share_pct in its detail
+           string, so the worker loses nothing. The legacy operator
+           field ``customer_concentration_severe`` continues to render
+           through the humanized soft-concern list above. #}
         {% if soft_signals and not soft_signals.is_empty %}
           <div class="findings" style="margin-top:36px">
-            {% if soft_signals.customer_concentration %}
+            {% if soft_signals.customer_concentration and not has_concentration_pattern %}
               {% set cc = soft_signals.customer_concentration %}
               <article class="finding">
                 <div class="head">
