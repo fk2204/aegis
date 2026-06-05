@@ -217,30 +217,36 @@ def _text_blocks(response: object) -> str:
 def _first_json_object(text: str) -> dict[str, Any]:
     """Extract the first {...} JSON object in a text response.
 
+    Uses `JSONDecoder.raw_decode` so trailing commentary or a second JSON
+    object after the first one is harmlessly ignored — Bedrock occasionally
+    emits the schema object followed by prose or a duplicated object, and
+    the previous `find('{')` ... `rfind('}')` slice would span both and
+    raise `JSONDecodeError: Extra data`. The first balanced object wins.
+
     If the response parses to a top-level JSON array, raise a clear error
     pointing at `parser/prompts.py` so operators know the prompt — not the
     parser — is the place to fix the schema mismatch.
     """
     start = text.find("{")
-    end = text.rfind("}")
     bracket_start = text.find("[")
     # If the response is a bare array (no object wrapper), give a clearer
     # error than "no JSON object". This lands in `aegis.parser.extract`
     # logs as `LLM returned malformed JSON: ...`, and the operator's first
     # action should be to inspect / amend the prompt.
-    if (start == -1 or end == -1 or end < start) and bracket_start != -1:
+    if start == -1 and bracket_start != -1:
         raise ValueError(
             "LLM returned a top-level JSON array; expected an object. "
             "Fix the prompt in `aegis/parser/prompts.py` to require an "
             "object wrapper (e.g. {\"classifications\": [...]})."
         )
-    if start == -1 or end == -1 or end < start:
+    if start == -1:
         raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
-    snippet = text[start : end + 1]
+    decoder = json.JSONDecoder()
     try:
-        parsed = json.loads(snippet)
+        parsed, _end = decoder.raw_decode(text[start:])
     except json.JSONDecodeError as exc:
-        raise ValueError(f"could not parse JSON: {exc}; raw={snippet[:200]!r}") from exc
+        snippet = text[start : start + 200]
+        raise ValueError(f"could not parse JSON: {exc}; raw={snippet!r}") from exc
     if not isinstance(parsed, dict):
         raise ValueError(
             "top-level JSON is not an object: got "
