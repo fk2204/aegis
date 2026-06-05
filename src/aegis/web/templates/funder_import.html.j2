@@ -20,18 +20,18 @@
     {% if error %}<div class="form-error">{{ error }}</div>{% endif %}
 
     <header class="sect-head">
-      <h2>Upload criteria PDF</h2>
+      <h2>Upload criteria documents</h2>
       <div class="rule"></div>
-      <div class="meta">max 25 MB · 10-30s extraction</div>
+      <div class="meta">PDFs and/or screenshots · max 25 MB each · 10-30 s per doc</div>
     </header>
 
     <form class="form" method="post" enctype="multipart/form-data" action="/ui/funders/import" style="margin-top:14px">
       <div class="field">
-        <label>Criteria PDF</label>
+        <label>Criteria documents</label>
         <div class="dropzone">
-          <div class="big">Drop a funder's criteria PDF</div>
-          <div class="small">or pick a file below</div>
-          <input type="file" name="pdf" accept="application/pdf" required>
+          <div class="big">Drop one or more funder docs</div>
+          <div class="small">PDF · PNG · JPEG &nbsp;·&nbsp; multiple files merge into one draft</div>
+          <input type="file" name="pdf" accept="application/pdf,image/png,image/jpeg" multiple required>
         </div>
       </div>
       <div class="form-actions">
@@ -45,10 +45,11 @@
       <div class="rule"></div>
     </header>
     <div class="feed">
-      <div class="event"><div class="t">1</div><div class="txt">Upload runs synchronously against Bedrock · ~10-30 s</div></div>
-      <div class="event"><div class="t">2</div><div class="txt">Review page highlights low-confidence fields</div></div>
-      <div class="event"><div class="t">3</div><div class="txt">Edit any field before saving — AEGIS never auto-creates funders</div></div>
-      <div class="event"><div class="t">4</div><div class="txt">Save persists the FunderRow + source PDF hash for audit</div></div>
+      <div class="event"><div class="t">1</div><div class="txt">Each file runs synchronously against Bedrock · ~10-30 s per doc</div></div>
+      <div class="event"><div class="t">2</div><div class="txt">Per-doc extractions merge field-by-field — highest confidence wins</div></div>
+      <div class="event"><div class="t">3</div><div class="txt">Review page highlights low-confidence fields</div></div>
+      <div class="event"><div class="t">4</div><div class="txt">Edit any field before saving — AEGIS never auto-creates funders</div></div>
+      <div class="event"><div class="t">5</div><div class="txt">Save persists the FunderRow + source hash for audit</div></div>
     </div>
   </div>
 </section>

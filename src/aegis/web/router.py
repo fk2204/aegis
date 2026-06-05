@@ -80,7 +80,12 @@ from aegis.compliance.overrides import (
 from aegis.compliance.states import STATES, StateNotServed, validate_state_served
 from aegis.config import get_settings
 from aegis.deals.repository import DealRepository
-from aegis.funders.extract import FunderExtractionError, extract_funder_guidelines
+from aegis.funders.extract import (
+    FunderExtractionError,
+    extract_funder_guidelines,
+    extract_funder_guidelines_from_image,
+    merge_extractions,
+)
 from aegis.funders.models import FunderRow, FunderTier
 from aegis.funders.replies import FunderReplyRepository
 from aegis.funders.repository import (
@@ -1267,41 +1272,135 @@ async def funder_import_form(request: Request) -> HTMLResponse:
 
 _MAX_FUNDER_IMPORT_BYTES = 25 * 1024 * 1024
 
+# Media types accepted at /ui/funders/import. PDFs route through the
+# document block; PNG/JPEG route through the image block. Anything else
+# is rejected with a 415-like 400 (FastAPI surfaces 415 awkwardly on
+# multipart uploads, so we re-render the form with a clear error).
+_FUNDER_IMPORT_PDF_TYPES: Final[frozenset[str]] = frozenset({"application/pdf"})
+_FUNDER_IMPORT_IMAGE_TYPES: Final[frozenset[str]] = frozenset(
+    {"image/png", "image/jpeg", "image/jpg"}
+)
+
+
+def _classify_funder_import_media(
+    upload: UploadFile,
+) -> str:
+    """Return "pdf" or "image" based on Content-Type, falling back to filename.
+
+    Returns "" if neither classification fits — caller renders an error.
+    """
+    raw = (upload.content_type or "").strip().lower()
+    if raw in _FUNDER_IMPORT_PDF_TYPES:
+        return "pdf"
+    if raw in _FUNDER_IMPORT_IMAGE_TYPES:
+        return "image"
+    # Filename fallback: browsers occasionally send a generic
+    # `application/octet-stream` for drag-dropped images.
+    fn = (upload.filename or "").lower()
+    if fn.endswith(".pdf"):
+        return "pdf"
+    if fn.endswith((".png", ".jpg", ".jpeg")):
+        return "image"
+    return ""
+
 
 @router.post("/funders/import", response_class=HTMLResponse, response_model=None)
 async def funder_import_review(
     request: Request,
-    pdf: Annotated[UploadFile, File()],
     llm: Annotated[LLMClient, Depends(get_llm)],
+    pdf: Annotated[list[UploadFile], File()],
 ) -> HTMLResponse:
-    """Run the LLM extraction pass and render an editable review page.
+    """Run the LLM extraction pass(es) and render an editable review page.
 
-    Stateless: the rendered form carries every field of the draft so the
-    save endpoint receives the (possibly edited) values directly. Avoids
-    a "drafts" table for Phase 7B.
+    Accepts one or more files (PDFs and/or PNG/JPEG screenshots). Each
+    file is routed by media type — PDFs through the document block,
+    images through the vision block — and the per-doc extractions are
+    field-merged so the operator sees a single review form.
+
+    The form parameter is still named `pdf` for backward compatibility
+    with existing bookmarks / scripts that target this endpoint; it now
+    accepts multiple files via the `multiple` attribute on the file
+    input.
+
+    Stateless: the rendered form carries every field of the merged draft
+    so the save endpoint receives the (possibly edited) values directly.
+    Avoids a "drafts" table for Phase 7B.
     """
-    body = await pdf.read(_MAX_FUNDER_IMPORT_BYTES + 1)
-    if len(body) > _MAX_FUNDER_IMPORT_BYTES:
+    # Treat the empty / single-empty-upload case identically.
+    uploads = [u for u in pdf if u and (u.filename or u.content_type)]
+    if not uploads:
         return templates.TemplateResponse(
             request,
             "funder_import.html.j2",
-            {"error": f"PDF exceeds {_MAX_FUNDER_IMPORT_BYTES} bytes"},
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-        )
-    if not body:
-        return templates.TemplateResponse(
-            request,
-            "funder_import.html.j2",
-            {"error": "PDF was empty"},
+            {"error": "no files uploaded"},
             status_code=status.HTTP_400_BAD_REQUEST,
         )
+
+    extractions: list[Any] = []  # FunderGuidelineExtraction — Any to avoid name
+    # collision with the per-file try/except scope.
+
+    for upload in uploads:
+        kind = _classify_funder_import_media(upload)
+        if kind == "":
+            return templates.TemplateResponse(
+                request,
+                "funder_import.html.j2",
+                {
+                    "error": (
+                        f"unsupported file type for {upload.filename or 'upload'!r}: "
+                        f"got {upload.content_type or 'unknown'}. "
+                        "Accepted: application/pdf, image/png, image/jpeg."
+                    ),
+                },
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        body = await upload.read(_MAX_FUNDER_IMPORT_BYTES + 1)
+        if len(body) > _MAX_FUNDER_IMPORT_BYTES:
+            return templates.TemplateResponse(
+                request,
+                "funder_import.html.j2",
+                {
+                    "error": (
+                        f"{upload.filename or 'upload'} exceeds "
+                        f"{_MAX_FUNDER_IMPORT_BYTES} bytes"
+                    ),
+                },
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
+        if not body:
+            return templates.TemplateResponse(
+                request,
+                "funder_import.html.j2",
+                {"error": f"{upload.filename or 'upload'} was empty"},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            if kind == "pdf":
+                extraction = extract_funder_guidelines(body, llm)
+            else:
+                extraction = extract_funder_guidelines_from_image(body, llm)
+        except FunderExtractionError as exc:
+            return templates.TemplateResponse(
+                request,
+                "funder_import.html.j2",
+                {
+                    "error": (
+                        f"extraction failed for {upload.filename or 'upload'}: {exc}"
+                    ),
+                },
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        extractions.append(extraction)
+
     try:
-        extraction = extract_funder_guidelines(body, llm)
+        merged = merge_extractions(extractions)
     except FunderExtractionError as exc:
         return templates.TemplateResponse(
             request,
             "funder_import.html.j2",
-            {"error": str(exc)},
+            {"error": f"merge failed: {exc}"},
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
 
@@ -1310,13 +1409,13 @@ async def funder_import_review(
     import json as _json
 
     tiers_json = _json.dumps(
-        [t.model_dump(mode="json") for t in extraction.draft.tiers]
+        [t.model_dump(mode="json") for t in merged.draft.tiers]
     )
     return templates.TemplateResponse(
         request,
         "funder_review.html.j2",
         {
-            "extraction": extraction,
+            "extraction": merged,
             "low_confidence_threshold": 60,
             "form_errors": [],
             "tiers_json": tiers_json,

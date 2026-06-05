@@ -1,9 +1,18 @@
-"""Funder guideline extraction — PDF in, FunderGuidelineExtraction out.
+"""Funder guideline extraction — PDF / image in, FunderGuidelineExtraction out.
 
-Single-pass: feeds the criteria PDF + extraction prompt to Bedrock, parses
-the JSON response into a Pydantic-validated `FunderGuidelineExtraction`.
-The operator reviews per-field confidence in the dashboard before
-upserting into the funder repository.
+Two entry points:
+
+* `extract_funder_guidelines(pdf_bytes, llm)` — PDF route. Sends the
+  document block + prompt to Bedrock.
+* `extract_funder_guidelines_from_image(png_bytes, llm)` — PNG/JPEG
+  route for funders who publish their criteria as a single-page
+  screenshot (the Shor Capital case). The vision pass is gated by the
+  same prompt and the same per-field confidence schema.
+
+For the multi-doc case (guidelines PNG + signed ISO PDF together — the
+Shor case loses half the picture if only one is submitted),
+`merge_extractions` field-merges per-doc extractions with
+highest-confidence-wins on scalars and union-of-sets on tuple fields.
 
 The LLM client is injected (`LLMClient` Protocol) so tests can stub canned
 responses. Production wiring uses `BedrockClient` from `aegis.llm`.
@@ -12,6 +21,7 @@ responses. Production wiring uses `BedrockClient` from `aegis.llm`.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final
@@ -23,6 +33,7 @@ from aegis.funders.prompts import FUNDER_GUIDELINE_EXTRACTION_PROMPT
 from aegis.llm import LLMClient
 
 _MAX_PDF_BYTES: Final[int] = 25 * 1024 * 1024
+_MAX_IMAGE_BYTES: Final[int] = 25 * 1024 * 1024
 
 
 class FunderExtractionError(RuntimeError):
@@ -46,10 +57,56 @@ def extract_funder_guidelines(
     except ValueError as exc:
         raise FunderExtractionError(f"LLM returned malformed JSON: {exc}") from exc
 
+    return _build_extraction(raw, truncated, source_bytes=pdf_bytes)
+
+
+def extract_funder_guidelines_from_image(
+    image_bytes: bytes,
+    llm: LLMClient,
+) -> FunderGuidelineExtraction:
+    """Extract a funder's underwriting criteria from a PNG/JPEG screenshot.
+
+    Used when the funder publishes criteria as an image (a Gmail
+    screenshot of the guideline block, a slide deck export, etc.).
+    Routes to `LLMClient.extract_raw_json_from_images` with a one-image
+    list — the LLM call shape matches the parser's OCR fallback so the
+    BedrockClient does not need a new code path.
+    """
+    if len(image_bytes) == 0:
+        raise FunderExtractionError("empty image buffer")
+    if len(image_bytes) > _MAX_IMAGE_BYTES:
+        raise FunderExtractionError(
+            f"image buffer too large: {len(image_bytes)} bytes (max {_MAX_IMAGE_BYTES})"
+        )
+
+    try:
+        raw, truncated = llm.extract_raw_json_from_images(
+            [image_bytes], FUNDER_GUIDELINE_EXTRACTION_PROMPT
+        )
+    except ValueError as exc:
+        raise FunderExtractionError(f"LLM returned malformed JSON: {exc}") from exc
+
+    return _build_extraction(raw, truncated, source_bytes=image_bytes)
+
+
+def _build_extraction(
+    raw: dict[str, Any],
+    truncated: bool,
+    *,
+    source_bytes: bytes,
+) -> FunderGuidelineExtraction:
+    """Shared shape: validate the raw extraction dict into a FunderGuidelineExtraction.
+
+    Both the PDF and image entry points end up here once the LLM has
+    returned its JSON. Keeping the validation in one place avoids the
+    pre-Wave-2 bug where the PDF path stamped provenance and the image
+    path would skip it.
+    """
     if truncated:
         raise FunderExtractionError(
-            "LLM extraction was truncated at max_tokens — funder guideline PDF "
-            "exceeds the model's output budget; try a smaller PDF or summary."
+            "LLM extraction was truncated at max_tokens — funder guideline "
+            "document exceeds the model's output budget; try a smaller "
+            "document or summary."
         )
 
     if "draft" not in raw:
@@ -62,10 +119,13 @@ def extract_funder_guidelines(
     unparseable = _coerce_str_list(raw.get("unparseable_fragments", []))
     overall = _coerce_int(raw.get("overall_confidence", 0))
 
-    # Stamp provenance: when extraction ran + the PDF hash so re-extraction
-    # is detectable.
+    # Stamp provenance: when extraction ran + a hash of the source bytes
+    # (PDF or image) so re-extraction is detectable. The column name
+    # remains `guidelines_source_pdf_hash` for backward compatibility —
+    # the value is still a SHA-256 hex digest, just over the image bytes
+    # for the image path.
     draft_payload["guidelines_extracted_at"] = datetime.now(UTC)
-    draft_payload["guidelines_source_pdf_hash"] = hashlib.sha256(pdf_bytes).hexdigest()
+    draft_payload["guidelines_source_pdf_hash"] = hashlib.sha256(source_bytes).hexdigest()
 
     try:
         draft = FunderRow.model_validate(draft_payload)
@@ -81,6 +141,238 @@ def extract_funder_guidelines(
         )
     except ValidationError as exc:
         raise FunderExtractionError(f"FunderGuidelineExtraction validation: {exc}") from exc
+
+
+# -- merge ------------------------------------------------------------------
+
+# FunderRow scalar fields that participate in the merge. Anything not
+# listed is taken from the first extraction (name) or recomputed from
+# the source bytes (provenance hashes/timestamps).
+_MERGE_SCALAR_FIELDS: Final[tuple[str, ...]] = (
+    "min_monthly_revenue",
+    "min_avg_daily_balance",
+    "min_credit_score",
+    "min_months_in_business",
+    "max_positions",
+    "accepts_stacking",
+    "min_advance",
+    "max_advance",
+    "max_nsf_tolerance",
+    "typical_factor_low",
+    "typical_factor_high",
+    "typical_holdback_low",
+    "typical_holdback_high",
+    "contact_name",
+    "contact_phone",
+    "contact_email",
+    "submission_email",
+)
+
+# Tuple-shaped fields that union (case-insensitive de-dupe).
+_MERGE_TUPLE_FIELDS: Final[tuple[str, ...]] = (
+    "excluded_industries",
+    "excluded_states",
+    "auto_decline_conditions",
+    "conditional_requirements",
+)
+
+
+def merge_extractions(
+    parts: Sequence[FunderGuidelineExtraction],
+) -> FunderGuidelineExtraction:
+    """Merge per-doc extractions field-by-field.
+
+    Merge rules:
+      * Scalar fields: highest per-field confidence wins. Ties go to the
+        earliest part (stable). A part that has confidence 0 for a field
+        never wins.
+      * Tuple fields (`excluded_industries`, `excluded_states`,
+        `auto_decline_conditions`, `conditional_requirements`,
+        `tiers`): union the entries. Strings de-duped case-insensitively
+        (preserving the first casing seen). Tiers de-duped by name.
+      * `notes_residual`: concatenated (deduped, newline-joined).
+      * `unparseable_fragments`: concatenated, order-preserving dedupe.
+      * `name`: first non-empty, non-"Unknown Funder" value, else
+        falls back to the first part's name.
+      * `confidence_by_field`: per-key max across contributing parts.
+      * `overall_confidence`: max across parts.
+      * Provenance (`guidelines_extracted_at`,
+        `guidelines_source_pdf_hash`): taken from the most-recent part
+        by `guidelines_extracted_at`.
+
+    Raises FunderExtractionError on an empty sequence — the caller
+    should have caught that before reaching merge time.
+    """
+    if not parts:
+        raise FunderExtractionError("merge_extractions requires at least one part")
+    if len(parts) == 1:
+        return parts[0]
+
+    base = parts[0]
+    base_dump = base.draft.model_dump()
+    merged_payload: dict[str, Any] = dict(base_dump)
+
+    # Name: first non-empty, non-placeholder value across parts.
+    merged_payload["name"] = _pick_name(parts)
+
+    # Scalars: max confidence wins.
+    for field in _MERGE_SCALAR_FIELDS:
+        winner_part, winner_conf = _pick_winner(parts, field)
+        if winner_part is None or winner_conf == 0:
+            # No part reported confidence > 0 for this field — keep base
+            # value (which may itself be None / "" / False).
+            continue
+        merged_payload[field] = winner_part.draft.model_dump()[field]
+
+    # Tuples: union with case-insensitive dedupe.
+    for field in _MERGE_TUPLE_FIELDS:
+        merged_payload[field] = _union_tuple(parts, field)
+
+    # Tiers: union by name (case-insensitive).
+    merged_payload["tiers"] = _union_tiers(parts)
+
+    # Residual notes: concatenate distinct non-empty blocks.
+    merged_payload["notes_residual"] = _concat_notes(parts)
+
+    # Provenance: take the latest extraction stamp + its hash. Falls
+    # back to first part if none have a stamp.
+    latest = max(
+        parts,
+        key=lambda p: p.draft.guidelines_extracted_at or datetime.min.replace(tzinfo=UTC),
+    )
+    merged_payload["guidelines_extracted_at"] = latest.draft.guidelines_extracted_at
+    merged_payload["guidelines_source_pdf_hash"] = latest.draft.guidelines_source_pdf_hash
+
+    try:
+        merged_draft = FunderRow.model_validate(merged_payload)
+    except ValidationError as exc:
+        raise FunderExtractionError(
+            f"merged FunderRow failed validation: {exc}"
+        ) from exc
+
+    merged_confidence = _merge_confidence(parts)
+    merged_unparseable = _merge_unparseable(parts)
+    merged_overall = max(p.overall_confidence for p in parts)
+
+    try:
+        return FunderGuidelineExtraction(
+            draft=merged_draft,
+            confidence_by_field=merged_confidence,
+            unparseable_fragments=merged_unparseable,
+            overall_confidence=merged_overall,
+        )
+    except ValidationError as exc:
+        raise FunderExtractionError(
+            f"merged FunderGuidelineExtraction validation: {exc}"
+        ) from exc
+
+
+def _pick_name(parts: Sequence[FunderGuidelineExtraction]) -> str:
+    """Pick the first non-placeholder funder name across parts."""
+    for p in parts:
+        n = p.draft.name.strip()
+        if n and n.lower() != "unknown funder":
+            return n
+    return parts[0].draft.name
+
+
+def _pick_winner(
+    parts: Sequence[FunderGuidelineExtraction],
+    field: str,
+) -> tuple[FunderGuidelineExtraction | None, int]:
+    """Find the part with the highest confidence for `field`.
+
+    Returns (winning_part, winning_confidence). Ties resolve to the
+    earliest part. If no part has a positive confidence for the field,
+    returns (None, 0).
+    """
+    best_part: FunderGuidelineExtraction | None = None
+    best_conf = -1
+    for p in parts:
+        conf = p.confidence_by_field.get(field, 0)
+        if conf > best_conf:
+            best_conf = conf
+            best_part = p
+    if best_conf <= 0:
+        return None, 0
+    return best_part, best_conf
+
+
+def _union_tuple(
+    parts: Sequence[FunderGuidelineExtraction],
+    field: str,
+) -> tuple[str, ...]:
+    """Union the tuple-typed `field` across parts; case-insensitive dedupe."""
+    seen_lower: set[str] = set()
+    out: list[str] = []
+    for p in parts:
+        values = getattr(p.draft, field)
+        if not isinstance(values, tuple):
+            continue
+        for v in values:
+            if not isinstance(v, str):
+                continue
+            key = v.strip().lower()
+            if not key or key in seen_lower:
+                continue
+            seen_lower.add(key)
+            out.append(v.strip())
+    return tuple(out)
+
+
+def _union_tiers(parts: Sequence[FunderGuidelineExtraction]) -> tuple[Any, ...]:
+    """Union FunderTier entries across parts, deduped by tier name."""
+    seen_lower: set[str] = set()
+    out: list[Any] = []
+    for p in parts:
+        for tier in p.draft.tiers:
+            key = tier.name.strip().lower()
+            if not key or key in seen_lower:
+                continue
+            seen_lower.add(key)
+            out.append(tier)
+    return tuple(out)
+
+
+def _concat_notes(parts: Sequence[FunderGuidelineExtraction]) -> str:
+    """Concatenate `notes_residual` blocks across parts, deduped + newline-joined."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in parts:
+        block = p.draft.notes_residual.strip()
+        if not block or block in seen:
+            continue
+        seen.add(block)
+        out.append(block)
+    return "\n\n".join(out)
+
+
+def _merge_confidence(
+    parts: Sequence[FunderGuidelineExtraction],
+) -> dict[str, int]:
+    """Per-key max confidence across parts."""
+    out: dict[str, int] = {}
+    for p in parts:
+        for key, value in p.confidence_by_field.items():
+            if value > out.get(key, -1):
+                out[key] = value
+    return out
+
+
+def _merge_unparseable(
+    parts: Sequence[FunderGuidelineExtraction],
+) -> list[str]:
+    """Concatenate unparseable_fragments across parts, order-preserving dedupe."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in parts:
+        for fragment in p.unparseable_fragments:
+            key = fragment.strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(fragment)
+    return out
 
 
 # -- coercion helpers --------------------------------------------------------
@@ -219,4 +511,9 @@ def _num_to_str(value: object) -> str:
     return str(value)
 
 
-__all__ = ["FunderExtractionError", "extract_funder_guidelines"]
+__all__ = [
+    "FunderExtractionError",
+    "extract_funder_guidelines",
+    "extract_funder_guidelines_from_image",
+    "merge_extractions",
+]

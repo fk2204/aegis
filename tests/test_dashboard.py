@@ -717,6 +717,176 @@ def test_funder_import_save_rejects_invalid_decimal(client: TestClient) -> None:
     assert "validation" in resp.text.lower() or "invalid" in resp.text.lower()
 
 
+# --- Wave 2 Track 1: multi-file + image import ----------------------------
+
+
+@pytest.fixture
+def stub_llm_image_extraction() -> object:
+    """Canned LLMClient whose vision path returns an image-only payload.
+
+    The PDF path raises so a test that should route to vision but hits
+    the PDF code path fails loudly.
+    """
+
+    class _ImgStub:
+        def extract_raw_json(
+            self, pdf_bytes: bytes, prompt: str
+        ) -> tuple[dict[str, object], bool]:
+            raise NotImplementedError("vision-only stub")
+
+        def extract_raw_json_from_images(
+            self, page_images_png: list[bytes], prompt: str
+        ) -> tuple[dict[str, object], bool]:
+            _ = (page_images_png, prompt)
+            return (
+                {
+                    "draft": {
+                        "name": "Shor Capital",
+                        "min_monthly_revenue": 30000,
+                        "excluded_industries": ["bail-bonds", "check-cashing"],
+                        "accepts_stacking": False,
+                        "tiers": [],
+                    },
+                    "confidence_by_field": {
+                        "min_monthly_revenue": 90,
+                        "excluded_industries": 88,
+                    },
+                    "unparseable_fragments": [],
+                    "overall_confidence": 70,
+                },
+                False,
+            )
+
+        def classify_batch_json(self, prompt: str) -> dict[str, object]:
+            raise NotImplementedError
+
+    return _ImgStub()
+
+
+def test_funder_import_form_accepts_image_types(client: TestClient) -> None:
+    """The dropzone must declare PDF + PNG/JPEG and allow multiple files."""
+    resp = client.get("/ui/funders/import")
+    assert resp.status_code == 200
+    assert "image/png" in resp.text
+    assert "image/jpeg" in resp.text
+    assert "multiple" in resp.text
+
+
+def test_funder_import_review_accepts_single_image(
+    client: TestClient, stub_llm_image_extraction: object
+) -> None:
+    """A single PNG routes through the vision path and renders review."""
+    from aegis.api.deps import get_llm
+
+    cast(FastAPI, client.app).dependency_overrides[get_llm] = (
+        lambda: stub_llm_image_extraction
+    )
+
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    resp = client.post(
+        "/ui/funders/import",
+        files={"pdf": ("guidelines.png", png_bytes, "image/png")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "Shor Capital" in resp.text
+    assert "Review Extraction" in resp.text
+
+
+def test_funder_import_review_merges_pdf_and_image(
+    client: TestClient,
+) -> None:
+    """PDF + PNG together → fields from BOTH appear in the merged review."""
+    from aegis.api.deps import get_llm
+
+    class _DualStub:
+        def extract_raw_json(
+            self, pdf_bytes: bytes, prompt: str
+        ) -> tuple[dict[str, object], bool]:
+            _ = (pdf_bytes, prompt)
+            return (
+                {
+                    "draft": {
+                        "name": "Shor Capital",
+                        "typical_factor_low": 1.30,
+                        "typical_factor_high": 1.45,
+                        "contact_name": "Iliya Mem",
+                        "contact_email": "iliya@shor.capital",
+                        "accepts_stacking": False,
+                        "tiers": [],
+                    },
+                    "confidence_by_field": {
+                        "typical_factor_low": 92,
+                        "typical_factor_high": 92,
+                        "contact_name": 95,
+                        "contact_email": 95,
+                    },
+                    "unparseable_fragments": [],
+                    "overall_confidence": 85,
+                },
+                False,
+            )
+
+        def extract_raw_json_from_images(
+            self, page_images_png: list[bytes], prompt: str
+        ) -> tuple[dict[str, object], bool]:
+            _ = (page_images_png, prompt)
+            return (
+                {
+                    "draft": {
+                        "name": "Shor Capital",
+                        "min_monthly_revenue": 30000,
+                        "excluded_industries": ["bail-bonds", "check-cashing"],
+                        "accepts_stacking": False,
+                        "tiers": [],
+                    },
+                    "confidence_by_field": {
+                        "min_monthly_revenue": 90,
+                        "excluded_industries": 88,
+                    },
+                    "unparseable_fragments": [],
+                    "overall_confidence": 70,
+                },
+                False,
+            )
+
+        def classify_batch_json(self, prompt: str) -> dict[str, object]:
+            raise NotImplementedError
+
+    cast(FastAPI, client.app).dependency_overrides[get_llm] = lambda: _DualStub()
+
+    resp = client.post(
+        "/ui/funders/import",
+        files=[
+            ("pdf", ("iso.pdf", b"%PDF-1.4\n%payload\n%%EOF\n", "application/pdf")),
+            ("pdf", ("guidelines.png", b"\x89PNG\r\n\x1a\n\x00" * 32, "image/png")),
+        ],
+    )
+
+    assert resp.status_code == 200, resp.text
+    # PDF-only fields surface.
+    assert "Iliya Mem" in resp.text
+    assert "1.30" in resp.text or "1.3" in resp.text
+    # PNG-only fields surface.
+    assert "bail-bonds" in resp.text
+    assert "30000" in resp.text or "30,000" in resp.text
+
+
+def test_funder_import_review_rejects_unsupported_type(client: TestClient) -> None:
+    """A .docx (or any unsupported MIME) → 400 with a clear error."""
+    resp = client.post(
+        "/ui/funders/import",
+        files={
+            "pdf": (
+                "guidelines.docx",
+                b"PK\x03\x04 fake docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert resp.status_code == 400
+    assert "unsupported" in resp.text.lower() or "accepted" in resp.text.lower()
+
+
 def test_merchant_match_no_document_renders_placeholder(client: TestClient) -> None:
     """Merchant with no uploaded document → placeholder, not crash."""
     from aegis.merchants.models import MerchantRow
