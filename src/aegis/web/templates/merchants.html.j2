@@ -8,7 +8,8 @@
 {% set meta = (merchants|length|string) ~ " merchant" ~ ('' if merchants|length == 1 else 's') ~ " · click row → dossier" %}
 {% set actions = [
     {"label": "Upload PDF", "href": "/ui/upload"},
-    {"label": "+ New merchant", "href": "/ui/intake", "variant": "primary"},
+    {"label": "+ Add manually", "href": "/ui/merchants/new"},
+    {"label": "+ New from statements", "href": "/ui/intake", "variant": "primary"},
 ] %}
 {% include "_page_header.html.j2" %}
 {% endblock %}
