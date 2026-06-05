@@ -83,6 +83,29 @@ These apply to every file. Domain-specific rules (parser internals, compliance, 
 - **No new dependencies without asking.**
 - **Functions over classes** unless state is genuinely needed.
 
+### Scoring discipline
+Learned the hard way: the H10 false-positive on VU Development (2026-06-03), the running-balance-drift catches on VU 7722 (2026-06-05), and the iText editor + reconciliation drift on A&R KM LLC's 4-of-4 Lili statements (2026-06-05). They bind every change to the scoring layer, the parser's pattern detectors, and any feature that touches the decline/approve boundary.
+
+- **Document integrity and business risk stay separate forever.** They answer different questions ("is the statement real?" vs "can the business support repayment?") and must NOT be blended back into one tunable number. The moment they share a score, "tune the severity to clear a specific deal" becomes the path of least resistance — that's the failure mode H10 demonstrated. Track A (integrity) is a near-binary gate; Track B (business risk) is an explainable band; Track C (concentration/context) is informational and never auto-penalizes. See `docs/SCORING_REDESIGN_CONTINUATION.md` for the three-track design.
+- **No track-tuning to pass a specific merchant.** Changes to severities, thresholds, escalation rules, and decline boundaries are validated against a corpus, not reverse-engineered from one deal. If a change is being proposed because "VU shouldn't decline" or "A&R KM should clear," that change does NOT ship; the rationale belongs in business-risk reasoning (Track B's band), not in the detector. A signal that fires on a merchant you believe is fine is an underwriting judgment (human review), not a reason to soften the signal. Shadow mode + corpus validation come before any decision-boundary edit; same discipline as the tampering rule.
+
+### Decision-boundary changes — deliberate + shadow-first
+Anything that moves a decline/approve boundary — a new fraud detector, an updated threshold, a re-tuned severity, a parse-routing rule that changes whether a doc reaches `manual_review` vs `proceed` — runs in **shadow mode first**: it logs what it WOULD do via `audit_log`, doesn't actually do it. Validate against BOTH false positives (would it have wrongly declined?) AND true positives (does it catch the cases we built it for?) on the corpus + on live shadow audit rows before flipping to live. The flip itself is a config / env var change, not a code deploy. The tampering rule is the reference pattern.
+
+### Extraction & automation assists, never replaces judgment
+LLM extraction (funder docs, statements, anything Bedrock-driven) is a **pre-fill assistant with human confirmation**, never autonomous creation. Proven necessary 2026-06-05: even after the funder extraction prompt was tightened, residual errors leaked at confidence 72 on Shor's ISO (agent-contract clauses misclassified as merchant-stip requirements). Auto-creating a row from extracted fields without showing the operator the editable result is banned. The pattern: extract → show in editable form with per-field confidence → operator confirms → save via the same upsert path. `/ui/funders/import` and the (planned) "add funder via Claude Code" wrapper both follow this rule; neither calls `repo.upsert()` until the operator has seen the values.
+
+### External-integration test discipline — use real captured payloads
+Tests for anything touching an external system (Close API, Supabase row shapes, Bedrock output, OFAC SDN list, Cloudflare Access headers) must validate against a **CAPTURED REAL response**, never a hand-written/synthetic fixture. Green tests against an invented shape are worthless and worse — they manufacture false confidence. Proven 2026-06-05: a synthetic Close-attachment fixture invented an `id` field that real Close attachments don't have; all 11 of the agent's tests passed against the fiction; production crashed on the first real API call with a Pydantic ValidationError. Same class of bug: mapper coverage gaps where the in-memory backend bypassed the real Supabase mappers and three field-drop bugs shipped to prod (`_row_to_document` chunk-B columns, `_row_to_deal` None-guard, `_doc_row_from_db` duplication).
+
+When fixing an integration:
+1. Capture the actual payload from the failing job (or a known-good live call).
+2. Sanitize for PII (strip note bodies, email subjects, real org/user/lead ids, real merchant URL tokens; keep the structural key set verbatim and the absence of fields verbatim).
+3. Save the sanitized payload as the fixture (`tests/<domain>/fixtures/<shape>.json`).
+4. Write tests that load the fixture and verify the model + the pipeline against that exact byte sequence.
+
+A green test against a fixture you wrote yourself proves your understanding matches your understanding. Only a green test against a captured payload proves your code matches reality.
+
 ---
 
 ## Working Agreement
@@ -139,4 +162,4 @@ At the end of any multi-step task, stop and summarize before moving to the next 
 
 ---
 
-**Last updated:** 2026-05-25 (scope correction; original 2026-05-16)
+**Last updated:** 2026-06-05 (Close-automation + extraction night — added external-integration test discipline, decision-boundary shadow-first, extraction-assists-not-replaces, reinforced scoring discipline with A&R KM + VU 7722 evidence)
