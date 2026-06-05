@@ -29,7 +29,6 @@ import pytest
 
 from aegis.audit import InMemoryAuditLog
 from aegis.close.client import (
-    CloseAttachment,
     CloseAuthError,
     CloseClient,
     CloseError,
@@ -377,52 +376,92 @@ def test_get_opportunity_hits_correct_endpoint(
     assert seen["url"].endswith("/api/v1/opportunity/oppo_abc/")
 
 
+def _seed_attachment_cache(
+    client: CloseClient, attachment_id: str, *, url: str, filename: str
+) -> None:
+    """Test helper: populate the URL cache that ``download_attachment``
+    consumes without going through ``list_lead_attachments``.
+
+    Mirrors the side effect ``list_lead_attachments`` would have had if
+    the orchestrator had just enumerated the lead — used by the download
+    tests below so each one stays focused on one concern.
+    """
+    client._attachment_cache[attachment_id] = (url, filename)
+
+
 def test_download_attachment_returns_bytes_and_filename(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_close_env(monkeypatch)
+    seen: dict[str, str] = {}
 
     def transport(request: httpx.Request) -> httpx.Response:
-        assert request.url.path.endswith("/api/v1/files/att_xyz/download/")
-        return httpx.Response(
-            200,
-            content=b"%PDF-1.7 fake",
-            headers={
-                "content-disposition": 'attachment; filename="bank_stmt.pdf"',
-            },
-        )
+        seen["host"] = request.url.host
+        seen["path"] = request.url.path
+        return httpx.Response(200, content=b"%PDF-1.7 fake")
 
     with CloseClient(
         http_client=httpx.Client(transport=httpx.MockTransport(transport))
     ) as client:
+        _seed_attachment_cache(
+            client,
+            "att_xyz",
+            url="https://app.close.com/go/file/persisted/abc123",
+            filename="bank_stmt.pdf",
+        )
         data, filename = client.download_attachment("att_xyz")
     assert data == b"%PDF-1.7 fake"
     assert filename == "bank_stmt.pdf"
+    # Host swap: app.close.com → api.close.com.
+    assert seen["host"] == "api.close.com"
+    assert seen["path"] == "/go/file/persisted/abc123"
 
 
-def test_download_attachment_filename_fallback_when_no_header(
+def test_download_attachment_rejects_non_pdf_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Close sometimes omits Content-Disposition. We fall back to a
-    benign default so the caller always gets a usable filename."""
+    """A 200 with an HTML error page (or any non-PDF body) must fail
+    loud rather than silently feeding garbage into the parser."""
     _set_close_env(monkeypatch)
 
     def transport(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"%PDF")
+        return httpx.Response(200, content=b"<html>not a pdf</html>")
 
     with CloseClient(
         http_client=httpx.Client(transport=httpx.MockTransport(transport))
     ) as client:
-        data, filename = client.download_attachment("att_xyz")
-    assert data == b"%PDF"
-    assert filename == "unknown.pdf"
+        _seed_attachment_cache(
+            client,
+            "att_xyz",
+            url="https://app.close.com/go/file/persisted/abc",
+            filename="bank_stmt.pdf",
+        )
+        with pytest.raises(CloseError, match="not a PDF"):
+            client.download_attachment("att_xyz")
+
+
+def test_download_attachment_cache_miss_raises_close_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the orchestrator calls download_attachment for an id that
+    list_lead_attachments never populated, raise a clear error pointing
+    at the new contract rather than silently 404ing."""
+    _set_close_env(monkeypatch)
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no network call should happen on cache miss")
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        with pytest.raises(CloseError, match="cache miss"):
+            client.download_attachment("att_unknown")
 
 
 def test_download_attachment_retries_on_500_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Per step 7 spec: download_attachment now wraps the retry decorator
-    (it previously did not). 500 should retry."""
+    """500 from the api.close.com download must retry via tenacity."""
     _set_close_env(monkeypatch)
     monkeypatch.setattr("aegis.close.client.time.sleep", lambda _s: None)
 
@@ -432,18 +471,20 @@ def test_download_attachment_retries_on_500_then_succeeds(
         calls["n"] += 1
         if calls["n"] < 2:
             return httpx.Response(500, text="server boom")
-        return httpx.Response(
-            200,
-            content=b"%PDF",
-            headers={"content-disposition": 'attachment; filename="x.pdf"'},
-        )
+        return httpx.Response(200, content=b"%PDF-1.7 fake")
 
     with CloseClient(
         http_client=httpx.Client(transport=httpx.MockTransport(transport))
     ) as client:
+        _seed_attachment_cache(
+            client,
+            "att_xyz",
+            url="https://app.close.com/go/file/persisted/abc",
+            filename="x.pdf",
+        )
         data, filename = client.download_attachment("att_xyz")
     assert calls["n"] == 2
-    assert data == b"%PDF"
+    assert data == b"%PDF-1.7 fake"
     assert filename == "x.pdf"
 
 
@@ -458,152 +499,21 @@ def test_download_attachment_401_raises_auth_error(
     with CloseClient(
         http_client=httpx.Client(transport=httpx.MockTransport(transport))
     ) as client:
+        _seed_attachment_cache(
+            client,
+            "att_xyz",
+            url="https://app.close.com/go/file/persisted/abc",
+            filename="bank_stmt.pdf",
+        )
         with pytest.raises(CloseAuthError):
             client.download_attachment("att_xyz")
 
 
-# ----------------------------------------------------------------------
-# list_lead_attachments + CloseAttachment
-# ----------------------------------------------------------------------
-
-
-def test_list_lead_attachments_happy_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _set_close_env(monkeypatch)
-    seen: dict[str, Any] = {}
-
-    def transport(request: httpx.Request) -> httpx.Response:
-        seen["method"] = request.method
-        seen["path"] = request.url.path
-        seen["params"] = dict(request.url.params)
-        return httpx.Response(
-            200,
-            json={
-                "has_more": False,
-                "data": [
-                    {
-                        "id": "file_001",
-                        "name": "2026-04_bank_statement.pdf",
-                        "content_type": "application/pdf",
-                        "size": 12345,
-                        "created_by_name": "Filip",
-                        "date_created": "2026-04-30T12:00:00Z",
-                        # Close returns extra fields we don't care about;
-                        # confirm extra="ignore" lets them through.
-                        "object_type": "lead",
-                        "object_id": "lead_abc",
-                    },
-                    {
-                        "id": "file_002",
-                        "name": "DL.jpg",
-                        "content_type": "image/jpeg",
-                        "size": 200,
-                    },
-                ],
-            },
-        )
-
-    with CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
-    ) as client:
-        items = client.list_lead_attachments("lead_abc")
-
-    assert seen["method"] == "GET"
-    assert seen["path"].endswith("/api/v1/files/")
-    assert seen["params"]["lead_id"] == "lead_abc"
-    assert seen["params"]["_limit"] == "100"
-    assert seen["params"]["_skip"] == "0"
-    assert len(items) == 2
-    assert isinstance(items[0], CloseAttachment)
-    assert items[0].id == "file_001"
-    assert items[0].name == "2026-04_bank_statement.pdf"
-    assert items[0].content_type == "application/pdf"
-    assert items[0].size == 12345
-    assert items[1].id == "file_002"
-    assert items[1].created_by_name is None  # optional + absent
-
-
-def test_list_lead_attachments_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _set_close_env(monkeypatch)
-
-    def transport(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"has_more": False, "data": []})
-
-    with CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
-    ) as client:
-        items = client.list_lead_attachments("lead_zero")
-    assert items == []
-
-
-def test_list_lead_attachments_follows_pagination(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """has_more=true on page 1 -> client requests page 2 with _skip=100."""
-    _set_close_env(monkeypatch)
-    skips_seen: list[str] = []
-
-    def transport(request: httpx.Request) -> httpx.Response:
-        skip = request.url.params.get("_skip", "missing")
-        skips_seen.append(skip)
-        if skip == "0":
-            return httpx.Response(
-                200,
-                json={
-                    "has_more": True,
-                    "data": [{"id": "file_p1", "name": "p1.pdf"}],
-                },
-            )
-        return httpx.Response(
-            200,
-            json={
-                "has_more": False,
-                "data": [{"id": "file_p2", "name": "p2.pdf"}],
-            },
-        )
-
-    with CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
-    ) as client:
-        items = client.list_lead_attachments("lead_big")
-
-    assert skips_seen == ["0", "100"]
-    assert [it.id for it in items] == ["file_p1", "file_p2"]
-
-
-def test_list_lead_attachments_401_raises_auth_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _set_close_env(monkeypatch)
-
-    def transport(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(401, text="bad key")
-
-    with CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
-    ) as client:
-        with pytest.raises(CloseAuthError):
-            client.list_lead_attachments("lead_abc")
-
-
-def test_list_lead_attachments_rejects_non_list_data(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If Close ever returns ``data`` as something other than a list,
-    fail loudly rather than swallow the surprise."""
-    _set_close_env(monkeypatch)
-
-    def transport(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"has_more": False, "data": {"oops": 1}})
-
-    with CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
-    ) as client:
-        with pytest.raises(CloseError, match="non-list"):
-            client.list_lead_attachments("lead_abc")
+# list_lead_attachments coverage now lives under
+# tests/close/test_client_attachments.py — the new activity-based shape
+# (Close API exposes attachments on Note/Email activities, not via
+# /api/v1/files/) has its own dedicated test module to keep the
+# enumeration + download fixtures co-located.
 
 
 # ----------------------------------------------------------------------

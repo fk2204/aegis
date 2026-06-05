@@ -1,0 +1,39 @@
+{
+  "has_more": false,
+  "data": [
+    {
+      "id": "acti_note_abc123",
+      "_type": "Note",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "note": "Bank statements attached",
+      "attachments": [
+        {
+          "id": "attc_pdf_001",
+          "url": "https://app.close.com/go/file/persisted/2026/05/abc123/Lili_2026-02.pdf",
+          "filename": "Lili 2026-02.pdf",
+          "content_type": "application/pdf",
+          "size": 312045,
+          "thumbnail_url": "https://app.close.com/go/file/thumb/abc123"
+        },
+        {
+          "id": "attc_dl_001",
+          "url": "https://app.close.com/go/file/persisted/2026/05/dl/DL.png",
+          "filename": "DL.png",
+          "content_type": "image/png",
+          "size": 80000
+        }
+      ],
+      "date_created": "2026-05-01T12:00:00.000000+00:00"
+    },
+    {
+      "id": "acti_note_no_attachments",
+      "_type": "Note",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "note": "Just a note, no files",
+      "attachments": [],
+      "date_created": "2026-05-02T12:00:00.000000+00:00"
+    }
+  ]
+}

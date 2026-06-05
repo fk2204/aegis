@@ -1,0 +1,503 @@
+"""Tests for the activity-based attachment enumeration + download flow.
+
+Close's API does not expose ``/api/v1/files/?lead_id=…`` — files live
+ON Note and Email activities as ``attachments[]`` entries. The original
+``CloseClient.list_lead_attachments`` 404'd every prod merchant; this
+module covers the fixed activity-based shape end to end:
+
+* ``list_lead_attachments`` walks ``/api/v1/activity/note/`` and
+  ``/api/v1/activity/email/`` for the lead, filters to ``content_type
+  == "application/pdf"``, and caches each PDF's source URL keyed by
+  attachment id.
+* ``download_attachment`` looks up the cached URL, rewrites
+  ``app.close.com`` → ``api.close.com``, follows Close's 302 to the S3
+  signed URL, and validates the PDF magic prefix.
+
+Fixture ``fixtures/acti_note_with_pdf.json`` mirrors the real Close
+payload shape proven by ``scripts/manual_close_pull_note_files.py``.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+from aegis.close.client import (
+    CloseAttachment,
+    CloseAuthError,
+    CloseClient,
+    CloseError,
+)
+from aegis.config import get_settings
+
+_TEST_KEY = "api_test_close_key"
+_BASE = "https://api.close.example"
+
+_FIXTURE_DIR = Path(__file__).parent / "fixtures"
+
+
+def _set_close_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLOSE_API_KEY", _TEST_KEY)
+    monkeypatch.setenv("CLOSE_API_BASE", _BASE)
+    get_settings.cache_clear()
+
+
+def _load_fixture(name: str) -> dict[str, Any]:
+    """Load a JSON fixture by filename from tests/close/fixtures/."""
+    parsed = json.loads((_FIXTURE_DIR / name).read_text(encoding="utf-8"))
+    if not isinstance(parsed, dict):
+        raise AssertionError(f"fixture {name} is not a JSON object")
+    return parsed
+
+
+def _empty_page() -> dict[str, Any]:
+    return {"has_more": False, "data": []}
+
+
+def _make_notes_emails_transport(
+    notes_pages: list[dict[str, Any]],
+    emails_pages: list[dict[str, Any]],
+) -> tuple[
+    list[tuple[str, dict[str, str]]],
+    httpx.MockTransport,
+]:
+    """Build a MockTransport that serves note + email pages in order
+    and records every request URL + params seen.
+
+    Returns ``(requests, transport)`` so individual tests can assert on
+    which endpoint was hit, in which order, with which ``_skip`` cursor.
+    """
+    notes_iter = iter(notes_pages)
+    emails_iter = iter(emails_pages)
+    notes_exhausted = _empty_page()
+    emails_exhausted = _empty_page()
+    requests: list[tuple[str, dict[str, str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = {k: v for k, v in request.url.params.items()}
+        requests.append((request.url.path, params))
+        if "/activity/note/" in request.url.path:
+            return httpx.Response(
+                200, json=next(notes_iter, notes_exhausted)
+            )
+        if "/activity/email/" in request.url.path:
+            return httpx.Response(
+                200, json=next(emails_iter, emails_exhausted)
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    return requests, httpx.MockTransport(handler)
+
+
+# ---------------------------------------------------------------------
+# list_lead_attachments — enumeration shape
+# ---------------------------------------------------------------------
+
+
+def test_list_lead_attachments_walks_notes_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Notes carrying a PDF surface as CloseAttachment with the activity
+    attachment's id, filename, and url propagated through."""
+    _set_close_env(monkeypatch)
+    notes_page = {
+        "has_more": False,
+        "data": [
+            {
+                "id": "acti_note_1",
+                "attachments": [
+                    {
+                        "id": "attc_1",
+                        "url": (
+                            "https://app.close.com/go/file/persisted/"
+                            "2026/05/abc/Lili_2026-02.pdf"
+                        ),
+                        "filename": "Lili 2026-02.pdf",
+                        "content_type": "application/pdf",
+                    }
+                ],
+            }
+        ],
+    }
+    requests, transport = _make_notes_emails_transport(
+        notes_pages=[notes_page], emails_pages=[]
+    )
+
+    with CloseClient(http_client=httpx.Client(transport=transport)) as client:
+        items = client.list_lead_attachments("lead_abc")
+
+    assert any(p == "/api/v1/activity/note/" for p, _ in requests)
+    assert any(p == "/api/v1/activity/email/" for p, _ in requests)
+    assert len(items) == 1
+    item = items[0]
+    assert isinstance(item, CloseAttachment)
+    assert item.id == "attc_1"
+    assert item.name == "Lili 2026-02.pdf"
+    assert item.url is not None
+    assert item.url.startswith("https://app.close.com/")
+
+
+def test_list_lead_attachments_walks_emails_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Emails with PDF attachments surface the same way notes do."""
+    _set_close_env(monkeypatch)
+    emails_page = {
+        "has_more": False,
+        "data": [
+            {
+                "id": "acti_email_1",
+                "attachments": [
+                    {
+                        "id": "attc_email_pdf",
+                        "url": (
+                            "https://app.close.com/go/file/persisted/"
+                            "2026/05/email/Statement.pdf"
+                        ),
+                        "filename": "Statement.pdf",
+                        "content_type": "application/pdf",
+                    }
+                ],
+            }
+        ],
+    }
+    _, transport = _make_notes_emails_transport(
+        notes_pages=[], emails_pages=[emails_page]
+    )
+
+    with CloseClient(http_client=httpx.Client(transport=transport)) as client:
+        items = client.list_lead_attachments("lead_abc")
+
+    assert len(items) == 1
+    assert items[0].id == "attc_email_pdf"
+    assert items[0].name == "Statement.pdf"
+
+
+def test_list_lead_attachments_filters_non_pdf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An attachment with content_type != application/pdf is dropped
+    silently — driver licenses (image/png), voided checks (image/jpeg),
+    etc. are never of interest to the parser pipeline."""
+    _set_close_env(monkeypatch)
+    payload = _load_fixture("acti_note_with_pdf.json")
+    _, transport = _make_notes_emails_transport(
+        notes_pages=[payload], emails_pages=[]
+    )
+
+    with CloseClient(http_client=httpx.Client(transport=transport)) as client:
+        items = client.list_lead_attachments("lead_test")
+
+    # The fixture has one PDF + one PNG on the first note, and an empty
+    # second note. Only the PDF survives the filter.
+    assert len(items) == 1
+    assert items[0].id == "attc_pdf_001"
+    assert items[0].content_type == "application/pdf"
+
+
+def test_list_lead_attachments_paginates_notes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """has_more=True triggers a second GET with _skip advanced by the
+    page size — pages are merged into one list."""
+    _set_close_env(monkeypatch)
+    page_one = {
+        "has_more": True,
+        "data": [
+            {
+                "id": "acti_note_p1",
+                "attachments": [
+                    {
+                        "id": "attc_p1",
+                        "url": "https://app.close.com/go/file/persisted/p1.pdf",
+                        "filename": "p1.pdf",
+                        "content_type": "application/pdf",
+                    }
+                ],
+            }
+        ],
+    }
+    page_two = {
+        "has_more": False,
+        "data": [
+            {
+                "id": "acti_note_p2",
+                "attachments": [
+                    {
+                        "id": "attc_p2",
+                        "url": "https://app.close.com/go/file/persisted/p2.pdf",
+                        "filename": "p2.pdf",
+                        "content_type": "application/pdf",
+                    }
+                ],
+            }
+        ],
+    }
+    requests, transport = _make_notes_emails_transport(
+        notes_pages=[page_one, page_two], emails_pages=[]
+    )
+
+    with CloseClient(http_client=httpx.Client(transport=transport)) as client:
+        items = client.list_lead_attachments("lead_big")
+
+    notes_calls = [
+        params for path, params in requests if path == "/api/v1/activity/note/"
+    ]
+    assert [p["_skip"] for p in notes_calls] == ["0", "100"]
+    assert [it.id for it in items] == ["attc_p1", "attc_p2"]
+
+
+def test_list_lead_attachments_activity_without_attachments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An activity with ``attachments: []`` yields nothing — no error,
+    no synthetic entry."""
+    _set_close_env(monkeypatch)
+    page = {
+        "has_more": False,
+        "data": [{"id": "acti_blank", "attachments": []}],
+    }
+    _, transport = _make_notes_emails_transport(
+        notes_pages=[page], emails_pages=[]
+    )
+
+    with CloseClient(http_client=httpx.Client(transport=transport)) as client:
+        items = client.list_lead_attachments("lead_x")
+    assert items == []
+
+
+def test_list_lead_attachments_empty_lead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both endpoints empty → empty list. Confirms both endpoints are
+    hit even when the first returns nothing."""
+    _set_close_env(monkeypatch)
+    requests, transport = _make_notes_emails_transport(
+        notes_pages=[], emails_pages=[]
+    )
+
+    with CloseClient(http_client=httpx.Client(transport=transport)) as client:
+        items = client.list_lead_attachments("lead_zero")
+
+    assert items == []
+    paths_hit = {path for path, _ in requests}
+    assert "/api/v1/activity/note/" in paths_hit
+    assert "/api/v1/activity/email/" in paths_hit
+
+
+def test_list_lead_attachments_401_raises_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_close_env(monkeypatch)
+
+    def transport(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="bad key")
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        with pytest.raises(CloseAuthError):
+            client.list_lead_attachments("lead_abc")
+
+
+def test_list_lead_attachments_rejects_non_list_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defensive: a contract violation from Close (data not a list)
+    must fail loud, not silent-skip."""
+    _set_close_env(monkeypatch)
+
+    def transport(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"has_more": False, "data": {"oops": 1}}
+        )
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        with pytest.raises(CloseError, match="non-list"):
+            client.list_lead_attachments("lead_abc")
+
+
+def test_list_lead_attachments_populates_download_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The (url, filename) for each PDF must be stashed on the client
+    so download_attachment can find it without a second API hop."""
+    _set_close_env(monkeypatch)
+    payload = _load_fixture("acti_note_with_pdf.json")
+    _, transport = _make_notes_emails_transport(
+        notes_pages=[payload], emails_pages=[]
+    )
+
+    with CloseClient(http_client=httpx.Client(transport=transport)) as client:
+        client.list_lead_attachments("lead_test")
+        cached = client._attachment_cache.get("attc_pdf_001")
+
+    assert cached is not None
+    cached_url, cached_filename = cached
+    assert cached_url.startswith("https://app.close.com/go/file/persisted/")
+    assert cached_filename == "Lili 2026-02.pdf"
+
+
+# ---------------------------------------------------------------------
+# download_attachment — host rewrite + redirect + magic-bytes validation
+# ---------------------------------------------------------------------
+
+
+def test_download_attachment_swaps_host_and_returns_pdf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The download path must rewrite app.close.com → api.close.com on
+    the source URL. The mock transport receives the rewritten host."""
+    _set_close_env(monkeypatch)
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["host"] = request.url.host
+        seen["path"] = request.url.path
+        return httpx.Response(200, content=b"%PDF-1.7 contents")
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    ) as client:
+        client._attachment_cache["attc_x"] = (
+            "https://app.close.com/go/file/persisted/2026/05/abc/x.pdf",
+            "x.pdf",
+        )
+        data, filename = client.download_attachment("attc_x")
+
+    assert seen["host"] == "api.close.com"
+    assert seen["path"] == "/go/file/persisted/2026/05/abc/x.pdf"
+    assert data == b"%PDF-1.7 contents"
+    assert filename == "x.pdf"
+
+
+def test_download_attachment_follows_redirect_to_s3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Close 302s to an S3 signed URL. httpx with follow_redirects=True
+    must land on the final body, which the client validates as a PDF."""
+    _set_close_env(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.close.com":
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "https://s3.example/signed/bank_stmt.pdf?sig=z",
+                },
+            )
+        if request.url.host == "s3.example":
+            return httpx.Response(200, content=b"%PDF-1.7 final body")
+        raise AssertionError(f"unexpected host {request.url.host}")
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    ) as client:
+        client._attachment_cache["attc_x"] = (
+            "https://app.close.com/go/file/persisted/abc/bank_stmt.pdf",
+            "bank_stmt.pdf",
+        )
+        data, filename = client.download_attachment("attc_x")
+
+    assert data == b"%PDF-1.7 final body"
+    assert filename == "bank_stmt.pdf"
+
+
+def test_download_attachment_rejects_non_pdf_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 200 with an HTML body (CDN error page, mis-routed S3 object)
+    must raise CloseError instead of returning garbage."""
+    _set_close_env(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>oops</html>")
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    ) as client:
+        client._attachment_cache["attc_x"] = (
+            "https://app.close.com/go/file/persisted/abc/wrong.pdf",
+            "wrong.pdf",
+        )
+        with pytest.raises(CloseError, match="not a PDF"):
+            client.download_attachment("attc_x")
+
+
+def test_download_attachment_cache_miss_raises_close_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No cache entry → CloseError that points at the listing contract.
+    The transport is never touched; verifies no fallback network call."""
+    _set_close_env(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no network call should happen on cache miss")
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    ) as client:
+        with pytest.raises(CloseError, match="cache miss"):
+            client.download_attachment("attc_unknown")
+
+
+def test_download_attachment_filename_falls_back_to_unknown_pdf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defensive fallback: if the cache somehow holds an empty filename
+    and the response carries no Content-Disposition either, we still
+    return a usable name rather than ``""``."""
+    _set_close_env(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"%PDF-1.7 ok")
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    ) as client:
+        client._attachment_cache["attc_x"] = (
+            "https://app.close.com/go/file/persisted/abc/x.pdf",
+            "",
+        )
+        _, filename = client.download_attachment("attc_x")
+
+    assert filename == "unknown.pdf"
+
+
+def test_download_attachment_end_to_end_via_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Integration: list → cache → download in one round, the way the
+    orchestrator drives the client. Confirms the orchestrator's call
+    shape (``download_attachment(att.id)``) still works after the
+    refactor without any orchestrator change."""
+    _set_close_env(monkeypatch)
+    notes_page = _load_fixture("acti_note_with_pdf.json")
+
+    pdf_body = b"%PDF-1.7 from-cdn"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/api/v1/activity/note/" in request.url.path:
+            return httpx.Response(200, json=notes_page)
+        if "/api/v1/activity/email/" in request.url.path:
+            return httpx.Response(200, json=_empty_page())
+        # Anything else is the download path.
+        assert request.url.host == "api.close.com"
+        return httpx.Response(200, content=pdf_body)
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    ) as client:
+        items = client.list_lead_attachments("lead_test")
+        assert len(items) == 1
+        only = items[0]
+        data, filename = client.download_attachment(only.id)
+
+    assert data == pdf_body
+    assert filename == "Lili 2026-02.pdf"

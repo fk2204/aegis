@@ -82,6 +82,25 @@ _DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
 _DEFAULT_RATE_LIMIT_SLEEP = 2.0  # fallback when 429 carries no usable hint
 _BODY_TRUNCATE_LEN = 500
 
+# Defensive bound on the activity scan inside list_lead_attachments. A
+# misbehaving lead must not let the worker loop indefinitely. 1000 is
+# well above realistic operator behavior (active leads top out at a
+# few dozen activities; pathologically chatty leads have ~200) but
+# small enough that the worker bails before redis-job-timeout fires.
+_MAX_ACTIVITIES_PER_LEAD = 1000
+
+# PDF magic bytes. download_attachment validates the body prefix so
+# corrupted CDN responses or wrong content-type-from-S3 fail loud
+# instead of silently writing garbage to the parser pipeline.
+_PDF_MAGIC = b"%PDF-"
+
+# Close serves activity attachment URLs from app.close.com but those
+# hosts refuse API-key Basic auth (400 "use api.close.com"). Swapping
+# the host to api.close.com routes the same path through their
+# authenticating gateway, which then 302s to the S3 signed URL.
+_CLOSE_APP_HOST = "https://app.close.com/"
+_CLOSE_API_HOST = "https://api.close.com/"
+
 
 class CloseError(RuntimeError):
     """Base class for Close client failures.
@@ -113,27 +132,43 @@ class CloseAuthError(CloseError):
 
 
 class CloseAttachment(BaseModel):
-    """One file attached to a Close Lead, as returned by the Files API.
+    """One PDF attachment on a Close Note or Email activity for a Lead.
 
     Returned by :meth:`CloseClient.list_lead_attachments`. Used by the
     attachment-orchestration arq job (``process_close_attachments``)
     to decide which attachments to pull through the parser and which
     to skip (filename-prefix filter).
 
-    Lenient on extra fields — Close's Files API returns more keys than
-    AEGIS cares about (``object_type``, ``object_id``, organization
+    Close's API does not expose a standalone /files/ resource — files
+    live on activities (Note, Email) as ``attachments[]`` items. Each
+    attachment dict has at minimum ``id``, ``filename``, ``content_type``,
+    and ``url`` pointing at ``app.close.com/go/file/persisted/...``.
+    The ``url`` is carried forward on this model so
+    :meth:`CloseClient.download_attachment` can avoid a second round-trip
+    to refetch the parent activity.
+
+    The ``filename`` field on the wire is exposed as ``name`` here for
+    consistency with the orchestrator's filename-filter call shape.
+    ``populate_by_name=True`` keeps direct ``name=...`` kwargs working
+    for tests that pre-date the activity-based shape.
+
+    Lenient on extra fields — activity attachment dicts carry more keys
+    than AEGIS cares about (``thumbnail_url``, ``size``, organization
     metadata, etc.). ``extra="ignore"`` keeps the model robust to
     upstream additions without forcing a schema change here.
     """
 
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+    model_config = ConfigDict(
+        extra="ignore", str_strip_whitespace=True, populate_by_name=True
+    )
 
     id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
+    name: str = Field(min_length=1, alias="filename")
     content_type: str | None = None
     size: int | None = None
     created_by_name: str | None = None
     date_created: str | None = None
+    url: str | None = None
 
 
 class CloseRateLimitError(CloseError):
@@ -177,6 +212,13 @@ class CloseClient:
             timeout=_DEFAULT_TIMEOUT, verify=_TLS_CONTEXT
         )
         self._audit = audit
+        # In-memory cache populated by list_lead_attachments. Keyed by
+        # the attachment id Close returns on each note/email activity;
+        # value is (download_url, filename). download_attachment looks
+        # this up to avoid a second round-trip to the activity endpoint.
+        # Lives per CloseClient instance — fine for the one-instance-
+        # per-worker-job lifecycle the orchestrator uses today.
+        self._attachment_cache: dict[str, tuple[str, str]] = {}
 
     def close(self) -> None:
         self._http.close()
@@ -328,18 +370,34 @@ class CloseClient:
         return self.request("GET", f"/api/v1/opportunity/{opportunity_id}/")
 
     def list_lead_attachments(self, lead_id: str) -> list[CloseAttachment]:
-        """GET /api/v1/files/?lead_id={lead_id} — list all files on a Lead.
+        """Enumerate PDF attachments across all Note + Email activities
+        for the lead.
 
-        Used by the attachment-orchestration arq job to enumerate every
-        PDF the operator has attached to a Close Lead so the orchestrator
-        can filename-filter + auto-pull statements through the parser
-        pipeline.
+        Close's API does NOT expose a standalone ``/api/v1/files/?lead_id=…``
+        endpoint — the previous implementation hit a 404 on every prod
+        merchant. Files live ON activities. We enumerate them via:
 
-        Pagination: Close returns ``{"has_more": bool, "data": [...]}``
-        envelopes with a default ``_limit=100``. This method follows
-        ``has_more`` via ``_skip`` until the cursor exhausts. A Lead
-        with hundreds of attachments is not a realistic shape today,
-        but the loop is cheap and keeps the contract honest.
+        * ``GET /api/v1/activity/note/?lead_id=<lead_id>``
+        * ``GET /api/v1/activity/email/?lead_id=<lead_id>``
+
+        For each activity we walk ``attachments[]`` (a list of dicts each
+        carrying ``id``, ``filename``, ``content_type``, ``url`` pointing
+        at ``app.close.com/go/file/persisted/…``) and emit one
+        :class:`CloseAttachment` per ``content_type == "application/pdf"``
+        entry. Non-PDFs (driver licenses, voided checks as JPEGs, etc.)
+        are dropped silently — the orchestrator only ever wants
+        statement PDFs.
+
+        The ``(url, filename)`` pair for every PDF is cached on the
+        client instance under the attachment id. :meth:`download_attachment`
+        consumes that cache instead of refetching the activity, which
+        keeps the worker's per-attachment cost to one network call.
+
+        Pagination: Close uses ``{"has_more": bool, "data": [...]}``
+        envelopes with ``_limit`` + ``_skip``. We follow ``has_more``
+        on both endpoints until exhausted. A defensive cap of
+        ``_MAX_ACTIVITIES_PER_LEAD`` aborts loops on a misbehaving lead
+        rather than spinning forever.
 
         Same auth + retry semantics as the other methods — each page
         call goes through :meth:`request`, which has its own tenacity
@@ -347,34 +405,85 @@ class CloseClient:
         (sleeps + retried inside ``request``); 5xx → retried; other 4xx
         → CloseError raised.
 
-        Returns an empty list if the Lead has no attachments.
+        Returns an empty list if neither endpoint has activities with
+        PDF attachments.
+        """
+        items: list[CloseAttachment] = []
+        for activity_kind in ("note", "email"):
+            items.extend(
+                self._list_activity_pdf_attachments(activity_kind, lead_id)
+            )
+        return items
+
+    def _list_activity_pdf_attachments(
+        self, activity_kind: str, lead_id: str
+    ) -> list[CloseAttachment]:
+        """Walk one activity endpoint (note or email) and collect every
+        PDF attachment as a :class:`CloseAttachment`.
+
+        Populates ``self._attachment_cache`` as a side effect so the
+        download path can find the source URL by attachment id.
         """
         items: list[CloseAttachment] = []
         skip = 0
         page_size = 100
+        activities_seen = 0
+        path = f"/api/v1/activity/{activity_kind}/"
         while True:
             page = self.request(
                 "GET",
-                "/api/v1/files/",
+                path,
                 params={
                     "lead_id": lead_id,
                     "_limit": page_size,
                     "_skip": skip,
                 },
             )
-            raw_items = page.get("data", [])
-            if not isinstance(raw_items, list):
+            raw_activities = page.get("data", [])
+            if not isinstance(raw_activities, list):
                 raise CloseError(
-                    "close /api/v1/files/ returned non-list data: "
-                    f"{type(raw_items).__name__}"
+                    f"close {path} returned non-list data: "
+                    f"{type(raw_activities).__name__}"
                 )
-            for raw in raw_items:
-                if not isinstance(raw, dict):
+            for activity in raw_activities:
+                if not isinstance(activity, dict):
                     raise CloseError(
-                        "close /api/v1/files/ returned non-object item: "
-                        f"{type(raw).__name__}"
+                        f"close {path} returned non-object activity: "
+                        f"{type(activity).__name__}"
                     )
-                items.append(CloseAttachment.model_validate(raw))
+                activities_seen += 1
+                attachments = activity.get("attachments") or []
+                if not isinstance(attachments, list):
+                    # Defensive — Close's contract says list, but a
+                    # surprise should fail loud rather than silent-skip.
+                    raise CloseError(
+                        f"close {path} activity attachments non-list: "
+                        f"{type(attachments).__name__}"
+                    )
+                for raw_att in attachments:
+                    if not isinstance(raw_att, dict):
+                        raise CloseError(
+                            f"close {path} attachment entry non-object: "
+                            f"{type(raw_att).__name__}"
+                        )
+                    if raw_att.get("content_type") != "application/pdf":
+                        continue
+                    attachment = CloseAttachment.model_validate(raw_att)
+                    if attachment.url is not None:
+                        self._attachment_cache[attachment.id] = (
+                            attachment.url,
+                            attachment.name,
+                        )
+                    items.append(attachment)
+            if activities_seen >= _MAX_ACTIVITIES_PER_LEAD:
+                _log.warning(
+                    "close.list_attachments cap_hit lead_id=%s kind=%s "
+                    "activities_seen=%s",
+                    lead_id,
+                    activity_kind,
+                    activities_seen,
+                )
+                return items
             if not page.get("has_more"):
                 return items
             skip += page_size
@@ -388,16 +497,20 @@ class CloseClient:
         reraise=True,
     )
     def download_attachment(self, attachment_id: str) -> tuple[bytes, str]:
-        """GET /api/v1/files/{attachment_id}/download/.
+        """Download a PDF attachment by id and return ``(bytes, filename)``.
 
-        Returns ``(file_bytes, filename)``. ``filename`` is parsed from
-        the response's ``Content-Disposition`` header (Close's standard
-        for file downloads); falls back to ``"unknown.pdf"`` when the
-        header is missing or unparseable.
+        Looks up the attachment's ``(url, filename)`` from the cache
+        populated by :meth:`list_lead_attachments`. Rewrites the host
+        from ``app.close.com`` → ``api.close.com`` (the only host that
+        accepts API-key Basic auth; ``app.close.com`` 400s with
+        "use api.close.com"). Follows the resulting 302 to the S3
+        signed URL and returns the body.
 
-        Used by the hybrid statement path (step 7) to pull bank-statement
-        PDFs that the operator attached to a Close Lead instead of
-        uploading to AEGIS directly.
+        Validates the body begins with the ``%PDF-`` magic prefix and
+        raises :class:`CloseError` if not — corrupted CDN responses,
+        Close edge cases that serve HTML error pages with 200 status,
+        and content-type drift all fail loud here rather than silently
+        writing junk into the parser pipeline.
 
         Same auth + retry semantics as :meth:`request`: 401 fails fast
         (wrong key — no retry), 429 sleeps the ``RateLimit`` reset value
@@ -405,6 +518,43 @@ class CloseClient:
         propagates immediately. Streams into memory bounded by the
         operator-configured upload cap upstream — the client does not
         enforce that cap itself.
+
+        Cache-miss policy: if the orchestrator calls
+        :meth:`download_attachment` for an id that
+        :meth:`list_lead_attachments` did not populate (shouldn't happen
+        in the current call shape; defensive against future refactors),
+        we raise :class:`CloseError` with a clear pointer rather than
+        silently 404-ing against a dead endpoint.
+        """
+        cached = self._attachment_cache.get(attachment_id)
+        if cached is None:
+            raise CloseError(
+                f"close download_attachment cache miss for {attachment_id!r}; "
+                "call list_lead_attachments first (Close attachments are "
+                "discovered via /activity/{note,email}/, not /files/)"
+            )
+        source_url, filename = cached
+        return self._download_attachment_url(
+            source_url, filename, attachment_id=attachment_id
+        )
+
+    @retry(
+        retry=retry_if_exception_type(
+            (httpx.TransportError, CloseRateLimitError)
+        ),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        reraise=True,
+    )
+    def _download_attachment_url(
+        self, source_url: str, filename: str, *, attachment_id: str
+    ) -> tuple[bytes, str]:
+        """GET the swapped-host URL, follow redirects, validate PDF magic.
+
+        Split from :meth:`download_attachment` so the cache lookup +
+        error message stay outside the retry loop (no point retrying
+        a cache miss) while the network call benefits from the same
+        tenacity policy as :meth:`request`.
         """
         settings = get_settings()
         if settings.close_api_key is None:
@@ -412,12 +562,15 @@ class CloseClient:
                 "CLOSE_API_KEY is not configured; set it in .env or "
                 "/etc/aegis/aegis.env"
             )
-        url = (
-            f"{settings.close_api_base.rstrip('/')}"
-            f"/api/v1/files/{attachment_id}/download/"
-        )
+
+        url = source_url.replace(_CLOSE_APP_HOST, _CLOSE_API_HOST, 1)
         auth = (settings.close_api_key.get_secret_value(), "")
-        resp = self._http.request("GET", url, auth=auth)
+        try:
+            resp = self._http.request(
+                "GET", url, auth=auth, follow_redirects=True
+            )
+        except httpx.TransportError:
+            raise
 
         if resp.status_code == 401:
             raise CloseAuthError(
@@ -430,13 +583,14 @@ class CloseClient:
             reset_seconds = self._parse_reset_seconds(resp)
             body = self._safe_body(resp)
             _log.warning(
-                "close.rate_limit_hit reset_seconds=%s body=%s (attachment download)",
+                "close.rate_limit_hit reset_seconds=%s body=%s "
+                "(attachment download)",
                 reset_seconds,
                 body,
             )
             self._audit_rate_limit(
                 method="GET",
-                path=f"/api/v1/files/{attachment_id}/download/",
+                path=f"/attachment/{attachment_id}",
                 reset_seconds=reset_seconds,
             )
             time.sleep(reset_seconds)
@@ -463,13 +617,20 @@ class CloseClient:
                 body=self._safe_body(resp),
             )
 
-        filename = (
-            _filename_from_content_disposition(
-                resp.headers.get("content-disposition", "")
+        pdf_bytes = resp.content
+        if not pdf_bytes.startswith(_PDF_MAGIC):
+            raise CloseError(
+                "close attachment body is not a PDF "
+                f"(attachment_id={attachment_id} head={pdf_bytes[:8]!r})"
             )
-            or "unknown.pdf"
-        )
-        return resp.content, filename
+
+        # Prefer the filename carried forward from the activity payload.
+        # Fall back to Content-Disposition (defensive — the S3 redirect
+        # target normally carries one) then to the benign default.
+        resolved_filename = filename or _filename_from_content_disposition(
+            resp.headers.get("content-disposition", "")
+        ) or "unknown.pdf"
+        return pdf_bytes, resolved_filename
 
     # ---------------------------------------------------------------
     # Helpers

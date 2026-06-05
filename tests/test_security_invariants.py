@@ -55,6 +55,11 @@ _BANNED_EMAIL_IMPORTS: tuple[str, ...] = (
 _ALLOWED_OUTBOUND_HOSTS: dict[str, str] = {
     # --- runtime endpoints --------------------------------------------------
     "api.close.com":                 "endpoint — Close CRM API (operator's CRM, not a funder)",
+    "app.close.com":                 (
+        "endpoint — source host for Close attachment URLs that "
+        "download_attachment rewrites to api.close.com (app.close.com "
+        "refuses API-key Basic auth, returns 400 'use api.close.com')"
+    ),
     "treas.gov":                     "endpoint — Treasury OFAC SDN list (sanctions check)",
     "ntfy.sh":                       "endpoint — ops push notifications",
     "hc-ping.com":                   "endpoint — healthchecks.io heartbeat pings",
