@@ -1,0 +1,211 @@
+{% extends "base.html.j2" %}
+{# Manual create form for a new FunderRow. Mirrors merchant_form.html.j2's
+   layout (sectioned, two/three-column rows, .form-error chrome). Tier
+   rows, auto_decline_conditions, conditional_requirements, notes and
+   notes_residual are OUT of scope here — those come from the PDF
+   extraction flow at /ui/funders/import. The operator can edit them
+   from the funder detail page later. #}
+{% set form_data = form if form is defined else {} %}
+{% set active = 'Funders' %}
+{% block title %}New Funder — AEGIS{% endblock %}
+
+{% block deck %}
+<header class="deck">
+  <h1>New Funder<em> · create record</em></h1>
+  <div class="meta">required marked *</div>
+  <div class="actions">
+    <a class="btn ghost" href="/ui/funders">Cancel</a>
+  </div>
+</header>
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1" style="max-width:920px;margin:0 auto">
+  <div>
+    {% if error %}<div class="form-error">{{ error }}</div>{% endif %}
+
+    <form class="form" method="post" action="/ui/funders/new" style="margin-top:14px">
+
+      <header class="sect-head">
+        <h2>Identity</h2>
+        <div class="rule"></div>
+      </header>
+
+      <div class="row two">
+        <div class="field">
+          <label>Funder name *</label>
+          <input name="name" required value="{{ form_data.get('name') or '' }}">
+          <span class="help">Must be unique across active funders.</span>
+        </div>
+        <div class="field" style="flex-direction:row;align-items:center;gap:10px">
+          {% set is_active = form_data.get('active', 'true') in ['true','on','yes','1'] %}
+          <input type="checkbox" id="active" name="active" value="true" {% if is_active %}checked{% endif %} style="width:auto">
+          <label for="active" style="margin:0">Active · matchable</label>
+        </div>
+      </div>
+
+      <header class="sect-head" style="margin-top:8px">
+        <h2>Hard gates</h2>
+        <div class="rule"></div>
+      </header>
+
+      <div class="row three">
+        <div class="field">
+          <label>Min monthly revenue · $</label>
+          <input class="mono-input" name="min_monthly_revenue" type="number" step="0.01" min="0" value="{{ form_data.get('min_monthly_revenue') or '' }}">
+        </div>
+        <div class="field">
+          <label>Min avg daily balance · $</label>
+          <input class="mono-input" name="min_avg_daily_balance" type="number" step="0.01" min="0" value="{{ form_data.get('min_avg_daily_balance') or '' }}">
+        </div>
+        <div class="field">
+          <label>Min FICO · 300-850</label>
+          <input class="mono-input" name="min_credit_score" type="number" min="300" max="850" value="{{ form_data.get('min_credit_score') or '' }}">
+        </div>
+      </div>
+
+      <div class="row three">
+        <div class="field">
+          <label>Min time in business · months</label>
+          <input class="mono-input" name="min_months_in_business" type="number" min="0" value="{{ form_data.get('min_months_in_business') or '' }}">
+        </div>
+        <div class="field">
+          <label>Max open positions</label>
+          <input class="mono-input" name="max_positions" type="number" min="0" value="{{ form_data.get('max_positions') or '' }}">
+        </div>
+        <div class="field">
+          <label>Max NSF tolerance</label>
+          <input class="mono-input" name="max_nsf_tolerance" type="number" min="0" value="{{ form_data.get('max_nsf_tolerance') or '' }}">
+        </div>
+      </div>
+
+      <div class="row three">
+        <div class="field">
+          <label>Min advance · $</label>
+          <input class="mono-input" name="min_advance" type="number" step="0.01" min="0" value="{{ form_data.get('min_advance') or '' }}">
+        </div>
+        <div class="field">
+          <label>Max advance · $</label>
+          <input class="mono-input" name="max_advance" type="number" step="0.01" min="0" value="{{ form_data.get('max_advance') or '' }}">
+        </div>
+        <div class="field" style="flex-direction:row;align-items:center;gap:10px">
+          {% set accepts_stacking = form_data.get('accepts_stacking') in ['true','on','yes','1'] %}
+          <input type="checkbox" id="accepts_stacking" name="accepts_stacking" value="true" {% if accepts_stacking %}checked{% endif %} style="width:auto">
+          <label for="accepts_stacking" style="margin:0">Accepts stacking</label>
+        </div>
+      </div>
+
+      <div class="field" style="flex-direction:row;align-items:center;gap:10px">
+        {% set requires_coj = form_data.get('requires_coj') in ['true','on','yes','1'] %}
+        <input type="checkbox" id="requires_coj" name="requires_coj" value="true" {% if requires_coj %}checked{% endif %} style="width:auto">
+        <label for="requires_coj" style="margin:0">Funder agreement requires confession of judgment (CoJ)</label>
+      </div>
+
+      <header class="sect-head" style="margin-top:8px">
+        <h2>Pricing envelope</h2>
+        <div class="rule"></div>
+      </header>
+
+      <div class="row two">
+        <div class="field">
+          <label>Typical factor · low</label>
+          <input class="mono-input" name="typical_factor_low" type="number" step="0.01" min="1" value="{{ form_data.get('typical_factor_low') or '' }}">
+        </div>
+        <div class="field">
+          <label>Typical factor · high</label>
+          <input class="mono-input" name="typical_factor_high" type="number" step="0.01" min="1" value="{{ form_data.get('typical_factor_high') or '' }}">
+        </div>
+      </div>
+
+      <div class="row two">
+        <div class="field">
+          <label>Typical holdback · low · fraction (e.g. 0.10)</label>
+          <input class="mono-input" name="typical_holdback_low" type="number" step="0.001" min="0" max="1" value="{{ form_data.get('typical_holdback_low') or '' }}">
+        </div>
+        <div class="field">
+          <label>Typical holdback · high · fraction (e.g. 0.20)</label>
+          <input class="mono-input" name="typical_holdback_high" type="number" step="0.001" min="0" max="1" value="{{ form_data.get('typical_holdback_high') or '' }}">
+        </div>
+      </div>
+
+      <header class="sect-head" style="margin-top:8px">
+        <h2>Exclusions</h2>
+        <div class="rule"></div>
+      </header>
+
+      <div class="row two">
+        <div class="field">
+          <label>Excluded industries</label>
+          <textarea name="excluded_industries" rows="3" placeholder="cannabis, firearms, adult">{{ form_data.get('excluded_industries') or '' }}</textarea>
+          <span class="help">Comma-separated. Free-text labels (industry strings, not NAICS codes).</span>
+        </div>
+        <div class="field">
+          <label>Excluded states</label>
+          <textarea name="excluded_states" rows="3" placeholder="CA, NY, NJ">{{ form_data.get('excluded_states') or '' }}</textarea>
+          <span class="help">Comma-separated 2-letter codes. Uppercased on save.</span>
+        </div>
+      </div>
+
+      <header class="sect-head" style="margin-top:8px">
+        <h2>Contact</h2>
+        <div class="rule"></div>
+      </header>
+
+      <div class="row two">
+        <div class="field">
+          <label>Contact name</label>
+          <input name="contact_name" value="{{ form_data.get('contact_name') or '' }}">
+        </div>
+        <div class="field">
+          <label>Contact phone</label>
+          <input class="mono-input" name="contact_phone" value="{{ form_data.get('contact_phone') or '' }}">
+        </div>
+      </div>
+
+      <div class="row two">
+        <div class="field">
+          <label>Contact email</label>
+          <input name="contact_email" type="email" value="{{ form_data.get('contact_email') or '' }}">
+        </div>
+        <div class="field">
+          <label>Submission email</label>
+          <input name="submission_email" type="email" value="{{ form_data.get('submission_email') or '' }}">
+          <span class="help">Address deals get sent to. May equal contact email.</span>
+        </div>
+      </div>
+
+      <header class="sect-head" style="margin-top:8px">
+        <h2>Compliance</h2>
+        <div class="rule"></div>
+      </header>
+
+      <div class="field" style="flex-direction:row;align-items:center;gap:10px">
+        {% set charges_merchant_advance_fees = form_data.get('charges_merchant_advance_fees') in ['true','on','yes','1'] %}
+        <input type="checkbox" id="charges_merchant_advance_fees" name="charges_merchant_advance_fees" value="true" {% if charges_merchant_advance_fees %}checked{% endif %} style="width:auto">
+        <label for="charges_merchant_advance_fees" style="margin:0">Funder contract requires merchant-side advance fees</label>
+      </div>
+
+      <div class="field">
+        <label>NY § 600.21(f) compensation disclosure text</label>
+        <textarea name="aegis_compensation_disclosure_text" rows="3" placeholder="AEGIS is paid a commission of …">{{ form_data.get('aegis_compensation_disclosure_text') or '' }}</textarea>
+        <span class="help">Per-funder text inserted into NY disclosures. Empty = NY merchants blocked until supplied.</span>
+      </div>
+
+      <header class="sect-head" style="margin-top:8px">
+        <h2>Notes</h2>
+        <div class="rule"></div>
+      </header>
+
+      <div class="field">
+        <label>Operator notes</label>
+        <textarea name="operator_notes" rows="4" placeholder="Internal commentary — survives re-extraction.">{{ form_data.get('operator_notes') or '' }}</textarea>
+      </div>
+
+      <div class="form-actions" style="margin-top:8px">
+        <button class="btn primary" type="submit">Create</button>
+        <a class="btn ghost" href="/ui/funders">Cancel</a>
+      </div>
+    </form>
+  </div>
+</section>
+{% endblock %}

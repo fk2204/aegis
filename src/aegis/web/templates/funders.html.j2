@@ -6,7 +6,10 @@
 {% set title = "Funders" %}
 {% set subtitle = "· criteria" %}
 {% set meta = (funders|length|string) ~ " funder" ~ ("" if funders|length == 1 else "s") ~ " · click row → full guideline" %}
-{% set actions = [{"label": "+ Import PDF", "href": "/ui/funders/import", "variant": "primary"}] %}
+{% set actions = [
+  {"label": "+ New funder", "href": "/ui/funders/new", "variant": "primary"},
+  {"label": "+ Import PDF", "href": "/ui/funders/import", "variant": "ghost"},
+] %}
 {% include "_page_header.html.j2" %}
 {% endblock %}
 

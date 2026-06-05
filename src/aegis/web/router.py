@@ -1434,6 +1434,111 @@ async def funder_import_save(
     )
 
 
+@router.get("/funders/new", response_class=HTMLResponse)
+async def funder_new_form(request: Request) -> HTMLResponse:
+    """Render the empty manual-create form for a new FunderRow.
+
+    Mirrors ``merchant_new_form``. The PDF-import flow at
+    ``/ui/funders/import`` remains the preferred path when a funder
+    publishes a structured criteria sheet; this manual form covers
+    funders whose terms only exist as conversation notes or ISO-
+    agreement clauses.
+    """
+    return templates.TemplateResponse(
+        request, "funder_form.html.j2", {"error": None}
+    )
+
+
+@router.post("/funders/new", response_class=HTMLResponse, response_model=None)
+async def funder_new_submit(
+    request: Request,
+    repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    name: Annotated[str, Form()],
+    active: Annotated[str, Form()] = "true",
+    # Hard gates
+    min_monthly_revenue:    Annotated[str, Form()] = "",
+    min_avg_daily_balance:  Annotated[str, Form()] = "",
+    min_credit_score:       Annotated[str, Form()] = "",
+    min_months_in_business: Annotated[str, Form()] = "",
+    max_positions:          Annotated[str, Form()] = "",
+    accepts_stacking:       Annotated[str, Form()] = "false",
+    min_advance:            Annotated[str, Form()] = "",
+    max_advance:            Annotated[str, Form()] = "",
+    max_nsf_tolerance:      Annotated[str, Form()] = "",
+    requires_coj:           Annotated[str, Form()] = "false",
+    # Pricing envelope
+    typical_factor_low:    Annotated[str, Form()] = "",
+    typical_factor_high:   Annotated[str, Form()] = "",
+    typical_holdback_low:  Annotated[str, Form()] = "",
+    typical_holdback_high: Annotated[str, Form()] = "",
+    # Exclusions (comma-separated)
+    excluded_industries: Annotated[str, Form()] = "",
+    excluded_states:     Annotated[str, Form()] = "",
+    # Contact
+    contact_name:     Annotated[str, Form()] = "",
+    contact_phone:    Annotated[str, Form()] = "",
+    contact_email:    Annotated[str, Form()] = "",
+    submission_email: Annotated[str, Form()] = "",
+    # Compliance
+    charges_merchant_advance_fees:      Annotated[str, Form()] = "false",
+    aegis_compensation_disclosure_text: Annotated[str, Form()] = "",
+    # Operator content
+    operator_notes: Annotated[str, Form()] = "",
+) -> HTMLResponse | RedirectResponse:
+    """Receive the manual create form and upsert a fresh FunderRow.
+
+    Reuses the same ``FunderRepository.upsert`` write-path as the PDF
+    import flow and ``scripts/audit/seed_shor_capital.py``. Tiers,
+    auto_decline_conditions, conditional_requirements, notes and
+    notes_residual are intentionally left at their defaults — those
+    are extraction-time fields and the operator edits them later from
+    the detail page.
+    """
+    try:
+        funder = FunderRow(
+            name=name,
+            active=active.lower() in _TRUE_TOKENS,
+            min_monthly_revenue=_decimal_or_none(min_monthly_revenue),
+            min_avg_daily_balance=_decimal_or_none(min_avg_daily_balance),
+            min_credit_score=_int_or_none(min_credit_score),
+            min_months_in_business=_int_or_none(min_months_in_business),
+            max_positions=_int_or_none(max_positions),
+            accepts_stacking=accepts_stacking.lower() in _TRUE_TOKENS,
+            min_advance=_decimal_or_none(min_advance),
+            max_advance=_decimal_or_none(max_advance),
+            max_nsf_tolerance=_int_or_none(max_nsf_tolerance),
+            requires_coj=requires_coj.lower() in _TRUE_TOKENS,
+            typical_factor_low=_decimal_or_none(typical_factor_low),
+            typical_factor_high=_decimal_or_none(typical_factor_high),
+            typical_holdback_low=_decimal_or_none(typical_holdback_low),
+            typical_holdback_high=_decimal_or_none(typical_holdback_high),
+            excluded_industries=_parse_csv_list(excluded_industries),
+            excluded_states=_parse_csv_list(excluded_states, upper=True),
+            contact_name=contact_name,
+            contact_phone=contact_phone,
+            contact_email=contact_email,
+            submission_email=submission_email,
+            charges_merchant_advance_fees=(
+                charges_merchant_advance_fees.lower() in _TRUE_TOKENS
+            ),
+            aegis_compensation_disclosure_text=aegis_compensation_disclosure_text,
+            operator_notes=operator_notes,
+        )
+    except (ValidationError, ValueError, TypeError) as exc:
+        return _funder_form_error(
+            request, str(exc), _funder_form_dict_from_locals(locals())
+        )
+    try:
+        saved = repo.upsert(funder)
+    except ValueError as exc:
+        return _funder_form_error(
+            request, str(exc), _funder_form_dict_from_locals(locals())
+        )
+    return RedirectResponse(
+        f"/ui/funders/{saved.id}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
 @router.get("/funders/{funder_id}", response_class=HTMLResponse)
 async def funder_detail(
     request: Request,
@@ -3215,6 +3320,74 @@ def _parse_bullet_lines(value: str) -> tuple[str, ...]:
     pattern for excluded_industries / excluded_states does not work).
     """
     return tuple(line.strip() for line in value.splitlines() if line.strip())
+
+
+_TRUE_TOKENS: frozenset[str] = frozenset({"true", "on", "yes", "1"})
+
+
+def _parse_csv_list(value: str, *, upper: bool = False) -> tuple[str, ...]:
+    """Split a comma-separated form value into a tuple of trimmed strings.
+
+    Empties are dropped. ``upper=True`` upper-cases each entry — used for
+    state codes (``"ca, ny"`` → ``("CA", "NY")``).
+    """
+    parts = (s.strip() for s in value.split(","))
+    if upper:
+        return tuple(s.upper() for s in parts if s)
+    return tuple(s for s in parts if s)
+
+
+_FUNDER_FORM_FIELDS: tuple[str, ...] = (
+    "name",
+    "active",
+    "min_monthly_revenue",
+    "min_avg_daily_balance",
+    "min_credit_score",
+    "min_months_in_business",
+    "max_positions",
+    "accepts_stacking",
+    "min_advance",
+    "max_advance",
+    "max_nsf_tolerance",
+    "requires_coj",
+    "typical_factor_low",
+    "typical_factor_high",
+    "typical_holdback_low",
+    "typical_holdback_high",
+    "excluded_industries",
+    "excluded_states",
+    "contact_name",
+    "contact_phone",
+    "contact_email",
+    "submission_email",
+    "charges_merchant_advance_fees",
+    "aegis_compensation_disclosure_text",
+    "operator_notes",
+)
+
+
+def _funder_form_dict_from_locals(locs: dict[str, Any]) -> dict[str, str]:
+    """Lift the named funder-form fields out of a route's local namespace.
+
+    Same discipline as ``_form_dict_from_locals`` for merchants — only the
+    documented field names pass through, never auxiliary locals (request,
+    repo, etc.).
+    """
+    return {k: str(locs.get(k, "")) for k in _FUNDER_FORM_FIELDS}
+
+
+def _funder_form_error(
+    request: Request,
+    error: str,
+    form: dict[str, str],
+) -> HTMLResponse:
+    """Re-render the manual-create form with an error banner and posted values."""
+    return templates.TemplateResponse(
+        request,
+        "funder_form.html.j2",
+        {"error": error, "form": form},
+        status_code=status.HTTP_400_BAD_REQUEST,
+    )
 
 
 def _score_input_from_dashboard(
