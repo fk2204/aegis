@@ -45,15 +45,16 @@ cannot leak credentials by accident.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import ssl
 import time
 from email.message import Message
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 import httpx
 import truststore
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -140,12 +141,23 @@ class CloseAttachment(BaseModel):
     to skip (filename-prefix filter).
 
     Close's API does not expose a standalone /files/ resource — files
-    live on activities (Note, Email) as ``attachments[]`` items. Each
-    attachment dict has at minimum ``id``, ``filename``, ``content_type``,
-    and ``url`` pointing at ``app.close.com/go/file/persisted/...``.
-    The ``url`` is carried forward on this model so
-    :meth:`CloseClient.download_attachment` can avoid a second round-trip
-    to refetch the parent activity.
+    live on activities (Note, Email) as ``attachments[]`` items. Confirmed
+    against live Close payload for A&R KM LLC on 2026-06-05: the real
+    wire shape on a Note attachment is
+    ``{content_type, filename, size, thumbnail_url, url}`` and on an
+    Email attachment is ``{content_id, content_type, filename,
+    inline_only, size, url}``. **Neither carries an ``id`` field.** An
+    earlier rewrite assumed ``id`` was present and crashed the worker
+    with a Pydantic ValidationError on every real lead. Verified via
+    ``scripts/manual_close_pull_note_files.py`` which only reads
+    ``filename`` and ``url`` from attachments.
+
+    Since the orchestrator's call signature uses ``att.id`` as the
+    cache key into the URL cache, we synthesize a stable id from the
+    URL when Close didn't send one: ``sha256(url)[:16]``. The id is
+    only used as a local cache key and an audit-trace token — not sent
+    back to Close — so a deterministic hash is sufficient and avoids
+    refactoring every caller.
 
     The ``filename`` field on the wire is exposed as ``name`` here for
     consistency with the orchestrator's filename-filter call shape.
@@ -153,22 +165,45 @@ class CloseAttachment(BaseModel):
     for tests that pre-date the activity-based shape.
 
     Lenient on extra fields — activity attachment dicts carry more keys
-    than AEGIS cares about (``thumbnail_url``, ``size``, organization
-    metadata, etc.). ``extra="ignore"`` keeps the model robust to
-    upstream additions without forcing a schema change here.
+    than AEGIS cares about (``thumbnail_url``, ``content_id``,
+    ``inline_only``, organization metadata, etc.). ``extra="ignore"``
+    keeps the model robust to upstream additions without forcing a
+    schema change here.
     """
 
     model_config = ConfigDict(
         extra="ignore", str_strip_whitespace=True, populate_by_name=True
     )
 
-    id: str = Field(min_length=1)
+    id: str = Field(default="", description="synthesized from URL when absent")
     name: str = Field(min_length=1, alias="filename")
     content_type: str | None = None
     size: int | None = None
     created_by_name: str | None = None
     date_created: str | None = None
     url: str | None = None
+
+    @model_validator(mode="after")
+    def _synthesize_id_from_url(self) -> Self:
+        """Synthesize ``id`` from ``url`` when the wire payload omits it.
+
+        Real Close activity attachments have no ``id`` field. The cache
+        key still needs to be stable across the listing/download steps
+        within a single worker invocation, so we use a 16-hex-char
+        SHA-256 prefix of the URL — stable, collision-resistant, and
+        deterministic for a given URL. Raise if both ``id`` and ``url``
+        are absent (malformed payload — fail loud).
+        """
+        if not self.id:
+            if not self.url:
+                raise ValueError(
+                    "CloseAttachment requires at least one of id or url"
+                )
+            # Bypass validate_assignment to avoid recursion.
+            object.__setattr__(
+                self, "id", hashlib.sha256(self.url.encode()).hexdigest()[:16]
+            )
+        return self
 
 
 class CloseRateLimitError(CloseError):

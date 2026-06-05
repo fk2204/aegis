@@ -182,20 +182,43 @@ def test_list_lead_attachments_filters_non_pdf(
 ) -> None:
     """An attachment with content_type != application/pdf is dropped
     silently — driver licenses (image/png), voided checks (image/jpeg),
-    etc. are never of interest to the parser pipeline."""
+    etc. are never of interest to the parser pipeline.
+
+    Inline payload here (not the real-shape fixture) so the assertion
+    isolates the content-type filter behavior from any other shape
+    variance. The real-shape fixture is exercised in
+    ``test_list_lead_attachments_handles_real_note_shape``.
+    """
     _set_close_env(monkeypatch)
-    payload = _load_fixture("acti_note_with_pdf.json")
+    page = {
+        "has_more": False,
+        "data": [
+            {
+                "id": "acti_mixed",
+                "attachments": [
+                    {
+                        "url": "https://app.close.com/go/file/p/keep.pdf",
+                        "filename": "keep.pdf",
+                        "content_type": "application/pdf",
+                    },
+                    {
+                        "url": "https://app.close.com/go/file/p/drop.png",
+                        "filename": "drop.png",
+                        "content_type": "image/png",
+                    },
+                ],
+            }
+        ],
+    }
     _, transport = _make_notes_emails_transport(
-        notes_pages=[payload], emails_pages=[]
+        notes_pages=[page], emails_pages=[]
     )
 
     with CloseClient(http_client=httpx.Client(transport=transport)) as client:
         items = client.list_lead_attachments("lead_test")
 
-    # The fixture has one PDF + one PNG on the first note, and an empty
-    # second note. Only the PDF survives the filter.
     assert len(items) == 1
-    assert items[0].id == "attc_pdf_001"
+    assert items[0].name == "keep.pdf"
     assert items[0].content_type == "application/pdf"
 
 
@@ -327,21 +350,47 @@ def test_list_lead_attachments_populates_download_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The (url, filename) for each PDF must be stashed on the client
-    so download_attachment can find it without a second API hop."""
+    so download_attachment can find it without a second API hop.
+
+    The real Close payload has no ``id`` field on attachments, so the
+    cache key is the synthesized id = sha256(url)[:16]. We verify the
+    cache by re-deriving the key from the URL we put on the wire.
+    """
+    import hashlib
+
     _set_close_env(monkeypatch)
-    payload = _load_fixture("acti_note_with_pdf.json")
+    url = "https://app.close.com/go/file/persisted/2026/05/abc/x.pdf"
+    page = {
+        "has_more": False,
+        "data": [
+            {
+                "id": "acti_cache",
+                "attachments": [
+                    {
+                        "url": url,
+                        "filename": "x.pdf",
+                        "content_type": "application/pdf",
+                    }
+                ],
+            }
+        ],
+    }
     _, transport = _make_notes_emails_transport(
-        notes_pages=[payload], emails_pages=[]
+        notes_pages=[page], emails_pages=[]
     )
 
+    synth_id = hashlib.sha256(url.encode()).hexdigest()[:16]
     with CloseClient(http_client=httpx.Client(transport=transport)) as client:
         client.list_lead_attachments("lead_test")
-        cached = client._attachment_cache.get("attc_pdf_001")
+        cached = client._attachment_cache.get(synth_id)
 
-    assert cached is not None
+    assert cached is not None, (
+        f"cache miss on synthesized id {synth_id!r}; "
+        f"keys={list(client._attachment_cache)}"
+    )
     cached_url, cached_filename = cached
-    assert cached_url.startswith("https://app.close.com/go/file/persisted/")
-    assert cached_filename == "Lili 2026-02.pdf"
+    assert cached_url == url
+    assert cached_filename == "x.pdf"
 
 
 # ---------------------------------------------------------------------
@@ -475,8 +524,9 @@ def test_download_attachment_end_to_end_via_list(
 ) -> None:
     """Integration: list → cache → download in one round, the way the
     orchestrator drives the client. Confirms the orchestrator's call
-    shape (``download_attachment(att.id)``) still works after the
-    refactor without any orchestrator change."""
+    shape (``download_attachment(att.id)``) still works against the
+    REAL Close note-activity payload shape (no ``id`` field on the
+    attachment — id is synthesized from the URL)."""
     _set_close_env(monkeypatch)
     notes_page = _load_fixture("acti_note_with_pdf.json")
 
@@ -495,9 +545,114 @@ def test_download_attachment_end_to_end_via_list(
         http_client=httpx.Client(transport=httpx.MockTransport(handler))
     ) as client:
         items = client.list_lead_attachments("lead_test")
-        assert len(items) == 1
-        only = items[0]
-        data, filename = client.download_attachment(only.id)
+        # Real fixture: act1 has 2 PDFs, act2 has 1 PDF, act3 is empty.
+        assert len(items) == 3
+        # Drive download against the first item — the way the worker
+        # iterates. ``att.id`` is the synthesized hash; download finds
+        # the cached URL by it.
+        first = items[0]
+        assert first.id  # synthesized, non-empty
+        data, filename = client.download_attachment(first.id)
 
     assert data == pdf_body
-    assert filename == "Lili 2026-02.pdf"
+    assert filename == first.name
+
+
+def test_list_lead_attachments_handles_real_note_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real Close note attachment payload has NO ``id`` field — the
+    earlier rewrite required it and crashed every prod merchant. This
+    fixture is the sanitized capture of the live response that broke
+    A&R KM LLC (lead_Qny6E…). The model must accept it cleanly and
+    synthesize a stable id from the URL.
+    """
+    _set_close_env(monkeypatch)
+    notes_page = _load_fixture("acti_note_with_pdf.json")
+    _, transport = _make_notes_emails_transport(
+        notes_pages=[notes_page], emails_pages=[]
+    )
+
+    with CloseClient(http_client=httpx.Client(transport=transport)) as client:
+        items = client.list_lead_attachments("lead_test")
+
+    # 3 PDFs across the fixture's note activities (2 in act1, 1 in act2,
+    # 0 in act3).
+    assert len(items) == 3
+    # Every synthesized id is non-empty and distinct (URLs differ so
+    # hashes do too).
+    ids = [it.id for it in items]
+    assert all(ids)
+    assert len(set(ids)) == 3, f"id collision among {ids!r}"
+    # No attachment had an ``id`` key on the wire — all values are the
+    # 16-char sha256 prefix.
+    for it in items:
+        assert len(it.id) == 16
+        assert all(c in "0123456789abcdef" for c in it.id)
+
+
+def test_list_lead_attachments_handles_real_email_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real Close email attachment payload has NO ``id`` field AND
+    carries extra keys (``content_id``, ``inline_only``) not present on
+    note attachments. Both shapes must validate cleanly through the
+    same model (``extra="ignore"`` covers the email-only keys).
+    """
+    _set_close_env(monkeypatch)
+    emails_page = _load_fixture("acti_email_with_pdf.json")
+    _, transport = _make_notes_emails_transport(
+        notes_pages=[], emails_pages=[emails_page]
+    )
+
+    with CloseClient(http_client=httpx.Client(transport=transport)) as client:
+        items = client.list_lead_attachments("lead_test")
+
+    # 2 PDFs on the first email activity, 0 on the second.
+    assert len(items) == 2
+    for it in items:
+        assert len(it.id) == 16
+        assert it.url is not None
+        assert it.url.startswith("https://app.close.com/")
+
+
+def test_close_attachment_synthesizes_id_when_wire_omits_it() -> None:
+    """Unit test on the model: a payload without ``id`` populates a
+    deterministic sha256-derived id. Same URL ⇒ same id (cache key
+    stability across worker invocations on the same lead)."""
+    import hashlib
+
+    url = "https://app.close.com/go/file/persisted/abc/x.pdf"
+    a1 = CloseAttachment.model_validate(
+        {"url": url, "filename": "x.pdf", "content_type": "application/pdf"}
+    )
+    a2 = CloseAttachment.model_validate(
+        {"url": url, "filename": "x.pdf", "content_type": "application/pdf"}
+    )
+    expected = hashlib.sha256(url.encode()).hexdigest()[:16]
+    assert a1.id == expected
+    assert a1.id == a2.id
+
+
+def test_close_attachment_requires_id_or_url() -> None:
+    """A payload missing BOTH id and url is unsalvageable — fail loud."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        CloseAttachment.model_validate(
+            {"filename": "x.pdf", "content_type": "application/pdf"}
+        )
+
+
+def test_close_attachment_explicit_id_wins_over_synthesis() -> None:
+    """If the wire payload DOES carry an explicit id (legacy fixture
+    shape, or a hypothetical future change), it overrides synthesis."""
+    a = CloseAttachment.model_validate(
+        {
+            "id": "explicit_id_value",
+            "url": "https://app.close.com/go/file/persisted/abc/x.pdf",
+            "filename": "x.pdf",
+            "content_type": "application/pdf",
+        }
+    )
+    assert a.id == "explicit_id_value"

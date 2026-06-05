@@ -1,0 +1,46 @@
+{
+  "data": [
+    {
+      "_type": "Email",
+      "id": "acti_test_7uyvmcGh",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "contact_id": "cont_test",
+      "user_id": "user_test",
+      "date_created": "2026-06-05T16:25:44+00:00",
+      "date_updated": "2026-06-05T16:27:31.098000+00:00",
+      "activity_at": "2026-06-05T16:25:44+00:00",
+      "attachments": [
+        {
+          "content_type": "application/pdf",
+          "filename": "BankLetter with VoidedCheck.pdf",
+          "size": 363099,
+          "url": "https://app.close.com/go/file/persisted/orga_test/abc004def004/file_004.pdf",
+          "content_id": null,
+          "inline_only": false
+        },
+        {
+          "content_type": "application/pdf",
+          "filename": "Driver License.pdf",
+          "size": 10925153,
+          "url": "https://app.close.com/go/file/persisted/orga_test/abc005def005/file_005.pdf",
+          "content_id": null,
+          "inline_only": false
+        }
+      ]
+    },
+    {
+      "_type": "Email",
+      "id": "acti_test_dNUNJuPb",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "contact_id": "cont_test",
+      "user_id": "user_test",
+      "date_created": "2026-06-05T16:06:54+00:00",
+      "date_updated": "2026-06-05T16:27:31.203000+00:00",
+      "activity_at": "2026-06-05T16:06:54+00:00",
+      "attachments": []
+    }
+  ],
+  "has_more": false
+}

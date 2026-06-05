@@ -1,39 +1,52 @@
 {
-  "has_more": false,
   "data": [
     {
-      "id": "acti_note_abc123",
       "_type": "Note",
+      "id": "acti_test_mlPYkfRR",
       "organization_id": "orga_test",
       "lead_id": "lead_test",
-      "note": "Bank statements attached",
+      "contact_id": null,
+      "user_id": "user_test",
+      "date_created": "2026-06-05T17:03:12.416000+00:00",
+      "date_updated": "2026-06-05T17:03:35.176000+00:00",
+      "activity_at": "2026-06-05T17:03:12.416000+00:00",
       "attachments": [
         {
-          "id": "attc_pdf_001",
-          "url": "https://app.close.com/go/file/persisted/2026/05/abc123/Lili_2026-02.pdf",
-          "filename": "Lili 2026-02.pdf",
           "content_type": "application/pdf",
-          "size": 312045,
-          "thumbnail_url": "https://app.close.com/go/file/thumb/abc123"
+          "filename": "BankLetter with VoidedCheck.pdf",
+          "size": 363099,
+          "thumbnail_url": null,
+          "url": "https://app.close.com/go/file/persisted/orga_test/abc001def001/file_001.pdf"
         },
         {
-          "id": "attc_dl_001",
-          "url": "https://app.close.com/go/file/persisted/2026/05/dl/DL.png",
-          "filename": "DL.png",
-          "content_type": "image/png",
-          "size": 80000
+          "content_type": "application/pdf",
+          "filename": "Driver License.pdf",
+          "size": 10925153,
+          "thumbnail_url": null,
+          "url": "https://app.close.com/go/file/persisted/orga_test/abc002def002/file_002.pdf"
         }
-      ],
-      "date_created": "2026-05-01T12:00:00.000000+00:00"
+      ]
     },
     {
-      "id": "acti_note_no_attachments",
       "_type": "Note",
+      "id": "acti_test_wGEsfQkw",
       "organization_id": "orga_test",
       "lead_id": "lead_test",
-      "note": "Just a note, no files",
-      "attachments": [],
-      "date_created": "2026-05-02T12:00:00.000000+00:00"
+      "contact_id": null,
+      "user_id": "user_test",
+      "date_created": "2026-06-05T15:52:34.256000+00:00",
+      "date_updated": "2026-06-05T16:00:55.472000+00:00",
+      "activity_at": "2026-06-05T15:52:34.256000+00:00",
+      "attachments": [
+        {
+          "content_type": "application/pdf",
+          "filename": "Lili Monthly Statement 2026-XX.pdf",
+          "size": 63545,
+          "thumbnail_url": null,
+          "url": "https://app.close.com/go/file/persisted/orga_test/abc003def003/file_003.pdf"
+        }
+      ]
     }
-  ]
+  ],
+  "has_more": false
 }
