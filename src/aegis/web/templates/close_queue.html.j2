@@ -1,0 +1,108 @@
+{% extends "base.html.j2" %}
+{% set active = 'CloseQueue' %}
+{% block title %}Close queue — AEGIS{% endblock %}
+
+{% block deck %}
+{% set title = "Close queue" %}
+{% set subtitle = "· pipeline state" %}
+{# Surface a compact count summary so the operator sees at a glance
+   how many merchants need attention before scanning the table. #}
+{% set _meta_bits = [] %}
+{% if state_counts.get('failed_pull') %}{% set _ = _meta_bits.append(state_counts['failed_pull']|string ~ ' failed to pull') %}{% endif %}
+{% if state_counts.get('failed_parse') %}{% set _ = _meta_bits.append(state_counts['failed_parse']|string ~ ' failed to parse') %}{% endif %}
+{% if state_counts.get('stuck') %}{% set _ = _meta_bits.append(state_counts['stuck']|string ~ ' stuck') %}{% endif %}
+{% if state_counts.get('gated') %}{% set _ = _meta_bits.append(state_counts['gated']|string ~ ' needs underwriter') %}{% endif %}
+{% if state_counts.get('parsing') or state_counts.get('awaiting_pull') %}
+  {% set _in_flight = (state_counts.get('parsing', 0) + state_counts.get('awaiting_pull', 0)) %}
+  {% set _ = _meta_bits.append(_in_flight|string ~ ' in flight') %}
+{% endif %}
+{% if state_counts.get('scored') %}{% set _ = _meta_bits.append(state_counts['scored']|string ~ ' scored') %}{% endif %}
+{% set meta = (rows|length|string) ~ ' merchant' ~ ('' if rows|length == 1 else 's') ~ (' · ' ~ _meta_bits|join(' · ') if _meta_bits else '') %}
+{% set actions = [] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+  <div>
+    <header class="sect-head">
+      <h2>Close-sourced merchants</h2>
+      <div class="rule"></div>
+      <div class="meta">
+        Stale threshold: pull &gt; {{ stale_pull_hours|round|int }}h · parse &gt; {{ stale_parse_hours|round|int }}h
+      </div>
+    </header>
+
+    {% if not rows %}
+      <div class="empty">
+        No Close-sourced merchants yet
+        <span class="copy">When a Close opportunity flips to <em>Docs In — Pre-UW</em>, the merchant appears here automatically.</span>
+      </div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>State</th>
+            <th>Business</th>
+            <th>Reason</th>
+            <th class="num">Docs</th>
+            <th>Last orchestration</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            {% set s = r.state %}
+            <tr>
+              <td>
+                {% with tone=s.severity, label=s.label %}{% include "_status_chip.html.j2" %}{% endwith %}
+              </td>
+              <td class="merchant">
+                <a href="/ui/merchants/{{ r.merchant_id }}">{{ r.business_name }}</a>
+                <span class="sub mono-cell">{{ r.close_lead_id|truncate(18, True, '…') }}</span>
+              </td>
+              <td>
+                <span class="desc">{{ s.detail }}</span>
+              </td>
+              <td class="mono-cell" style="text-align:right">{{ r.doc_count }}</td>
+              <td>
+                {% if r.last_audit_action and r.last_audit_action != '—' %}
+                  <span class="mono-cell">{{ r.last_audit_action|replace('close.orchestration.', '') }}</span>
+                {% else %}
+                  <span class="mono-cell">—</span>
+                {% endif %}
+                {% if r.last_audit_at %}
+                  <span class="sub">{{ r.last_audit_at.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if s.action == 'retry' %}
+                  {# Retry the rescan handler — same surface as the
+                     dossier button. SHA-256 dedup makes this idempotent
+                     for documents already pulled. #}
+                  <form method="post" action="/ui/merchants/{{ r.merchant_id }}/close-rescan" style="display:inline">
+                    <button class="btn warn" type="submit">Retry rescan</button>
+                  </form>
+                {% elif s.action == 'review' %}
+                  <a class="btn" href="/ui/merchants/{{ r.merchant_id }}">Open dossier →</a>
+                {% else %}
+                  <a class="btn ghost" href="/ui/merchants/{{ r.merchant_id }}">View</a>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    <div class="marginalia" style="margin-top:14px">
+      <strong>How to read this</strong> ·
+      <span class="chip bad">Failed</span> = retry the pull (network / API regression);
+      <span class="chip warn">Stuck</span> = pull or parse stalled past its threshold — usually a retry too;
+      <span class="chip warn">Needs underwriter</span> = parser flagged integrity or reconciliation concerns — open the dossier, not retry;
+      <span class="chip info">Pulling / Parsing</span> = in flight, no action;
+      <span class="chip good">Scored</span> = clean.
+    </div>
+  </div>
+</section>
+{% endblock %}
