@@ -1,0 +1,1222 @@
+{
+  "merchant_id": "5cf4479d-c6ac-4267-a2f7-5e7ef04c1345",
+  "documents": [
+    {
+      "document_id": "9ea69506-694f-4599-8fa2-df4f247251b9",
+      "filename": "vu7722-mar.pdf",
+      "parse_status": "proceed",
+      "summary": {
+        "bank_name": "Bank of America, N.A.",
+        "account_last4": "7722",
+        "period_start": "2026-03-01",
+        "period_end": "2026-03-31"
+      },
+      "transactions": [
+        {
+          "id": "d2098c47-661f-497b-a5ed-755e53b8b96e",
+          "posted_date": "2026-03-02",
+          "description": "CHECKCARD 0227 MURPHY EXPRESS 8783 LAS VEGAS NV 24431056059278948257442 CKCD 5542 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-15.45",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "5bd8ff11-0454-4200-b1cf-f4b353f34112",
+          "posted_date": "2026-03-02",
+          "description": "CHECKCARD 0227 MURPHY EXPRESS 8783 LAS VEGAS NV 24431056059278948257459 CKCD 5542 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-32.87",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "c25c10ae-0f55-4fc9-b80c-18117cb951cf",
+          "posted_date": "2026-03-02",
+          "description": "CHECKCARD 0227 MURPHY EXPRESS 8783 LAS VEGAS NV 24431056059278948257467 CKCD 5542 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-50.59",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "3158934d-f21f-40af-9f40-39126e3f6921",
+          "posted_date": "2026-03-02",
+          "description": "PURCHASE 0301 Google One 650-2530000 CA",
+          "amount": "-1.99",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "f876bd1e-0900-4606-858a-e8ba8117c297",
+          "posted_date": "2026-03-02",
+          "description": "PURCHASE 0227 AMAZON MKTPL*BE55I1HD2 Amzn.com/billWA",
+          "amount": "-65.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "b32b190d-5bf3-42a4-bced-54f0a05b15b9",
+          "posted_date": "2026-03-02",
+          "description": "CHECKCARD 0227 CA DMV 063 clover.com CA 24116416059663636171047 CKCD 9399 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-412.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "e70059a2-01fb-4588-a8fd-fbade36e0665",
+          "posted_date": "2026-03-02",
+          "description": "CHECKCARD 0227 FD *CA DMV OL *SVC clover.com CA 24116416059663239170925 CKCD 9399 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-8.24",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "f25d3291-1e84-4a8d-8867-1002491939a6",
+          "posted_date": "2026-03-02",
+          "description": "CHECKCARD 0301 GOOGLE *Worksp Mountain ViewCA CKCD 7311 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-25.2",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "eccdb847-2f79-42a1-89c1-67abc81e3269",
+          "posted_date": "2026-03-02",
+          "description": "CHECKCARD 0301 Google Workspace_americ SG 74777136060000091884069 RECURRING CKCD 4816 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-28.98",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "2d8095de-3a22-471c-80b8-4983e0c137ec",
+          "posted_date": "2026-03-02",
+          "description": "PURCHASE 0301 SHOPIFY* 495755031 SHOPIFY.COM IL",
+          "amount": "-166.26",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "77c8e1e4-4614-460b-9317-4dcf03029034",
+          "posted_date": "2026-03-03",
+          "description": "CHECKCARD 0302 THE FOAT 725-222-0064 CA 24431066061387672151336 CKCD 7299 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-287.96",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "2c2dc1b6-bc34-4e90-91d7-5c0659fa9213",
+          "posted_date": "2026-03-03",
+          "description": "WIRE TYPE:BOOK OUT DATE:260303 TIME:1536 ET TRN:2026030300547107 RELATED REF:600318286 BNF:MMA SPECIALTIES ID:501025321218",
+          "amount": "-125275.0",
+          "category": "wire_out",
+          "running_balance": null
+        },
+        {
+          "id": "664bfb99-a3bf-472d-bd28-a1deb5d9638c",
+          "posted_date": "2026-03-03",
+          "description": "Online Banking transfer from CHK 7719 Confirmation# 4556990395",
+          "amount": "125792.37",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "930bad0c-c0c8-4028-bac1-349364a3fca0",
+          "posted_date": "2026-03-06",
+          "description": "PURCHASE 0304 Experian* Credit Report 479-3436237 CA",
+          "amount": "-1.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "b7b612b2-dc75-49c1-aacb-bb4733534180",
+          "posted_date": "2026-03-06",
+          "description": "CHECKCARD 0305 CA SECRETARY OF STATE W 916-6951338 CA 24755426064260648832332 CKCD 9399 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-5.0",
+          "category": "fee",
+          "running_balance": null
+        },
+        {
+          "id": "0991fb82-cb74-4835-9756-073413b9b141",
+          "posted_date": "2026-03-06",
+          "description": "PURCHASE 0306 Amazon Grocery Subscri 888-280-4331 WA",
+          "amount": "-9.99",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "ef731ebe-8449-45b7-8df8-e0d5efd411df",
+          "posted_date": "2026-03-09",
+          "description": "WIRE TYPE:BOOK OUT DATE:260309 TIME:0404 ET TRN:2026030900096621 RELATED REF:601082654 BNF:MMA SPECIALTIES ID:501025321218",
+          "amount": "-163167.29",
+          "category": "wire_out",
+          "running_balance": null
+        },
+        {
+          "id": "1f995455-82cc-41c2-b827-24d53d90c192",
+          "posted_date": "2026-03-09",
+          "description": "Online Banking transfer from CHK 7719 Confirmation# 4895759310",
+          "amount": "164916.25",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "86b3c785-ecc0-4146-8082-6f64fdc633ac",
+          "posted_date": "2026-03-09",
+          "description": "Online Banking transfer from CHK 7719 Confirmation# 5594749025",
+          "amount": "2608.32",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "333a89da-c3d1-4b9d-8bb4-fc13da145ebc",
+          "posted_date": "2026-03-09",
+          "description": "Online Banking transfer from CHK 7719 Confirmation# 4105577731",
+          "amount": "2467.22",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "c5ced49e-da37-40cb-9db3-7f1603aa3613",
+          "posted_date": "2026-03-09",
+          "description": "Zelle payment to Law Offices of Phillip Kantor Conf# qrbfjkm6v",
+          "amount": "-1500.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "90dca4e9-d01c-40a6-be68-e6141a3f51b7",
+          "posted_date": "2026-03-09",
+          "description": "Zelle payment to Law Offices of Todd B Serota Conf# nzwrjjych",
+          "amount": "-3700.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "57b84d77-6cc2-4bb5-aeec-df7f93399a51",
+          "posted_date": "2026-03-09",
+          "description": "PROVIDENTIAL ENT DES:SALE ID: INDN:VU DEVELOPMENT CO ID:9215986202 CCD",
+          "amount": "-1106.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "d3eacd83-a205-4377-9dd8-d33960ea813e",
+          "posted_date": "2026-03-09",
+          "description": "PURCHASE 0306 AMAZON MKTPL*BE83W3SF1 Amzn.com/billWA",
+          "amount": "-70.4",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "e901056f-2225-426f-95db-e9d22259f400",
+          "posted_date": "2026-03-09",
+          "description": "PURCHASE 0308 AMAZON RETA* BP0FS9WJ2 WWW.AMAZON.COWA",
+          "amount": "-61.44",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "25ac3902-898f-434d-9345-acf5ca8c1309",
+          "posted_date": "2026-03-09",
+          "description": "PURCHASE 0308 AMAZON MKTPL*BP3XA44D1 Amzn.com/billWA",
+          "amount": "-19.3",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "5abcf969-72b3-43e5-9787-f2f995938c36",
+          "posted_date": "2026-03-09",
+          "description": "PURCHASE 0308 GRASSHOPPER GR Boston MA",
+          "amount": "-53.38",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "4890c918-dcb9-4c0f-a08a-e66ce622f57b",
+          "posted_date": "2026-03-11",
+          "description": "PURCHASE 0310 AMAZON MKTPL*BE4213R80 Amzn.com/billWA",
+          "amount": "-99.98",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "c35b467b-6667-4c89-aaef-f41ffd1d57e4",
+          "posted_date": "2026-03-11",
+          "description": "PURCHASE 0310 AMAZON MKTPL*BP6NJ0GN1 Amzn.com/billWA",
+          "amount": "-61.76",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "a7c76bfe-1289-4b52-98ae-7a52bcf9c346",
+          "posted_date": "2026-03-12",
+          "description": "Online Banking transfer to CHK 9940 Confirmation# 5030883800",
+          "amount": "-998.72",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "b8b9682f-e013-49a8-addc-9168599290c3",
+          "posted_date": "2026-03-12",
+          "description": "Online Banking payment to CRD 0993 Confirmation# 4830902273",
+          "amount": "-329.27",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "f6fd520a-cc05-4cc6-85a2-9efdc1e24be3",
+          "posted_date": "2026-03-13",
+          "description": "PURCHASE 0312 ShipStation 512-8864006 TX",
+          "amount": "-49.99",
+          "category": "fee",
+          "running_balance": null
+        },
+        {
+          "id": "52780659-d9b1-4427-83ac-dace2e5486ef",
+          "posted_date": "2026-03-16",
+          "description": "CHECKCARD 0314 INTUIT *QBooks Online CL.INTUIT.COMCA 24692166073107109968674 RECURRING CKCD 5734 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-75.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "aadb50e2-7c5e-4288-be85-4144306111aa",
+          "posted_date": "2026-03-16",
+          "description": "PURCHASE 0315 Experian* Credit Report 479-3436237 CA",
+          "amount": "-24.99",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "f81e10d7-b533-467f-a3f5-c634b8f6f8b4",
+          "posted_date": "2026-03-16",
+          "description": "CHECKCARD 0315 LINE2 888-472-9900 CA 24692166074107832616797 RECURRING CKCD 5968 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-21.95",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "6f790f9e-e4c2-4164-af6f-60082a74b2ab",
+          "posted_date": "2026-03-16",
+          "description": "CHECKCARD 0313 SAN MARCOS GLASS AND SH 760-744-4703 CA 24801976073679508504219 CKCD 5231 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-102.3",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "ba19f341-36b6-4b9b-a4d5-dc9bdb183872",
+          "posted_date": "2026-03-16",
+          "description": "PURCHASE 0315 Experian* Credit Report 479-3436237 CA",
+          "amount": "-29.99",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "a5d077ad-50ec-4b78-b5a3-2ce5e8cc072d",
+          "posted_date": "2026-03-16",
+          "description": "PURCHASE 0315 Experian* Credit Report 479-3436237 CA",
+          "amount": "-29.99",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "26077ec6-4888-4c8e-b428-e7b8198e54c9",
+          "posted_date": "2026-03-17",
+          "description": "Online Banking transfer from CHK 7719 Confirmation# 5273076915",
+          "amount": "7500.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "bcde7291-f5cb-4280-8d6f-5619618b73d9",
+          "posted_date": "2026-03-17",
+          "description": "Zelle payment to ENRIQUE LUGO-HERNANDEZ for \"Final Payment for Fencing & Gates. Next Project\"; Conf# nb1yprvpg",
+          "amount": "-1000.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "a6818d07-7d10-4272-9c6f-3133a0d37d57",
+          "posted_date": "2026-03-18",
+          "description": "WIRE TYPE:BOOK OUT DATE:260318 TIME:0850 ET TRN:2026031800295118 RELATED REF:602748820 BNF:MMA SPECIALTIES ID:501025321218",
+          "amount": "-161575.0",
+          "category": "wire_out",
+          "running_balance": null
+        },
+        {
+          "id": "3df49bb3-5d74-48b1-b34d-530c2b9868eb",
+          "posted_date": "2026-03-18",
+          "description": "Online Banking transfer from CHK 7719 Confirmation# 4983792843",
+          "amount": "161692.37",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "1e8c0982-d6d8-49de-be33-a67b79df960f",
+          "posted_date": "2026-03-18",
+          "description": "PURCHASE 0318 AMAZON RETA* BD54S1GR1 WWW.AMAZON.COWA",
+          "amount": "-26.39",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "61258327-4ae3-491b-9a2c-a03d852ac371",
+          "posted_date": "2026-03-18",
+          "description": "Discount Tire DES:WEB PAY ID:19626 INDN:VU DEV CO ID:2381906220 CCD",
+          "amount": "-1844.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "8d19cd99-fb01-4b3c-b66c-6e427bd09317",
+          "posted_date": "2026-03-23",
+          "description": "PURCHASE 0321 Experian* Credit Report 479-3436237 CA",
+          "amount": "-29.99",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "ffc951f6-8741-4ead-a1c0-7f3a47160350",
+          "posted_date": "2026-03-23",
+          "description": "PURCHASE 0320 Experian* Credit Report 479-3436237 CA",
+          "amount": "-29.99",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "aea9c443-e378-4d01-986a-6f3ccda78692",
+          "posted_date": "2026-03-25",
+          "description": "PURCHASE 0324 PAYPAL *YAHOO MAILSTOR1 402-935-7733 NY",
+          "amount": "-1.99",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "9c28fc6d-abf7-4d50-979c-9bb715e3b95e",
+          "posted_date": "2026-03-26",
+          "description": "PURCHASE 0326 REVERSE AGE LAB REVERSEAGELABNV",
+          "amount": "-99.96",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "4089298e-4db2-44fe-ad17-de28f03ba6ac",
+          "posted_date": "2026-03-26",
+          "description": "PURCHASE 0325 AMAZON MKTPL*B560S94G0 Amzn.com/billWA",
+          "amount": "-56.27",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "bf1ebcfc-7502-43ce-b76d-428bcac79e01",
+          "posted_date": "2026-03-26",
+          "description": "PURCHASE 0325 AMAZON MKTPL*B57DJ8ZP0 Amzn.com/billWA",
+          "amount": "-9.74",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "96dcc3c5-e5da-4002-89c2-75bb32e20304",
+          "posted_date": "2026-03-26",
+          "description": "PURCHASE 0325 Adobe Inc 800-8336687 CA",
+          "amount": "-19.99",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "091e838a-9363-4d2c-a74e-71fe85cf330a",
+          "posted_date": "2026-03-27",
+          "description": "CHECKCARD 0326 IIQ*IDENTITYIQ.COM 877-8754347 NV 24906416085253727982833 RECURRING CKCD 8999 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-34.99",
+          "category": "fee",
+          "running_balance": null
+        },
+        {
+          "id": "e7ca2bf9-2dbf-4883-b0a8-8ed4d609f534",
+          "posted_date": "2026-03-27",
+          "description": "Zelle payment to Milissa Goon Conf# pthjd5r7j",
+          "amount": "-456.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "464320a5-4e02-4da0-9bc2-7e1994b6ef48",
+          "posted_date": "2026-03-27",
+          "description": "Zelle payment to Law Offices of Todd B Serota Conf# myi3plitj",
+          "amount": "-3100.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "116658bc-579e-4c57-b0b5-4953810e6bb7",
+          "posted_date": "2026-03-27",
+          "description": "PURCHASE 0326 AMAZON MKTPL*B53GU6EW0 Amzn.com/billWA",
+          "amount": "-194.05",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "f09aee12-e91b-4297-a416-58da592a02c7",
+          "posted_date": "2026-03-27",
+          "description": "PURCHASE 0326 AMAZON MKTPL*B53YN0671 Amzn.com/billWA",
+          "amount": "-85.64",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "044c973c-9f47-42f3-a666-69e259f76893",
+          "posted_date": "2026-03-27",
+          "description": "CHECKCARD 0327 NAV TECH 855-226-8388 NAV.COM UT 24011346086100026140615 RECURRING CKCD 5734 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-49.99",
+          "category": "fee",
+          "running_balance": null
+        },
+        {
+          "id": "ea5d82b8-ed2b-4b2c-8553-1dd2fb799ef5",
+          "posted_date": "2026-03-30",
+          "description": "CHECKCARD 0329 WM SUPERCENTER #3351 LAS VEGAS NV 24445006089400253614909 CKCD 5411 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-118.95",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "4df8a610-2f0d-45be-911f-af31a360249a",
+          "posted_date": "2026-03-30",
+          "description": "CHECKCARD 0328 SQ *CHRIS SIMMONS PHOTO Las Vegas NV 24692166087100718227974 CKCD 7333 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-87.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "4bb8b1dc-e1f9-42ea-8edd-6b1ec1f208ae",
+          "posted_date": "2026-03-30",
+          "description": "Online Banking transfer from CHK 7719 Confirmation# 4882726430",
+          "amount": "1121.67",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "f214ef53-f768-49c0-8c56-752980a50ac7",
+          "posted_date": "2026-03-30",
+          "description": "PURCHASE 0327 AMAZON MKTPL*BC43N9FZ2 Amzn.com/billWA",
+          "amount": "-78.15",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "3a2d7d47-5047-4cdd-b1d2-871b9ce5dbde",
+          "posted_date": "2026-03-30",
+          "description": "CHECKCARD 0326 MURPHY EXPRESS 8783 LAS VEGAS NV 24431056086290085579352 CKCD 5542 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-21.53",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "b92d66cf-1387-4077-9f67-420e1d6c706e",
+          "posted_date": "2026-03-30",
+          "description": "CHECKCARD 0326 MURPHY EXPRESS 8783 LAS VEGAS NV 24431056086290085579360 CKCD 5542 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-41.59",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "276c7edf-08e6-4490-a340-c8ad42911cfc",
+          "posted_date": "2026-03-30",
+          "description": "CHECKCARD 0327 SQ *JP MOTORSPORTS Las Vegas NV 24692166086109469587362 CKCD 5399 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-82.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "d1caed24-12f9-4c15-a4cc-1ede6f5247d7",
+          "posted_date": "2026-03-30",
+          "description": "CHECKCARD 0327 TA/PETRO #331 LAS VEGAS NV 24941666087290578456280 CKCD 5541 XXXXXXXXXXXX3880 XXXX XXXX XXXX 3880",
+          "amount": "-11.08",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "d1d15397-e378-4336-a332-8b6105dec169",
+          "posted_date": "2026-03-31",
+          "description": "PURCHASE 0330 AMAZON MKTPL*BC8878ML2 Amzn.com/billWA",
+          "amount": "-150.14",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "780ee280-d368-42c0-babf-ba644ec82816",
+          "posted_date": "2026-03-31",
+          "description": "PURCHASE 0330 AMAZON MKTPL*BC5Z985C2 Amzn.com/billWA",
+          "amount": "-42.26",
+          "category": "other",
+          "running_balance": null
+        }
+      ]
+    },
+    {
+      "document_id": "49c7d058-3e2a-4554-ad46-f4063146b36e",
+      "filename": "eStmt_2026-02-27.pdf",
+      "parse_status": "manual_review",
+      "summary": {
+        "bank_name": "Bank of America, N.A.",
+        "account_last4": "7719",
+        "period_start": "2026-02-01",
+        "period_end": "2026-02-28"
+      },
+      "transactions": [
+        {
+          "id": "83e9d606-8507-47e4-a93c-b24da9085957",
+          "posted_date": "2026-02-02",
+          "description": "CHECKCARD 0201 FREEDOM VOICE SYSTEMS 800-4771477 AZ 24906416032249420410134 RECURRING CKCD 4814 XXXXXXXXXXXX3730 XXXX XXXX XXXX 3730",
+          "amount": "-15.87",
+          "category": "fee",
+          "running_balance": null
+        },
+        {
+          "id": "86e56873-16b2-4065-9b04-3465f535bedd",
+          "posted_date": "2026-02-03",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5616819490",
+          "amount": "-1000.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "0958ec21-0c0b-4f16-9f33-df4d4e6c07a1",
+          "posted_date": "2026-02-05",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4533048395",
+          "amount": "-2500.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "db861ec7-8bef-4bad-ae5d-928411a2e010",
+          "posted_date": "2026-02-05",
+          "description": "CLAIMS PROCESSING TRANSACTION FDES NTX 0008723 339149",
+          "amount": "6500.0",
+          "category": "ach_credit",
+          "running_balance": null
+        },
+        {
+          "id": "11a125c0-6760-4fff-80ef-e072d0a0e25c",
+          "posted_date": "2026-02-05",
+          "description": "CLAIMS PROCESSING TRANSACTION FDES NTX 0008723 339149",
+          "amount": "10000.0",
+          "category": "ach_credit",
+          "running_balance": null
+        },
+        {
+          "id": "932ad519-4c13-44e7-b570-a12f69561a8d",
+          "posted_date": "2026-02-06",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4442132580",
+          "amount": "-1500.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "199c75c0-59a1-4805-abae-ba4e5eb1dba4",
+          "posted_date": "2026-02-12",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4890376230",
+          "amount": "-30213.71",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "477879d6-be7c-4146-b649-b621fe7f9166",
+          "posted_date": "2026-02-13",
+          "description": "WooPayments DES:WooPayment ID:ST-U8J1O9J4N5D9 INDN:VU DEVELOPMENT CO ID:1800948598 CCD",
+          "amount": "920.21",
+          "category": "deposit",
+          "running_balance": null
+        },
+        {
+          "id": "57933b55-5536-468c-9e5a-de01263116a0",
+          "posted_date": "2026-02-17",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4528296776",
+          "amount": "-304500.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "b7132d58-4145-49b0-a31d-e704a08cc9a9",
+          "posted_date": "2026-02-25",
+          "description": "WIRE TYPE:BOOK IN DATE:260225 TIME:1629 ET TRN:2026022500621163 SNDR REF:598936268 ORIG:1/INTERNATIONAL WHOLESALE ID:501029097881",
+          "amount": "124998.0",
+          "category": "wire_in",
+          "running_balance": null
+        },
+        {
+          "id": "6905962e-5052-4b00-b261-ee1f3d53813a",
+          "posted_date": "2026-02-25",
+          "description": "WIRE TYPE:BOOK IN DATE:260225 TIME:0430 ET TRN:2026022400634663 SNDR REF:598743990 ORIG:1/INTERNATIONAL WHOLESALE ID:501029097881",
+          "amount": "224595.0",
+          "category": "wire_in",
+          "running_balance": null
+        },
+        {
+          "id": "f5b8b988-f1a7-4eb6-bfe4-72d2e2007c85",
+          "posted_date": "2026-02-26",
+          "description": "CPS MERCHANT SER DES:ACH Debit ID:9029972425 INDN:VU DEVELOPMENT CO ID:9200502236 CCD",
+          "amount": "-48.45",
+          "category": "fee",
+          "running_balance": null
+        },
+        {
+          "id": "e2e9c0e5-6c74-4a66-9fdc-e60ab89c1f51",
+          "posted_date": "2026-02-26",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5614429443",
+          "amount": "-2792.0",
+          "category": "transfer",
+          "running_balance": null
+        }
+      ]
+    },
+    {
+      "document_id": "f4cb4d34-f1ec-48db-aa5f-876a08ef242c",
+      "filename": "eStmt_2026-04-30 7719.pdf",
+      "parse_status": "manual_review",
+      "summary": {
+        "bank_name": "Bank of America, N.A.",
+        "account_last4": "7719",
+        "period_start": "2026-04-01",
+        "period_end": "2026-04-30"
+      },
+      "transactions": [
+        {
+          "id": "7ff87c0d-7474-4457-a971-0eaf0e63a4c2",
+          "posted_date": "2026-04-01",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5504470423",
+          "amount": "-2500.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "041856ae-3de6-4d18-83d5-91868b1d1697",
+          "posted_date": "2026-04-01",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4204515327",
+          "amount": "-308575.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "3288b29d-b17b-49d4-bdca-fb91a8a0fa10",
+          "posted_date": "2026-04-02",
+          "description": "CHECKCARD 0401 FREEDOM VOICE SYSTEMS 800-4771477 AZ 24906416091254171897370 RECURRING CKCD 4814 XXXXXXXXXXXX3730 XXXX XXXX XXXX 3730",
+          "amount": "-15.9",
+          "category": "fee",
+          "running_balance": null
+        },
+        {
+          "id": "a8d384fb-ad05-4705-a009-d0d5138bf621",
+          "posted_date": "2026-04-02",
+          "description": "Zelle payment from SHAHRAN VALAFAR Conf# h7alqcd5j",
+          "amount": "3000.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "029a3c3b-233a-48a4-98be-c14ccdec7d96",
+          "posted_date": "2026-04-06",
+          "description": "Zelle payment from SHAHRAN VALAFAR Conf# fstaa619g",
+          "amount": "3375.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "a76385a8-ae7f-4387-9075-82f3f7db0c15",
+          "posted_date": "2026-04-06",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4837600272",
+          "amount": "-2500.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "68edb086-b7b3-49c3-b692-d9e6ccc1cb8c",
+          "posted_date": "2026-04-10",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4886377586",
+          "amount": "-2572.27",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "e76a14d2-5b28-4585-af6d-ce0e495b8114",
+          "posted_date": "2026-04-13",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5295136321",
+          "amount": "-2266.49",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "e2931728-4d90-499f-b224-73970c9177ef",
+          "posted_date": "2026-04-13",
+          "description": "VENMO DES:CASHOUT ID:1049552162832 INDN:VU DEVELOPMENT CO ID:5264681992 PPD",
+          "amount": "2299.65",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "bfd5631e-2fb6-4e6a-a584-32649e63790f",
+          "posted_date": "2026-04-15",
+          "description": "WIRE TYPE:BOOK IN DATE:260415 TIME:0428 ET TRN:2026041400573976 SNDR REF:607461532 ORIG:1/INTERNATIONAL WHOLESALE ID:501029097881",
+          "amount": "124925.0",
+          "category": "wire_in",
+          "running_balance": null
+        },
+        {
+          "id": "4d2a1901-3369-47f0-8595-414dbbea9761",
+          "posted_date": "2026-04-17",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5542970412",
+          "amount": "-2527.29",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "6456bacf-d970-45d3-bf60-5ab62c358f79",
+          "posted_date": "2026-04-17",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5242977724",
+          "amount": "-139317.68",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "20a8a452-20d3-4049-ae94-ceeb6ae00fc1",
+          "posted_date": "2026-04-17",
+          "description": "WIRE TYPE:BOOK IN DATE:260417 TIME:0755 ET TRN:2026041700283136 SNDR REF:607981832 ORIG:1/INTERNATIONAL WHOLESALE ID:501029097881",
+          "amount": "124875.0",
+          "category": "wire_in",
+          "running_balance": null
+        },
+        {
+          "id": "1b01d4e8-e60d-4006-a255-5a2d9a923311",
+          "posted_date": "2026-04-21",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5280856139",
+          "amount": "-7562.37",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "60333c81-2fd6-4c00-bd3e-e8b119b2aef2",
+          "posted_date": "2026-04-21",
+          "description": "WIRE TYPE:BOOK IN DATE:260421 TIME:0825 ET TRN:2026042100280009 SNDR REF:608448434 ORIG:1/INTERNATIONAL WHOLESALE ID:501029097881",
+          "amount": "124875.0",
+          "category": "wire_in",
+          "running_balance": null
+        },
+        {
+          "id": "8773497b-df27-4a2f-8180-cc30aebfb2c5",
+          "posted_date": "2026-04-22",
+          "description": "WIRE TYPE:BOOK IN DATE:260422 TIME:0648 ET TRN:2026042200242463 SNDR REF:608589430 ORIG:1/INTERNATIONAL WHOLESALE ID:501029097881",
+          "amount": "124775.0",
+          "category": "wire_in",
+          "running_balance": null
+        },
+        {
+          "id": "e9ecdf0a-eb5f-4d19-9a9c-ae8a755b4602",
+          "posted_date": "2026-04-29",
+          "description": "Zelle payment from LLC DRIVE AWAY DREAMS Conf# 99cf20y5j",
+          "amount": "570.0",
+          "category": "transfer",
+          "running_balance": null
+        }
+      ]
+    },
+    {
+      "document_id": "30e6d5f7-cbc2-4282-8350-198eac75cd75",
+      "filename": "eStmt_2026-05-29.pdf",
+      "parse_status": "manual_review",
+      "summary": {
+        "bank_name": "Bank of America",
+        "account_last4": "7719",
+        "period_start": "2026-05-01",
+        "period_end": "2026-05-31"
+      },
+      "transactions": [
+        {
+          "id": "9f1a33c0-5406-4ea3-8266-3948e5522f26",
+          "posted_date": "2026-05-01",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4267964623",
+          "amount": "-351019.27",
+          "category": "transfer",
+          "running_balance": "3256.76"
+        },
+        {
+          "id": "2fe16f00-c2d7-45e4-b663-286168362c2e",
+          "posted_date": "2026-05-04",
+          "description": "WIRE TYPE:BOOK IN DATE:260504 TIME:0657 ET TRN:2026050400300892 SNDR REF:610697530 ORIG:1/EWHOLESALE MOTORS TRUST ID:501028449443",
+          "amount": "13000.0",
+          "category": "wire_in",
+          "running_balance": null
+        },
+        {
+          "id": "fe3538e6-4c18-40f7-babc-65879a16b598",
+          "posted_date": "2026-05-04",
+          "description": "Prfd Rwds for Bus-Book Credit Fee Waiver of $15",
+          "amount": "0.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "f7f2adea-699f-48ab-a3ef-98f1db0e936c",
+          "posted_date": "2026-05-04",
+          "description": "CHECKCARD 0502 FREEDOM VOICE SYSTEMS 800-4771477 AZ 24906416122256751973193 RECURRING CKCD 4814 XXXXXXXXXXXX3730 XXXX XXXX XXXX 3730",
+          "amount": "-15.87",
+          "category": "fee",
+          "running_balance": null
+        },
+        {
+          "id": "e911ace6-ab5a-4485-82aa-684edb5ad094",
+          "posted_date": "2026-05-06",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4506487263",
+          "amount": "-11479.27",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "717f16c0-f1c8-4f26-8d15-a6e80c08b0d5",
+          "posted_date": "2026-05-06",
+          "description": "Zelle payment from RAFAEL GUERRERO for \"6 tires\"; Conf# uc2rcbt22",
+          "amount": "1831.83",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "3bc6515c-f8d0-41cf-a9e3-55f0467d694b",
+          "posted_date": "2026-05-06",
+          "description": "Online transfer from CHK 1218 Confirmation# fkl3mwkij; MMA SPECIALTIES",
+          "amount": "10525.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "2dda7b1b-321a-4382-a873-7abac826c914",
+          "posted_date": "2026-05-06",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5206325978",
+          "amount": "-12727.23",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "89537547-b274-4d16-8127-eac637bb8d66",
+          "posted_date": "2026-05-07",
+          "description": "WooPayments DES:WooPayment ID:ST-D5V2K8X7R6Z6 INDN:VU DEVELOPMENT CO ID:1800948598 CCD",
+          "amount": "678.43",
+          "category": "ach_credit",
+          "running_balance": null
+        },
+        {
+          "id": "aaa5cdab-933f-482d-ac0b-ede6c7da7401",
+          "posted_date": "2026-05-18",
+          "description": "Prfd Rwds for Bus-Book Credit Fee Waiver of $15",
+          "amount": "0.0",
+          "category": "other",
+          "running_balance": null
+        },
+        {
+          "id": "bf5156c7-15fa-4837-92f2-95184f7fcf3e",
+          "posted_date": "2026-05-18",
+          "description": "WIRE TYPE:BOOK IN DATE:260518 TIME:0411 ET TRN:2026051800063925 SNDR REF:612950184 ORIG:1/INTERNATIONAL WHOLESALE ID:501029097881",
+          "amount": "250025.0",
+          "category": "wire_in",
+          "running_balance": null
+        },
+        {
+          "id": "9368ff30-d1bd-4c55-b3d9-bed910a8666e",
+          "posted_date": "2026-05-18",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5010432630",
+          "amount": "-151287.23",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "0bde12e4-c2f5-4d04-8426-69a77daf86f4",
+          "posted_date": "2026-05-26",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4562774587",
+          "amount": "-3750.27",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "4a0af750-24d5-4b6d-a96e-1cc0b78b1293",
+          "posted_date": "2026-05-26",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5075081439",
+          "amount": "-2972.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "a9f22b29-8e5c-4ba7-900b-8e7c37e98e62",
+          "posted_date": "2026-05-26",
+          "description": "CPS MERCHANT SER DES:ACH Debit ID:9031371916 INDN:VU DEVELOPMENT CO ID:9200502236 CCD",
+          "amount": "-48.45",
+          "category": "fee",
+          "running_balance": null
+        },
+        {
+          "id": "981ebeb9-06fc-42e1-afbb-ca967aa793e4",
+          "posted_date": "2026-05-27",
+          "description": "Zelle payment from RAFAEL GUERRERO Conf# tqvdbtixz",
+          "amount": "1303.07",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "b41448b6-751f-4aa5-a7e9-2c0fda81a942",
+          "posted_date": "2026-05-27",
+          "description": "INTERNATIONAL WH DES:SENDER ID:XXXXXXXXX INDN:VU DEVELOPMENT CO ID:SXXXXXXXXX PPD",
+          "amount": "99500.0",
+          "category": "ach_credit",
+          "running_balance": null
+        },
+        {
+          "id": "ca7f5931-86bb-4129-b603-5acfb4adc27e",
+          "posted_date": "2026-05-28",
+          "description": "INTERNATIONAL WH DES:SENDER ID:XXXXXXXXX INDN:VU DEVELOPMENT CO ID:SXXXXXXXXX PPD",
+          "amount": "100075.0",
+          "category": "ach_credit",
+          "running_balance": null
+        },
+        {
+          "id": "4f7ac6e0-19bc-4fdb-88ad-223b130c63f9",
+          "posted_date": "2026-05-28",
+          "description": "VENMO DES:CASHOUT ID:1050565125359 INDN:VU DEVELOPMENT CO ID:5264681992 PPD",
+          "amount": "2500.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "8e70a884-3ff7-4222-95ef-ad5facc4d152",
+          "posted_date": "2026-05-29",
+          "description": "Zelle payment from CHESTER ZABIK for \"Tire payment for 2 26535R19. Ship to Chester Za\"; Conf# LCEGXZ5EC",
+          "amount": "670.95",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "2eb73680-599b-4923-8b99-4980a7a01566",
+          "posted_date": "2026-05-29",
+          "description": "INTERNATIONAL WH DES:SENDER ID:XXXXXXXXX INDN:VU DEVELOPMENT CO ID:SXXXXXXXXX PPD",
+          "amount": "125125.0",
+          "category": "ach_credit",
+          "running_balance": null
+        }
+      ]
+    },
+    {
+      "document_id": "932dca55-2fed-4ea6-93e4-b0cb413a57cd",
+      "filename": "eStmt_2026-03-31.pdf",
+      "parse_status": "manual_review",
+      "summary": {
+        "bank_name": "Bank of America, N.A.",
+        "account_last4": "7719",
+        "period_start": "2026-03-01",
+        "period_end": "2026-03-31"
+      },
+      "transactions": [
+        {
+          "id": "1b8ac4e5-3f38-4979-bce9-312d26440f19",
+          "posted_date": "2026-03-02",
+          "description": "WIRE TYPE:BOOK IN DATE:260302 TIME:0418 ET TRN:2026022700714305 SNDR REF:599585914 ORIG:1/INTERNATIONAL WHOLESALE ID:501029097881",
+          "amount": "100005.0",
+          "category": "wire_in",
+          "running_balance": "451949.73"
+        },
+        {
+          "id": "8438f878-153d-4af6-a78d-9a0c45b920be",
+          "posted_date": "2026-03-03",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4556990395",
+          "amount": "-125792.37",
+          "category": "transfer",
+          "running_balance": "326157.36"
+        },
+        {
+          "id": "4a91311e-a203-42ef-8b93-44e78c369dc0",
+          "posted_date": "2026-03-05",
+          "description": "CHECKCARD 0304 FREEDOM VOICE SYSTEMS 800-4771477 AZ 24906416063251979464241 RECURRING CKCD 4814 XXXXXXXXXXXX3730 XXXX XXXX XXXX 3730",
+          "amount": "-15.87",
+          "category": "fee",
+          "running_balance": "326141.49"
+        },
+        {
+          "id": "6d464f9a-38b7-415e-8dbd-2772cb8baf54",
+          "posted_date": "2026-03-09",
+          "description": "PAYPAL DES:TRANSFER ID:1048752730076 INDN:VU DEVELOPMENT CO ID:PAYPALSD11 PPD",
+          "amount": "1055.42",
+          "category": "ach_credit",
+          "running_balance": null
+        },
+        {
+          "id": "de65b8b2-d1a5-4344-a8bf-7e56921d5fdd",
+          "posted_date": "2026-03-09",
+          "description": "Zelle payment from LLC DRIVE AWAY DREAMS Conf# 99c8fyjxo",
+          "amount": "550.0",
+          "category": "ach_credit",
+          "running_balance": "172958.53"
+        },
+        {
+          "id": "0d8ff2bf-3a34-4313-9316-92ae8448cb22",
+          "posted_date": "2026-03-09",
+          "description": "Zelle payment from PRO TEAM PERFORMANCE LLC for \"Vitour Tempesta P1 order for four 265 35 18\"; Conf# 99c88tkb4",
+          "amount": "1253.15",
+          "category": "ach_credit",
+          "running_balance": null
+        },
+        {
+          "id": "82e9a50c-329e-4614-a596-dde8c37a4859",
+          "posted_date": "2026-03-09",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5594749025",
+          "amount": "-2608.32",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "9644b966-8caa-40be-9dc4-fcbf20681983",
+          "posted_date": "2026-03-09",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4895759310",
+          "amount": "-164916.25",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "ff33b988-2ce4-4a32-afc1-f776476c4923",
+          "posted_date": "2026-03-09",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4105577731",
+          "amount": "-2467.22",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "6ba82460-141c-40c4-a20e-6a5a05d3dee5",
+          "posted_date": "2026-03-09",
+          "description": "WIRE TYPE:BOOK IN DATE:260309 TIME:0404 ET TRN:2026030900096552 SNDR REF:601082516 ORIG:1/EWHOLESALE MOTORS TRUST ID:501028449443",
+          "amount": "13950.26",
+          "category": "wire_in",
+          "running_balance": null
+        },
+        {
+          "id": "f896b1d9-10de-46f1-9a82-457ef2454bea",
+          "posted_date": "2026-03-10",
+          "description": "Zelle payment from DAVID HOLMES for \"1475V\"; Conf# T0ZWMJDL5",
+          "amount": "1717.91",
+          "category": "ach_credit",
+          "running_balance": "174676.44"
+        },
+        {
+          "id": "d312b326-b871-4f0c-88c4-2a59c40b2438",
+          "posted_date": "2026-03-17",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 5273076915",
+          "amount": "-7500.0",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "a7005e6f-a50c-441b-8568-60523ffbaf37",
+          "posted_date": "2026-03-17",
+          "description": "WooPayments DES:WooPayment ID:ST-U9F2E9D8C8B9 INDN:VU DEVELOPMENT CO ID:1800948598 CCD",
+          "amount": "241.48",
+          "category": "deposit",
+          "running_balance": "167417.92"
+        },
+        {
+          "id": "6b7df314-fc1a-4276-88be-70cd585ee589",
+          "posted_date": "2026-03-18",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4983792843",
+          "amount": "-161692.37",
+          "category": "transfer",
+          "running_balance": "5725.55"
+        },
+        {
+          "id": "dc4fb7cd-cfd8-4df8-aa32-f8169329af1c",
+          "posted_date": "2026-03-19",
+          "description": "WIRE TYPE:BOOK IN DATE:260319 TIME:0642 ET TRN:2026031900232540 SNDR REF:602879244 ORIG:1/INTERNATIONAL WHOLESALE ID:501029097881",
+          "amount": "124950.0",
+          "category": "wire_in",
+          "running_balance": "130675.55"
+        },
+        {
+          "id": "be741ff4-32a7-45f9-a5f4-a8183323cdd9",
+          "posted_date": "2026-03-20",
+          "description": "WIRE TYPE:BOOK IN DATE:260320 TIME:0654 ET TRN:2026032000226085 SNDR REF:603065930 ORIG:1/INTERNATIONAL WHOLESALE ID:501029097881",
+          "amount": "124775.0",
+          "category": "wire_in",
+          "running_balance": "255450.55"
+        },
+        {
+          "id": "2fcd3cf7-033c-4b15-9756-b293bca215a5",
+          "posted_date": "2026-03-23",
+          "description": "Zelle payment from LLC DRIVE AWAY DREAMS for \"remaining balance\"; Conf# 99ca17b87",
+          "amount": "20.0",
+          "category": "ach_credit",
+          "running_balance": "255620.55"
+        },
+        {
+          "id": "00b262c5-70e1-41ed-b8d7-a6877ed1eb37",
+          "posted_date": "2026-03-23",
+          "description": "Zelle payment from LLC DRIVE AWAY DREAMS Conf# 99caaiwq4",
+          "amount": "150.0",
+          "category": "ach_credit",
+          "running_balance": null
+        },
+        {
+          "id": "1afd62bb-4efa-4432-87df-d49eccfaedf1",
+          "posted_date": "2026-03-24",
+          "description": "WIRE TYPE:BOOK IN DATE:260324 TIME:0436 ET TRN:2026032400048549 SNDR REF:603550598 ORIG:1/INTERNATIONAL WHOLESALE ID:501029097881",
+          "amount": "58025.0",
+          "category": "wire_in",
+          "running_balance": "313645.55"
+        },
+        {
+          "id": "234e2c53-d565-47c1-a614-018a65b8c4f8",
+          "posted_date": "2026-03-25",
+          "description": "VENMO DES:ACCTVERIFY ID:1049148547889 INDN:VU DEVELOPMENT CO ID:7264681992 PPD",
+          "amount": "0.21",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "79196d45-c623-4125-8fb3-cca0351262e3",
+          "posted_date": "2026-03-25",
+          "description": "VENMO DES:ACCTVERIFY ID:1049148548010 INDN:VU DEVELOPMENT CO ID:8264681992 WEB",
+          "amount": "-0.13",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "7c69e432-c5b1-490e-8e93-31b55f649949",
+          "posted_date": "2026-03-25",
+          "description": "VENMO DES:ACCTVERIFY ID:1049148548050 INDN:VU DEVELOPMENT CO ID:8264681992 WEB",
+          "amount": "-0.21",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "a3bc3087-179a-45a1-8e57-230d7fb66cb3",
+          "posted_date": "2026-03-25",
+          "description": "VENMO DES:ACCTVERIFY ID:1049148548146 INDN:VU DEVELOPMENT CO ID:7264681992 PPD",
+          "amount": "0.13",
+          "category": "transfer",
+          "running_balance": null
+        },
+        {
+          "id": "a1354741-c626-49e6-b003-bc2667509c78",
+          "posted_date": "2026-03-26",
+          "description": "CPS MERCHANT SER DES:ACH Debit ID:9030440801 INDN:VU DEVELOPMENT CO ID:9200502236 CCD",
+          "amount": "-48.45",
+          "category": "fee",
+          "running_balance": "313597.1"
+        },
+        {
+          "id": "360c9d22-0916-4f7f-8ac9-b6d9730de467",
+          "posted_date": "2026-03-27",
+          "description": "VENMO DES:CASHOUT ID:1049176531094 INDN:VU DEVELOPMENT CO ID:5264681992 PPD",
+          "amount": "942.95",
+          "category": "transfer",
+          "running_balance": "314540.05"
+        },
+        {
+          "id": "1488000a-6c82-4bdf-b9ed-48a4afc5d988",
+          "posted_date": "2026-03-30",
+          "description": "Online Banking transfer to CHK 7722 Confirmation# 4882726430",
+          "amount": "-1121.67",
+          "category": "transfer",
+          "running_balance": "313418.38"
+        }
+      ]
+    }
+  ]
+}
