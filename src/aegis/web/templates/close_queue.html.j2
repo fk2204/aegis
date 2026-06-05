@@ -53,9 +53,12 @@
         <tbody>
           {% for r in rows %}
             {% set s = r.state %}
-            <tr>
+            <tr {% if s.state == 'stuck' %}style="background:var(--decline-soft, #fff4f0)"{% endif %}>
               <td>
                 {% with tone=s.severity, label=s.label %}{% include "_status_chip.html.j2" %}{% endwith %}
+                {% if s.state == 'stuck' %}
+                  <span class="chip bad" style="margin-left:6px;font-size:9.5px;letter-spacing:0.10em" title="Exceeded stale threshold — pull > {{ stale_pull_hours|round|int }}h or parse > {{ stale_parse_hours|round|int }}h">STALE</span>
+                {% endif %}
               </td>
               <td class="merchant">
                 <a href="/ui/merchants/{{ r.merchant_id }}">{{ r.business_name }}</a>

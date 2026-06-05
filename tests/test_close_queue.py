@@ -40,9 +40,18 @@ from aegis.web.router import _classify_close_pipeline_state
 # ---------------------------------------------------------------------
 
 
-def _doc(parse_status: str, *, uploaded_at: datetime | None = None) -> DocumentRow:
+def _doc(
+    parse_status: str,
+    *,
+    uploaded_at: datetime | None = None,
+    all_flags: list[str] | None = None,
+) -> DocumentRow:
     """Build a DocumentRow with the given parse_status. uploaded_at
-    defaults to "now" so freshness tests can override it explicitly."""
+    defaults to "now" so freshness tests can override it explicitly.
+    ``all_flags`` lets a test inject the [CATEGORY]-tagged flags the
+    parser produces, so the gating-reason classifier can be exercised
+    against representative bytes (e.g. iText editor + reconciliation
+    drift = the A&R KM signature)."""
     return DocumentRow.model_validate(
         {
             "id": uuid4(),
@@ -51,6 +60,7 @@ def _doc(parse_status: str, *, uploaded_at: datetime | None = None) -> DocumentR
             "original_filename": "stmt.pdf",
             "parse_status": parse_status,
             "uploaded_at": uploaded_at or datetime.now(UTC),
+            "all_flags": all_flags or [],
         }
     )
 
@@ -160,6 +170,54 @@ def test_classify_gated_manual_review() -> None:
     assert result["action"] == "review"
     assert "underwriter" in result["label"].lower()
     assert "4 statement" in result["detail"]
+
+
+def test_classify_gated_detail_surfaces_tampering_flags() -> None:
+    """A&R KM-shaped: iText editor + reconciliation failures → the
+    detail must name "editor metadata + reconciliation drift" so the
+    operator scans a queue of 30/day and instantly distinguishes
+    tampering reviews from OFAC / OCR / missing-doc reviews."""
+    docs = [
+        _doc(
+            "manual_review",
+            all_flags=[
+                "[META] editor_detected: iText 2.1.7 by 1T3XT",
+                "[MATH] reconciliation_failed_period: expected -263.89 got 236.11",
+                "[MATH] reconciliation_failed_withdrawal_total: …",
+            ],
+        )
+        for _ in range(4)
+    ]
+    result = _classify_close_pipeline_state(
+        docs=docs, audit_rows=[], now=datetime.now(UTC)
+    )
+    assert result["state"] == "gated"
+    assert "editor metadata" in result["detail"]
+    assert "reconciliation drift" in result["detail"]
+    # No leftover generic phrase when reasons resolved.
+    assert "integrity / reconciliation concerns" not in result["detail"]
+
+
+def test_classify_gated_detail_surfaces_ofac() -> None:
+    """An OFAC hit on a single doc must surface as OFAC, not lumped
+    into a generic phrase. The next step on OFAC is a sanctions review,
+    not a tampering review."""
+    docs = [_doc("manual_review", all_flags=["[OFAC] sdn_match: Acme Holdings"])]
+    result = _classify_close_pipeline_state(
+        docs=docs, audit_rows=[], now=datetime.now(UTC)
+    )
+    assert "OFAC match" in result["detail"]
+
+
+def test_classify_gated_fallback_when_no_categorized_flags() -> None:
+    """A manual_review doc with no [CATEGORY]-tagged flags falls back
+    to the generic phrase rather than naming nothing — covers legacy
+    docs from before the prefix convention."""
+    docs = [_doc("manual_review", all_flags=["uncategorized_concern"])]
+    result = _classify_close_pipeline_state(
+        docs=docs, audit_rows=[], now=datetime.now(UTC)
+    )
+    assert "integrity / reconciliation concerns" in result["detail"]
 
 
 def test_classify_gated_mix_with_errors_still_routes_to_underwriter() -> None:
@@ -427,6 +485,45 @@ def test_close_queue_nav_link_present(client: TestClient) -> None:
     resp = client.get("/ui/merchants")
     assert resp.status_code == 200
     assert "/ui/close-queue" in resp.text
+
+
+def test_close_queue_stuck_row_renders_stale_badge(
+    client: TestClient,
+    fresh_repos: tuple[
+        InMemoryMerchantRepository, InMemoryDocumentRepository, InMemoryAuditLog
+    ],
+) -> None:
+    """A stuck row gets a red STALE badge and a tinted background so it
+    stands out in a long queue. Visual emphasis on rows that have
+    silently exceeded the threshold."""
+    merchants, _docs, audit = fresh_repos
+    saved = merchants.upsert(
+        MerchantRow(
+            business_name="Stale Pull Merchant",
+            owner_name="Op",
+            state="CA",
+            close_lead_id="lead_stale",
+        )
+    )
+    # Backdate the orchestration audit > 6h to trigger stuck.
+    old = datetime.now(UTC) - timedelta(hours=8)
+    audit.entries.append(
+        {
+            "actor": "worker",
+            "actor_email": None,
+            "action": "close.orchestration.enqueued",
+            "subject_type": "merchant",
+            "subject_id": str(saved.id),
+            "details": {},
+            "created_at": old.isoformat(),
+        }
+    )
+    resp = client.get("/ui/close-queue")
+    assert resp.status_code == 200
+    assert "Stale Pull Merchant" in resp.text
+    assert ">STALE<" in resp.text
+    # Stuck retry button still appears (operator action remains retry).
+    assert f"/ui/merchants/{saved.id}/close-rescan" in resp.text
 
 
 def test_close_queue_sorts_failures_first(

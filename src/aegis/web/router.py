@@ -1115,6 +1115,45 @@ _CLOSE_QUEUE_STALE_PULL_HOURS: Final[float] = 6.0
 _CLOSE_QUEUE_STALE_PARSE_HOURS: Final[float] = 1.0
 
 
+# Flag-category → human label for the GATED detail line. The classifier
+# peeks at all_flags on each manual_review doc and surfaces the unique
+# categories so the operator sees WHY at a glance — "editor metadata +
+# reconciliation drift" reads as a tampering signal, "OFAC match" as a
+# sanctions hit, "OCR concerns" as a missing-data review. Distinct
+# semantics demand distinct response — re-pulling won't change
+# tampering flags but it might clear an OCR concern.
+_CLOSE_QUEUE_FLAG_CATEGORY_LABELS: Final[dict[str, str]] = {
+    "META":    "editor metadata",
+    "MATH":    "reconciliation drift",
+    "PATTERN": "pattern signal",
+    "STRUCT":  "PDF structure",
+    "OFAC":    "OFAC match",
+    "LLM":     "LLM concerns",
+    "OCR":     "OCR concerns",
+}
+_CLOSE_QUEUE_FLAG_CATEGORY_ORDER: Final[tuple[str, ...]] = (
+    "OFAC", "META", "MATH", "PATTERN", "STRUCT", "OCR", "LLM",
+)
+
+
+def _gating_reason_labels(docs: list[DocumentRow]) -> list[str]:
+    """Extract unique [CATEGORY] flag prefixes across docs, map to
+    human labels in stable order. Empty list if no docs carry tagged
+    flags — fall back to a generic phrase in the classifier."""
+    found: set[str] = set()
+    for d in docs:
+        for f in (d.all_flags or []):
+            if isinstance(f, str) and f.startswith("[") and "]" in f:
+                cat = f[1:f.find("]")]
+                if cat in _CLOSE_QUEUE_FLAG_CATEGORY_LABELS:
+                    found.add(cat)
+    return [
+        _CLOSE_QUEUE_FLAG_CATEGORY_LABELS[c]
+        for c in _CLOSE_QUEUE_FLAG_CATEGORY_ORDER
+        if c in found
+    ]
+
+
 def _parse_audit_ts(value: object) -> datetime | None:
     if value is None or value == "":
         return None
@@ -1264,14 +1303,24 @@ def _classify_close_pipeline_state(
         if clean:
             extras.append(f"{len(clean)} clean")
         suffix = (" · " + ", ".join(extras)) if extras else ""
+        # Surface the gating reasons (flag categories) so the operator
+        # can distinguish tampering (editor metadata + reconciliation
+        # drift) from OFAC, from OCR concerns, from PDF structure issues
+        # — each implies a different next move.
+        reason_labels = _gating_reason_labels(manual_review)
+        reason_phrase = (
+            " + ".join(reason_labels)
+            if reason_labels
+            else "integrity / reconciliation concerns"
+        )
         return {
             "state": "gated",
             "label": "Needs underwriter",
             "severity": "warn",
             "action": "review",
             "detail": (
-                f"{len(manual_review)} statement(s) flagged for review "
-                f"(integrity / reconciliation concerns){suffix}"
+                f"{len(manual_review)} statement(s) flagged · "
+                f"{reason_phrase}{suffix}"
             ),
         }
     if error and not clean:
