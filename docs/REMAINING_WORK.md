@@ -1,6 +1,7 @@
 # AEGIS — Remaining work
 
-**Snapshot taken:** 2026-06-05 (end of Close-automation + extraction night).
+**Snapshot taken:** 2026-06-06 (Step 2a shadow-comparison run; see new
+"Step 2 of 3-track redesign" entry below).
 **Purpose:** durable list of what's queued, parked, or systemic. So nothing's
 lost between sessions.
 
@@ -96,6 +97,49 @@ Not ready to ship; need dedicated thinking, not opportunistic patching.
   infer ownership.
 - This subsumes A.2 (the 65/70 threshold) and the A.1 EOF gate as
   policy implementations within the new tracks.
+
+### Step 2 of 3-track redesign — `fraud_score` retirement + A+B+C live cutover
+- **Status:** A/B/C live ADDITIVE on the dossier (commit `5d53d5d`,
+  verified VU + A&R KM 2026-06-05). The existing `score_deal` /
+  `fraud_score` path still controls every production decision. Step 2
+  retires `fraud_score` and flips A/B/C live. **NOT authorized** —
+  gated on the conditions below.
+- **Diagnostic:** `scripts/shadow_comparison_a_b_c_vs_fraud_score.py`
+  (commit `973d7fd`). Read-only sweep — every merchant in the corpus,
+  LIVE decision vs new A/B/C, categorised per disagreement bucket.
+  Re-run periodically; treat exit code 3 (any
+  `old-caught-something-new-misses` row) as a STOP.
+- **Cutover gating conditions — ALL required, in order:**
+  1. **Corpus growth.** The 2026-06-06 baseline is N=1 for Track B/C
+     comparison (only VU had classified transactions; A&R KM had docs
+     but the `manual_review` path persisted no analyses). A cutover
+     decision on N=1 is not a population claim, it is a case
+     observation. Need significantly more deals through both systems
+     before "no regressions" means anything.
+  2. **Track A historical lookback.** Pull every historical
+     `fraud_score_critical` decline and verify Track A would have
+     caught it (FAIL verdict) — explicitly proves Track A isn't
+     missing the integrity signature `fraud_score` previously gated
+     on. Document as `scripts/track_a_historical_lookback.py` output;
+     corpus + box-run, not laptop-run.
+  3. **Regression review.** Every
+     `old-caught-something-new-misses` row across the accumulated
+     re-runs gets per-merchant operator triage — categorise (genuine
+     regression vs detector gap vs corpus-shape artifact) BEFORE
+     flipping. Zero rows is not the bar; **reviewed rows** is the
+     bar.
+  4. **Deliberate flip.** When the gating conditions are met, the
+     flip is an env var change (mirrors the tampering-rule pattern:
+     shadow → live by config, not code deploy). The PR title says
+     "retire fraud_score" — small, explicit, reversible.
+- **What this is NOT:** a small-N green-light. The 2026-06-06 sweep
+  landed VU=agreement and A&R KM=new-is-better; both were the
+  predicted-correct categorizations and prove the comparison
+  machinery works. They do not prove the new system is safe to take
+  over decisions on merchants not yet seen. Re-running the script
+  monthly (or whenever ≥5 new merchants flow through) keeps the
+  baseline current; a clean exit 0 on a small corpus does not
+  authorize cutover on its own.
 
 ### A.1 + A.2 decline-boundary policy
 - **Spec shapes:** `docs/audit-confirmed-bugs.md`.
