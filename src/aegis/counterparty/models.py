@@ -68,6 +68,20 @@ CounterpartyClass = Literal[
     # revenue is from one named end customer, that's a genuine
     # repayment-risk concern.
     "end_customer",
+    # Large BoA book wire ("WIRE TYPE:BOOK IN/OUT") that carries only
+    # a TRN: tracking number and no CHK/SAV last-4 reference — the
+    # description can't tell us whether it was an internal own-account
+    # move (BoA→BoA between accounts the merchant controls) or an
+    # external wire (revenue from a counterparty whose identity is
+    # lost in the TRN). The bundle matcher cannot pair these (no CHK
+    # reference, no Confirmation#). Held in this resolvable state
+    # until a human determines which it is. **NOT counted as revenue,
+    # NOT netted as own_account.** Track B and Track C must treat this
+    # bucket as a separate aggregation cell — misrouting it would
+    # distort both true_revenue and concentration math (verified
+    # 2026-06-05 against VU Development: 15 BOOK rows totalling
+    # ~$1.97M would have hidden in `unknown` without this class).
+    "book_wire_unresolved",
     # Default surface for review. Used when no dictionary rule matches
     # and the LLM-assist hasn't yet labeled the row. Operator review
     # promotes unknown rows into the dictionary over time.

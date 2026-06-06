@@ -331,6 +331,176 @@ def test_vu_acceptance_zelle_incoming_classifies_as_end_customer(
         assert classifications[t.id].counterparty == "end_customer"
 
 
+def test_vu_acceptance_book_wires_classify_as_book_wire_unresolved(
+    vu_bundle: tuple[
+        dict[str, list[ClassifiedTransaction]], set[str]
+    ],
+    vu_classifications: tuple[
+        dict[UUID, CounterpartyClassification], BundleSummary
+    ],
+) -> None:
+    """The load-bearing fix from the unknown-bucket audit.
+
+    Every "WIRE TYPE:BOOK IN/OUT" row in VU's bundle (15 of them,
+    ~$1.97M combined) must land in ``book_wire_unresolved`` —
+    NOT ``unknown``, NOT ``own_account`` (matcher can't pair
+    TRN-only descriptions), NOT ``own_account_unconfirmed``.
+    They're held in a dedicated class for operator resolution.
+
+    This is what kills the silent-revenue-hiding failure mode where
+    13 incoming wires totalling $1.52M would be lumped with debit-
+    card expenses under ``unknown``.
+    """
+    by_doc, _ = vu_bundle
+    classifications, summary = vu_classifications
+    book_rows = [
+        t
+        for txns in by_doc.values()
+        for t in txns
+        if "WIRE TYPE:BOOK" in t.description
+    ]
+    # Empirical count against the captured fixture: 13 BOOK IN +
+    # 3 BOOK OUT = 16. (The unknown-bucket audit on 2026-06-05 cited
+    # 15 because the outgoing prefix-clustering rolled by date, hiding
+    # the third BOOK OUT row with a unique date prefix; the test
+    # works off the real row count.)
+    assert len(book_rows) == 16, (
+        f"expected 16 BOOK wire rows in VU bundle, got {len(book_rows)}"
+    )
+    incoming = [t for t in book_rows if t.amount > 0]
+    outgoing = [t for t in book_rows if t.amount < 0]
+    assert len(incoming) == 13
+    assert len(outgoing) == 3
+
+    for t in book_rows:
+        cc = classifications[t.id]
+        assert cc.counterparty == "book_wire_unresolved", (
+            f"BOOK wire {t.description[:50]!r} routed to "
+            f"{cc.counterparty!r} instead of book_wire_unresolved"
+        )
+        assert cc.reason == "book_wire_trn_only"
+        # Never paired — bundle matcher has nothing to pair against.
+        assert cc.paired_transaction_id is None
+    # And surfaces in the bundle summary's by_class rollup.
+    assert summary.by_class.get("book_wire_unresolved") == 16
+
+
+def test_vu_acceptance_venmo_cashout_classifies_as_processor(
+    vu_bundle: tuple[
+        dict[str, list[ClassifiedTransaction]], set[str]
+    ],
+    vu_classifications: tuple[
+        dict[UUID, CounterpartyClassification], BundleSummary
+    ],
+) -> None:
+    """VENMO DES:CASHOUT rows are the merchant pulling processed
+    revenue off the Venmo P2P rail — must classify as ``processor``
+    with reason ``venmo_cashout``. ACCTVERIFY (different DES: value)
+    stays in ``unknown`` — verified by a separate row in the bundle."""
+    by_doc, _ = vu_bundle
+    classifications, _ = vu_classifications
+
+    cashout = [
+        t
+        for txns in by_doc.values()
+        for t in txns
+        if "VENMO" in t.description and "DES:CASHOUT" in t.description
+    ]
+    assert len(cashout) >= 3
+    for t in cashout:
+        cc = classifications[t.id]
+        assert cc.counterparty == "processor"
+        assert cc.reason == "venmo_cashout"
+
+    acctverify = [
+        t
+        for txns in by_doc.values()
+        for t in txns
+        if "VENMO" in t.description and "DES:ACCTVERIFY" in t.description
+    ]
+    assert len(acctverify) >= 2
+    for t in acctverify:
+        # ACCTVERIFY micro-deposits remain in unknown — distinguish
+        # cashout-revenue from verification-noise on the same rail.
+        assert classifications[t.id].counterparty == "unknown"
+        assert classifications[t.id].reason == "venmo_acctverify"
+
+
+def test_vu_acceptance_lowercase_online_transfer_classifies_via_bundle_matcher(
+    vu_bundle: tuple[
+        dict[str, list[ClassifiedTransaction]], set[str]
+    ],
+    vu_classifications: tuple[
+        dict[UUID, CounterpartyClassification], BundleSummary
+    ],
+) -> None:
+    """The lowercase 'Online transfer from CHK 1218' row in VU's bundle
+    must flow through the bundle matcher. CHK 1218 isn't in our bundle
+    (we have only 7719 + 7722) → own_account_unconfirmed with reason
+    ``no_statement_for_referenced_account``."""
+    by_doc, _ = vu_bundle
+    classifications, _ = vu_classifications
+
+    matches = [
+        t
+        for txns in by_doc.values()
+        for t in txns
+        if t.description.startswith("Online transfer ")
+        and "Banking" not in t.description
+    ]
+    assert len(matches) >= 1
+    for t in matches:
+        cc = classifications[t.id]
+        assert cc.counterparty == "own_account_unconfirmed"
+        # CHK 1218 → no statement in bundle.
+        assert cc.other_account_last4 == "1218"
+        assert cc.reason == "no_statement_for_referenced_account"
+
+
+def test_vu_acceptance_no_incoming_revenue_hides_in_unknown(
+    vu_bundle: tuple[
+        dict[str, list[ClassifiedTransaction]], set[str]
+    ],
+    vu_classifications: tuple[
+        dict[UUID, CounterpartyClassification], BundleSummary
+    ],
+) -> None:
+    """The whole point of the three-pattern fix: after the patch,
+    no incoming-revenue-shaped row should be sitting in ``unknown``.
+
+    Permitted exceptions:
+      - VENMO DES:ACCTVERIFY micro-deposits (tiny amounts, intentional)
+      - Anything <= $5 (rounding errors, account verifications)
+
+    Anything else incoming and unknown is a regression — Track B's
+    true_revenue math would silently understate it.
+    """
+    from decimal import Decimal
+
+    by_doc, _ = vu_bundle
+    classifications, _ = vu_classifications
+
+    leaks: list[ClassifiedTransaction] = []
+    for txns in by_doc.values():
+        for t in txns:
+            cc = classifications[t.id]
+            if cc.counterparty != "unknown":
+                continue
+            if t.amount <= 0:
+                continue
+            if "ACCTVERIFY" in t.description:
+                continue
+            if t.amount <= Decimal("5.00"):
+                continue
+            leaks.append(t)
+    assert not leaks, (
+        "incoming revenue rows leaking into unknown bucket:\n  "
+        + "\n  ".join(
+            f"${t.amount} :: {t.description[:80]!r}" for t in leaks
+        )
+    )
+
+
 def test_vu_acceptance_checkcard_outgoing_classifies_as_unknown(
     vu_bundle: tuple[
         dict[str, list[ClassifiedTransaction]], set[str]

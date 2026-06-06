@@ -69,18 +69,46 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
         r"Online Banking transfer\s+(?:to|from)\s+(?:CHK|SAV)\s+\d+",
         _PLACEHOLDER_OWN_TRANSFER, "boa_online_transfer", 100, "either",
     ),
-    # BoA wire flagged as a book-transfer (internal between BoA
-    # accounts). "WIRE TYPE:BOOK IN/OUT". Less confident than the
-    # online-banking transfer (Confirmation# may not pair).
+    # Lowercase / non-"Banking" variant — same shape, different bank or
+    # BoA's product copy variation. Verified 2026-06-05 against VU's
+    # CHK 1218 row: "Online transfer from CHK 1218 Confirmation#
+    # fkl3mwkij; MMA SPECIA". CHK 1218 isn't in VU's bundle so the
+    # bundle matcher resolves this as own_account_unconfirmed
+    # (no_statement). The MORE-specific "Online Banking transfer"
+    # above wins on BoA's standard description; this fires only when
+    # "Banking" is absent.
     (
-        r"WIRE TYPE:BOOK\s+(?:IN|OUT)",
-        _PLACEHOLDER_OWN_TRANSFER, "boa_book_wire", 90, "either",
+        r"\bOnline transfer\s+(?:to|from)\s+(?:CHK|SAV)\s+\d+",
+        _PLACEHOLDER_OWN_TRANSFER, "generic_online_transfer", 85, "either",
     ),
     # Chase-style transfer description (anecdotal; promote to verified
     # once we have a real Chase fixture).
     (
         r"REMOTE ONLINE TRANSFER",
         _PLACEHOLDER_OWN_TRANSFER, "chase_remote_transfer", 85, "either",
+    ),
+
+    # ──────────────────────────────────────────────────────────────────
+    # BOOK WIRES — direct class; NOT routed through the bundle matcher
+    # ──────────────────────────────────────────────────────────────────
+    #
+    # "WIRE TYPE:BOOK IN/OUT DATE:… TIME:… ET TRN:… …" — a BoA book
+    # wire identified only by a TRN: tracking number. No CHK/SAV
+    # reference, no Confirmation#, so the bundle matcher has nothing
+    # to pair against and the description alone cannot tell us
+    # internal-vs-external.
+    #
+    # This is the load-bearing fix from the 2026-06-05 unknown-bucket
+    # audit: 15 such rows on VU totalled ~$1.97M (13 incoming +
+    # 2 outgoing). Routing them to ``_PLACEHOLDER_OWN_TRANSFER`` made
+    # the matcher fall through to ``not_transfer`` → ``unknown``,
+    # silently hiding $1.5M of incoming flow as expense-shaped noise.
+    # Now they land in a dedicated ``book_wire_unresolved`` class:
+    # NOT counted as revenue, NOT netted as own_account, held for
+    # operator resolution.
+    (
+        r"WIRE TYPE:BOOK\s+(?:IN|OUT)",
+        "book_wire_unresolved", "book_wire_trn_only", 90, "either",
     ),
 
     # ──────────────────────────────────────────────────────────────────
@@ -180,6 +208,15 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
     # KNOWN NOISE — fees, verifications, statement items
     # ──────────────────────────────────────────────────────────────────
     #
+    # Venmo cashout — the merchant pulling processed revenue from
+    # Venmo to their bank account. P2P payment rail; counts as a
+    # processor for revenue purposes. Distinct from VENMO DES:ACCTVERIFY
+    # (below) which is just account-verification micro-deposit noise.
+    # MUST appear before ACCTVERIFY to win the more-specific match.
+    (
+        r"VENMO\s+DES:CASHOUT",
+        "processor", "venmo_cashout", 90, "incoming",
+    ),
     # Venmo account-verification micro-deposits. Not revenue.
     (
         r"VENMO\s+DES:ACCTVERIFY",
@@ -273,10 +310,13 @@ def extract_other_account_last4(description: str) -> str | None:
     return m.group(1) if m else None
 
 
-# Confirmation# extractor. BoA uses "Confirmation# NNNN". Used as the
-# pairing key by the bundle matcher.
+# Confirmation# extractor. BoA's "Online Banking transfer" uses a
+# purely numeric Confirmation# (e.g. "Confirmation# 4556990395"); the
+# generic "Online transfer" variant uses an alphanumeric one (e.g.
+# "Confirmation# fkl3mwkij"). Accept either so the bundle matcher can
+# pair across both shapes.
 _CONFIRMATION_RE: Final[re.Pattern[str]] = re.compile(
-    r"Confirmation#\s*(\d+)", re.IGNORECASE
+    r"Confirmation#\s*([a-zA-Z0-9]+)", re.IGNORECASE
 )
 
 
