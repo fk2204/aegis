@@ -100,11 +100,14 @@ Tests for anything touching an external system (Close API, Supabase row shapes, 
 
 When fixing an integration:
 1. Capture the actual payload from the failing job (or a known-good live call).
-2. Sanitize for PII (strip note bodies, email subjects, real org/user/lead ids, real merchant URL tokens; keep the structural key set verbatim and the absence of fields verbatim).
+2. **Sanitize for PII IN THE SAME STEP** — never write a raw-PII fixture to disk. The capture pipeline must run the payload through `tests/_fixture_sanitize.py::sanitize_fixture_payload` BEFORE writing the JSON. Reference template: `scripts/audit/capture_transactions_fixture.py`. Strip note bodies, email subjects, real org/user/lead ids, real merchant URL tokens, named individuals from transaction descriptions. Keep the structural key set verbatim and the absence of fields verbatim.
 3. Save the sanitized payload as the fixture (`tests/<domain>/fixtures/<shape>.json`).
 4. Write tests that load the fixture and verify the model + the pipeline against that exact byte sequence.
+5. The PII canary (`tests/test_fixture_pii_canary.py`) runs on every CI build and fails the suite if any committed fixture has known PII patterns. Treat a canary failure as a STOP — fix the leak before pushing, never silence the test.
 
 A green test against a fixture you wrote yourself proves your understanding matches your understanding. Only a green test against a captured payload proves your code matches reality.
+
+**Historical mistake to avoid repeating** (2026-06-05, `ae62df2`): the foundation commit for counterparty classification shipped a fixture with named Zelle counterparty individuals because the redaction pass ran AFTER the initial fixture commit AND the regex missed the "Zelle payment to" rows. The leak ended up on `origin/main` and on GitHub. The forward fix is the sanitizer + canary above; the operator's call on the historical leak was "accept it, no force-push, redact in-tree forward". Don't ship a capture script that bypasses the sanitizer.
 
 ---
 
