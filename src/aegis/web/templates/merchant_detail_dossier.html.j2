@@ -393,6 +393,13 @@
         </div>
       {% endif %}
 
+      {# Unified A+B+C tracks panel — informational, additive.
+         Renders alongside the score block above; Step 2 of the
+         scoring redesign retires fraud_score and flips this live. #}
+      {% if unified_tracks is defined and unified_tracks %}
+        {% include "_unified_tracks_panel.html.j2" %}
+      {% endif %}
+
       {# Statement coverage — surfaces the active (bank, last4) bundle, any
          alternate bundles for the merchant, and any missing months between
          the earliest and latest statement in the bundle. Always render when

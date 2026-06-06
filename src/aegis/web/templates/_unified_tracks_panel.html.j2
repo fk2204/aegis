@@ -1,0 +1,241 @@
+{#
+  Unified A+B+C tracks panel. ADDITIVE — renders ALONGSIDE the
+  existing score block, not in place of it. Step 2 of the scoring
+  redesign retires fraud_score; this commit only surfaces A/B/C.
+
+  Inputs (from build_unified_tracks_view):
+    unified_tracks.integrity_verdicts       tuple[IntegrityVerdict, …]
+    unified_tracks.integrity_worst_verdict  "fail" | "review" | "clean" | None
+    unified_tracks.integrity_summary        str (one-line roll-up)
+    unified_tracks.risk_band                BusinessRiskBand | None
+    unified_tracks.context_panel            ConcentrationContextPanel | None
+    unified_tracks.insufficient_data_reason str
+
+  Layout: A first (integrity is the gate), then B (the band), then C
+  (concentration context). The underwriter reads top-to-bottom.
+#}
+
+{% set ut = unified_tracks %}
+
+<section class="body cols-1" style="margin-top:18px">
+  <div>
+    <header class="sect-head">
+      <h2>3-track view <span class="meta" style="font-weight:normal">· integrity → business risk → concentration · informational, does not affect decline</span></h2>
+      <div class="rule"></div>
+    </header>
+
+    {# ───────────── TRACK A — Integrity verdict ────────────────────── #}
+
+    <div class="track-a" style="margin-top:14px;padding:14px;border:1px solid var(--rule);border-radius:6px">
+      <header class="sect-head" style="margin:0 0 6px 0">
+        <h3 style="margin:0;font-size:14px">A · Document integrity</h3>
+        {% if ut.integrity_worst_verdict == 'fail' %}
+          {% with tone="bad", label="FAIL" %}{% include "_status_chip.html.j2" %}{% endwith %}
+        {% elif ut.integrity_worst_verdict == 'review' %}
+          {% with tone="warn", label="REVIEW" %}{% include "_status_chip.html.j2" %}{% endwith %}
+        {% elif ut.integrity_worst_verdict == 'clean' %}
+          {% with tone="good", label="CLEAN" %}{% include "_status_chip.html.j2" %}{% endwith %}
+        {% else %}
+          <span class="chip">no signals</span>
+        {% endif %}
+        <span class="meta" style="margin-left:8px">{{ ut.integrity_summary }}</span>
+      </header>
+
+      {% if ut.integrity_verdicts %}
+        <table class="queue" style="margin-top:8px;font-size:12.5px">
+          <thead>
+            <tr>
+              <th style="width:90px">Verdict</th>
+              <th style="width:160px">Branch</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for v in ut.integrity_verdicts %}
+              <tr class="no-click">
+                <td>
+                  {% if v.verdict == 'fail' %}
+                    {% with tone="bad", label="FAIL" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                  {% elif v.verdict == 'review' %}
+                    {% with tone="warn", label="REVIEW" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                  {% else %}
+                    {% with tone="good", label="CLEAN" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                  {% endif %}
+                </td>
+                <td class="mono-cell">{{ v.branch }}</td>
+                <td>
+                  <div class="desc">{{ v.rationale }}</div>
+                  {% if v.evidence %}
+                    <ul style="margin:4px 0 0 0;padding-left:18px;font-size:11.5px;color:var(--ink-2)">
+                      {% for e in v.evidence %}
+                        <li><span class="mono-cell" style="color:var(--ink-3)">{{ e.signal }}</span> · {{ e.detail }}</li>
+                      {% endfor %}
+                    </ul>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="marginalia">{{ ut.integrity_summary or "No integrity signals captured." }}</div>
+      {% endif %}
+    </div>
+
+    {# ───────────── TRACK B — Business risk band ───────────────────── #}
+
+    <div class="track-b" style="margin-top:14px;padding:14px;border:1px solid var(--rule);border-radius:6px">
+      <header class="sect-head" style="margin:0 0 6px 0">
+        <h3 style="margin:0;font-size:14px">B · Business risk band</h3>
+        {% if ut.risk_band %}
+          {% if ut.risk_band.band == 'high' %}
+            {% with tone="bad", label="HIGH" %}{% include "_status_chip.html.j2" %}{% endwith %}
+          {% elif ut.risk_band.band == 'elevated' %}
+            {% with tone="warn", label="ELEVATED" %}{% include "_status_chip.html.j2" %}{% endwith %}
+          {% elif ut.risk_band.band == 'moderate' %}
+            {% with tone="warn", label="MODERATE" %}{% include "_status_chip.html.j2" %}{% endwith %}
+          {% else %}
+            {% with tone="good", label="LOW" %}{% include "_status_chip.html.j2" %}{% endwith %}
+          {% endif %}
+          <span class="meta" style="margin-left:8px;font-family:var(--mono)">{{ ut.risk_band.action|replace('_', ' ') }}</span>
+        {% else %}
+          <span class="chip">insufficient data</span>
+        {% endif %}
+      </header>
+
+      {% if ut.risk_band %}
+        {% set cf = ut.risk_band.cashflow %}
+        <div class="meta" style="margin-top:6px">
+          true revenue ${{ "{:,.0f}".format(cf.true_revenue_total) }}
+          · {{ "${:,.0f}".format(cf.monthly_revenue_estimate) }}/mo
+          · NSF {{ cf.nsf_count }}
+          · MCA {{ cf.mca_position_count }}
+          {% if cf.international_client_share_pct is not none %}
+            · intl client {{ cf.international_client_share_pct }}%
+          {% endif %}
+          · {{ cf.statement_period_days }}d period
+        </div>
+
+        <table class="queue" style="margin-top:8px;font-size:12.5px">
+          <thead>
+            <tr><th style="width:90px">Severity</th><th style="width:180px">Factor</th><th>Detail</th></tr>
+          </thead>
+          <tbody>
+            {% for r in ut.risk_band.reasons %}
+              <tr class="no-click">
+                <td>
+                  {% if r.severity == 'critical' %}
+                    {% with tone="bad", label="CRITICAL" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                  {% elif r.severity == 'elevated' %}
+                    {% with tone="warn", label="ELEVATED" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                  {% elif r.severity == 'concern' %}
+                    {% with tone="warn", label="CONCERN" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                  {% elif r.severity == 'neutral' %}
+                    <span class="chip">neutral</span>
+                  {% else %}
+                    {% with tone="good", label="OK" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                  {% endif %}
+                </td>
+                <td class="mono-cell">{{ r.factor }}</td>
+                <td><span class="desc">{{ r.detail }}</span></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        {% if ut.risk_band.insufficient_data_factors %}
+          <div class="marginalia" style="margin-top:6px">
+            Insufficient data: {{ ut.risk_band.insufficient_data_factors|join(', ') }}.
+          </div>
+        {% endif %}
+      {% else %}
+        <div class="marginalia">{{ ut.insufficient_data_reason }}</div>
+      {% endif %}
+    </div>
+
+    {# ───────────── TRACK C — Concentration / context panel ────────── #}
+
+    <div class="track-c" style="margin-top:14px;padding:14px;border:1px solid var(--rule);border-radius:6px">
+      <header class="sect-head" style="margin:0 0 6px 0">
+        <h3 style="margin:0;font-size:14px">C · Concentration / context</h3>
+        {% if ut.context_panel %}
+          <span class="meta" style="margin-left:8px">revenue basis ${{ "{:,.0f}".format(ut.context_panel.revenue_basis) }}</span>
+        {% else %}
+          <span class="chip">insufficient data</span>
+        {% endif %}
+      </header>
+
+      {% if ut.context_panel %}
+        <table class="queue" style="margin-top:8px;font-size:12.5px">
+          <thead>
+            <tr>
+              <th style="width:130px">Class</th>
+              <th style="width:80px" class="num">Share</th>
+              <th style="width:130px" class="num">Total</th>
+              <th>Framing</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in ut.context_panel.by_class %}
+              <tr class="no-click">
+                <td>
+                  {% if row.severity == 'durability' %}
+                    {% with tone="warn", label="DURABILITY" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                  {% elif row.severity == 'review' %}
+                    {% with tone="warn", label="REVIEW" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                  {% else %}
+                    <span class="chip">{{ row.counterparty }}</span>
+                  {% endif %}
+                </td>
+                <td class="mono-cell num">{{ row.share_pct }}%</td>
+                <td class="mono-cell num">${{ "{:,.0f}".format(row.incoming_total) }}</td>
+                <td><span class="desc">{{ row.framing }}</span></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        {% if ut.context_panel.stress %}
+          <div class="marginalia" style="margin-top:8px">
+            <strong>Stress view</strong> ·
+            base ${{ "{:,.0f}".format(ut.context_panel.stress.base_revenue) }}
+            · stress ${{ "{:,.0f}".format(ut.context_panel.stress.stress_revenue) }}
+            · drop {{ ut.context_panel.stress.revenue_drop_pct }}%
+            <br><span class="desc" style="font-size:11.5px">{{ ut.context_panel.stress.framing }}</span>
+          </div>
+        {% endif %}
+
+        {% if ut.context_panel.unconfirmed_account_last4s %}
+          <div class="marginalia" style="margin-top:6px">
+            Operator follow-up — unconfirmed accounts:
+            {% for a4 in ut.context_panel.unconfirmed_account_last4s %}
+              <span class="mono-cell">…{{ a4 }}</span>{% if not loop.last %}, {% endif %}
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        {% if ut.context_panel.book_wire_unresolved_total_incoming > 0 or ut.context_panel.book_wire_unresolved_total_outgoing > 0 %}
+          <div class="marginalia" style="margin-top:6px">
+            Book wires (NOT counted as revenue):
+            incoming ${{ "{:,.0f}".format(ut.context_panel.book_wire_unresolved_total_incoming) }}
+            · outgoing ${{ "{:,.0f}".format(ut.context_panel.book_wire_unresolved_total_outgoing) }}
+          </div>
+        {% endif %}
+
+        {% if ut.context_panel.warnings %}
+          {% for w in ut.context_panel.warnings %}
+            <div class="form-error" style="margin-top:6px">{{ w }}</div>
+          {% endfor %}
+        {% endif %}
+      {% else %}
+        <div class="marginalia">{{ ut.insufficient_data_reason }}</div>
+      {% endif %}
+    </div>
+
+    <div class="marginalia" style="margin-top:10px;font-size:11px">
+      The 3-track view is informational. The existing score block above
+      continues to drive the production decision; Step 2 of the
+      scoring redesign retires fraud_score and flips A/B/C live.
+    </div>
+  </div>
+</section>

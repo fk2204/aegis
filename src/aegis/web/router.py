@@ -3130,6 +3130,19 @@ async def merchant_detail(
     _has_concentration_pattern = pattern_has_customer_concentration(
         pattern_analysis_for_view
     )
+
+    # Build the unified A+B+C view alongside the existing score block.
+    # Pure presentation; no decline-path impact. Step 2 of the scoring
+    # redesign retires fraud_score and flips A/B/C live; this commit
+    # only adds the surface.
+    from aegis.scoring_v2.dossier_panel import build_unified_tracks_view
+
+    unified_tracks = build_unified_tracks_view(
+        documents=all_docs,
+        list_transactions=docs.list_transactions,
+        analyses_by_doc=analyses_by_doc,
+    )
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -3157,6 +3170,7 @@ async def merchant_detail(
             "trend": trend,
             "history": history,
             "close_last_orchestration_capped": close_last_orchestration_capped,
+            "unified_tracks": unified_tracks,
         },
     )
 
