@@ -1,0 +1,372 @@
+"""Track A — Integrity Verdict — acceptance tests.
+
+Branch coverage + structural guard + Q2 mapping verification + the
+two real-merchant acceptance cases:
+
+* **A&R KM** — iText 2.1.7 editor metadata + 4-of-4 month
+  reconciliation drift = the competent-fabrication signature →
+  ``fail`` via the ``drift_plus_editor`` branch.
+* **VU 7722** — March 2026 statement carries reconciliation period
+  drift but no editor metadata in the parser's current detection →
+  ``review`` via the ``drift_alone`` branch.
+
+The signal strings used in these acceptance tests are the LITERAL
+flags AEGIS's parser produces today (per ``aegis.parser.metadata``
+and ``aegis.parser.validate``). They are byte-for-byte what the
+parser emits — same CLAUDE.md "external-integration test discipline"
+rule the rest of the redesign follows.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from aegis.scoring_v2.track_a import (
+    DocumentIntegritySignals,
+    IntegrityVerdict,
+    compute_integrity_verdict,
+)
+
+# ─────────────────────────────────────────────────────────────────────
+# Branch coverage — one test per Q2 branch
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_clean_branch_fires_when_nothing_does() -> None:
+    """No metadata signal, no reconciliation failure → clean."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_clean",
+        metadata_score=8,
+        metadata_flags=("page_count: 4",),
+        validation_failures=(),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "clean"
+    assert v.branch == "clean"
+    assert v.evidence == ()
+    assert "no integrity signals fired" in v.rationale.lower()
+
+
+def test_strong_metadata_branch_fires_at_score_threshold() -> None:
+    """metadata_score >= 50 → fail regardless of corroboration."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_strong",
+        metadata_score=72,
+        metadata_flags=(
+            "editor_detected: Foxit PhantomPDF 11.2",
+            "missing_pdf_signature",
+        ),
+        validation_failures=(),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "fail"
+    assert v.branch == "strong_metadata"
+    # Both flags surface as evidence so the underwriter sees what
+    # contributed to the score.
+    signal_kinds = {e.signal for e in v.evidence}
+    assert "metadata_score" in signal_kinds
+    assert "editor_detected" in signal_kinds
+    assert "metadata_flag" in signal_kinds
+
+
+def test_drift_alone_branch_fires_review() -> None:
+    """Reconciliation drift with no editor flag and low metadata
+    → review (drift_alone). VU 7722 shape."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_drift_alone",
+        metadata_score=12,
+        metadata_flags=("page_count: 6",),
+        validation_failures=(
+            "reconciliation_failed_period: expected -263.89 got 236.11",
+        ),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "review"
+    assert v.branch == "drift_alone"
+    assert len(v.evidence) == 1
+    assert v.evidence[0].signal == "reconciliation_failed_period"
+    assert "drift_alone" in v.rationale.lower()
+    assert "ocr" in v.rationale.lower()
+
+
+def test_medium_corroborated_branch_fires_review() -> None:
+    """metadata_score in 25-49 + reconciliation failure but NO editor
+    flag → review (medium_corroborated)."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_medium",
+        metadata_score=37,
+        metadata_flags=(
+            "personal_author: 'Jane Doe'",
+        ),
+        validation_failures=(
+            "reconciliation_failed_deposit_total: listed 9200 vs printed 8970",
+        ),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "review"
+    assert v.branch == "medium_corroborated"
+    # Evidence includes the score, the reconciliation failure, AND
+    # the non-editor metadata flag for context.
+    signal_kinds = {e.signal for e in v.evidence}
+    assert "metadata_score" in signal_kinds
+    assert "reconciliation_failed_deposit_total" in signal_kinds
+    assert "metadata_flag" in signal_kinds
+
+
+def test_drift_plus_editor_branch_fires_fail() -> None:
+    """Editor metadata + reconciliation drift → fail
+    (drift_plus_editor). A&R KM shape."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_arkm_lili_03",
+        metadata_score=38,
+        metadata_flags=(
+            "editor_detected: iText 2.1.7 by 1T3XT",
+        ),
+        validation_failures=(
+            "reconciliation_failed_period: expected -263.89 got 236.11",
+            "reconciliation_failed_withdrawal_total: "
+            "listed 31416.55 vs printed 30726.55",
+        ),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "fail"
+    assert v.branch == "drift_plus_editor"
+    # Editor flag + every drift failure each surface as evidence.
+    assert len(v.evidence) == 3
+    assert v.evidence[0].signal == "editor_detected"
+    assert "iText 2.1.7" in v.evidence[0].detail
+    drift_evidence = [e for e in v.evidence if e.signal.startswith("reconciliation_failed")]
+    assert len(drift_evidence) == 2
+    # Rationale names the competent-fabrication phrase.
+    assert "competent-fabrication" in v.rationale.lower()
+
+
+def test_drift_plus_editor_fires_even_below_medium_metadata_floor() -> None:
+    """The drift+editor composition is signal-driven, not score-driven.
+    Even a metadata_score of 10 with just the editor flag and drift
+    fires fail — the corroboration is the editor flag PRESENCE, not
+    its score contribution."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_low_score_editor",
+        metadata_score=10,
+        metadata_flags=(
+            "editor_detected: iText 2.1.7 by 1T3XT",
+        ),
+        validation_failures=(
+            "reconciliation_failed_period: expected 12 got 0",
+        ),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "fail"
+    assert v.branch == "drift_plus_editor"
+
+
+def test_editor_metadata_alone_below_threshold_does_not_fire() -> None:
+    """Editor metadata without drift, and below the strong score
+    floor, falls through to clean — Preview-export false positive
+    guard. Mirrors ``aegis.parser.tampering``'s 'legitimate single
+    big customer merchant who opened their PDF in Preview must not
+    auto-decline' principle."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_editor_only",
+        metadata_score=22,
+        metadata_flags=(
+            "editor_detected: Preview (macOS)",
+        ),
+        validation_failures=(),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "clean"
+    assert v.branch == "clean"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Structural guard — schema MUST NOT carry a decline field
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_verdict_has_no_decline_or_score_field() -> None:
+    """Track A is additive. Schema MUST NOT carry a field that wires
+    into the live decline path. Mirrors the Track B / Track C guards.
+    """
+    fields = set(IntegrityVerdict.model_fields)
+    forbidden = {
+        "decline",
+        "auto_decline",
+        "risk_score",
+        "fraud_score",
+        "score",
+        "outcome",
+        "tampering_confirmed",
+    }
+    leaked = fields & forbidden
+    assert not leaked, (
+        f"Track A output must not carry decline/score fields; leaked: {leaked}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Q2 mapping — verify the thresholds match the parser-side rule
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_track_a_thresholds_match_parser_tampering() -> None:
+    """Track A's thresholds MUST stay in sync with the parser's
+    existing tampering rule so the two layers can't disagree on the
+    same input. The values are duplicated in code (not imported) for
+    module-graph cleanliness; this test asserts the equivalence."""
+    from aegis.parser import tampering as parser_tampering
+    from aegis.scoring_v2.track_a import compute as track_a_compute
+
+    assert (
+        track_a_compute._STRONG_METADATA_FLOOR
+        == parser_tampering._STRONG_METADATA_FLOOR
+    )
+    assert (
+        track_a_compute._MEDIUM_METADATA_FLOOR
+        == parser_tampering._MEDIUM_METADATA_FLOOR
+    )
+    assert (
+        track_a_compute._MEDIUM_METADATA_CEIL
+        == parser_tampering._MEDIUM_METADATA_CEIL
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Real-merchant acceptance: A&R KM (fail) + VU 7722 (review)
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def arkm_lili_signals() -> DocumentIntegritySignals:
+    """A&R KM's Lili statement signature — VERBATIM from the live prod
+    database snapshot pulled 2026-06-05 against merchant
+    ``a522a8fb-0a9b-4235-87f3-c019b1bb8e1a``.
+
+    Every Lili statement (2026-02 through 2026-05) carried this
+    same signal triple. Two prod realities the test asserts on:
+
+    1. ``metadata_score=0`` — the editor flag fires on the
+       ``metadata_flags`` column but does NOT (yet) update the
+       persisted ``fraud_score_breakdown.metadata`` integer. This is
+       a known quirk of the current parser persistence (the editor
+       detection sets the flag string but the score backfill is
+       separate); Track A's drift_plus_editor branch is signal-based
+       (editor flag presence + drift), not score-based, so the
+       verdict is correct REGARDLESS of the persisted score quirk.
+       This is the load-bearing point of the verdict design.
+    2. The persisted ``all_flags`` column carries the
+       ``[MATH] `` category prefix the storage layer prepends; the
+       sanitizer in ``signals.py`` strips it so callers can pass
+       either the raw parser format or the persisted format.
+    """
+    return DocumentIntegritySignals(
+        document_id="arkm_lili_2026_03",
+        metadata_score=0,  # ← real prod value; editor flag present but score still 0
+        metadata_flags=(
+            "editor_detected: iText 2.1.7 by 1T3XT",
+        ),
+        validation_failures=(
+            # Persisted-form failures (with [MATH] prefix) — verbatim
+            # from the live ``all_flags`` column. The signals module
+            # strips the prefix before matching.
+            "[MATH] reconciliation_failed_period: expected 197.45 got 364.12",
+            "[MATH] reconciliation_failed_withdrawal_total: "
+            "listed 32508.86 vs printed 32167.19",
+            "[MATH] reconciliation_failed_intraday: "
+            "2026-03-19 p2l1: expected 8047.99 got 8214.66",
+        ),
+    )
+
+
+@pytest.fixture
+def vu_7722_signals() -> DocumentIntegritySignals:
+    """VU 7722 February statement — verbatim from the live prod DB
+    snapshot. One reconciliation failure (a $55 withdrawal-total
+    drift), no editor metadata.
+
+    The drift_alone branch fires; underwriter adjudicates whether
+    it's OCR slop or genuine drift. The ~$55 magnitude is consistent
+    with the running-balance-drift signature the operator noted
+    (per docs/REMAINING_WORK.md: VU 7722 — '3 of 4 months failed
+    reconciliation by $5 / $11 / $55')."""
+    return DocumentIntegritySignals(
+        document_id="vu7722_2026_02",
+        metadata_score=0,  # ← real prod value; no editor metadata
+        metadata_flags=(),
+        validation_failures=(
+            # Verbatim from prod.
+            "[MATH] reconciliation_failed_withdrawal_total: "
+            "listed 341722.93 vs printed 341667.93",
+        ),
+    )
+
+
+def test_arkm_lili_verdict_is_fail_drift_plus_editor(
+    arkm_lili_signals: DocumentIntegritySignals,
+) -> None:
+    """The headline acceptance case: A&R KM's iText + drift =
+    competent-fabrication signature → fail.
+
+    Notes for the dossier reader:
+    - metadata_score is 0 in prod (editor flag fires but the score
+      backfill is a separate parser concern). The verdict is correct
+      because the drift_plus_editor branch reads the FLAG presence,
+      not the score.
+    - All three reconciliation failures surface as separate evidence
+      rows so the underwriter sees the full pattern (period +
+      withdrawal_total + intraday) and can't mistake it for a single
+      reconciliation accident.
+    """
+    v = compute_integrity_verdict(arkm_lili_signals)
+    assert v.verdict == "fail"
+    assert v.branch == "drift_plus_editor"
+    # Evidence cites iText specifically.
+    itext_evidence = [e for e in v.evidence if "iText" in e.detail]
+    assert len(itext_evidence) == 1
+    # And all three reconciliation failures.
+    drift_evidence = [
+        e for e in v.evidence if e.signal.startswith("reconciliation_failed")
+    ]
+    assert len(drift_evidence) == 3
+
+
+def test_vu_7722_verdict_is_review_drift_alone(
+    vu_7722_signals: DocumentIntegritySignals,
+) -> None:
+    """VU 7722's drift with no editor metadata → review (drift_alone)."""
+    v = compute_integrity_verdict(vu_7722_signals)
+    assert v.verdict == "review"
+    assert v.branch == "drift_alone"
+    # Evidence is the single reconciliation failure.
+    assert len(v.evidence) == 1
+    # Rationale calls out the OCR-vs-drift ambiguity.
+    assert "ocr" in v.rationale.lower()
+
+
+def test_arkm_vs_vu_verdicts_distinguish_via_editor_presence(
+    arkm_lili_signals: DocumentIntegritySignals,
+    vu_7722_signals: DocumentIntegritySignals,
+) -> None:
+    """The same reconciliation-failure family fires on both merchants
+    — what distinguishes A&R KM (fail) from VU (review) is the editor
+    metadata. This is the load-bearing reframe: drift alone could be
+    OCR; drift + editor is the competent-fabrication signature."""
+    arkm_v = compute_integrity_verdict(arkm_lili_signals)
+    vu_v = compute_integrity_verdict(vu_7722_signals)
+
+    # Same drift pattern fires on both.
+    assert any(
+        e.signal.startswith("reconciliation_failed")
+        for e in arkm_v.evidence
+    )
+    assert any(
+        e.signal.startswith("reconciliation_failed")
+        for e in vu_v.evidence
+    )
+
+    # The verdicts differ because editor metadata is present on A&R only.
+    assert arkm_v.verdict == "fail"
+    assert vu_v.verdict == "review"
+    assert arkm_v.branch == "drift_plus_editor"
+    assert vu_v.branch == "drift_alone"
