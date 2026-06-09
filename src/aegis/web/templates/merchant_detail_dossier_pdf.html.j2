@@ -199,7 +199,7 @@
 
   {% if stacking %}
     <h3>MCA stacking — {{ stacking.position_count }} active position{{ '' if stacking.position_count == 1 else 's' }}</h3>
-    <p>Daily burden <strong>${{ stacking.daily_total }}</strong> · projected monthly <strong>${{ stacking.monthly_burden }}</strong> · {{ stacking.debit_count }} contributing debits</p>
+    <p>Daily burden <strong>${{ stacking.daily_total }}</strong> · projected monthly <strong>${{ stacking.monthly_burden }}</strong> · {{ stacking.debit_count }} contributing debits{% if stacking.mca_pct_of_deposits is not none %} · MCA burden <strong>{{ stacking.mca_pct_of_deposits }}%</strong> of monthly revenue{% endif %}</p>
   {% endif %}
 
   {% for card in pattern_cards %}

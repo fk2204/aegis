@@ -560,6 +560,13 @@
                 <span class="v">{{ stacking.debit_count }}</span>
                 <span class="qual">across the period</span>
               </div>
+              {% if stacking.mca_pct_of_deposits is not none %}
+                <div title="Monthly MCA burden (daily × 22 business days) divided by monthly revenue. Values above 100% mean the debt-service stream exceeds incoming revenue — read as an underwriting red flag, not a render bug.">
+                  <span class="k">MCA burden</span>
+                  <span class="v {% if stacking.mca_pct_of_deposits > 100 %}neg{% endif %}">{{ stacking.mca_pct_of_deposits }}%</span>
+                  <span class="qual">of monthly revenue</span>
+                </div>
+              {% endif %}
             </div>
             {% if stacking.debits %}
               <details>

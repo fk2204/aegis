@@ -6,6 +6,7 @@ Pulls the MCA-stacking summary the operator cares about out of an
   * total daily MCA burden ($)
   * estimated active position count
   * monthly burden projection (daily * 22 business days)
+  * MCA burden as a percentage of monthly revenue (debt-service drain)
   * a flat list of contributing debits (lender label, amount, date)
 
 When no MCA debits are detected the helper returns ``None`` so the
@@ -43,12 +44,22 @@ class StackingDebit:
 
 @dataclass(frozen=True)
 class StackingCard:
-    """Display payload for the merchant findings panel."""
+    """Display payload for the merchant findings panel.
+
+    ``mca_pct_of_deposits`` is the monthly MCA debt-service drain
+    expressed as a percentage of monthly revenue — the operator-facing
+    answer to "MCA drain is X% of revenue" instead of just "$Y/day."
+    ``None`` when ``monthly_revenue`` is zero / missing (avoids a
+    divide-by-zero and avoids rendering a meaningless 0.00%). Values
+    above 100 are NOT capped: a burden that exceeds revenue is itself
+    the underwriting signal and must surface unclipped.
+    """
 
     daily_total: str
     monthly_burden: str
     position_count: int
     debit_count: int
+    mca_pct_of_deposits: Decimal | None
     debits: list[StackingDebit]
 
 
@@ -83,11 +94,27 @@ def build_stacking_card(
 
     monthly = (daily * _BUSINESS_DAYS_PER_MONTH).quantize(Decimal("0.01"))
 
+    # Burden-as-percent-of-revenue. Use AnalysisRow.monthly_revenue
+    # (true_revenue projected to 30 days by the parser, already filtered
+    # of MCA proceeds where the LLM caught them) as the denominator.
+    # Skip when revenue is zero/negative — a 0% reading there would be
+    # actively misleading (the merchant has no income to compare to),
+    # and the template suppresses the row when this field is None.
+    monthly_revenue = analysis.monthly_revenue
+    mca_pct_of_deposits: Decimal | None
+    if monthly_revenue is None or monthly_revenue <= Decimal("0"):
+        mca_pct_of_deposits = None
+    else:
+        mca_pct_of_deposits = (
+            monthly / monthly_revenue * Decimal(100)
+        ).quantize(Decimal("0.01"))
+
     return StackingCard(
         daily_total=str(daily),
         monthly_burden=str(monthly),
         position_count=analysis.mca_positions,
         debit_count=len(debits),
+        mca_pct_of_deposits=mca_pct_of_deposits,
         debits=debits,
     )
 
