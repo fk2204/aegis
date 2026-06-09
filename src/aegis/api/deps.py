@@ -20,6 +20,11 @@ from aegis.compliance.overrides import (
     OverrideRepository,
     SupabaseOverrideRepository,
 )
+from aegis.compliance.render_events import (
+    DisclosureRenderEventRepository,
+    InMemoryDisclosureRenderEventRepository,
+    SupabaseDisclosureRenderEventRepository,
+)
 from aegis.compliance.snapshot import (
     DecisionSnapshot,
     InMemoryDecisionSnapshot,
@@ -126,6 +131,20 @@ def get_llm() -> LLMClient:
 
 
 @lru_cache(maxsize=1)
+def get_disclosure_render_event_repository() -> DisclosureRenderEventRepository:
+    """Process-wide DisclosureRenderEventRepository (U16 — migration 042).
+
+    Same memory / supabase toggle as the other repositories. The route
+    layer in ``api/routes/disclosures.py`` uses this to persist the
+    render-event status (``ok`` / ``needs_review`` / ``apr_compute_failed``)
+    that U3 deferred.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryDisclosureRenderEventRepository()
+    return SupabaseDisclosureRenderEventRepository()
+
+
+@lru_cache(maxsize=1)
 def get_override_repository() -> OverrideRepository:
     """Process-wide OverrideRepository (mp Phase 10). Same memory /
     supabase toggle as the other repositories."""
@@ -189,6 +208,7 @@ def reset_dependency_caches() -> None:
     get_override_repository.cache_clear()
     get_audit.cache_clear()
     get_decision_snapshot.cache_clear()
+    get_disclosure_render_event_repository.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
     get_close_client.cache_clear()
@@ -199,6 +219,7 @@ __all__ = [
     "get_close_client",
     "get_deal_repository",
     "get_decision_snapshot",
+    "get_disclosure_render_event_repository",
     "get_funder_reply_repository",
     "get_funder_repository",
     "get_llm",
