@@ -1,10 +1,10 @@
-"""Wire-in tests: /deals/score writes a decisions row (mp Phase 2).
+"""Wire-in tests: /deals/score writes a decisions row (mp Phase 2 + U17).
 
 The wire-in is the load-bearing piece of master plan §12. These tests
 guard the contract:
 
 - document_id supplied → decision snapshot is written.
-- document_id omitted → no snapshot (logged warning), score still served.
+- document_id omitted → 422 (U17 — was previously a silent skip).
 - recommendation 'approve' → decision 'approve'.
 - recommendation 'decline' → decision 'decline'.
 - recommendation 'refer'   → decision 'manual_review' (the API
@@ -185,21 +185,27 @@ def test_refer_recommendation_writes_manual_review_decision(
 
 
 # ---------------------------------------------------------------------------
-# Snapshot is skipped (but score is served) when document_id is omitted
+# Without document_id the call now 422s (U17 — was previously a soft skip)
 # ---------------------------------------------------------------------------
 
 
-def test_score_without_document_id_does_not_write_snapshot(
+def test_score_without_document_id_returns_422(
     client: TestClient,
     snapshot: InMemoryDecisionSnapshot,
     audit: InMemoryAuditLog,
 ) -> None:
+    """U17 contract: ``document_id`` is required so every scoring call
+    produces an immutable decisions snapshot. The pre-U17 "no snapshot,
+    log a warning" branch is gone — the audit_log fallback in the
+    portfolio analytics module that papered over the gap is gone too,
+    so the gap has to close at the source instead.
+    """
     resp = client.post("/deals/score", json=_score_input(), headers=AUTH)
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 422, resp.text
+    # No snapshot, no audit rows — the request never reached the route
+    # body because FastAPI's validator rejected it first.
     assert snapshot.rows() == []
-    # deal.score audit row still landed (unchanged behavior).
-    assert any(e["action"] == "deal.score" for e in audit.entries)
-    # …but no decision.* entry, since no snapshot was attempted.
+    assert not any(e["action"] == "deal.score" for e in audit.entries)
     assert not any(e["action"].startswith("decision.") for e in audit.entries)
 
 

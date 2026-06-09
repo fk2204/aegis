@@ -16,14 +16,15 @@ the score first. The merchant must already be linked to a Close Lead
 handler in step 4). Idempotency lives in
 ``aegis.close.sync.push_decision_to_close`` — see step 5.
 
-Decision snapshot wiring (mp Phase 2): when ``document_id`` is supplied
-as a query parameter, the score endpoints also write an immutable row
-to the ``decisions`` table per master plan §9.2 — one snapshot per
-approve / decline / manual_review call. The snapshot is what
-regulators and counsel read six months later; the audit_log entry
-sitting alongside is the cross-reference. ``document_id`` is optional
-so existing API callers don't break, but every production caller
-(dashboard, Close sync) is expected to pass it.
+Decision snapshot wiring (mp Phase 2 / U17): ``document_id`` is REQUIRED
+on every score-emitting route. Each call writes an immutable row to the
+``decisions`` table per master plan §9.2 — one snapshot per approve /
+decline / manual_review call. The snapshot is what regulators and
+counsel read six months later; the audit_log entry sitting alongside
+is the cross-reference. Calls that omit ``document_id`` now 422 (FastAPI
+validation) rather than silently producing a score with no snapshot —
+the U13 portfolio audit-log fallback existed to paper over historical
+gaps; U17 removes the gap at its source.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 import aegis
@@ -160,9 +161,9 @@ def _build_decision_payload(
     )
 
 
-def _maybe_record_decision(
+def _record_decision(
     *,
-    document_id: UUID | None,
+    document_id: UUID,
     deal: ScoreInput,
     result: ScoreResult,
     matrix: StateMatrix,
@@ -170,20 +171,14 @@ def _maybe_record_decision(
     audit: AuditLog,
     decided_by: str = "api",
 ) -> None:
-    """Write a decision snapshot when ``document_id`` is supplied.
+    """Write an immutable decision snapshot for the scored deal.
 
-    Absent document_id → no snapshot (the caller is a tooling path that
-    doesn't yet bind to a statement). The route still returns the
-    score; only the immutable evidence row is skipped. A warning logs
-    so the gap is visible.
+    ``document_id`` is required at the route layer (U17), so this helper
+    no longer has a "skip if absent" branch. Per master plan §2
+    principle 3, a decision without a snapshot is a regulator-defense
+    gap — failures here surface as 503 so the caller can retry rather
+    than silently returning a score with no audit trail.
     """
-    if document_id is None:
-        _log.warning(
-            "decision.snapshot_skipped reason=no_document_id merchant=%s recommendation=%s",
-            deal.merchant_id,
-            result.recommendation,
-        )
-        return
     payload = _build_decision_payload(
         deal_id=document_id,
         deal=deal,
@@ -220,9 +215,26 @@ def score(
     audit: Annotated[AuditLog, Depends(get_audit)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
+    document_id: Annotated[
+        UUID,
+        Query(
+            description=(
+                "document_id is required so every scoring decision "
+                "produces an immutable snapshot row in the decisions "
+                "table. Calls that omit it 422 (U17, breaking change "
+                "from the pre-U17 optional behavior)."
+            ),
+        ),
+    ],
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
-    document_id: UUID | None = None,
 ) -> ScoreResult:
+    """Score a deal. ``document_id`` is required so every scoring
+    decision produces an immutable snapshot row in the decisions table.
+
+    Breaking change (U17): pre-U17 callers that omitted ``document_id``
+    received a score with no snapshot; the call now 422s instead. Every
+    production caller (dashboard, Close sync) already supplies it.
+    """
     try:
         result = score_deal(deal, ofac=ofac)
     except OFACStaleError as exc:
@@ -249,10 +261,10 @@ def score(
             # Initial Report of Blocked Property (docs/compliance/07_*).
             "decline_details": result.decline_details,
             "ofac_consulted": ofac is not None,
-            "document_id": str(document_id) if document_id else None,
+            "document_id": str(document_id),
         },
     )
-    _maybe_record_decision(
+    _record_decision(
         document_id=document_id,
         deal=deal,
         result=result,
@@ -275,8 +287,18 @@ def score_with_matches(
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
+    document_id: Annotated[
+        UUID,
+        Query(
+            description=(
+                "document_id is required so every scoring decision "
+                "produces an immutable snapshot row in the decisions "
+                "table. Calls that omit it 422 (U17, breaking change "
+                "from the pre-U17 optional behavior)."
+            ),
+        ),
+    ],
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
-    document_id: UUID | None = None,
 ) -> DealMatchResult:
     """Phase 7B endpoint powering the dashboard's matched-funders panel.
 
@@ -284,6 +306,11 @@ def score_with_matches(
     calling ``match_funder`` per row. Funders that the matcher returns
     ``None`` for (inactive or no criteria) are dropped. The remainder
     sort by ``match_score`` descending.
+
+    ``document_id`` is required so every scoring decision produces an
+    immutable snapshot row in the decisions table. Breaking change
+    (U17): pre-U17 callers that omitted ``document_id`` received a score
+    with no snapshot; the call now 422s instead.
     """
     try:
         score_result = score_deal(deal, ofac=ofac)
@@ -313,10 +340,10 @@ def score_with_matches(
             "matched_funder_count": len(matches),
             "decline_details": score_result.decline_details,
             "ofac_consulted": ofac is not None,
-            "document_id": str(document_id) if document_id else None,
+            "document_id": str(document_id),
         },
     )
-    _maybe_record_decision(
+    _record_decision(
         document_id=document_id,
         deal=deal,
         result=score_result,

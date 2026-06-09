@@ -277,12 +277,50 @@ def test_disclosure_render_unserved_state_returns_422(client: TestClient) -> Non
 
 
 def test_score_deal_returns_score_result(client: TestClient) -> None:
-    # No OFAC client passed → scorer skips OFAC.
-    resp = client.post("/deals/score", json=_score_input_dict(), headers=AUTH)
+    # No OFAC client passed → scorer skips OFAC. ``document_id`` is
+    # required post-U17 so the call writes a decisions snapshot.
+    document_id = uuid4()
+    resp = client.post(
+        f"/deals/score?document_id={document_id}",
+        json=_score_input_dict(),
+        headers=AUTH,
+    )
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert "tier" in data and "score" in data
     assert data["recommendation"] in {"approve", "decline", "refer"}
+
+
+def test_score_deal_without_document_id_returns_422(client: TestClient) -> None:
+    """U17 contract: ``document_id`` is required on /deals/score so every
+    scoring call produces an immutable decisions row. Omitting it now
+    422s rather than silently producing a score with no snapshot."""
+    resp = client.post("/deals/score", json=_score_input_dict(), headers=AUTH)
+    assert resp.status_code == 422, resp.text
+    # FastAPI surfaces missing-query-param errors with loc=query+name.
+    body = resp.json()
+    assert any(
+        err.get("loc", []) == ["query", "document_id"]
+        for err in body.get("detail", [])
+    ), body
+
+
+def test_score_with_matches_without_document_id_returns_422(
+    client: TestClient,
+) -> None:
+    """Same U17 contract on /deals/score-with-matches — the route emits
+    the same decisions snapshot and so enforces the same requirement."""
+    resp = client.post(
+        "/deals/score-with-matches",
+        json=_score_input_dict(),
+        headers=AUTH,
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert any(
+        err.get("loc", []) == ["query", "document_id"]
+        for err in body.get("detail", [])
+    ), body
 
 
 # --- auth --------------------------------------------------------------------

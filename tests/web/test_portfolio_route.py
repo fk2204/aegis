@@ -29,12 +29,14 @@ from fastapi.testclient import TestClient
 from aegis.api.app import create_app
 from aegis.api.deps import (
     get_audit,
+    get_decision_snapshot,
     get_funder_repository,
     get_merchant_repository,
     get_repository,
     reset_dependency_caches,
 )
 from aegis.audit import InMemoryAuditLog
+from aegis.compliance.snapshot import InMemoryDecisionSnapshot
 from aegis.deals.portfolio_analytics import (
     DEFAULT_WINDOW_DAYS,
     MAX_WINDOW_DAYS,
@@ -92,11 +94,13 @@ def _populated_app() -> tuple[
     InMemoryMerchantRepository,
     InMemoryFunderRepository,
     InMemoryAuditLog,
+    InMemoryDecisionSnapshot,
     list[FunderRow],
     list[MerchantRow],
 ]:
     """Build an app whose merchant + funder repos are pre-seeded with
-    a known mix of merchants, funders, audit rows, and reply rows.
+    a known mix of merchants, funders, audit rows, reply rows, and an
+    in-memory decision snapshot.
 
     Returns the client + the live repos + the seeded entities so each
     test can introspect / assert against the same objects.
@@ -106,6 +110,7 @@ def _populated_app() -> tuple[
     funders_repo = InMemoryFunderRepository()
     docs_repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
+    snapshot = InMemoryDecisionSnapshot()
 
     # Three merchants in three pipeline states.
     m1 = _merchant(business_name="Acme Diner", state="NY")
@@ -125,8 +130,17 @@ def _populated_app() -> tuple[
     app.dependency_overrides[get_funder_repository] = lambda: funders_repo
     app.dependency_overrides[get_repository] = lambda: docs_repo
     app.dependency_overrides[get_audit] = lambda: audit
+    app.dependency_overrides[get_decision_snapshot] = lambda: snapshot
     client = TestClient(app)
-    return client, merchants_repo, funders_repo, audit, [f1, f2], [m1, m2, m3]
+    return (
+        client,
+        merchants_repo,
+        funders_repo,
+        audit,
+        snapshot,
+        [f1, f2],
+        [m1, m2, m3],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +289,7 @@ def test_funder_approval_rate_math_is_exact() -> None:
         documents=[],
         funder_reply_rows=reply_rows,
         audit_rows=audit_rows,
+        decision_rows=[],
         date_range=DateRange(
             from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
         ),
@@ -311,20 +326,21 @@ def test_funder_approval_rate_math_is_exact() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_tier_counts_match_audit_score_rows() -> None:
-    """Five ``deal.score`` audit rows with tiers A/A/B/C/F yield the
-    expected per-tier counts and a median of B (sorted ABCF, middle =
-    B)."""
+def test_tier_counts_match_decisions_rows() -> None:
+    """Five decisions rows with tiers A/A/B/C/F yield the expected
+    per-tier counts and a median of B (sorted ABCF, middle = B). The
+    decisions table is the sole source post-U17."""
     merchant = _merchant(business_name="Tier Subject LLC", state="NY")
-    audit_rows: list[dict[str, object]] = []
+    decision_rows: list[dict[str, object]] = []
     for tier in ["A", "A", "B", "C", "F"]:
-        audit_rows.append(
+        decision_rows.append(
             {
-                "actor": "api",
-                "action": "deal.score",
-                "subject_id": str(merchant.id),
-                "details": {"tier": tier, "recommendation": "approve"},
-                "created_at": "2026-06-01T12:00:00Z",
+                "id": str(uuid4()),
+                "deal_id": str(uuid4()),
+                "decided_at": "2026-06-01T12:00:00Z",
+                "decision": "approve",
+                "state_code": "NY",
+                "score_factors": {"tier": tier},
             }
         )
 
@@ -333,7 +349,8 @@ def test_tier_counts_match_audit_score_rows() -> None:
         funders=[],
         documents=[],
         funder_reply_rows=[],
-        audit_rows=audit_rows,
+        audit_rows=[],
+        decision_rows=decision_rows,
         date_range=DateRange(
             from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
         ),
@@ -351,31 +368,34 @@ def test_tier_counts_match_audit_score_rows() -> None:
 
 
 def test_recent_activity_orders_most_recent_first() -> None:
-    """The recent-activity panel surfaces scoring events in
-    most-recent-first order."""
-    merchant = _merchant(business_name="Recent Activity LLC", state="NY")
-    audit_rows: list[dict[str, object]] = [
+    """The recent-activity panel surfaces scoring decisions in
+    most-recent-first order. Sourced from the decisions table
+    post-U17 — ``decided_at`` drives the sort."""
+    decision_rows: list[dict[str, object]] = [
         {
-            "actor": "api",
-            "action": "deal.score",
-            "subject_id": str(merchant.id),
-            "details": {"tier": "A", "recommendation": "approve"},
-            "created_at": "2026-06-01T08:00:00Z",
+            "id": str(uuid4()),
+            "deal_id": str(uuid4()),
+            "decided_at": "2026-06-01T08:00:00Z",
+            "decision": "approve",
+            "state_code": "NY",
+            "score_factors": {"tier": "A"},
         },
         {
-            "actor": "api",
-            "action": "deal.score",
-            "subject_id": str(merchant.id),
-            "details": {"tier": "B", "recommendation": "approve"},
-            "created_at": "2026-06-05T08:00:00Z",
+            "id": str(uuid4()),
+            "deal_id": str(uuid4()),
+            "decided_at": "2026-06-05T08:00:00Z",
+            "decision": "approve",
+            "state_code": "NY",
+            "score_factors": {"tier": "B"},
         },
     ]
     metrics = compute_portfolio_metrics(
-        merchants=[merchant],
+        merchants=[],
         funders=[],
         documents=[],
         funder_reply_rows=[],
-        audit_rows=audit_rows,
+        audit_rows=[],
+        decision_rows=decision_rows,
         date_range=DateRange(
             from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
         ),
@@ -425,6 +445,7 @@ def test_pipeline_state_counts_submitted_and_funded_via_audit() -> None:
         documents=[],
         funder_reply_rows=[],
         audit_rows=audit_rows,
+        decision_rows=[],
         date_range=DateRange(
             from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
         ),
@@ -441,9 +462,10 @@ def test_pipeline_state_counts_submitted_and_funded_via_audit() -> None:
 
 
 def test_portfolio_route_renders_populated_funder_table() -> None:
-    """With audit + reply rows seeded into the InMemoryAuditLog, the
-    route renders the funder names in the body."""
-    client, _, _, audit, funders, merchants = _populated_app()
+    """With audit + decision rows seeded into the in-memory stores, the
+    route renders the funder names + the tier panel populated from the
+    decisions table."""
+    client, _, _, audit, snapshot, funders, merchants = _populated_app()
     f1, _f2 = funders
     submitted_m = merchants[0]
 
@@ -457,14 +479,17 @@ def test_portfolio_route_renders_populated_funder_table() -> None:
             "created_at": None,
         }
     )
-    audit.entries.append(
+    # Post-U17 the score signal must come from the decisions table —
+    # the audit-log fallback is gone. Drop a row in the snapshot store
+    # directly (it's a list-backed in-memory implementation).
+    snapshot._rows.append(
         {
-            "actor": "api",
-            "action": "deal.score",
-            "subject_type": "merchant",
-            "subject_id": str(submitted_m.id),
-            "details": {"tier": "A", "recommendation": "approve"},
-            "created_at": None,
+            "id": str(uuid4()),
+            "deal_id": str(uuid4()),
+            "decided_at": "2026-06-01T12:00:00Z",
+            "decision": "approve",
+            "state_code": "NY",
+            "score_factors": {"tier": "A"},
         }
     )
 
@@ -526,6 +551,7 @@ def test_fraud_catch_rate_counts_documents_at_or_above_threshold() -> None:
         documents=docs,
         funder_reply_rows=[],
         audit_rows=[],
+        decision_rows=[],
         date_range=DateRange(
             from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
         ),
@@ -536,8 +562,9 @@ def test_fraud_catch_rate_counts_documents_at_or_above_threshold() -> None:
 
 
 # ---------------------------------------------------------------------------
-# U13 — decisions table is the primary source for tier / state / recent
-# activity. Audit-log fallback still works when no decisions are present.
+# U17 — decisions table is the SOLE source for tier / state / recent
+# activity. The audit_log ``deal.score`` fallback (added in U13) is gone
+# once ``document_id`` became required on the score routes.
 # ---------------------------------------------------------------------------
 
 
@@ -658,10 +685,9 @@ def test_state_counts_read_from_decisions_state_code() -> None:
 
 
 def test_audit_log_score_row_alone_is_not_counted_when_decisions_present() -> None:
-    """The regression-prevention: a ``deal.score`` audit row with no
-    matching decisions row does NOT inflate tier_counts. Decisions is
-    the source of truth — audit only kicks in as fallback when the
-    decisions list is empty."""
+    """Regression-prevention: a ``deal.score`` audit row with no matching
+    decisions row does NOT inflate tier_counts. Decisions is the sole
+    source of truth post-U17."""
     merchant = _merchant(business_name="Ghost Score LLC", state="TX")
     audit_rows: list[dict[str, object]] = [
         {
@@ -703,20 +729,27 @@ def test_audit_log_score_row_alone_is_not_counted_when_decisions_present() -> No
     assert metrics.tier_counts.total == 1
 
 
-def test_audit_log_fallback_when_decisions_empty() -> None:
-    """Graceful degradation: when ``decision_rows`` is empty, the
-    legacy audit_log ``deal.score`` parse path still surfaces tier
-    counts. Protects historical /deals/score calls that never
-    supplied ``document_id`` and so didn't snapshot."""
-    merchant = _merchant(business_name="Legacy LLC", state="NY")
+def test_empty_decisions_yields_empty_tier_and_state_panels() -> None:
+    """U17 contract: with no decisions rows in the window, tier_counts
+    is all zeros, state_counts is empty, recent_activity is empty, and
+    avg_tier is None — regardless of how many ``deal.score`` audit rows
+    sit in the audit_log. The audit-log fallback that U13 added to
+    paper over the pre-U17 gap is gone; the operator runs more deals
+    to populate decisions.
+    """
+    merchant = _merchant(business_name="Empty Window LLC", state="NY")
+    # A heap of audit ``deal.score`` rows that USED to drive the
+    # fallback path. Post-U17 they're invisible to the portfolio
+    # tier / state / recent-activity panels.
     audit_rows: list[dict[str, object]] = [
         {
             "actor": "api",
             "action": "deal.score",
             "subject_id": str(merchant.id),
-            "details": {"tier": "A", "recommendation": "approve"},
+            "details": {"tier": tier, "recommendation": "approve"},
             "created_at": "2026-06-01T12:00:00Z",
         }
+        for tier in ["A", "A", "B", "C", "F"]
     ]
 
     metrics = compute_portfolio_metrics(
@@ -725,11 +758,18 @@ def test_audit_log_fallback_when_decisions_empty() -> None:
         documents=[],
         funder_reply_rows=[],
         audit_rows=audit_rows,
-        decision_rows=[],  # explicitly empty — fallback path
+        decision_rows=[],
         date_range=DateRange(
             from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
         ),
     )
 
-    assert metrics.tier_counts.A == 1
-    assert metrics.tier_counts.total == 1
+    assert metrics.tier_counts.A == 0
+    assert metrics.tier_counts.B == 0
+    assert metrics.tier_counts.C == 0
+    assert metrics.tier_counts.D == 0
+    assert metrics.tier_counts.F == 0
+    assert metrics.tier_counts.total == 0
+    assert metrics.state_counts == []
+    assert metrics.recent_activity == []
+    assert metrics.avg_tier is None

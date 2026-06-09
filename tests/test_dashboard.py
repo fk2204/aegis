@@ -955,6 +955,8 @@ def test_api_score_with_matches_returns_combined_payload(
     merchant: MerchantRow,
     funder_repo_seeded: InMemoryFunderRepository,
 ) -> None:
+    from uuid import uuid4
+
     payload = {
         "merchant_id": str(merchant.id),
         "business_name": merchant.business_name,
@@ -986,8 +988,11 @@ def test_api_score_with_matches_returns_combined_payload(
         "requested_factor": "1.30",
         "requested_term_days": 120,
     }
+    # ``document_id`` is required post-U17 so the score call writes
+    # an immutable decisions snapshot.
+    document_id = uuid4()
     resp = client.post(
-        "/deals/score-with-matches",
+        f"/deals/score-with-matches?document_id={document_id}",
         json=payload,
         headers={"Authorization": "Bearer test-token-not-real"},
     )

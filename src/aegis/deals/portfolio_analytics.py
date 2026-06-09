@@ -46,19 +46,19 @@ Design notes:
 
   * Decisions by tier, by state, and recent activity read the
     ``decisions`` table (migration 015) directly. Each /deals/score
-    call that supplies ``document_id`` snapshots one immutable row
-    with ``state_code``, ``score_factors.tier`` (AEGIS A/B/C/D/F),
+    call snapshots one immutable row with ``state_code``,
+    ``score_factors.tier`` (AEGIS A/B/C/D/F),
     ``decision`` (approve/decline/manual_review/redisclosure),
     ``decided_at``. Reading the snapshot beats parsing the
     ``deal.score`` audit JSON — the shape is contractual rather than
     a coincidence of the audit detail key set.
 
-    Historical scoring events predate the snapshot wiring (or were
-    issued without ``document_id`` and so didn't snapshot); for that
-    window the audit_log fallback path is preserved so the metrics
-    degrade gracefully rather than appearing empty. The
-    ``decision_rows`` arg is the primary source — when present and
-    non-empty, audit-log parsing is skipped for these three panels.
+    U17 (2026-06): ``document_id`` is now required on the score routes,
+    so every /deals/score call produces a decisions row. The U13
+    audit_log fallback path is gone — if ``decision_rows`` is empty
+    for the window, the tier / state / recent-activity panels render
+    empty rather than parsing audit JSON. The operator runs more
+    deals to populate decisions; empty is the honest answer.
 
   * Fraud catch rate is computed off ``documents.fraud_score >= 70`` —
     matching the parser's hard-decline band (pipeline.py
@@ -207,8 +207,8 @@ class FunderApprovalRow(_StrictModel):
 class TierCounts(_StrictModel):
     """Count of scored deals by AEGIS tier (A / B / C / D / F).
 
-    Sourced from ``audit_log`` rows whose action is ``deal.score``. The
-    same merchant may be scored multiple times — each scoring event
+    Sourced from the ``decisions`` table (migration 015). The same
+    merchant may be scored multiple times — each decision snapshot
     counts once. This matches how the operator reads the metric
     ("how many A-tier scoring runs hit the desk this month").
     """
@@ -379,8 +379,8 @@ def compute_portfolio_metrics(
     documents: Iterable[DocumentRow],
     funder_reply_rows: Iterable[dict[str, Any]],
     audit_rows: Iterable[dict[str, Any]],
+    decision_rows: Iterable[dict[str, Any]],
     date_range: DateRange,
-    decision_rows: Iterable[dict[str, Any]] | None = None,
 ) -> PortfolioMetrics:
     """Pure aggregation. No I/O.
 
@@ -391,14 +391,19 @@ def compute_portfolio_metrics(
       * ``deal.submit_to_funders`` — used for the per-funder
         submission counter.
       * ``deal.funded`` — used for the pipeline "funded" bucket.
-      * ``deal.score`` — fallback source for tier / state / recent
-        activity when ``decision_rows`` is None or empty.
 
     ``decision_rows`` shape mirrors the ``decisions`` table
     (migration 015):
       ``{id, deal_id, decided_at, decision, state_code,
         score_factors: {tier, ...}, ...}``
-    Primary source for the tier / state / recent-activity panels.
+    Sole source for the tier / state / recent-activity panels (U17 —
+    the audit_log ``deal.score`` fallback was removed once document_id
+    became required on the score routes, so every score call now
+    produces a decisions row).
+
+    Empty ``decision_rows`` → zero tier counts, zero state counts,
+    empty recent-activity list. The page renders the empty state
+    rather than parsing audit JSON.
 
     ``funder_reply_rows`` shape mirrors the ``funder_replies`` table
     (migration 021):
@@ -415,7 +420,7 @@ def compute_portfolio_metrics(
     documents_list = list(documents)
     replies_list = list(funder_reply_rows)
     audit_list = list(audit_rows)
-    decisions_list = list(decision_rows) if decision_rows is not None else []
+    decisions_list = list(decision_rows)
 
     docs_by_merchant = _group_documents_by_merchant(documents_list)
     pipeline = _compute_pipeline_counts(merchants_list, docs_by_merchant, audit_list)
@@ -434,23 +439,14 @@ def compute_portfolio_metrics(
     merchants_by_id = {m.id: m for m in merchants_list}
     docs_by_id = {d.id: d for d in documents_list if d.id is not None}
 
-    # Decisions table is the canonical source for tier / state /
-    # recent activity (mp Phase 2, migration 015). Fall back to the
-    # audit_log JSON parse path when no decisions rows are visible —
-    # historical /deals/score calls that didn't supply document_id
-    # never snapshotted, and degrading to audit prevents the page
-    # from looking empty for the operator.
-    if decisions_list:
-        tier_counts = _compute_tier_counts_from_decisions(decisions_list)
-        state_counts = _compute_state_counts_from_decisions(decisions_list)
-        recent_activity = _compute_recent_activity_from_decisions(
-            decisions_list, docs_by_id, merchants_by_id
-        )
-    else:
-        score_rows = _filter_score_audit_rows(audit_list)
-        tier_counts = _compute_tier_counts(score_rows)
-        state_counts = _compute_state_counts(score_rows, merchants_by_id)
-        recent_activity = _compute_recent_activity(score_rows, merchants_by_id)
+    # Decisions table is the sole source for tier / state / recent
+    # activity (mp Phase 2 + U17). Empty decisions → empty panels;
+    # the page renders the empty state rather than parsing audit JSON.
+    tier_counts = _compute_tier_counts_from_decisions(decisions_list)
+    state_counts = _compute_state_counts_from_decisions(decisions_list)
+    recent_activity = _compute_recent_activity_from_decisions(
+        decisions_list, docs_by_id, merchants_by_id
+    )
     avg_tier = _compute_avg_tier(tier_counts)
 
     fraud_catch_count, fraud_total_scored = _compute_fraud_counts(documents_list)
@@ -719,55 +715,6 @@ def _to_uuid(value: object) -> UUID | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Tier counts + state counts + recent activity (all from deal.score audit)
-# ---------------------------------------------------------------------------
-
-
-def _filter_score_audit_rows(audit_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return rows whose action is ``deal.score`` (the scoring event).
-
-    Ordered most-recent first when ``created_at`` is present; rows
-    without a timestamp keep their input order (InMemoryAuditLog
-    doesn't stamp ``created_at`` — the caller's order is the order).
-    """
-    score_rows = [r for r in audit_rows if r.get("action") == "deal.score"]
-    score_rows.sort(
-        key=lambda r: (_audit_created_at(r) or datetime.min.replace(tzinfo=UTC)),
-        reverse=True,
-    )
-    return score_rows
-
-
-def _audit_created_at(row: dict[str, Any]) -> datetime | None:
-    value = row.get("created_at")
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=UTC)
-    if isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-    return None
-
-
-def _compute_tier_counts(score_rows: list[dict[str, Any]]) -> TierCounts:
-    counts = {tier: 0 for tier in TIER_ORDER}
-    for r in score_rows:
-        details = r.get("details")
-        if not isinstance(details, dict):
-            continue
-        tier = details.get("tier")
-        if isinstance(tier, str) and tier in counts:
-            counts[tier] += 1
-    return TierCounts(
-        A=counts["A"], B=counts["B"], C=counts["C"], D=counts["D"], F=counts["F"]
-    )
-
-
 # Numeric mapping for the median-tier calculation. Higher is better.
 _TIER_SCORE: Final[dict[str, int]] = {"A": 4, "B": 3, "C": 2, "D": 1, "F": 0}
 _TIER_FROM_SCORE: Final[dict[int, str]] = {v: k for k, v in _TIER_SCORE.items()}
@@ -791,59 +738,6 @@ def _compute_avg_tier(tier_counts: TierCounts) -> str | None:
     return _TIER_FROM_SCORE.get(median_value)
 
 
-def _compute_state_counts(
-    score_rows: list[dict[str, Any]],
-    merchants_by_id: dict[UUID, MerchantRow],
-) -> list[StateCount]:
-    counts: dict[str, int] = {}
-    for r in score_rows:
-        sid = _audit_subject_uuid(r)
-        if sid is None:
-            continue
-        merchant = merchants_by_id.get(sid)
-        if merchant is None or merchant.state is None:
-            continue
-        state = merchant.state.upper()
-        counts[state] = counts.get(state, 0) + 1
-    rows = [StateCount(state=s, count=c) for s, c in counts.items() if c > 0]
-    rows.sort(key=lambda r: (-r.count, r.state))
-    return rows[:TOP_STATES_LIMIT]
-
-
-def _compute_recent_activity(
-    score_rows: list[dict[str, Any]],
-    merchants_by_id: dict[UUID, MerchantRow],
-) -> list[RecentDeal]:
-    out: list[RecentDeal] = []
-    for r in score_rows[:RECENT_ACTIVITY_LIMIT]:
-        sid = _audit_subject_uuid(r)
-        merchant = merchants_by_id.get(sid) if sid is not None else None
-        details = r.get("details")
-        tier: str | None = None
-        recommendation: str | None = None
-        if isinstance(details, dict):
-            tier_value = details.get("tier")
-            if isinstance(tier_value, str):
-                tier = tier_value
-            rec_value = details.get("recommendation")
-            if isinstance(rec_value, str):
-                recommendation = rec_value
-        out.append(
-            RecentDeal(
-                merchant_id=merchant.id if merchant is not None else None,
-                business_name=(
-                    merchant.business_name
-                    if merchant is not None
-                    else (f"merchant {str(sid)[:8]}" if sid is not None else "—")
-                ),
-                tier=tier,
-                recommendation=recommendation,
-                scored_at=_audit_created_at(r),
-            )
-        )
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Tier counts + state counts + recent activity (decisions table source)
 #
@@ -855,9 +749,9 @@ def _compute_recent_activity(
 #   state_code: str (2-letter ISO state)
 #   score_factors: dict          — {"tier": "A"|"B"|"C"|"D"|"F", ...}
 #
-# These functions are the canonical (post-mp Phase 2) read path. The
-# audit-log variants above remain as the fallback when decisions rows
-# are empty for the window.
+# These functions are the canonical (post-U17) read path. The audit-log
+# fallback variants were removed once document_id became required on
+# the score routes.
 # ---------------------------------------------------------------------------
 
 
