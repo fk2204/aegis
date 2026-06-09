@@ -170,6 +170,30 @@ class Settings(BaseSettings):
     # operator's risk-policy decision (2026-06-04).
     aegis_tampering_decline_mode: Literal["shadow", "live"] = "shadow"
 
+    # EOF-marker hard-decline threshold (R4.6 reconciliation).
+    #
+    # The scorer hard-declines when ``deal.eof_markers > aegis_eof_threshold``.
+    # Default ``1`` preserves the legacy behavior (decline at 2+ EOF markers)
+    # so a config-flag rollout is byte-identical to today's scorer until the
+    # operator explicitly lifts the threshold.
+    #
+    # Set ``AEGIS_EOF_THRESHOLD=2`` to align with the pipeline routing policy
+    # at docs/AUDIT_2026_05_10.md line 46 — "2 EOFs → review, 3+ →
+    # manual_review". Per CLAUDE.md "Decision-boundary changes —
+    # shadow-first": the flip itself is a config / env var change, not a
+    # code deploy. Validate on the corpus before flipping in prod.
+    aegis_eof_threshold: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description=(
+            "EOF marker count above which score_deal hard-declines. "
+            "Default 1 matches the legacy scorer behavior (declines at 2+). "
+            "Set to 2 to lift policy in line with pipeline routing "
+            "(3+ → manual_review per docs/AUDIT_2026_05_10.md line 46)."
+        ),
+    )
+
     # ------------------------------------------------------------------
     # PDF retention redesign (chunk A) — see docs/PDF_RETENTION_DESIGN.md
     # ------------------------------------------------------------------

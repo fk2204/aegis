@@ -26,6 +26,7 @@ from decimal import Decimal
 from typing import Final
 
 from aegis.compliance.apr import APRCalculationError, calculate_apr
+from aegis.config import get_settings
 from aegis.money import safe_divide
 from aegis.scoring.models import PaperGrade, ScoreInput, ScoreResult
 from aegis.scoring.ofac import OFACClient
@@ -250,16 +251,30 @@ def _check_hard_declines(
     if deal.fraud_score >= FRAUD_SCORE_HARD_DECLINE:
         reasons.append(f"fraud_score_critical: {deal.fraud_score}")
 
-    if deal.eof_markers > 1:
+    eof_threshold = get_settings().aegis_eof_threshold
+    if deal.eof_markers > eof_threshold:
         reasons.append(f"incremental_pdf_saves: {deal.eof_markers} EOF markers")
-        # AUDIT R4.6: scorer hard-declines at >1 EOF; pipeline policy is 3+.
-        # Reconcile via shadow-mode policy flip after corpus validation.
-        # See ``docs/AUDIT_2026_05_10.md`` line 46 ("2 EOFs → review,
-        # 3+ → manual_review"). The shadow flag documents what the
-        # pipeline policy WOULD do without altering current behavior.
-        shadow_flags.append(
-            "eof_policy_mismatch:scorer_declines_at_2_pipeline_routes_review"
-        )
+        # AUDIT R4.6: scorer hard-declines at ``> aegis_eof_threshold`` EOFs;
+        # pipeline policy (docs/AUDIT_2026_05_10.md line 46) is "2 EOFs →
+        # review, 3+ → manual_review". The threshold is now an env var
+        # (AEGIS_EOF_THRESHOLD). Per CLAUDE.md "Decision-boundary changes —
+        # shadow-first": Reconcile by setting AEGIS_EOF_THRESHOLD=2 in
+        # /etc/aegis/aegis.env after corpus validation. The shadow flag
+        # documents the CURRENT active policy so the operator can audit
+        # which posture is live without grepping config.
+        if eof_threshold == 1:
+            # Default: legacy behavior. Scorer declines at 2+, pipeline
+            # routes 2 → review. Mismatch remains until the flip.
+            shadow_flags.append(
+                "eof_policy_mismatch:scorer_declines_at_2_pipeline_routes_review"
+            )
+        else:
+            # Lifted: scorer aligns with pipeline policy. Flag confirms
+            # the lift so the operator sees which threshold is active.
+            shadow_flags.append(
+                f"eof_policy_aligned:scorer_declines_at_{eof_threshold + 1}"
+                f"_threshold={eof_threshold}"
+            )
 
     if deal.monthly_revenue < MIN_MONTHLY_REVENUE:
         reasons.append(f"revenue_below_minimum: ${deal.monthly_revenue}")
