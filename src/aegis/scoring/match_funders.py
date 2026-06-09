@@ -25,12 +25,31 @@ We deliberately separate "the funder published an exact maximum" from
   - accepts_stacking=False + deal positions == 0 -> no concern
     (clean first-position deal; stacking never engaged).
 
-Unused fields
--------------
-`typical_factor_low/high` and `typical_holdback_low/high` on FunderRow
-are extracted from guideline PDFs and stored, but match scoring does
-not use them yet. They are reserved for the v1.1 ranking enhancement
-(reordering equally-qualified funders by pricing fit to the deal).
+Pricing guidance (R4.2)
+-----------------------
+``compute_estimated_terms`` reads ``typical_factor_low/high`` and
+``typical_holdback_low/high`` and produces a per-funder
+``EstimatedTerms`` (advance / factor / holdback / daily payment / APR).
+The score tier drives a linear interpolation: A → low end of the range
+(most favorable to the merchant), F → high end (most defensive). APR is
+computed via ``compliance.apr.calculate_apr`` — the actuarial method
+required by Reg Z App J / CA 10 CCR § 950. When the optimizer cannot
+bracket a root the APR is left as ``None`` rather than silently
+substituting 0% (matches the R0.4 APR error gate discipline).
+
+Auto-decline / conditional requirements (R4.3)
+-----------------------------------------------
+``FunderRow.auto_decline_conditions`` and ``.conditional_requirements``
+are populated by the LLM guideline extractor as free-text strings. We
+do NOT try to parse natural language. Instead:
+
+- Each ``auto_decline_conditions`` entry surfaces as a hard fail when
+  its lower-case form contains an "absolute" trigger (``decline``,
+  ``do not fund``, ``must not``, ``no exception``, ``absolute``), or as
+  a soft concern otherwise. Erring towards review — a soft concern the
+  operator can promote is cheaper than ignoring a hard "do not fund".
+- Each ``conditional_requirements`` entry surfaces as a soft concern
+  with the verbatim text so the operator can verify with the funder.
 
 `FunderRow` lives in `aegis.funders.models` (Phase 3.5). It is re-exported
 here so existing callers (`from aegis.scoring.match_funders import FunderRow`)
@@ -39,8 +58,174 @@ continue to work.
 
 from __future__ import annotations
 
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Final
+
+from aegis.compliance.apr import APRCalculationError, calculate_apr
 from aegis.funders.models import FunderRow
-from aegis.scoring.models import FunderMatch, ScoreInput, ScoreResult
+from aegis.scoring.models import (
+    EstimatedTerms,
+    FunderMatch,
+    ScoreInput,
+    ScoreResult,
+)
+
+# Tier → position along the funder's pricing range, 0.0 = best end (low
+# factor / low holdback, merchant-favorable), 1.0 = worst end (high
+# factor / high holdback, defensive). A-tier deals get the funder's
+# advertised low end; E/F deals price at the top of the range. Linear
+# interpolation between is intentional — funders publish a range, not
+# a curve, so anything more elaborate would be overfitting.
+_TIER_INTERPOLATION_POSITION: Final[dict[str, Decimal]] = {
+    "A": Decimal("0.00"),
+    "B": Decimal("0.25"),
+    "C": Decimal("0.50"),
+    "D": Decimal("0.75"),
+    "E": Decimal("1.00"),  # not currently emitted by scoring (Literal
+    # restricts to A/B/C/D/F) but included for forward-compat and
+    # explicit-intent documentation.
+    "F": Decimal("1.00"),
+}
+
+# Quantization for display values. Factor / holdback at 4 decimal places
+# (precise enough for "1.2875" without false precision); money at 2dp;
+# APR returned from calculate_apr is already 6dp-quantized.
+_RATE_QUANT: Final[Decimal] = Decimal("0.0001")
+_MONEY_QUANT: Final[Decimal] = Decimal("0.01")
+
+# Auto-decline trigger keywords. Matched on lower-cased entry text. A
+# single match elevates the entry to a hard fail; otherwise it lands as
+# a soft concern. Bias is intentional: false-positive hard_fail forces
+# operator review (cheap); false-negative would silently submit a deal
+# the funder has explicitly refused (expensive).
+_AUTO_DECLINE_ABSOLUTE_TRIGGERS: Final[tuple[str, ...]] = (
+    "decline",
+    "do not fund",
+    "must not",
+    "no exception",
+    "absolute",
+)
+
+
+def compute_estimated_terms(
+    funder: FunderRow,
+    score: ScoreResult,
+    deal: ScoreInput,
+) -> EstimatedTerms | None:
+    """Compute per-funder pricing guidance for a deal.
+
+    Returns ``None`` when:
+      - the funder has not published a pricing envelope
+        (``typical_factor_low/high`` and ``typical_holdback_low/high``
+        all unset), or
+      - the score tier is outside the interpolation table, or
+      - ``score.estimated_payback_days`` is missing (no term → no daily
+        payment → no APR).
+
+    The interpolation is linear between the funder's published low and
+    high ends, indexed by ``_TIER_INTERPOLATION_POSITION``. See module
+    docstring for the design rationale.
+    """
+    # Tier mapping — emit None when the tier is unknown / unrepresented.
+    if score.tier not in _TIER_INTERPOLATION_POSITION:
+        return None
+    position = _TIER_INTERPOLATION_POSITION[score.tier]
+
+    # Pricing envelope must be fully specified to interpolate. A funder
+    # with only a low bound (or only a high bound) is ambiguous — we'd
+    # rather show nothing than fabricate the other end.
+    if (
+        funder.typical_factor_low is None
+        or funder.typical_factor_high is None
+        or funder.typical_holdback_low is None
+        or funder.typical_holdback_high is None
+    ):
+        return None
+
+    if score.estimated_payback_days is None or score.estimated_payback_days <= 0:
+        return None
+
+    factor = _interpolate(
+        funder.typical_factor_low, funder.typical_factor_high, position
+    ).quantize(_RATE_QUANT, rounding=ROUND_HALF_UP)
+    holdback = _interpolate(
+        funder.typical_holdback_low, funder.typical_holdback_high, position
+    ).quantize(_RATE_QUANT, rounding=ROUND_HALF_UP)
+
+    # Advance: start from the score's suggested max, clamp into the
+    # funder's [min, max] window. Funders that publish only one bound
+    # constrain only that side.
+    advance = score.suggested_max_advance
+    if funder.min_advance is not None and advance < funder.min_advance:
+        advance = funder.min_advance
+    if funder.max_advance is not None and advance > funder.max_advance:
+        advance = funder.max_advance
+    advance = advance.quantize(_MONEY_QUANT, rounding=ROUND_HALF_UP)
+
+    payback_days = score.estimated_payback_days
+    total_payback = advance * factor
+    daily_payment = (total_payback / Decimal(payback_days)).quantize(
+        _MONEY_QUANT, rounding=ROUND_HALF_UP
+    )
+
+    apr = _estimate_apr(advance, daily_payment, payback_days)
+
+    evidence = (
+        f"tier={score.tier} → {(position * Decimal('100')).quantize(Decimal('1'))}% "
+        f"along factor range {funder.typical_factor_low}-{funder.typical_factor_high} "
+        f"→ {factor}; holdback {funder.typical_holdback_low}-"
+        f"{funder.typical_holdback_high} → {holdback}"
+    )
+
+    return EstimatedTerms(
+        estimated_advance=advance,
+        estimated_factor=factor,
+        estimated_holdback_pct=holdback,
+        estimated_daily_payment=daily_payment,
+        estimated_apr=apr,
+        interpolation_evidence=evidence,
+    )
+
+
+def _interpolate(low: Decimal, high: Decimal, position: Decimal) -> Decimal:
+    """Linear interpolation between low and high at fractional position.
+
+    position=0 → low, position=1 → high. No clamping — callers pass a
+    value from ``_TIER_INTERPOLATION_POSITION`` which is bounded by
+    construction.
+    """
+    return low + (high - low) * position
+
+
+def _estimate_apr(
+    advance: Decimal,
+    daily_payment: Decimal,
+    payback_days: int,
+) -> Decimal | None:
+    """Synthesize a daily payment stream and run the actuarial APR.
+
+    Returns ``None`` when ``calculate_apr`` cannot converge — better to
+    render "APR: unavailable" than the 0.00% silent fallback the legacy
+    code path used (see R0.4 / docs/AUDIT_2026_05_10.md H7). ``date``
+    is anchored at an arbitrary disbursement_date because APR depends
+    only on the offsets, not the calendar position.
+    """
+    from datetime import date, timedelta
+
+    if daily_payment <= 0 or advance <= 0:
+        return None
+
+    disbursement = date(2026, 1, 1)
+    payments = [
+        (disbursement + timedelta(days=offset), daily_payment)
+        for offset in range(1, payback_days + 1)
+    ]
+    try:
+        return calculate_apr(advance, payments, disbursement)
+    except APRCalculationError:
+        # No silent zero: surface as None and let the dossier render
+        # "APR: unavailable" so the operator sees the gap.
+        return None
 
 
 def match_funder(
@@ -146,18 +331,77 @@ def match_funder(
         if deal.state.upper() in {s.upper() for s in funder.excluded_states}:
             hard.append(f"state_excluded: {deal.state}")
 
+    # R4.3: auto_decline_conditions + conditional_requirements
+    # ---------------------------------------------------------
+    # These fields are LLM-extracted free text. We do not parse natural
+    # language — we surface every non-empty entry, classifying based on
+    # absolute-language keywords. See module docstring "Auto-decline /
+    # conditional requirements" for the rationale.
+    auto_decline_hard, auto_decline_soft = _evaluate_auto_decline(
+        funder.auto_decline_conditions
+    )
+    if funder.auto_decline_conditions:
+        criteria_count += 1
+    hard.extend(auto_decline_hard)
+    soft.extend(auto_decline_soft)
+
+    conditional_soft = _evaluate_conditional_requirements(
+        funder.conditional_requirements
+    )
+    if funder.conditional_requirements:
+        criteria_count += 1
+    soft.extend(conditional_soft)
+
     if criteria_count == 0:
         return None
 
     qualifies = len(hard) == 0
     likelihood = _likelihood(qualifies, soft, score.tier)
+    estimated_terms = compute_estimated_terms(funder, score, deal)
     return FunderMatch(
         funder_id=funder.id,
         funder_name=funder.name,
         match_score=likelihood,
         reasons=[f"tier_{score.tier}"] if qualifies else [],
         soft_concerns=hard + soft,  # union — caller wants the full picture
+        estimated_terms=estimated_terms,
     )
+
+
+def _evaluate_auto_decline(
+    entries: tuple[str, ...],
+) -> tuple[list[str], list[str]]:
+    """Classify each auto_decline entry into (hard, soft).
+
+    Entries whose lower-cased text contains any
+    ``_AUTO_DECLINE_ABSOLUTE_TRIGGERS`` keyword become hard fails; the
+    rest become soft concerns. Both branches preserve the funder's
+    verbatim entry text so the operator can read the original language
+    in the dossier.
+    """
+    hard: list[str] = []
+    soft: list[str] = []
+    for raw in entries:
+        text = raw.strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if any(trigger in lowered for trigger in _AUTO_DECLINE_ABSOLUTE_TRIGGERS):
+            hard.append(f"auto_decline: {text}")
+        else:
+            soft.append(f"auto_decline_review: {text} — review with funder")
+    return hard, soft
+
+
+def _evaluate_conditional_requirements(entries: tuple[str, ...]) -> list[str]:
+    """Surface every non-empty conditional requirement as a soft concern."""
+    out: list[str] = []
+    for raw in entries:
+        text = raw.strip()
+        if not text:
+            continue
+        out.append(f"conditional: {text} — verify with funder")
+    return out
 
 
 def _likelihood(qualifies: bool, soft: list[str], tier: str) -> int:
@@ -167,5 +411,5 @@ def _likelihood(qualifies: bool, soft: list[str], tier: str) -> int:
     return max(0, base - 10 * len(soft))
 
 
-__all__ = ["FunderRow", "match_funder"]
+__all__ = ["FunderRow", "compute_estimated_terms", "match_funder"]
 # FunderRow is re-exported from aegis.funders.models — see module docstring.

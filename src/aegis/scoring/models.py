@@ -212,6 +212,56 @@ class ScoreResult(_StrictModel):
       operator-side review hints; no tier / recommendation change."""
 
 
+class EstimatedTerms(_StrictModel):
+    """Per-funder pricing guidance for an offered deal.
+
+    Computed in ``scoring/match_funders.compute_estimated_terms`` from the
+    funder's ``typical_factor_low/high`` and ``typical_holdback_low/high``
+    pricing envelope plus the deal's score tier. The interpolation runs
+    from "best end of the funder's range" (tier A) to "worst end" (tier
+    E/F), so an A-tier deal gets the favorable factor, an F-tier deal gets
+    the most defensive factor the funder lists.
+
+    All fields are Decimal; nothing here is float. APR uses the Reg Z
+    Appendix J actuarial method via ``compliance.apr.calculate_apr`` —
+    never hand-rolled. ``estimated_apr`` is ``None`` (not silent zero)
+    when ``calculate_apr`` cannot bracket a root: a 0.00% APR rendered
+    next to a 1.30x factor is a regulator-grade lie, so refuse to render
+    rather than fabricate.
+
+    ``interpolation_evidence`` exposes the linear-interpolation step the
+    operator would otherwise need to re-derive (tier=C → "50% along
+    factor range 1.20-1.40 → 1.30"). Useful for explaining a quote to a
+    funder rep without re-opening the model.
+    """
+
+    estimated_advance: Money
+    """Suggested advance clamped to ``[funder.min_advance, funder.max_advance]``.
+    Derived from ``ScoreResult.suggested_max_advance``."""
+
+    estimated_factor: Decimal
+    """Factor rate (1.0+) interpolated within the funder's
+    ``typical_factor_low..typical_factor_high`` range."""
+
+    estimated_holdback_pct: Decimal
+    """Holdback as a fraction (0.12 for 12%), interpolated within
+    ``typical_holdback_low..typical_holdback_high``."""
+
+    estimated_daily_payment: Money
+    """``advance * factor / payback_days``. Uses
+    ``ScoreResult.estimated_payback_days`` for the term."""
+
+    estimated_apr: Decimal | None
+    """APR as a fraction (0.365 → 36.5%) via the Reg Z Appendix J
+    actuarial method on the synthesized daily payment stream. ``None``
+    when the optimizer cannot converge — NOT silently 0%."""
+
+    interpolation_evidence: str
+    """Human-readable derivation, e.g.
+    ``"tier=C → 50% along factor range 1.20-1.40 → 1.30"``. Surfaced in
+    the dossier so the operator can sanity-check the quote."""
+
+
 class FunderMatch(_StrictModel):
     """A funder candidate ranked against this merchant's profile."""
 
@@ -220,6 +270,11 @@ class FunderMatch(_StrictModel):
     match_score: int = Field(ge=0, le=100)
     reasons: list[str] = Field(default_factory=list)
     soft_concerns: list[str] = Field(default_factory=list)
+    estimated_terms: EstimatedTerms | None = None
+    """Per-funder pricing guidance. ``None`` when the funder has no
+    ``typical_factor_*`` / ``typical_holdback_*`` envelope, or when
+    ``estimated_payback_days`` is missing from the score result, or when
+    the score tier falls outside the interpolation table."""
 
 
 class SubmissionPackage(_StrictModel):
@@ -247,6 +302,7 @@ class DealMatchResult(_StrictModel):
 
 __all__ = [
     "DealMatchResult",
+    "EstimatedTerms",
     "FunderMatch",
     "PaperGrade",
     "Recommendation",
