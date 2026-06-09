@@ -152,8 +152,60 @@ class ScoringDisagreementRepository(Protocol):
         comparison_run_at: datetime | None = None,
     ) -> ScoringDisagreementRecord: ...
 
-    def list_open(self) -> list[ScoringDisagreementRecord]:
-        """Return every row with ``triaged_at IS NULL`` (triage queue)."""
+    def list_open(
+        self,
+        *,
+        category: str | None = None,
+        limit: int | None = None,
+    ) -> list[ScoringDisagreementRecord]:
+        """Return every row with ``triaged_at IS NULL`` (triage queue).
+
+        ``category`` narrows to a single bucket. ``limit`` truncates the
+        result; ``None`` means no truncation. Implementations must preserve
+        the regression-sentinel-first ordering from the view.
+        """
+        ...
+
+    def list_all(
+        self,
+        *,
+        category: str | None = None,
+        limit: int | None = None,
+    ) -> list[ScoringDisagreementRecord]:
+        """Return every row regardless of triage state.
+
+        Powers ``--all`` retrospective queries from the CLI. Reads the
+        backing table directly (not the open view) so triaged rows are
+        included.
+        """
+        ...
+
+    def get(self, record_id: UUID) -> ScoringDisagreementRecord | None:
+        """Return one row by id, or ``None`` if not present."""
+        ...
+
+    def record_triage_decision(
+        self,
+        *,
+        record_id: UUID,
+        decision: str,
+        by: str,
+        notes: str | None = None,
+        at: datetime | None = None,
+        force: bool = False,
+    ) -> ScoringDisagreementRecord:
+        """Apply an operator triage decision to a row.
+
+        Validates ``decision`` against ``ALLOWED_TRIAGE_DECISIONS``.
+        Refuses to overwrite an already-triaged row unless ``force`` is
+        True (double-decide guard). Returns the updated record.
+
+        Raises:
+            ValueError: ``decision`` not in the allowed enum.
+            KeyError: no row with ``record_id`` exists.
+            ScoringDisagreementWriteError: persist failed, or an
+                already-triaged row was targeted without ``force``.
+        """
         ...
 
 
@@ -193,6 +245,20 @@ def _canonical_evidence_json(evidence: dict[str, Any] | None) -> str:
 def _evidence_hash(evidence: dict[str, Any] | None) -> str:
     """sha256 hex of the canonical evidence string."""
     return hashlib.sha256(_canonical_evidence_json(evidence).encode("utf-8")).hexdigest()
+
+
+# Ordering inherited from migration 038's view: regression sentinel
+# first, then ``comparison_run_at`` DESC inside each bucket. Used by
+# both the in-memory repo (to mimic the view) and the Supabase repo's
+# ``list_all`` (PostgREST cannot express the CASE-expression ORDER BY,
+# so client-side bucketing applies after the server-side date sort).
+_CATEGORY_ORDER: Final[dict[str, int]] = {
+    CATEGORY_OLD_BETTER: 0,
+    CATEGORY_NEW_BETTER: 1,
+    CATEGORY_AMBIGUOUS: 2,
+    CATEGORY_AGREEMENT: 3,
+    CATEGORY_INSUFFICIENT: 4,
+}
 
 
 def _idempotency_anchor(
@@ -287,8 +353,99 @@ class InMemoryScoringDisagreementRepository:
         self.rows.append(record)
         return record
 
-    def list_open(self) -> list[ScoringDisagreementRecord]:
-        return [r for r in self.rows if r.triaged_at is None]
+    def _sorted(
+        self,
+        rows: list[ScoringDisagreementRecord],
+    ) -> list[ScoringDisagreementRecord]:
+        # Mirror migration 038's view ORDER BY: regression sentinel first,
+        # then ``comparison_run_at`` DESC inside each bucket.
+        return sorted(
+            rows,
+            key=lambda r: (
+                _CATEGORY_ORDER.get(r.category, 99),
+                # Newest first: invert the timestamp by negating epoch seconds.
+                -r.comparison_run_at.timestamp(),
+            ),
+        )
+
+    def list_open(
+        self,
+        *,
+        category: str | None = None,
+        limit: int | None = None,
+    ) -> list[ScoringDisagreementRecord]:
+        if category is not None:
+            _validate_category(category)
+        rows = [r for r in self.rows if r.triaged_at is None]
+        if category is not None:
+            rows = [r for r in rows if r.category == category]
+        rows = self._sorted(rows)
+        if limit is not None:
+            rows = rows[:limit]
+        return rows
+
+    def list_all(
+        self,
+        *,
+        category: str | None = None,
+        limit: int | None = None,
+    ) -> list[ScoringDisagreementRecord]:
+        if category is not None:
+            _validate_category(category)
+        rows = list(self.rows)
+        if category is not None:
+            rows = [r for r in rows if r.category == category]
+        rows = self._sorted(rows)
+        if limit is not None:
+            rows = rows[:limit]
+        return rows
+
+    def get(self, record_id: UUID) -> ScoringDisagreementRecord | None:
+        for row in self.rows:
+            if row.id == record_id:
+                return row
+        return None
+
+    def record_triage_decision(
+        self,
+        *,
+        record_id: UUID,
+        decision: str,
+        by: str,
+        notes: str | None = None,
+        at: datetime | None = None,
+        force: bool = False,
+    ) -> ScoringDisagreementRecord:
+        _validate_triage_decision(decision)
+        if not by or not by.strip():
+            raise ValueError("'by' (operator identity) must be a non-empty string")
+        target = self.get(record_id)
+        if target is None:
+            raise KeyError(f"no disagreement row with id={record_id}")
+        if target.triaged_at is not None and not force:
+            raise ScoringDisagreementWriteError(
+                f"row {record_id} is already triaged by {target.triaged_by!r} "
+                f"at {target.triaged_at.isoformat()}; pass force=True to overwrite"
+            )
+        # The in-memory repo holds live refs, so we mutate the existing record.
+        ts = at or datetime.now(UTC)
+        # Pydantic models with extra='forbid' still allow attribute assignment
+        # on declared fields. Round-trip through model_copy to keep the model
+        # validated when assignment is set strict in future Pydantic configs.
+        updated = target.model_copy(
+            update={
+                "triaged_at": ts,
+                "triaged_by": by.strip(),
+                "triage_decision": decision,
+                "triage_notes": notes,
+            }
+        )
+        # Replace the stored row.
+        for idx, row in enumerate(self.rows):
+            if row.id == record_id:
+                self.rows[idx] = updated
+                break
+        return updated
 
 
 # ---------------------------------------------------------------------
@@ -459,15 +616,31 @@ class SupabaseScoringDisagreementRepository:
             )
         return _row_to_record(rows[0])
 
-    def list_open(self) -> list[ScoringDisagreementRecord]:
-        """Read the open-triage view (migration 038)."""
+    def list_open(
+        self,
+        *,
+        category: str | None = None,
+        limit: int | None = None,
+    ) -> list[ScoringDisagreementRecord]:
+        """Read the open-triage view (migration 038).
+
+        Ordering is inherited from the view's ORDER BY clause:
+        regression-sentinel category first, newest ``comparison_run_at``
+        within each bucket. ``category`` and ``limit`` apply server-side.
+        """
+        if category is not None:
+            _validate_category(category)
         try:
-            result = (
+            query = (
                 get_supabase()
                 .table("scoring_disagreements_open")
                 .select("*")
-                .execute()
             )
+            if category is not None:
+                query = query.eq("category", category)
+            if limit is not None:
+                query = query.limit(limit)
+            result = query.execute()
         except Exception as exc:
             raise ScoringDisagreementWriteError(
                 "failed to read scoring_disagreements_open view"
@@ -481,6 +654,127 @@ class SupabaseScoringDisagreementRepository:
             r.setdefault("triage_decision", None)
             r.setdefault("triage_notes", None)
         return [_row_to_record(r) for r in rows]
+
+    def list_all(
+        self,
+        *,
+        category: str | None = None,
+        limit: int | None = None,
+    ) -> list[ScoringDisagreementRecord]:
+        """Read every row regardless of triage state.
+
+        Reads the backing table directly (not the view) so triaged rows
+        are included. Ordering reproduces the view's contract:
+        regression sentinel first, then newest ``comparison_run_at``.
+        Filtering + truncation happen server-side.
+        """
+        if category is not None:
+            _validate_category(category)
+        try:
+            query = (
+                get_supabase()
+                .table("scoring_shadow_disagreements")
+                .select("*")
+                .order("comparison_run_at", desc=True)
+            )
+            if category is not None:
+                query = query.eq("category", category)
+            if limit is not None:
+                query = query.limit(limit)
+            result = query.execute()
+        except Exception as exc:
+            raise ScoringDisagreementWriteError(
+                "failed to read scoring_shadow_disagreements"
+            ) from exc
+        rows = cast(list[dict[str, Any]], result.data or [])
+        records = [_row_to_record(r) for r in rows]
+        # Client-side category ordering since PostgREST cannot express the
+        # CASE-expression ORDER BY from view 038. Within each bucket the
+        # server's comparison_run_at DESC is preserved.
+        return sorted(
+            records,
+            key=lambda r: _CATEGORY_ORDER.get(r.category, 99),
+        )
+
+    def get(self, record_id: UUID) -> ScoringDisagreementRecord | None:
+        try:
+            result = (
+                get_supabase()
+                .table("scoring_shadow_disagreements")
+                .select("*")
+                .eq("id", str(record_id))
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise ScoringDisagreementWriteError(
+                f"failed to read disagreement row id={record_id}"
+            ) from exc
+        rows = cast(list[dict[str, Any]], result.data or [])
+        if not rows:
+            return None
+        return _row_to_record(rows[0])
+
+    def record_triage_decision(
+        self,
+        *,
+        record_id: UUID,
+        decision: str,
+        by: str,
+        notes: str | None = None,
+        at: datetime | None = None,
+        force: bool = False,
+    ) -> ScoringDisagreementRecord:
+        """Persist an operator triage decision to a row.
+
+        Pre-fetches the row to enforce the double-decide guard
+        (``ScoringDisagreementWriteError`` if already triaged and
+        ``force`` is False). On success, returns the updated record.
+        """
+        _validate_triage_decision(decision)
+        if not by or not by.strip():
+            raise ValueError("'by' (operator identity) must be a non-empty string")
+
+        current = self.get(record_id)
+        if current is None:
+            raise KeyError(f"no disagreement row with id={record_id}")
+        if current.triaged_at is not None and not force:
+            raise ScoringDisagreementWriteError(
+                f"row {record_id} is already triaged by {current.triaged_by!r} "
+                f"at {current.triaged_at.isoformat()}; pass force=True to overwrite"
+            )
+
+        ts = at or datetime.now(UTC)
+        payload: dict[str, Any] = {
+            "triaged_at": ts.isoformat(),
+            "triaged_by": by.strip(),
+            "triage_decision": decision,
+            "triage_notes": notes,
+        }
+        try:
+            result = (
+                get_supabase()
+                .table("scoring_shadow_disagreements")
+                .update(payload)
+                .eq("id", str(record_id))
+                .execute()
+            )
+        except Exception as exc:
+            _log.error(
+                "scoring_v2.shadow_disagreement.triage_failed id=%s decision=%s",
+                record_id,
+                decision,
+            )
+            raise ScoringDisagreementWriteError(
+                f"failed to triage row id={record_id} decision={decision}"
+            ) from exc
+
+        rows = cast(list[dict[str, Any]], result.data or [])
+        if not rows:
+            raise ScoringDisagreementWriteError(
+                f"triage update returned no row for id={record_id}"
+            )
+        return _row_to_record(rows[0])
 
 
 # ---------------------------------------------------------------------
