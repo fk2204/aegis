@@ -321,6 +321,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='merchants' "
         "AND column_name='maturity_date'"
     ),
+    "040_funder_renewal_attestations.sql": (
+        # Probe the table itself: 040 is a new top-level CREATE TABLE
+        # (U6 — operator-side renewal-disclosure attestation capture).
+        # If the table exists, every column + index + RLS toggle landed
+        # together in the same migration body. Mirrors the 036 / 037
+        # probe pattern.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' "
+        "AND table_name='funder_renewal_attestations'"
+    ),
 }
 
 

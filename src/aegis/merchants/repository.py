@@ -13,13 +13,18 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict
 
 from aegis.db import get_supabase
 from aegis.merchants.models import MerchantRow
+
+if TYPE_CHECKING:
+    from aegis.merchants.renewal_attestations import (
+        RenewalAttestationRepository,
+    )
 
 _log = logging.getLogger(__name__)
 
@@ -54,6 +59,16 @@ _STATE_DISCLOSURE_LEAD_DAYS: dict[str, int] = {
 }
 
 
+# How many days before the state-disclosure deadline AEGIS flips a row
+# from ``not_required_funder_owns`` (default, no urgency) to
+# ``disclosure_pending`` (operator should check that the funder has sent
+# the notice). The 14-day window mirrors the operator-visibility framing
+# of the renewal calendar: a 14-day countdown is short enough to be a
+# real prompt and long enough to give the operator time to chase the
+# funder before the regulator-facing deadline.
+_DISCLOSURE_PENDING_LEAD_DAYS: int = 14
+
+
 class RenewalSummary(BaseModel):
     """One row on the operator's upcoming-renewals calendar.
 
@@ -65,13 +80,24 @@ class RenewalSummary(BaseModel):
     the accessor only returns rows whose maturity is known and lies in
     the lookahead window.
 
-    ``renewal_status`` is always ``"not_required_funder_owns"`` today
-    because AEGIS is a pure ISO broker (see CLAUDE.md SCOPE NOTE) and
-    has no signal on whether the funder has actually transmitted the
-    pre-maturity disclosure. The column is shipped so the visual
-    framing is honest — and so a future funder-disclosure-attestation
-    table can flip the status to ``"disclosure_sent"`` /
-    ``"disclosure_pending"`` without a schema change here.
+    ``renewal_status`` is one of:
+
+      * ``"disclosure_sent"``         — operator attested via the
+        ``funder_renewal_attestations`` table (migration 040 / U6) that
+        the funder transmitted the required notice.
+      * ``"disclosure_pending"``      — no attestation AND the state
+        deadline is within 14 days but not past — the operator should
+        chase the funder.
+      * ``"disclosure_overdue"``      — no attestation AND the state
+        deadline has already passed.
+      * ``"not_required_funder_owns"`` — default. Either the merchant
+        is in a state with no AEGIS-tracked renewal deadline (anything
+        outside CA / NY) or the deadline is > 14 days out.
+
+    The status never drives a broker-side enforcement gate — AEGIS is a
+    pure ISO broker (see CLAUDE.md SCOPE NOTE) and funders own the
+    regulator-facing obligation. The status is operator-visibility
+    framing.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -86,11 +112,48 @@ class RenewalSummary(BaseModel):
     renewal_status: str
 
 
+def _derive_renewal_status(
+    *,
+    days_until_state_deadline: int | None,
+    has_attestation: bool,
+) -> str:
+    """Compute one of the four renewal-status values.
+
+    Logic (U6 — operator-side attestation flow):
+
+      * ``disclosure_sent``           — an attestation row exists for this
+        (merchant, maturity_date) tuple.
+      * ``disclosure_overdue``        — no attestation AND
+        ``days_until_state_deadline < 0`` (deadline already past).
+      * ``disclosure_pending``        — no attestation AND
+        ``0 <= days_until_state_deadline < 14`` (within the operator-
+        prompt window).
+      * ``not_required_funder_owns``  — default. No attestation AND either
+        the merchant is in a state with no AEGIS-tracked deadline OR the
+        deadline is more than 14 days away.
+
+    Note: this function never inspects ``days_until_maturity`` — only the
+    state-deadline-relative urgency drives the status. Per CLAUDE.md
+    SCOPE NOTE, AEGIS surfaces operator visibility into the funder's
+    obligation, not the maturity itself.
+    """
+    if has_attestation:
+        return "disclosure_sent"
+    if days_until_state_deadline is None:
+        return "not_required_funder_owns"
+    if days_until_state_deadline < 0:
+        return "disclosure_overdue"
+    if days_until_state_deadline < _DISCLOSURE_PENDING_LEAD_DAYS:
+        return "disclosure_pending"
+    return "not_required_funder_owns"
+
+
 def list_upcoming_renewals(
     repo: MerchantRepository,
     *,
     window_days: int = 90,
     today: date | None = None,
+    attestations: RenewalAttestationRepository | None = None,
 ) -> list[RenewalSummary]:
     """List renewing merchants whose maturity falls within ``window_days``.
 
@@ -107,6 +170,15 @@ def list_upcoming_renewals(
         ``_STATE_DISCLOSURE_LEAD_DAYS`` (CA=60, NY=30, else None) and
         compute ``days_until_state_deadline =
         days_until_maturity - lead_days``.
+      * When ``attestations`` is provided (U6 — migration 040), consult
+        ``funder_renewal_attestations`` for each (merchant, maturity)
+        pair to flip the per-row status off the default. The four-state
+        logic lives in ``_derive_renewal_status``.
+
+    The ``attestations`` parameter is optional so existing callers that
+    don't care about attestation status (CSV export, in-process tests
+    pre-U6) keep working — when omitted, every row defaults to
+    ``not_required_funder_owns`` as before.
     """
     if window_days <= 0:
         raise ValueError(f"window_days must be positive, got {window_days}")
@@ -129,6 +201,23 @@ def list_upcoming_renewals(
         days_until_state_deadline = (
             delta_days - lead if lead is not None else None
         )
+        # When the caller passes ``attestations`` (U6 — migration 040)
+        # we consult the table and compute one of the four statuses.
+        # When the caller omits the repo (legacy callers, CSV export
+        # paths, pre-U6 in-process tests), we preserve the previous
+        # behavior: every row defaults to ``not_required_funder_owns``.
+        if attestations is None:
+            renewal_status = "not_required_funder_owns"
+        else:
+            has_attestation = bool(
+                attestations.find_for_renewal(
+                    merchant_id=m.id, maturity_date=maturity
+                )
+            )
+            renewal_status = _derive_renewal_status(
+                days_until_state_deadline=days_until_state_deadline,
+                has_attestation=has_attestation,
+            )
         summaries.append(
             RenewalSummary(
                 merchant_id=m.id,
@@ -138,7 +227,7 @@ def list_upcoming_renewals(
                 maturity_date=maturity,
                 days_until_maturity=delta_days,
                 days_until_state_deadline=days_until_state_deadline,
-                renewal_status="not_required_funder_owns",
+                renewal_status=renewal_status,
             )
         )
     summaries.sort(key=lambda s: s.days_until_maturity)

@@ -42,6 +42,11 @@ from aegis.funders.repository import (
     SupabaseFunderRepository,
 )
 from aegis.llm import BedrockClient, LLMClient
+from aegis.merchants.renewal_attestations import (
+    InMemoryRenewalAttestationRepository,
+    RenewalAttestationRepository,
+    SupabaseRenewalAttestationRepository,
+)
 from aegis.merchants.repository import (
     InMemoryMerchantRepository,
     MerchantRepository,
@@ -77,6 +82,17 @@ def get_merchant_repository() -> MerchantRepository:
     if get_settings().aegis_storage_backend == "memory":
         return InMemoryMerchantRepository()
     return SupabaseMerchantRepository()
+
+
+@lru_cache(maxsize=1)
+def get_renewal_attestation_repository() -> RenewalAttestationRepository:
+    """Process-wide RenewalAttestationRepository (U6 — migration 040).
+
+    Same memory / supabase toggle as the merchant repository.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryRenewalAttestationRepository()
+    return SupabaseRenewalAttestationRepository()
 
 
 @lru_cache(maxsize=1)
@@ -166,6 +182,7 @@ def reset_dependency_caches() -> None:
     """Drop the lru_cache singletons. For tests that swap settings."""
     get_repository.cache_clear()
     get_merchant_repository.cache_clear()
+    get_renewal_attestation_repository.cache_clear()
     get_funder_repository.cache_clear()
     get_deal_repository.cache_clear()
     get_funder_reply_repository.cache_clear()
@@ -188,6 +205,7 @@ __all__ = [
     "get_merchant_repository",
     "get_ofac_client",
     "get_override_repository",
+    "get_renewal_attestation_repository",
     "get_repository",
     "reset_dependency_caches",
 ]

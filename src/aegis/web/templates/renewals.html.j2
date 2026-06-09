@@ -22,9 +22,17 @@
         AEGIS surfaces upcoming maturities; the funder owns the
         regulatory disclosure obligation (CA SB 362 § 22806 — 60 days
         pre-maturity; NY 23 NYCRR § 600.17 — 30 days pre-maturity).
-        Verify the funder has issued the required notice on each row.
+        Verify the funder has issued the required notice on each row,
+        then capture an operator attestation here so the calendar
+        reflects reality.
       </span>
     </div>
+
+    {% if flash %}
+      <div class="empty" role="status" style="margin-bottom:1rem">
+        <strong>{{ flash }}</strong>
+      </div>
+    {% endif %}
 
     <header class="sect-head">
       <h2>Maturities within {{ window_days }} days</h2>
@@ -62,11 +70,12 @@
             <th class="num">Days to maturity</th>
             <th class="num">Days to state deadline</th>
             <th>Disclosure status</th>
+            <th>Attest funder transmission</th>
           </tr>
         </thead>
         <tbody>
           {% for r in rows %}
-            <tr onclick="window.location.href='/ui/merchants/{{ r.merchant_id }}'">
+            <tr>
               <td class="merchant">
                 <a href="/ui/merchants/{{ r.merchant_id }}">{{ r.business_name }}</a>
                 <span class="sub">{{ r.merchant_id|string|truncate(8, True, '') }}</span>
@@ -87,8 +96,42 @@
                   <span class="chip pos">SENT</span>
                 {% elif r.renewal_status == 'disclosure_pending' %}
                   <span class="chip warn">PENDING</span>
+                {% elif r.renewal_status == 'disclosure_overdue' %}
+                  <span class="chip neg">OVERDUE</span>
                 {% else %}
                   <span class="chip info">FUNDER OWNS</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if r.renewal_status == 'disclosure_sent' %}
+                  <span class="sub">attestation recorded</span>
+                {% else %}
+                  <form method="post"
+                        action="/ui/renewals/{{ r.merchant_id }}/attest"
+                        class="inline-form">
+                    <input type="hidden"
+                           name="maturity_date"
+                           value="{{ r.maturity_date.isoformat() }}">
+                    <label class="sub" for="funder_name_{{ r.merchant_id }}">Funder</label>
+                    <input type="text"
+                           id="funder_name_{{ r.merchant_id }}"
+                           name="funder_name"
+                           placeholder="Funder name"
+                           required
+                           maxlength="255">
+                    <label class="sub" for="disclosure_sent_at_{{ r.merchant_id }}">Sent on</label>
+                    <input type="date"
+                           id="disclosure_sent_at_{{ r.merchant_id }}"
+                           name="disclosure_sent_at"
+                           required>
+                    <label class="sub" for="notes_{{ r.merchant_id }}">Notes</label>
+                    <input type="text"
+                           id="notes_{{ r.merchant_id }}"
+                           name="notes"
+                           placeholder="optional"
+                           maxlength="2000">
+                    <button type="submit">Record</button>
+                  </form>
                 {% endif %}
               </td>
             </tr>
