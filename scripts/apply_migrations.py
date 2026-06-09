@@ -313,6 +313,14 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' "
         "AND table_name='scoring_disagreements_open'"
     ),
+    "039_merchants_maturity_date.sql": (
+        # Probe the column directly: 039 is a single ADD COLUMN IF NOT
+        # EXISTS on merchants. Mirrors the 008 / 026 / 034 probe pattern
+        # for additive merchant columns.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='maturity_date'"
+    ),
 }
 
 

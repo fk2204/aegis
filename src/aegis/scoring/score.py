@@ -123,7 +123,7 @@ def score_deal(
         _state_disclosure_flag(
             merchant_state=deal.state,
             deal_state=deal.state,
-            advance_fees_charged=None,
+            advance_fees_charged=deal.advance_fees_charged,
         )
     )
     if hard_declines:

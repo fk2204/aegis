@@ -147,6 +147,14 @@ class ScoreInput(_StrictModel):
     acceleration_clause_triggered: bool = False
     unauthorized_withdrawal_dispute: bool = False
     tampering_confirmed: bool = False
+
+    # R3.4 — advance-fee shadow flag (FL / GA). True when the deal charges
+    # merchant-side advance fees (sourced from
+    # ``funder.charges_merchant_advance_fees`` for the matched funder at
+    # build-input time). Drives the FL / GA shadow flag in
+    # ``_state_disclosure_flag``. ``None`` means "unknown" — the flag does
+    # not fire under uncertainty (default of all pre-R3.4 callers).
+    advance_fees_charged: bool | None = None
     # 0..100 composite "looks AI-generated" score. Scored softly,
     # never auto-declined (per §6.4 — false positives kill real deals).
     ai_generated_score: int = Field(default=0, ge=0, le=100)

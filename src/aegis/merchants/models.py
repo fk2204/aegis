@@ -101,6 +101,13 @@ class MerchantRow(_StrictModel):
     intake_date: date | None = None
     is_renewal: bool = False
 
+    # Renewal maturity date (migration 039). Operator-populated per-deal at
+    # renewal-onboarding time. Drives the upcoming-renewals calendar
+    # (``list_upcoming_renewals`` in ``aegis.merchants.repository``); never
+    # used to gate a broker-side enforcement action — funder partners own
+    # regulator-facing renewal disclosures (see CLAUDE.md mission statement).
+    maturity_date: date | None = None
+
     # Operator-curated funder pick after reviewing matches. The UI button
     # to set this is deferred (Phase 7 audit decision); column lives here
     # so the future button is a no-migration patch.

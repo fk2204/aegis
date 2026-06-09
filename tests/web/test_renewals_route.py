@@ -256,12 +256,12 @@ def test_renewals_route_rejects_out_of_range_window(
 # ---------------------------------------------------------------------------
 
 
-def test_list_upcoming_renewals_returns_empty_when_schema_missing(
+def test_list_upcoming_renewals_returns_empty_when_no_maturity_set(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A plain ``MerchantRow`` (no ``maturity_date`` attribute) yields
-    an empty list and emits the INFO log line documented in the
-    accessor's docstring."""
+    """Migration 039 landed the ``maturity_date`` column. A renewing row
+    with the column unset (``None``) is filtered out by the accessor and
+    triggers the "no renewals in window" INFO line."""
     repo = InMemoryMerchantRepository()
     repo.upsert(
         MerchantRow(
@@ -276,8 +276,7 @@ def test_list_upcoming_renewals_returns_empty_when_schema_missing(
         result = list_upcoming_renewals(repo)
     assert result == []
     assert any(
-        "maturity_date column not present" in r.message
-        for r in caplog.records
+        "no renewals in window" in r.message for r in caplog.records
     )
 
 

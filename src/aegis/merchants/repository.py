@@ -97,17 +97,7 @@ def list_upcoming_renewals(
     Reads from the supplied ``MerchantRepository``. Returns rows sorted by
     ``days_until_maturity`` ascending (most urgent first).
 
-    Schema-augmentation gap
-    -----------------------
-    The ``merchants`` table does NOT have a ``maturity_date`` column
-    today (verified 2026-06-09). Per the R3.2 scope this accessor MUST
-    NOT auto-migrate the schema — adding a column is an explicit
-    operator decision. While the column is absent, this function logs
-    one INFO line and returns ``[]``; the route still renders the
-    operator-visibility banner and an empty-state message.
-
-    When the column lands (additive migration, no backfill), the
-    accessor will:
+    Logic (migration 039 — ``maturity_date`` column landed):
 
       * Filter to ``is_renewal=True AND maturity_date IS NOT NULL``.
       * Compute ``days_until_maturity = maturity_date - today``.
@@ -123,23 +113,13 @@ def list_upcoming_renewals(
     as_of = today or datetime.now(UTC).date()
     rows = list(repo.list_all())
     candidates: list[tuple[MerchantRow, date]] = []
-    schema_has_maturity = False
     for m in rows:
         if not m.is_renewal:
             continue
-        # ``maturity_date`` is read via getattr so the accessor compiles
-        # cleanly before the schema augmentation lands. When the column
-        # is added to ``MerchantRow``, this branch resolves the attribute
-        # normally and no further code changes are needed here.
-        maturity: object = getattr(m, "maturity_date", None)
-        if isinstance(maturity, date) and not isinstance(maturity, datetime):
-            schema_has_maturity = True
-            candidates.append((m, maturity))
-    if not schema_has_maturity:
-        _log.info(
-            "renewals: maturity_date column not present — schema augmentation pending"
-        )
-        return []
+        maturity = m.maturity_date
+        if maturity is None:
+            continue
+        candidates.append((m, maturity))
     summaries: list[RenewalSummary] = []
     for m, maturity in candidates:
         delta_days = (maturity - as_of).days
@@ -162,6 +142,8 @@ def list_upcoming_renewals(
             )
         )
     summaries.sort(key=lambda s: s.days_until_maturity)
+    if not summaries:
+        _log.info("renewals: no renewals in window (window_days=%d)", window_days)
     return summaries
 
 
@@ -502,6 +484,7 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         broker_source=row.get("broker_source"),
         intake_date=_parse_date(row.get("intake_date")),
         is_renewal=bool(row.get("is_renewal", False)),
+        maturity_date=_parse_date(row.get("maturity_date")),
         preferred_funder_id=(
             UUID(row["preferred_funder_id"])
             if row.get("preferred_funder_id")
@@ -559,6 +542,7 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "broker_source": m.broker_source,
         "intake_date": m.intake_date.isoformat() if m.intake_date else None,
         "is_renewal": m.is_renewal,
+        "maturity_date": m.maturity_date.isoformat() if m.maturity_date else None,
         "preferred_funder_id": (
             str(m.preferred_funder_id) if m.preferred_funder_id else None
         ),
