@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 from typing import Final, Literal
 
 from aegis.config import get_settings
@@ -57,6 +58,7 @@ from aegis.parser.extract import (
 )
 from aegis.parser.metadata import MetadataAnalysis, analyze_metadata
 from aegis.parser.models import Aggregates, ClassifiedTransaction, ValidationResult
+from aegis.parser.nsf_secondary import secondary_validate_nsf
 from aegis.parser.page_router import (
     PageStrategyDecision,
     classify_pages,
@@ -108,6 +110,16 @@ CLASSIFICATION_CONFIDENCE_FLOOR: Final[int] = 60
 # from real funded deals.
 HIGH_IMPACT_CATEGORY_CONFIDENCE_FLOOR: Final[int] = 70
 HIGH_IMPACT_CATEGORIES: Final[frozenset[str]] = frozenset({"mca_debit", "nsf_fee"})
+
+# R1.7 — ADB partial-coverage escalation threshold (shadow). When the
+# aggregator's adb_partial_coverage flag reports skipped/period > 10%,
+# the average-daily-balance metric is computed over too few days to be
+# trusted. Decision-boundary rule (CLAUDE.md) requires shadow-mode first
+# for anything that would route a doc from proceed → manual_review, so
+# this commit only EMITS a flag (`adb_coverage_thin:...would_route_review`)
+# and does NOT change parse_status. Operator validates against corpus
+# then flips via config in a follow-up commit.
+ADB_COVERAGE_THIN_RATIO_THRESHOLD: Final[Decimal] = Decimal("0.10")
 
 ParseStatus = Literal["proceed", "review", "manual_review"]
 
@@ -292,6 +304,27 @@ def run_pipeline(
     if used_per_page_routing:
         all_flags.append("[META] per_page_routing_used")
 
+    # R1.7 — ADB partial-coverage escalation (SHADOW). When the aggregator
+    # reports more than 10% of period days skipped, the ADB metric is
+    # computed over too narrow a window to be trustworthy. Emit a shadow
+    # flag that documents the would-be routing change without touching
+    # parse_status — operator flips via config after corpus validation.
+    adb_thin_flag = _adb_coverage_thin_flag(aggregate_result.flags)
+    if adb_thin_flag is not None:
+        all_flags.append(f"[SHADOW] {adb_thin_flag}")
+
+    # R1.8 — NSF secondary validation (SHADOW). Re-checks every LLM-labeled
+    # nsf_fee row against running-balance + co-located return / reversal /
+    # chargeback evidence. Low-confidence NSF rows fire separately. Pure
+    # evidence emission; the row's category and parse_status are unchanged.
+    nsf_issues = secondary_validate_nsf(
+        classified,
+        beginning_balance=extraction.statement.summary.beginning_balance,
+        period_start=extraction.statement.summary.period_start,
+        period_end=extraction.statement.summary.period_end,
+    )
+    all_flags.extend(f"[SHADOW] {issue.flag_text}" for issue in nsf_issues)
+
     return PipelineResult(
         parse_status=parse_status,
         metadata=metadata,
@@ -443,6 +476,56 @@ def _confidence_failures(
     return failures
 
 
+def _adb_coverage_thin_flag(aggregate_flags: list[str]) -> str | None:
+    """Parse the aggregator's `adb_partial_coverage:{skipped}/{period}` flag.
+
+    Returns a shadow-flag string when ``skipped / period > 10%``, else None.
+    The flag name explicitly carries ``would_route_review`` so operators
+    can see what the live routing would do after the shadow-mode flip
+    (decision-boundary rule from CLAUDE.md).
+
+    Format of the source flag (set in ``parser/aggregate.py``):
+        ``adb_partial_coverage:{int}/{int}``
+
+    Returns None on:
+      - absent flag (clean coverage, nothing to surface)
+      - malformed numerator/denominator (defense against future format drift)
+      - zero or negative denominator (math undefined)
+      - ratio at or below the threshold (10% is allowed)
+    """
+    prefix = "adb_partial_coverage:"
+    for flag in aggregate_flags:
+        if not flag.startswith(prefix):
+            continue
+        payload = flag[len(prefix):]
+        parts = payload.split("/", maxsplit=1)
+        if len(parts) != 2:
+            return None
+        try:
+            skipped = int(parts[0])
+            period = int(parts[1])
+        except ValueError:
+            return None
+        if period <= 0:
+            return None
+        if skipped <= 0:
+            return None
+        ratio = Decimal(skipped) / Decimal(period)
+        if ratio <= ADB_COVERAGE_THIN_RATIO_THRESHOLD:
+            return None
+        # Quantize to whole-percent for stable rendering; threshold is 10%
+        # so single-digit precision is sufficient.
+        ratio_pct = int((ratio * Decimal("100")).to_integral_value())
+        threshold_pct = int(
+            (ADB_COVERAGE_THIN_RATIO_THRESHOLD * Decimal("100")).to_integral_value()
+        )
+        return (
+            f"adb_coverage_thin:skip_ratio={ratio_pct}pct_"
+            f"threshold={threshold_pct}pct_would_route_review"
+        )
+    return None
+
+
 def _collect_flags(
     metadata: MetadataAnalysis,
     validation: ValidationResult,
@@ -460,6 +543,7 @@ def _collect_flags(
 
 
 __all__ = [
+    "ADB_COVERAGE_THIN_RATIO_THRESHOLD",
     "CLASSIFICATION_CONFIDENCE_FLOOR",
     "EOF_HARD_DECLINE",
     "FRAUD_WEIGHTS",
