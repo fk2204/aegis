@@ -98,6 +98,7 @@ from aegis.merchants.repository import (
     MerchantConflictError,
     MerchantNotFoundError,
     MerchantRepository,
+    list_upcoming_renewals,
 )
 from aegis.ops.operators import resolve_operator_email
 from aegis.parser.models import ClassifiedTransaction
@@ -4477,6 +4478,73 @@ async def compliance_obligations(request: Request) -> HTMLResponse:
                 "active": "Compliance",
                 "obligations": rows,
                 "summary": summary,
+            },
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# /renewals — upcoming-maturity calendar (R3.2, operator-visibility only).
+#
+# Per ``.claude/rules/compliance.md`` SCOPE NOTE: AEGIS does not own
+# regulator-facing renewal disclosure issuance — funder partners do
+# (CA SB 362 § 22806 — 60 days pre-maturity; NY 23 NYCRR § 600.17 —
+# 30 days pre-maturity). This route is an operator-visibility surface
+# so the operator can verify the funder has transmitted the required
+# pre-maturity notice. The list is NOT used to drive any broker-side
+# enforcement gate.
+# ---------------------------------------------------------------------------
+
+
+_RENEWAL_WINDOW_DEFAULT_DAYS: Final[int] = 90
+_RENEWAL_WINDOW_MAX_DAYS: Final[int] = 365
+
+
+@router.get("/renewals", response_class=HTMLResponse)
+async def upcoming_renewals(
+    request: Request,
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    window_days: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=_RENEWAL_WINDOW_MAX_DAYS,
+            description="Lookahead window in days; default 90.",
+        ),
+    ] = _RENEWAL_WINDOW_DEFAULT_DAYS,
+) -> HTMLResponse:
+    """Operator-visibility calendar of merchants approaching maturity.
+
+    Rows derive from ``MerchantRepository.list_all()`` filtered to
+    ``is_renewal=True`` whose ``maturity_date`` falls within
+    ``window_days``. Sorted by ``days_until_maturity`` ascending (most
+    urgent first). When the ``maturity_date`` column is absent from the
+    schema (current state — see ``list_upcoming_renewals`` docstring),
+    the accessor returns an empty list and the template renders an
+    explicit "schema augmentation pending" empty state instead of a
+    misleading "no rows" message.
+    """
+    rows = list_upcoming_renewals(merchants_repo, window_days=window_days)
+    # Detect the schema-augmentation gap so the template can render a
+    # different empty state than the legitimate "no merchants in window"
+    # case. Mirrors the accessor's own gap-detection: if any merchant in
+    # the repo carries a real ``maturity_date`` attribute, the schema is
+    # present and the empty result truly means "nobody's maturing soon."
+    schema_missing = not any(
+        isinstance(getattr(m, "maturity_date", None), date)
+        and not isinstance(getattr(m, "maturity_date", None), datetime)
+        for m in merchants_repo.list_all()
+    )
+    return cast(
+        "HTMLResponse",
+        templates.TemplateResponse(
+            request,
+            "renewals.html.j2",
+            {
+                "active": "Renewals",
+                "rows": rows,
+                "window_days": window_days,
+                "schema_missing": schema_missing,
             },
         ),
     )

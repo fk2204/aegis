@@ -11,12 +11,17 @@ for production. Uniqueness invariants enforced at this layer:
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime
 from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
 
+from pydantic import BaseModel, ConfigDict
+
 from aegis.db import get_supabase
 from aegis.merchants.models import MerchantRow
+
+_log = logging.getLogger(__name__)
 
 
 class MerchantNotFoundError(KeyError):
@@ -35,6 +40,129 @@ class MerchantConflictError(ValueError):
 # (see the ``is_finalized`` checks in ``web/router.py``) so this
 # placeholder never reaches a regulatory or scoring surface.
 PROVISIONAL_BUSINESS_NAME_PLACEHOLDER = "(awaiting parse)"
+
+
+# Per ``.claude/rules/compliance.md`` SCOPE NOTE: AEGIS does not own
+# regulator-facing renewal disclosure issuance — funder partners do. The
+# state-deadline columns below (CA SB 362 60-day pre-maturity / NY
+# § 600.17 30-day pre-maturity) are surfaced for OPERATOR VISIBILITY so
+# the operator can verify the funder has sent the required notice. The
+# row count is NOT used to drive a broker-side enforcement gate.
+_STATE_DISCLOSURE_LEAD_DAYS: dict[str, int] = {
+    "CA": 60,  # SB 362 — 60-day pre-maturity renewal disclosure
+    "NY": 30,  # 23 NYCRR § 600.17 — 30-day pre-maturity renewal disclosure
+}
+
+
+class RenewalSummary(BaseModel):
+    """One row on the operator's upcoming-renewals calendar.
+
+    Pure projection — never persisted. Built by ``list_upcoming_renewals``
+    from ``MerchantRow`` + the in-Python state-deadline lookup. None on
+    ``days_until_state_deadline`` means the merchant's state has no
+    renewal-disclosure deadline AEGIS tracks (i.e. anything other than
+    CA or NY). None on ``maturity_date`` is impossible by construction —
+    the accessor only returns rows whose maturity is known and lies in
+    the lookahead window.
+
+    ``renewal_status`` is always ``"not_required_funder_owns"`` today
+    because AEGIS is a pure ISO broker (see CLAUDE.md SCOPE NOTE) and
+    has no signal on whether the funder has actually transmitted the
+    pre-maturity disclosure. The column is shipped so the visual
+    framing is honest — and so a future funder-disclosure-attestation
+    table can flip the status to ``"disclosure_sent"`` /
+    ``"disclosure_pending"`` without a schema change here.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    merchant_id: UUID
+    business_name: str
+    state: str | None
+    industry_naics: str | None
+    maturity_date: date
+    days_until_maturity: int
+    days_until_state_deadline: int | None
+    renewal_status: str
+
+
+def list_upcoming_renewals(
+    repo: MerchantRepository,
+    *,
+    window_days: int = 90,
+    today: date | None = None,
+) -> list[RenewalSummary]:
+    """List renewing merchants whose maturity falls within ``window_days``.
+
+    Reads from the supplied ``MerchantRepository``. Returns rows sorted by
+    ``days_until_maturity`` ascending (most urgent first).
+
+    Schema-augmentation gap
+    -----------------------
+    The ``merchants`` table does NOT have a ``maturity_date`` column
+    today (verified 2026-06-09). Per the R3.2 scope this accessor MUST
+    NOT auto-migrate the schema — adding a column is an explicit
+    operator decision. While the column is absent, this function logs
+    one INFO line and returns ``[]``; the route still renders the
+    operator-visibility banner and an empty-state message.
+
+    When the column lands (additive migration, no backfill), the
+    accessor will:
+
+      * Filter to ``is_renewal=True AND maturity_date IS NOT NULL``.
+      * Compute ``days_until_maturity = maturity_date - today``.
+      * Drop rows where ``days_until_maturity < 0`` or
+        ``> window_days``.
+      * Look up the state-disclosure lead from
+        ``_STATE_DISCLOSURE_LEAD_DAYS`` (CA=60, NY=30, else None) and
+        compute ``days_until_state_deadline =
+        days_until_maturity - lead_days``.
+    """
+    if window_days <= 0:
+        raise ValueError(f"window_days must be positive, got {window_days}")
+    as_of = today or datetime.now(UTC).date()
+    rows = list(repo.list_all())
+    candidates: list[tuple[MerchantRow, date]] = []
+    schema_has_maturity = False
+    for m in rows:
+        if not m.is_renewal:
+            continue
+        # ``maturity_date`` is read via getattr so the accessor compiles
+        # cleanly before the schema augmentation lands. When the column
+        # is added to ``MerchantRow``, this branch resolves the attribute
+        # normally and no further code changes are needed here.
+        maturity: object = getattr(m, "maturity_date", None)
+        if isinstance(maturity, date) and not isinstance(maturity, datetime):
+            schema_has_maturity = True
+            candidates.append((m, maturity))
+    if not schema_has_maturity:
+        _log.info(
+            "renewals: maturity_date column not present — schema augmentation pending"
+        )
+        return []
+    summaries: list[RenewalSummary] = []
+    for m, maturity in candidates:
+        delta_days = (maturity - as_of).days
+        if delta_days < 0 or delta_days > window_days:
+            continue
+        lead = _STATE_DISCLOSURE_LEAD_DAYS.get((m.state or "").upper())
+        days_until_state_deadline = (
+            delta_days - lead if lead is not None else None
+        )
+        summaries.append(
+            RenewalSummary(
+                merchant_id=m.id,
+                business_name=m.business_name,
+                state=m.state,
+                industry_naics=m.industry_naics,
+                maturity_date=maturity,
+                days_until_maturity=delta_days,
+                days_until_state_deadline=days_until_state_deadline,
+                renewal_status="not_required_funder_owns",
+            )
+        )
+    summaries.sort(key=lambda s: s.days_until_maturity)
+    return summaries
 
 
 class MerchantRepository(Protocol):
@@ -445,5 +573,7 @@ __all__ = [
     "MerchantConflictError",
     "MerchantNotFoundError",
     "MerchantRepository",
+    "RenewalSummary",
     "SupabaseMerchantRepository",
+    "list_upcoming_renewals",
 ]

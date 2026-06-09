@@ -1,0 +1,101 @@
+{% extends "base.html.j2" %}
+{% set active = 'Renewals' %}
+{% block title %}Upcoming renewals — AEGIS{% endblock %}
+
+{% block deck %}
+{% set title = "Upcoming renewals" %}
+{% set subtitle = "· operator visibility · " ~ window_days ~ "-day window" %}
+{% set meta = (rows|length|string) ~ " merchant" ~ ('' if rows|length == 1 else 's') ~ " approaching maturity" %}
+{% set actions = [
+    {"label": "Merchants", "href": "/ui/merchants"},
+    {"label": "Compliance", "href": "/ui/compliance/obligations"},
+] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+  <div>
+    <div class="empty" role="note" style="margin-bottom:1rem">
+      <strong>Operator visibility only.</strong>
+      <span class="copy">
+        AEGIS surfaces upcoming maturities; the funder owns the
+        regulatory disclosure obligation (CA SB 362 § 22806 — 60 days
+        pre-maturity; NY 23 NYCRR § 600.17 — 30 days pre-maturity).
+        Verify the funder has issued the required notice on each row.
+      </span>
+    </div>
+
+    <header class="sect-head">
+      <h2>Maturities within {{ window_days }} days</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ rows|length }}{% if schema_missing %} · maturity_date column absent{% endif %}</div>
+    </header>
+
+    {% if schema_missing %}
+      <div class="empty">
+        Maturity data unavailable
+        <span class="copy">
+          AEGIS has no <code>maturity_date</code> column on the
+          <code>merchants</code> table yet. Add the column via an
+          additive migration (operator decision — not auto-applied) to
+          populate this calendar. See
+          <code>src/aegis/merchants/repository.py::list_upcoming_renewals</code>
+          for the contract this view expects.
+        </span>
+      </div>
+    {% elif not rows %}
+      <div class="empty">
+        No renewals approaching maturity in the next {{ window_days }} days.
+        <span class="copy">
+          Adjust the window with <code>?window_days=N</code>.
+        </span>
+      </div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th>State</th>
+            <th>Industry</th>
+            <th>Maturity</th>
+            <th class="num">Days to maturity</th>
+            <th class="num">Days to state deadline</th>
+            <th>Disclosure status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr onclick="window.location.href='/ui/merchants/{{ r.merchant_id }}'">
+              <td class="merchant">
+                <a href="/ui/merchants/{{ r.merchant_id }}">{{ r.business_name }}</a>
+                <span class="sub">{{ r.merchant_id|string|truncate(8, True, '') }}</span>
+              </td>
+              <td class="mono-cell">{{ r.state or '—' }}</td>
+              <td>{{ r.industry_naics or '—' }}</td>
+              <td class="mono-cell">{{ r.maturity_date.isoformat() }}</td>
+              <td class="mono-cell" style="text-align:right">{{ r.days_until_maturity }}</td>
+              <td class="mono-cell" style="text-align:right">
+                {% if r.days_until_state_deadline is not none %}
+                  {{ r.days_until_state_deadline }}
+                {% else %}
+                  N/A
+                {% endif %}
+              </td>
+              <td>
+                {% if r.renewal_status == 'disclosure_sent' %}
+                  <span class="chip pos">SENT</span>
+                {% elif r.renewal_status == 'disclosure_pending' %}
+                  <span class="chip warn">PENDING</span>
+                {% else %}
+                  <span class="chip info">FUNDER OWNS</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
