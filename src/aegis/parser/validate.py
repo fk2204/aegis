@@ -24,6 +24,18 @@ Failure codes (start of string is parsed by `pipeline.py` for severity)
 - `daily_balance_mismatch`  — at least one day's running balance is wrong
 - `extraction_row_count_mismatch` — extracted row count differs from printed
                                     count by more than max(3, printed * 2%)
+
+Shadow soft-flags (emitted into ValidationResult.warnings; do NOT route to
+manual_review on their own — operator validates against corpus, then flips
+to a hard-flag-that-routes via config)
+------------------------------------------------------------------------
+- `daily_balance_continuity_break:{date}_expected_{x}_actual_{y}_diff_{d}` —
+  per-day reconciliation off by ≥ $0.01 (stricter than the $1.00 tolerance
+  on the routing-level check; catches surgical row swaps that shift cents).
+- `daily_balance_continuity_breaks_count:{N}` — summary count when ≥1 break.
+- `transaction_id_sequence_gap:{from}_{to}_{missing}` — gap in a populated
+  sequential transaction-id / reference / confirmation column. Likely
+  evidence of deleted rows.
 """
 
 from __future__ import annotations
@@ -34,6 +46,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
+from itertools import pairwise
 
 from aegis.money import money_eq
 from aegis.parser.models import ExtractedStatement, Transaction, ValidationResult
@@ -45,6 +58,30 @@ MAX_STATEMENT_DAYS = 50
 
 # Period-tie-out tolerance: $1.00. Per-day reconciliation also $1.00.
 _TOL = Decimal("1.00")
+
+# R1.4 shadow check: stricter cent-level tolerance for the per-day
+# continuity validator. The existing `_check_daily_running_balance` uses
+# the $1.00 tolerance and routes to `manual_review`; this stricter shadow
+# check catches sub-dollar drift (surgical row swaps where the deletion
+# and the inserted compensator differ by cents — month math passes, day
+# math drifts).
+_CONTINUITY_TOL = Decimal("0.01")
+
+# R1.5 shadow check: a transaction-id-like field must be populated on at
+# least this fraction of rows AND those values must be majority numeric
+# before we'll treat it as a real sequence. Below the floor we treat the
+# field as "not a sequence" and emit no flag (silent skip per spec).
+_TXN_ID_POPULATION_FLOOR = Decimal("0.80")
+
+# Tokens that mark a number in a transaction description as a transaction
+# id / reference / confirmation. Matched case-insensitively against a word
+# preceding the number (optionally followed by `#`, `:`, or whitespace).
+_TXN_ID_TOKEN_PATTERN = re.compile(
+    r"\b(?:conf|confirmation|ref|reference|trace|trn|tran|txn|trans|seq|sequence|chk|check)\b"
+    r"[\s#:.\-]*"
+    r"(?P<num>\d{4,12})",
+    re.IGNORECASE,
+)
 
 # Word-boundary "deposit" — avoids matching inside "DEPOSITED",
 # "REDEPOSIT" etc. Combined with the exclusion set below, this drops the
@@ -101,6 +138,11 @@ def validate_extraction(
     _check_source_attribution(statement, ctx)
     _check_daily_running_balance(statement, ctx)
     _check_intraday_running_balance(statement, ctx)
+    # R1.4 / R1.5 — shadow mode. These emit warnings only; routing is
+    # unchanged. Operator validates against corpus before flipping to a
+    # routing flag via config.
+    _shadow_check_daily_balance_continuity(statement, ctx)
+    _shadow_check_transaction_id_sequence_gaps(statement, ctx)
     if truncated:
         ctx.failures.append("extraction_truncated_retry_required")
 
@@ -342,8 +384,229 @@ def _check_intraday_running_balance(
             )
 
 
+# -- R1.4 shadow: daily balance continuity ---------------------------------
+
+
+@dataclass(frozen=True)
+class DailyContinuityBreak:
+    """One day's continuity break, for shadow-flag emission and tests.
+
+    `expected` is `previous_day_eod_balance + Σ(today's amounts)`.
+    `actual` is the printed `running_balance` on the LAST transaction of
+    the day. `diff = actual - expected`. Days whose last row carries no
+    printed running balance are SKIPPED (not represented in this list)
+    because they cannot be validated either way.
+    """
+
+    day: date
+    expected: Decimal
+    actual: Decimal
+    diff: Decimal
+
+
+def validate_daily_balance_continuity(
+    transactions: list[Transaction],
+    beginning_balance: Decimal,
+    period_start: date,
+    period_end: date,
+) -> list[DailyContinuityBreak]:
+    """Per-day reconciliation walk with cent-level tolerance.
+
+    Sorts transactions deterministically (posted_date, then source_page,
+    then source_line) and walks day by day. For each day with at least one
+    transaction AND a printed running_balance on the LAST transaction of
+    that day, compute:
+
+        expected_eod = previous_day_eod + Σ(today's amounts)
+
+    where `previous_day_eod` is the last printed running_balance from a
+    prior day (or `beginning_balance` if no prior day printed one). Any
+    abs(diff) >= $0.01 is reported as a `DailyContinuityBreak`.
+
+    Days without a printed end-of-day running_balance are SKIPPED and do
+    NOT advance `previous_day_eod` — we never derive a balance from raw
+    amount sums, only from printed totals, so we can't claim a day "ties"
+    when the bank didn't print its number.
+
+    Transactions outside `[period_start, period_end]` are ignored; the
+    caller's existing period-window checks handle out-of-window rows.
+    """
+    if not transactions:
+        return []
+
+    in_window = [
+        txn for txn in transactions if period_start <= txn.posted_date <= period_end
+    ]
+    if not in_window:
+        return []
+
+    by_day: defaultdict[date, list[Transaction]] = defaultdict(list)
+    for txn in in_window:
+        by_day[txn.posted_date].append(txn)
+
+    # Stable, deterministic intra-day ordering: source_page then source_line.
+    for day in by_day:
+        by_day[day].sort(key=lambda t: (t.source_page, t.source_line))
+
+    days_sorted = sorted(by_day.keys())
+    breaks: list[DailyContinuityBreak] = []
+    prev_eod: Decimal = beginning_balance
+
+    for day in days_sorted:
+        rows = by_day[day]
+        last_row = rows[-1]
+        if last_row.running_balance is None:
+            # Bank did not print an EOD running balance for this day. The
+            # spec requires SKIP — we cannot validate this day in either
+            # direction, and we must not advance `prev_eod` from raw sums.
+            continue
+
+        day_delta = sum((r.amount for r in rows), Decimal("0"))
+        expected_eod = prev_eod + day_delta
+        actual_eod = last_row.running_balance
+        diff = actual_eod - expected_eod
+
+        if abs(diff) >= _CONTINUITY_TOL:
+            breaks.append(
+                DailyContinuityBreak(
+                    day=day,
+                    expected=expected_eod,
+                    actual=actual_eod,
+                    diff=diff,
+                )
+            )
+
+        # Always anchor to the printed balance, never to expected — the
+        # check's purpose is to detect drift between printed values, so
+        # carrying expected forward would mask compounding breaks.
+        prev_eod = actual_eod
+
+    return breaks
+
+
+def _shadow_check_daily_balance_continuity(
+    statement: ExtractedStatement, ctx: _ValidationContext
+) -> None:
+    """Emit per-break shadow flags + a summary count. No routing change."""
+    breaks = validate_daily_balance_continuity(
+        statement.transactions,
+        beginning_balance=statement.summary.beginning_balance,
+        period_start=statement.summary.period_start,
+        period_end=statement.summary.period_end,
+    )
+    if not breaks:
+        return
+    for brk in breaks:
+        ctx.warnings.append(
+            f"daily_balance_continuity_break:{brk.day.isoformat()}"
+            f"_expected_{brk.expected}_actual_{brk.actual}_diff_{brk.diff}"
+        )
+    ctx.warnings.append(f"daily_balance_continuity_breaks_count:{len(breaks)}")
+
+
+# -- R1.5 shadow: transaction-id sequence gaps -----------------------------
+
+
+@dataclass(frozen=True)
+class GapEvidence:
+    """One gap in a populated sequential transaction-id column."""
+
+    from_id: int
+    to_id: int
+    count_missing: int
+    suspected_position: int  # 0-indexed; index of `from_id` in the sorted ids list
+
+
+def _extract_txn_id(description: str) -> int | None:
+    """Pull a numeric transaction-id-looking value from a description.
+
+    Looks for tokens like `CONF#`, `REF:`, `TRACE`, `TRN`, `SEQ`, `CHK`
+    (case-insensitive) immediately followed by a 4-12 digit number.
+    Returns the first match as an int, or None. We deliberately require
+    the keyword prefix so we don't pick up dollar amounts, ZIPs, dates,
+    etc. that happen to live in the description.
+    """
+    match = _TXN_ID_TOKEN_PATTERN.search(description)
+    if match is None:
+        return None
+    try:
+        return int(match.group("num"))
+    except ValueError:
+        return None
+
+
+def detect_transaction_id_sequence_gaps(
+    transactions: list[Transaction],
+) -> list[GapEvidence]:
+    """Find gaps in a sequential transaction-id field, if one exists.
+
+    Algorithm (per spec):
+      1. Scan descriptions for a transaction-id-shaped token (see
+         `_TXN_ID_TOKEN_PATTERN`).
+      2. If ≥ 80% of rows yield a numeric id, treat it as a real sequence.
+         Below the floor → return [] (silent skip).
+      3. Sort the ids ascending, walk consecutive pairs, emit a
+         `GapEvidence` per pair whose delta > 1.
+
+    The 80% population floor is intentional — many statements (Chase,
+    Wells) print confirmation numbers on some rows but not on transfers,
+    fees, or check images. If only 30% of rows have ids, the "missing"
+    ones might just be unprinted, not deleted.
+    """
+    if not transactions:
+        return []
+
+    extracted: list[int] = []
+    for txn in transactions:
+        txn_id = _extract_txn_id(txn.description)
+        if txn_id is not None:
+            extracted.append(txn_id)
+
+    if not extracted:
+        return []
+
+    population_rate = Decimal(len(extracted)) / Decimal(len(transactions))
+    if population_rate < _TXN_ID_POPULATION_FLOOR:
+        return []
+
+    # De-dup (some banks re-print the same conf number on a paired credit
+    # / debit) and sort ascending.
+    unique_ids = sorted(set(extracted))
+    if len(unique_ids) < 2:
+        return []
+
+    gaps: list[GapEvidence] = []
+    for position, (from_id, to_id) in enumerate(pairwise(unique_ids)):
+        delta = to_id - from_id
+        if delta > 1:
+            gaps.append(
+                GapEvidence(
+                    from_id=from_id,
+                    to_id=to_id,
+                    count_missing=delta - 1,
+                    suspected_position=position,
+                )
+            )
+    return gaps
+
+
+def _shadow_check_transaction_id_sequence_gaps(
+    statement: ExtractedStatement, ctx: _ValidationContext
+) -> None:
+    """Emit a shadow flag per detected gap. No routing change."""
+    gaps = detect_transaction_id_sequence_gaps(statement.transactions)
+    for gap in gaps:
+        ctx.warnings.append(
+            f"transaction_id_sequence_gap:{gap.from_id}_{gap.to_id}_{gap.count_missing}"
+        )
+
+
 __all__ = [
     "MAX_STATEMENT_DAYS",
     "MIN_STATEMENT_DAYS",
+    "DailyContinuityBreak",
+    "GapEvidence",
+    "detect_transaction_id_sequence_gaps",
+    "validate_daily_balance_continuity",
     "validate_extraction",
 ]
