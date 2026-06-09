@@ -10,6 +10,10 @@
  *
  * Typography: Fraunces (variable, optical sizing) + JetBrains Mono for
  * evidence. Single-family serif keeps the editorial coherence.
+ *
+ * Responsive breakpoints: <768px sidebar stacks, KPI grid auto-fits,
+ * tables horizontally scrollable. R4.8 / 2026-06-09. See the
+ * `@media (max-width: 768px)` block at the bottom of this file.
  */
 
 /* Token definition block was moved to aegis-system.css (loaded FIRST
@@ -1130,3 +1134,293 @@
   vertical-align: middle;
 }
 
+/* ===================================================================
+ * R4.8 — Mobile-responsive dossier (2026-06-09)
+ *
+ * Brokers do deals on phones. The dossier was designed for desktop
+ * (260px sidebar + main column inside a 1800px-max sheet, 5-column KPI
+ * strip, 6-column meta-row, 8-column statements ledger) and the layout
+ * does not reflow on mobile viewports without the breakpoint below.
+ *
+ * Scope discipline (per .claude/rules/operating-principles.md #6 — ship
+ * workflows, not aesthetics): this block is the SMALLEST set of CSS
+ * changes that makes the dossier USABLE on a phone. It does NOT
+ * redesign the layout, does NOT change typography choices, does NOT
+ * move anything around for desktop users.
+ *
+ * Strategy:
+ *   1. Sidebar (.sheet aside.rail) un-sticks and stacks above main
+ *      content. The TOC + compliance + statements blocks remain
+ *      readable inline; the rail's max-height/overflow is dropped on
+ *      mobile so it doesn't trap content behind a scrollbar.
+ *   2. KPI / spread / stack-card / meta-row grids switch from fixed
+ *      column counts (repeat(N, 1fr)) to auto-fit minmax so cells wrap
+ *      gracefully — mirrors the U11 portfolio + U2 stacking-card
+ *      pattern already in production for other dashboards.
+ *   3. Tables stay full-width within their wrapping <div class="table-
+ *      scroll"> so the operator can swipe horizontally instead of
+ *      losing rightmost columns.
+ *   4. Buttons + links sized to 44x44px minimum touch target on mobile
+ *      (Apple HIG / WCAG 2.5.5).
+ *   5. Body copy floor at 16px on small screens (no pinch-zoom prompt
+ *      from iOS Safari, which kicks in below 16px on form inputs).
+ *
+ * Out of scope: hamburger nav, slide-out drawer, dedicated mobile
+ * topstrip — sidebar-stacks-above-main is sufficient. Re-evaluate
+ * after two weeks of mobile use generates a concrete ask.
+ * =================================================================== */
+
+/* --- .table-scroll — horizontal-scroll wrapper for wide tables -----
+ *
+ * Wraps every <table> in the dossier that has >3 columns. On desktop
+ * the wrapper is a no-op (width: 100%, no overflow). On mobile the
+ * inner table can extend past the viewport and the wrapper exposes
+ * touch-driven horizontal scrolling. -webkit-overflow-scrolling:touch
+ * keeps the momentum-scroll behaviour on iOS Safari (the property is
+ * a no-op on modern non-WebKit engines, which already use momentum
+ * scrolling by default — harmless to leave in).
+ */
+.dossier-page .table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.dossier-page .table-scroll > table {
+  /* Inside .table-scroll, tables must not shrink to fit; let them
+   * push out and rely on the wrapper's overflow-x:auto. */
+  min-width: 100%;
+}
+
+@media (max-width: 768px) {
+  /* --- Page substrate — disable left/right scroll on the body ----
+   * The dossier already sets overflow-x:hidden on body; reinforce
+   * here so any rogue desktop selector (e.g. 1800px-wide masthead)
+   * does not leak a horizontal scrollbar onto the page. */
+  .dossier-page.body-root {
+    padding-bottom: 100px;          /* desktop has 160px; mobile keeps the
+                                       statusbar visible without wasting
+                                       a screenful of empty space. */
+  }
+
+  /* --- Topstrip --------------------------------------------------- */
+  .dossier-page .topstrip {
+    padding: 10px 16px;             /* desktop 56px; mobile 16px for edge-to-edge */
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 10.5px;
+  }
+  .dossier-page .topstrip .links {
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .dossier-page .topstrip a {
+    /* WCAG 2.5.5 — 44x44 touch target. Padding via line-height +
+     * vertical hit area; visual size unchanged. */
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  /* --- Masthead --------------------------------------------------- */
+  .dossier-page .masthead {
+    padding: 18px 16px 0;           /* desktop 28px 56px */
+  }
+  .dossier-page .masthead .title {
+    font-size: 48px;                /* desktop 92px; phones can't fit 92px without overflow */
+    line-height: 0.98;
+    letter-spacing: -0.02em;
+    margin: 14px 0 8px;
+  }
+  .dossier-page .masthead .subtitle {
+    font-size: 15px;                /* desktop 16px; floor at 15 for tight phone widths */
+    margin-bottom: 16px;
+  }
+  .dossier-page .masthead .running {
+    font-size: 10px;
+    flex-direction: column;         /* left/center/right collapse to a stack */
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .dossier-page .masthead .running .left {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  /* Meta-row: 6-column grid → auto-fit so tiles wrap to 2/3 per row. */
+  .dossier-page .masthead .meta-row {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    padding: 10px 0 14px;
+    gap: 8px 0;
+  }
+  .dossier-page .masthead .meta-row > div {
+    padding: 4px 12px;
+    /* On wrapped rows the right-edge border looks arbitrary; soften
+     * it to a faint divider so wrapping doesn't read as broken. */
+    border-right-color: var(--rule-soft);
+  }
+  .dossier-page .masthead .meta-row > div:first-child {
+    padding-left: 0;
+  }
+
+  /* --- Flash banner ---------------------------------------------- */
+  .dossier-page .flash {
+    padding: 14px 16px 0;
+  }
+  .dossier-page .flash > div {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* --- SHEET — sidebar collapses, stacks above main -------------- */
+  .dossier-page .sheet {
+    grid-template-columns: 1fr;
+    padding: 0 16px;
+    gap: 0;
+  }
+  .dossier-page aside.rail {
+    /* Un-stick the rail; on mobile a sticky sidebar would float over
+     * the main column and trap content. Stack it inline above main. */
+    position: static;
+    max-height: none;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+    padding: 20px 0 24px;
+    margin-bottom: 12px;
+  }
+  .dossier-page aside.rail .toc {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    margin-bottom: 18px;
+  }
+  .dossier-page aside.rail .toc a {
+    /* Touch target sizing for the TOC nav links. */
+    min-height: 44px;
+    padding: 6px 0;
+    font-size: 13.5px;
+  }
+
+  .dossier-page main.main {
+    padding: 24px 0;                /* desktop: 36px 0 36px 36px */
+  }
+
+  /* --- Section header — calmer numerics column on phone ---------- */
+  .dossier-page .section {
+    margin-bottom: 36px;            /* desktop 56px */
+  }
+  .dossier-page .section > header {
+    grid-template-columns: 40px 1fr;
+    gap: 10px;
+    /* Footnote moves below the heading on phones (was a 3rd column). */
+  }
+  .dossier-page .section > header .footnote {
+    grid-column: 1 / -1;
+    text-align: left;
+    padding-bottom: 0;
+    padding-top: 4px;
+  }
+  .dossier-page .section > header h2 {
+    font-size: 24px;                /* desktop 34px */
+  }
+
+  /* --- Verdict — 3 cols collapse to 1, anchor shrinks ------------ */
+  .dossier-page .verdict {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+  .dossier-page .verdict .anchor {
+    aspect-ratio: auto;
+    min-height: 200px;
+  }
+  .dossier-page .verdict .anchor .letter {
+    font-size: 160px;               /* desktop 240px */
+  }
+  .dossier-page .verdict .scoreboard {
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+    padding-left: 0;
+    padding-top: 16px;
+  }
+  .dossier-page .verdict .narrative .lede {
+    font-size: 17px;                /* desktop 19px */
+  }
+
+  /* --- KPI strip (.spread) — auto-fit so 5 tiles wrap ------------ */
+  .dossier-page .spread {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+  .dossier-page .spread > div {
+    /* On wrapped rows the right-edge border looks broken; soften
+     * to subtle divider. */
+    border-right-color: var(--rule-soft);
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .dossier-page .spread .v {
+    font-size: 22px;                /* desktop 28px */
+  }
+
+  /* --- Findings two-column grid → single column ------------------ */
+  .dossier-page .findings {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+
+  /* --- Stacking card 4-col grid → auto-fit ----------------------- */
+  .dossier-page .stack-card {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+  .dossier-page .stack-card > div {
+    border-right-color: var(--rule-soft);
+    border-bottom: 1px solid var(--rule-soft);
+  }
+
+  /* --- Funder summary 2 cols → 1 -------------------------------- */
+  .dossier-page .funder-summary {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  /* --- Disposition 2 cols → 1 (sig drops below copy) ------------ */
+  .dossier-page .disposition {
+    grid-template-columns: 1fr;
+    gap: 24px;
+    padding: 22px 0;
+  }
+  .dossier-page .disposition .sign {
+    text-align: left;
+  }
+
+  /* --- Buttons — 44x44 touch target ----------------------------- */
+  .dossier-page .btn {
+    /* Don't change padding/letter-spacing (would alter desktop on
+     * resize); add min-height so the hit area meets WCAG. */
+    min-height: 44px;
+  }
+
+  /* --- Body floor at 16px so iOS does not pinch-zoom inputs ----- */
+  .dossier-page input[type="text"],
+  .dossier-page input[type="email"],
+  .dossier-page input[type="number"],
+  .dossier-page input[type="search"],
+  .dossier-page input[type="tel"],
+  .dossier-page input[type="url"],
+  .dossier-page input[type="password"],
+  .dossier-page select,
+  .dossier-page textarea {
+    font-size: 16px;
+  }
+
+  /* --- Audit-ledger table cells — slightly larger floor --------- */
+  .dossier-page .audit-ledger,
+  .dossier-page .audit-ledger td,
+  .dossier-page .audit-ledger th {
+    font-size: 12px;                /* desktop 11px; bump for phone legibility */
+  }
+
+  /* --- Statusbar — wrap so timestamp doesn't push items off ----- */
+  .dossier-page .statusbar {
+    flex-wrap: wrap;
+    padding: 6px 16px;
+    gap: 8px;
+  }
+}
