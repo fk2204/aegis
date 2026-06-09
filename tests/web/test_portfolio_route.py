@@ -533,3 +533,203 @@ def test_fraud_catch_rate_counts_documents_at_or_above_threshold() -> None:
     assert metrics.fraud_total_scored == 5
     assert metrics.fraud_catch_count == 3
     assert metrics.fraud_catch_rate_pct == 60
+
+
+# ---------------------------------------------------------------------------
+# U13 — decisions table is the primary source for tier / state / recent
+# activity. Audit-log fallback still works when no decisions are present.
+# ---------------------------------------------------------------------------
+
+
+def test_tier_counts_read_from_decisions_table_when_present() -> None:
+    """When ``decision_rows`` is non-empty, audit_log ``deal.score``
+    JSON is NOT consulted for tier_counts. This is the regression-
+    prevention for the rewire: someone editing the audit detail key
+    set must not silently shift the portfolio counts.
+    """
+    merchant = _merchant(business_name="Decision Source Co", state="NY")
+
+    # Audit rows that say tier=A on three deal.score events. If the
+    # rewire silently fell back to audit, we'd see A=3. We don't.
+    audit_rows: list[dict[str, object]] = [
+        {
+            "actor": "api",
+            "action": "deal.score",
+            "subject_id": str(merchant.id),
+            "details": {"tier": "A", "recommendation": "approve"},
+            "created_at": "2026-06-01T12:00:00Z",
+        }
+        for _ in range(3)
+    ]
+
+    # Decisions table says B/B/C — these are the canonical numbers.
+    decision_rows: list[dict[str, object]] = [
+        {
+            "id": str(uuid4()),
+            "deal_id": str(uuid4()),
+            "decided_at": "2026-06-05T12:00:00Z",
+            "decision": "approve",
+            "state_code": "NY",
+            "score_factors": {"tier": "B"},
+        },
+        {
+            "id": str(uuid4()),
+            "deal_id": str(uuid4()),
+            "decided_at": "2026-06-06T12:00:00Z",
+            "decision": "approve",
+            "state_code": "NY",
+            "score_factors": {"tier": "B"},
+        },
+        {
+            "id": str(uuid4()),
+            "deal_id": str(uuid4()),
+            "decided_at": "2026-06-07T12:00:00Z",
+            "decision": "manual_review",
+            "state_code": "CA",
+            "score_factors": {"tier": "C"},
+        },
+    ]
+
+    metrics = compute_portfolio_metrics(
+        merchants=[merchant],
+        funders=[],
+        documents=[],
+        funder_reply_rows=[],
+        audit_rows=audit_rows,
+        decision_rows=decision_rows,
+        date_range=DateRange(
+            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
+        ),
+    )
+
+    # Decisions wins — A=0, B=2, C=1 (NOT A=3 from audit fallback).
+    assert metrics.tier_counts.A == 0
+    assert metrics.tier_counts.B == 2
+    assert metrics.tier_counts.C == 1
+    assert metrics.tier_counts.total == 3
+
+
+def test_state_counts_read_from_decisions_state_code() -> None:
+    """``decisions.state_code`` is the authoritative state — no join
+    through merchants needed. Two NY + one CA decision rows produce
+    NY=2, CA=1 regardless of merchant.state."""
+    decision_rows: list[dict[str, object]] = [
+        {
+            "id": str(uuid4()),
+            "deal_id": str(uuid4()),
+            "decided_at": "2026-06-05T12:00:00Z",
+            "decision": "approve",
+            "state_code": "NY",
+            "score_factors": {"tier": "A"},
+        },
+        {
+            "id": str(uuid4()),
+            "deal_id": str(uuid4()),
+            "decided_at": "2026-06-06T12:00:00Z",
+            "decision": "approve",
+            "state_code": "ny",  # mixed case — should normalize
+            "score_factors": {"tier": "B"},
+        },
+        {
+            "id": str(uuid4()),
+            "deal_id": str(uuid4()),
+            "decided_at": "2026-06-07T12:00:00Z",
+            "decision": "decline",
+            "state_code": "CA",
+            "score_factors": {"tier": "D"},
+        },
+    ]
+
+    metrics = compute_portfolio_metrics(
+        merchants=[],
+        funders=[],
+        documents=[],
+        funder_reply_rows=[],
+        audit_rows=[],
+        decision_rows=decision_rows,
+        date_range=DateRange(
+            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
+        ),
+    )
+
+    state_map = {row.state: row.count for row in metrics.state_counts}
+    assert state_map.get("NY") == 2
+    assert state_map.get("CA") == 1
+
+
+def test_audit_log_score_row_alone_is_not_counted_when_decisions_present() -> None:
+    """The regression-prevention: a ``deal.score`` audit row with no
+    matching decisions row does NOT inflate tier_counts. Decisions is
+    the source of truth — audit only kicks in as fallback when the
+    decisions list is empty."""
+    merchant = _merchant(business_name="Ghost Score LLC", state="TX")
+    audit_rows: list[dict[str, object]] = [
+        {
+            "actor": "api",
+            "action": "deal.score",
+            "subject_id": str(merchant.id),
+            "details": {"tier": "A", "recommendation": "approve"},
+            "created_at": "2026-06-01T12:00:00Z",
+        }
+    ]
+    # One unrelated decision row so decisions_list is non-empty —
+    # this is the trigger for the rewire path.
+    decision_rows: list[dict[str, object]] = [
+        {
+            "id": str(uuid4()),
+            "deal_id": str(uuid4()),
+            "decided_at": "2026-06-08T12:00:00Z",
+            "decision": "decline",
+            "state_code": "FL",
+            "score_factors": {"tier": "F"},
+        }
+    ]
+
+    metrics = compute_portfolio_metrics(
+        merchants=[merchant],
+        funders=[],
+        documents=[],
+        funder_reply_rows=[],
+        audit_rows=audit_rows,
+        decision_rows=decision_rows,
+        date_range=DateRange(
+            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
+        ),
+    )
+
+    # The ghost audit-only A is invisible — only the F from decisions.
+    assert metrics.tier_counts.A == 0
+    assert metrics.tier_counts.F == 1
+    assert metrics.tier_counts.total == 1
+
+
+def test_audit_log_fallback_when_decisions_empty() -> None:
+    """Graceful degradation: when ``decision_rows`` is empty, the
+    legacy audit_log ``deal.score`` parse path still surfaces tier
+    counts. Protects historical /deals/score calls that never
+    supplied ``document_id`` and so didn't snapshot."""
+    merchant = _merchant(business_name="Legacy LLC", state="NY")
+    audit_rows: list[dict[str, object]] = [
+        {
+            "actor": "api",
+            "action": "deal.score",
+            "subject_id": str(merchant.id),
+            "details": {"tier": "A", "recommendation": "approve"},
+            "created_at": "2026-06-01T12:00:00Z",
+        }
+    ]
+
+    metrics = compute_portfolio_metrics(
+        merchants=[merchant],
+        funders=[],
+        documents=[],
+        funder_reply_rows=[],
+        audit_rows=audit_rows,
+        decision_rows=[],  # explicitly empty — fallback path
+        date_range=DateRange(
+            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
+        ),
+    )
+
+    assert metrics.tier_counts.A == 1
+    assert metrics.tier_counts.total == 1

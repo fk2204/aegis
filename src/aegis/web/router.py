@@ -49,6 +49,7 @@ from pydantic import ValidationError
 from aegis.api.deps import (
     get_audit,
     get_deal_repository,
+    get_decision_snapshot,
     get_funder_reply_repository,
     get_funder_repository,
     get_llm,
@@ -77,6 +78,10 @@ from aegis.compliance.overrides import (
     OverridePayload,
     OverrideRepository,
     record_override,
+)
+from aegis.compliance.snapshot import (
+    DecisionSnapshot,
+    InMemoryDecisionSnapshot,
 )
 from aegis.compliance.states import STATES, StateNotServed, validate_state_served
 from aegis.config import get_settings
@@ -4787,16 +4792,19 @@ async def renewal_attestation_submit(
 
 def _fetch_portfolio_data(
     audit: AuditLog,
+    snapshot: DecisionSnapshot,
     date_range: DateRange,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return ``(audit_rows, funder_reply_rows)`` filtered to the window.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return ``(audit_rows, funder_reply_rows, decision_rows)`` for the window.
 
     Two paths:
 
-      * Supabase-backed audit log → issue a ranged ``audit_log`` query
-        and a ``funder_replies`` query, both bounded to the window.
+      * Supabase-backed audit log → issue a ranged ``audit_log`` query,
+        a ``funder_replies`` query, and a ``decisions`` query, all
+        bounded to the window.
       * In-memory audit log (tests / dev) → read ``audit.entries``
-        directly; the in-memory FunderReplyRepository tracks rows on
+        directly and ``InMemoryDecisionSnapshot.rows()`` for the
+        snapshot. The in-memory FunderReplyRepository tracks rows on
         the same object, so the caller passes them via dependency
         override when the test needs replies. Fall back to ``[]``
         when not available.
@@ -4806,6 +4814,7 @@ def _fetch_portfolio_data(
     """
     audit_rows: list[dict[str, Any]] = []
     reply_rows: list[dict[str, Any]] = []
+    decision_rows: list[dict[str, Any]] = []
 
     if hasattr(audit, "entries"):
         # In-memory branch — duck-typed at ``InMemoryAuditLog.entries``.
@@ -4823,6 +4832,17 @@ def _fetch_portfolio_data(
                 audit_rows.append(r)
             elif date_range.from_date <= row_date <= date_range.to_date:
                 audit_rows.append(r)
+        if isinstance(snapshot, InMemoryDecisionSnapshot):
+            for r in snapshot.rows():
+                ts = r.get("decided_at")
+                if ts is None:
+                    decision_rows.append(r)
+                    continue
+                row_date = _coerce_audit_date(ts)
+                if row_date is None:
+                    decision_rows.append(r)
+                elif date_range.from_date <= row_date <= date_range.to_date:
+                    decision_rows.append(r)
     else:
         # Supabase branch — issue the ranged query directly. The route
         # already imports get_supabase via aegis.audit; importing here
@@ -4853,6 +4873,20 @@ def _fetch_portfolio_data(
                 .execute()
             )
             reply_rows = cast(list[dict[str, Any]], reply_result.data or [])
+            decisions_result = (
+                get_supabase()
+                .table("decisions")
+                .select(
+                    "id,deal_id,decided_at,decision,state_code,"
+                    "score,score_factors"
+                )
+                .gte("decided_at", from_iso)
+                .lte("decided_at", to_iso + "T23:59:59Z")
+                .order("decided_at", desc=True)
+                .limit(5000)
+                .execute()
+            )
+            decision_rows = cast(list[dict[str, Any]], decisions_result.data or [])
         except Exception:
             # Treat data fetch failure as an empty window rather than
             # 500-ing the page. The operator sees the empty state and
@@ -4863,8 +4897,9 @@ def _fetch_portfolio_data(
                 date_range.from_date, date_range.to_date)
             audit_rows = []
             reply_rows = []
+            decision_rows = []
 
-    return audit_rows, reply_rows
+    return audit_rows, reply_rows, decision_rows
 
 
 def _coerce_audit_date(value: object) -> date | None:
@@ -4888,6 +4923,7 @@ async def portfolio_view(
     funders_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     docs_repo: Annotated[DocumentRepository, Depends(get_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
     from_: Annotated[
         str | None,
         Query(
@@ -4934,7 +4970,9 @@ async def portfolio_view(
     # explicit limit; the supabase backend honors the same.
     documents_list = docs_repo.list_documents(limit=5000)
 
-    audit_rows, reply_rows = _fetch_portfolio_data(audit, date_range)
+    audit_rows, reply_rows, decision_rows = _fetch_portfolio_data(
+        audit, snapshot, date_range
+    )
 
     metrics = compute_portfolio_metrics(
         merchants=merchants_list,
@@ -4943,6 +4981,7 @@ async def portfolio_view(
         funder_reply_rows=reply_rows,
         audit_rows=audit_rows,
         date_range=date_range,
+        decision_rows=decision_rows,
     )
 
     return cast(

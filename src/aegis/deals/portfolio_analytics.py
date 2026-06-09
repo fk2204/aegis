@@ -44,15 +44,21 @@ Design notes:
     ``src/aegis/submissions/repository.py``'s module docstring), so the
     audit row is the durable record.
 
-  * Decisions by tier reads ``audit_log`` rows whose ``action`` =
-    ``deal.score`` and extracts ``details.tier``. AEGIS does not
-    persist a per-deal tier column — the tier is computed by
-    ``score_deal`` each time scoring runs and surfaced into the audit
-    row. The tier column on the ``decisions`` table tracks state CFDL
-    tier (1/2/3), not AEGIS tier (A/B/C/D/F).
+  * Decisions by tier, by state, and recent activity read the
+    ``decisions`` table (migration 015) directly. Each /deals/score
+    call that supplies ``document_id`` snapshots one immutable row
+    with ``state_code``, ``score_factors.tier`` (AEGIS A/B/C/D/F),
+    ``decision`` (approve/decline/manual_review/redisclosure),
+    ``decided_at``. Reading the snapshot beats parsing the
+    ``deal.score`` audit JSON — the shape is contractual rather than
+    a coincidence of the audit detail key set.
 
-  * Decisions by state reads the same ``deal.score`` audit rows and
-    joins on the merchant to read ``state``.
+    Historical scoring events predate the snapshot wiring (or were
+    issued without ``document_id`` and so didn't snapshot); for that
+    window the audit_log fallback path is preserved so the metrics
+    degrade gracefully rather than appearing empty. The
+    ``decision_rows`` arg is the primary source — when present and
+    non-empty, audit-log parsing is skipped for these three panels.
 
   * Fraud catch rate is computed off ``documents.fraud_score >= 70`` —
     matching the parser's hard-decline band (pipeline.py
@@ -374,6 +380,7 @@ def compute_portfolio_metrics(
     funder_reply_rows: Iterable[dict[str, Any]],
     audit_rows: Iterable[dict[str, Any]],
     date_range: DateRange,
+    decision_rows: Iterable[dict[str, Any]] | None = None,
 ) -> PortfolioMetrics:
     """Pure aggregation. No I/O.
 
@@ -381,16 +388,23 @@ def compute_portfolio_metrics(
       ``{actor, action, subject_type, subject_id, details, created_at}``
 
     Only rows whose ``action`` starts with ``deal.`` are inspected:
-      * ``deal.score`` — used for tier + state + recent activity.
       * ``deal.submit_to_funders`` — used for the per-funder
         submission counter.
       * ``deal.funded`` — used for the pipeline "funded" bucket.
+      * ``deal.score`` — fallback source for tier / state / recent
+        activity when ``decision_rows`` is None or empty.
+
+    ``decision_rows`` shape mirrors the ``decisions`` table
+    (migration 015):
+      ``{id, deal_id, decided_at, decision, state_code,
+        score_factors: {tier, ...}, ...}``
+    Primary source for the tier / state / recent-activity panels.
 
     ``funder_reply_rows`` shape mirrors the ``funder_replies`` table
     (migration 021):
       ``{funder_id, deal_id, status, received_at, ...}``
 
-    Both inputs are expected to already be filtered to the date window
+    All inputs are expected to already be filtered to the date window
     by the caller (the route handler narrows the supabase queries with
     ``.gte/.lte``). The function does not re-filter — it trusts the
     range, so a test fixture can feed in a known set without time
@@ -401,6 +415,7 @@ def compute_portfolio_metrics(
     documents_list = list(documents)
     replies_list = list(funder_reply_rows)
     audit_list = list(audit_rows)
+    decisions_list = list(decision_rows) if decision_rows is not None else []
 
     docs_by_merchant = _group_documents_by_merchant(documents_list)
     pipeline = _compute_pipeline_counts(merchants_list, docs_by_merchant, audit_list)
@@ -416,13 +431,27 @@ def compute_portfolio_metrics(
         round((declined_total / decided_total) * 100) if decided_total > 0 else None
     )
 
-    score_rows = _filter_score_audit_rows(audit_list)
-    tier_counts = _compute_tier_counts(score_rows)
-    avg_tier = _compute_avg_tier(tier_counts)
-
     merchants_by_id = {m.id: m for m in merchants_list}
-    state_counts = _compute_state_counts(score_rows, merchants_by_id)
-    recent_activity = _compute_recent_activity(score_rows, merchants_by_id)
+    docs_by_id = {d.id: d for d in documents_list if d.id is not None}
+
+    # Decisions table is the canonical source for tier / state /
+    # recent activity (mp Phase 2, migration 015). Fall back to the
+    # audit_log JSON parse path when no decisions rows are visible —
+    # historical /deals/score calls that didn't supply document_id
+    # never snapshotted, and degrading to audit prevents the page
+    # from looking empty for the operator.
+    if decisions_list:
+        tier_counts = _compute_tier_counts_from_decisions(decisions_list)
+        state_counts = _compute_state_counts_from_decisions(decisions_list)
+        recent_activity = _compute_recent_activity_from_decisions(
+            decisions_list, docs_by_id, merchants_by_id
+        )
+    else:
+        score_rows = _filter_score_audit_rows(audit_list)
+        tier_counts = _compute_tier_counts(score_rows)
+        state_counts = _compute_state_counts(score_rows, merchants_by_id)
+        recent_activity = _compute_recent_activity(score_rows, merchants_by_id)
+    avg_tier = _compute_avg_tier(tier_counts)
 
     fraud_catch_count, fraud_total_scored = _compute_fraud_counts(documents_list)
     fraud_catch_rate_pct = (
@@ -810,6 +839,148 @@ def _compute_recent_activity(
                 tier=tier,
                 recommendation=recommendation,
                 scored_at=_audit_created_at(r),
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Tier counts + state counts + recent activity (decisions table source)
+#
+# Decisions table shape (per migration 015 + snapshot._payload_to_row):
+#   id: UUID
+#   deal_id: UUID                — references documents(id)
+#   decided_at: datetime | str | None
+#   decision: 'approve'|'decline'|'manual_review'|'redisclosure'
+#   state_code: str (2-letter ISO state)
+#   score_factors: dict          — {"tier": "A"|"B"|"C"|"D"|"F", ...}
+#
+# These functions are the canonical (post-mp Phase 2) read path. The
+# audit-log variants above remain as the fallback when decisions rows
+# are empty for the window.
+# ---------------------------------------------------------------------------
+
+
+def _decision_tier(row: dict[str, Any]) -> str | None:
+    """Extract the AEGIS tier letter from a decisions row.
+
+    The tier lives at ``score_factors.tier`` (set by the score route's
+    ``_build_decision_payload``). Returns None when missing / malformed
+    rather than KeyError-ing — a broken row drops out of the count
+    rather than crashing the page.
+    """
+    factors = row.get("score_factors")
+    if not isinstance(factors, dict):
+        return None
+    tier = factors.get("tier")
+    if isinstance(tier, str) and tier in _TIER_SCORE:
+        return tier
+    return None
+
+
+# Map decisions.decision (DB enum) onto the recommendation vocabulary
+# the audit-log path surfaced. Keeps the template + tests unchanged on
+# the rewire — the page renders "approve" / "decline" / "refer".
+_DECISION_TO_RECOMMENDATION: Final[dict[str, str]] = {
+    "approve": "approve",
+    "decline": "decline",
+    "manual_review": "refer",
+    "redisclosure": "refer",
+}
+
+
+def _decision_decided_at(row: dict[str, Any]) -> datetime | None:
+    """Parse ``decided_at`` from a decisions row into a tz-aware datetime."""
+    value = row.get("decided_at")
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def _compute_tier_counts_from_decisions(
+    decision_rows: list[dict[str, Any]],
+) -> TierCounts:
+    counts = {tier: 0 for tier in TIER_ORDER}
+    for r in decision_rows:
+        tier = _decision_tier(r)
+        if tier is not None:
+            counts[tier] += 1
+    return TierCounts(
+        A=counts["A"], B=counts["B"], C=counts["C"], D=counts["D"], F=counts["F"]
+    )
+
+
+def _compute_state_counts_from_decisions(
+    decision_rows: list[dict[str, Any]],
+) -> list[StateCount]:
+    counts: dict[str, int] = {}
+    for r in decision_rows:
+        state_raw = r.get("state_code")
+        if not isinstance(state_raw, str) or len(state_raw) != 2:
+            continue
+        state = state_raw.upper()
+        counts[state] = counts.get(state, 0) + 1
+    rows = [StateCount(state=s, count=c) for s, c in counts.items() if c > 0]
+    rows.sort(key=lambda r: (-r.count, r.state))
+    return rows[:TOP_STATES_LIMIT]
+
+
+def _compute_recent_activity_from_decisions(
+    decision_rows: list[dict[str, Any]],
+    docs_by_id: dict[UUID, DocumentRow],
+    merchants_by_id: dict[UUID, MerchantRow],
+) -> list[RecentDeal]:
+    """Resolve each decision row through documents → merchant.
+
+    ``deal_id`` on a decision row references ``documents(id)`` (see
+    migration 015 header). The merchant is the document's owner; if
+    the document has been deleted (orphan) or has no merchant_id, the
+    row still surfaces with a placeholder business_name so the
+    operator at least sees the count match the table.
+    """
+    sorted_rows = sorted(
+        decision_rows,
+        key=lambda r: (_decision_decided_at(r) or datetime.min.replace(tzinfo=UTC)),
+        reverse=True,
+    )
+    out: list[RecentDeal] = []
+    for r in sorted_rows[:RECENT_ACTIVITY_LIMIT]:
+        deal_uuid = _to_uuid(r.get("deal_id"))
+        doc = docs_by_id.get(deal_uuid) if deal_uuid is not None else None
+        merchant = (
+            merchants_by_id.get(doc.merchant_id)
+            if doc is not None and doc.merchant_id is not None
+            else None
+        )
+        decision_raw = r.get("decision")
+        recommendation = (
+            _DECISION_TO_RECOMMENDATION.get(decision_raw)
+            if isinstance(decision_raw, str)
+            else None
+        )
+        out.append(
+            RecentDeal(
+                merchant_id=merchant.id if merchant is not None else None,
+                business_name=(
+                    merchant.business_name
+                    if merchant is not None
+                    else (
+                        f"document {str(deal_uuid)[:8]}"
+                        if deal_uuid is not None
+                        else "—"
+                    )
+                ),
+                tier=_decision_tier(r),
+                recommendation=recommendation,
+                scored_at=_decision_decided_at(r),
             )
         )
     return out
