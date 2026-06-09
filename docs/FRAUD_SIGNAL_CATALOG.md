@@ -145,6 +145,32 @@ Both sibling catalogs contain detailed `file:line` citations for every signal cl
 
 ---
 
-**Last updated:** 2026-06-04
-**Scope:** dossier display only. Engine, scoring, and persistence unchanged.
+## Shadow-mode signals (operator-facing evidence only)
+
+These detectors land in `PatternAnalysis.shadow_patterns` at severity 0. They do NOT contribute to `fraud_score`, do NOT alter `hard_decline_reasons`, and do NOT change `parse_status`. Per CLAUDE.md § "Decision-boundary changes — deliberate + shadow-first": the detector emits an evidence flag, the operator validates against the corpus, and a follow-up commit flips it into the scored path behind a config gate once the false-positive rate is confirmed low.
+
+### `structured_deposit_cluster` — shadow, severity 0 (M9)
+
+- **Detects:** Walks deposits classified as `deposit`, `ach_credit`, or `wire_in`. Filters to amounts in the BSA-avoidance band (`$8,500.00 ≤ amount ≤ $9,999.99`). Looks for any 14-day rolling window containing ≥3 such deposits.
+- **Why it matters:**
+  - **31 USC § 5324** makes it a federal crime to structure deposits to evade the CTR reporting threshold.
+  - **31 CFR § 1010.311** requires financial institutions to file a Currency Transaction Report (CTR) on any cash transaction over $10,000.
+  - The textbook "smurfing" pattern is repeated deposits just under $10K. In MCA underwriting, this is a strong signal of intent to obscure cash flow from a regulator — a federal crime that AEGIS surfaces but does not adjudicate.
+- **Cash-only caveat:** AEGIS cannot reliably distinguish cash from check / wire / ACH on a row description. The detector fires on ANY deposit category in the band; operator review interprets context. A $9,500 wire is almost never structured; a $9,500 over-the-counter deposit on a 3-in-14d cluster is the textbook signal.
+- **Threshold rationale:**
+  - Band floor $8,500 — FinCEN-typical smurfing floor. Depositors usually keep a comfortable margin under $10K; $8,500 catches the band without flagging routine $5K-$8K business deposits.
+  - Band ceiling $9,999.99 — last cent under the $10K CTR threshold. $10,000 exact is excluded because the bank itself files the CTR at that amount, so there is no avoidance to detect.
+  - Cluster size ≥3 — FinCEN "pattern" floor. Two coincident in-band deposits in two weeks is not a pattern; three is. Legitimate businesses do regularly deposit $9,000 amounts, so the threshold deliberately avoids 1- and 2-deposit noise.
+  - Window 14 days — matches FinCEN's typical structuring-review window. Wider (30d) would catch slow-drip smurfing but also flood the queue with false positives on businesses with $9K monthly recurring deposits.
+- **When to escalate:** The flag is informational on first ship. A reasonable escalation rubric for operator-side review:
+  - 1 cluster on a single statement period AND the band rows are cash-deposit-style descriptors: investigate. Ask the merchant for context. Consider declining.
+  - 2+ clusters across a statement bundle, OR a single cluster with > 3 members at amounts tightly clustered near $9,500: stronger signal. Declining without context is defensible.
+  - Cluster composed entirely of `wire_in` or known-counterparty `ach_credit`: usually false positive. The pattern is unlikely to be structuring.
+- **Flag format:** `structured_deposit_cluster:N_deposits_in_14_day_window_dates=YYYYMMDD,YYYYMMDD,...`
+- **Source:** `src/aegis/parser/patterns.py:_detect_structured_deposit_cluster`. Auditability: every emitted `Pattern.source_ids` is the exact UUID list of the cluster's contributing transactions, per AEGIS rule "every aggregate stores its source transaction IDs."
+
+---
+
+**Last updated:** 2026-06-09
+**Scope:** dossier display + shadow-mode evidence. Engine, scoring, and persistence unchanged.
 **Related:** `src/aegis/web/_pattern_cards.py`, `src/aegis/web/templates/merchant_detail_dossier.html.j2`, `docs/FLAG_GLOSSARY.md`.

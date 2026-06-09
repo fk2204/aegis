@@ -115,6 +115,44 @@ _DISGUISE_MAX_MEDIAN_SPACING_DAYS: Final[int] = 2
 # the classic simultaneous-onboarding stacking marker.
 _SAME_DAY_CLUSTER_MIN_FUNDERS: Final[int] = 3
 
+# M9 — structured-deposit (BSA threshold-avoidance) detector.
+#
+# 31 USC § 5324 makes it a federal crime to structure deposits to evade
+# the Currency Transaction Report (CTR) reporting requirement at
+# 31 CFR § 1010.311 (cash transactions > $10,000). Repeatedly depositing
+# just under the $10K threshold — "smurfing" — is the classic pattern.
+#
+# AEGIS cannot reliably distinguish cash from check / wire on a bank
+# statement description, so the detector fires on ANY deposit in the
+# BSA-avoidance band ($8,500 to $9,999) and surfaces it for operator
+# review. A $9,500 wire is almost never structured; a $9,500 cash
+# deposit on a 3-deposit-in-14d cluster is the textbook signal. The
+# operator's review interprets context.
+#
+# Thresholds:
+# - Band: $8,500 ≤ amount ≤ $9,999. Lower bound is FinCEN-typical
+#   smurfing floor (depositors usually keep a comfortable margin under
+#   $10K; $8,500 catches the band without flagging routine $5K-$8K
+#   business deposits). Upper bound excludes $10,000 exactly because
+#   at that amount the bank itself files the CTR — no avoidance.
+# - Cluster size: ≥3 in any 14-day rolling window. Three is the FinCEN
+#   "pattern" floor — fewer is noise because legitimate businesses
+#   regularly deposit ~$9K amounts. Two coincident in-band deposits in
+#   two weeks is not a pattern; three is.
+# - Window: 14-day rolling. Matches FinCEN's typical structuring
+#   review window. A wider window (30d) would catch slow-drip smurfing
+#   but also flood the queue with false positives.
+_STRUCTURED_DEPOSIT_MIN_AMOUNT: Final[Decimal] = Decimal("8500.00")
+_STRUCTURED_DEPOSIT_MAX_AMOUNT: Final[Decimal] = Decimal("9999.99")
+_STRUCTURED_DEPOSIT_MIN_CLUSTER: Final[int] = 3
+_STRUCTURED_DEPOSIT_WINDOW_DAYS: Final[int] = 14
+# Deposit categories considered in-scope. Excludes ``refund`` and
+# ``transfer`` — refunds and inter-account moves are not depositor-
+# initiated cash placements and never represent CTR avoidance.
+_STRUCTURED_DEPOSIT_CATEGORIES: Final[frozenset[str]] = frozenset(
+    {"deposit", "ach_credit", "wire_in"}
+)
+
 # Known payroll-processor counterparties. Presence of any of these as a
 # debit counterparty over the period satisfies the "operating business
 # has payroll" signal. Absence is a soft red flag for businesses claiming
@@ -539,6 +577,11 @@ def analyze_patterns(
     shadow_patterns.extend(
         _detect_same_day_mca_funder_cluster(mca_positions, transactions)
     )
+    # M9 — structured-deposit (BSA threshold-avoidance) clusters.
+    # Walks ALL transactions (not just classified deposits) so the
+    # detector picks up rows whose category is ``deposit``,
+    # ``ach_credit``, or ``wire_in`` per 31 USC § 5324 scope.
+    shadow_patterns.extend(_detect_structured_deposit_cluster(transactions))
 
     ai_score = _ai_generated_statement_score(transactions, deposits)
 
@@ -1001,6 +1044,121 @@ def _detect_same_day_mca_funder_cluster(
                 severity=0,
                 detail=detail,
                 source_ids=ids,
+            )
+        )
+    return out
+
+
+def _detect_structured_deposit_cluster(
+    transactions: list[ClassifiedTransaction],
+) -> list[Pattern]:
+    """Detect BSA threshold-avoidance ("structuring") deposit clusters.
+
+    Walks deposits — positive-amount rows classified as ``deposit``,
+    ``ach_credit``, or ``wire_in`` — filters to those in the avoidance
+    band (``$8,500 ≤ amount ≤ $9,999.99``), and looks for any 14-day
+    rolling window containing ``_STRUCTURED_DEPOSIT_MIN_CLUSTER`` (3) or
+    more such deposits.
+
+    Statutory context:
+    - **31 USC § 5324** — structuring (deliberately breaking deposits
+      below the CTR threshold) is a federal crime.
+    - **31 CFR § 1010.311** — financial institutions must file a CTR for
+      cash transactions over $10,000.
+    - The deposits AEGIS sees on a bank statement are post-deposit
+      records; the detector cannot prove the cash-vs-check origin. It
+      surfaces the pattern for operator review.
+
+    Cash-only caveat: BSA-structuring is most common with cash, but
+    the parser cannot reliably distinguish cash from check / wire from
+    a row description. The detector fires on ANY deposit category in
+    the band; the operator interprets context (a $9,500 wire is almost
+    never structured; a $9,500 deposit might be).
+
+    Shadow-mode output:
+    - Severity 0 (no fraud_score contribution).
+    - Appended to ``PatternAnalysis.shadow_patterns``.
+    - Does NOT touch ``mca_positions``, hard-decline reasons, or
+      ``parse_status``.
+
+    Flag format:
+        structured_deposit_cluster:N_deposits_in_14_day_window_dates=YYYYMMDD,YYYYMMDD,...
+
+    One pattern per distinct cluster window. If two windows overlap and
+    both contain ≥3 in-band deposits, the detector picks the densest
+    earliest-starting window and consumes its members so no row is
+    reported in two flags.
+    """
+    if not transactions:
+        return []
+
+    in_band = sorted(
+        (
+            t
+            for t in transactions
+            if t.category in _STRUCTURED_DEPOSIT_CATEGORIES
+            and t.amount >= _STRUCTURED_DEPOSIT_MIN_AMOUNT
+            and t.amount <= _STRUCTURED_DEPOSIT_MAX_AMOUNT
+        ),
+        key=lambda t: (t.posted_date, t.id),
+    )
+    if len(in_band) < _STRUCTURED_DEPOSIT_MIN_CLUSTER:
+        return []
+
+    # Sliding-window cluster discovery.
+    # Walk each candidate as a window-anchor; collect all in-band rows
+    # whose posted_date falls in ``[anchor, anchor + window_days - 1]``.
+    # If ≥3, record the cluster and mark members as consumed so they
+    # don't seed an overlapping near-duplicate flag.
+    consumed: set[UUID] = set()
+    clusters: list[list[ClassifiedTransaction]] = []
+    window_span = timedelta(days=_STRUCTURED_DEPOSIT_WINDOW_DAYS - 1)
+
+    for i, anchor in enumerate(in_band):
+        if anchor.id in consumed:
+            continue
+        window_end = anchor.posted_date + window_span
+        members: list[ClassifiedTransaction] = []
+        for cand in in_band[i:]:
+            if cand.id in consumed:
+                continue
+            if cand.posted_date > window_end:
+                break
+            members.append(cand)
+        if len(members) >= _STRUCTURED_DEPOSIT_MIN_CLUSTER:
+            clusters.append(members)
+            for m in members:
+                consumed.add(m.id)
+
+    if not clusters:
+        return []
+
+    out: list[Pattern] = []
+    for members in clusters:
+        dates = [m.posted_date for m in members]
+        dates_compact = ",".join(d.strftime("%Y%m%d") for d in dates)
+        code = (
+            f"structured_deposit_cluster:"
+            f"{len(members)}_deposits_in_{_STRUCTURED_DEPOSIT_WINDOW_DAYS}_day_window"
+            f"_dates={dates_compact}"
+        )
+        amounts_summary = ", ".join(
+            f"${m.amount.quantize(Decimal('0.01'))}" for m in members
+        )
+        detail = (
+            f"{len(members)} deposit(s) in the BSA-avoidance band "
+            f"($8,500-$9,999) within a {_STRUCTURED_DEPOSIT_WINDOW_DAYS}-day "
+            f"window ({dates[0].isoformat()} .. {dates[-1].isoformat()}) — "
+            f"amounts: {amounts_summary}. Possible 31 USC § 5324 / "
+            f"31 CFR § 1010.311 structuring. Shadow-mode evidence only; "
+            f"operator review required."
+        )
+        out.append(
+            Pattern(
+                code=code,
+                severity=0,
+                detail=detail,
+                source_ids=[m.id for m in members],
             )
         )
     return out

@@ -307,6 +307,26 @@ These appear in `all_flags` as strings, surfaced on the merchant detail soft-sig
 
 ---
 
+## 10. Shadow-mode flags (severity 0, operator-validation only)
+
+These detectors emit `Pattern(severity=0)` into `PatternAnalysis.shadow_patterns` — a separate list from the live `patterns` field. They do NOT add to `fraud_score`, do NOT alter hard-decline reasons, and do NOT change `parse_status`. Per CLAUDE.md "Decision-boundary changes — deliberate + shadow-first," each new detector lands shadow-first; the operator corpus-validates false-positive rate, then a follow-up commit flips it into the scored path behind a config gate.
+
+### `structured_deposit_cluster:N_deposits_in_14_day_window_dates=YYYYMMDD,...` — shadow, severity 0
+
+- **Detects:** ≥3 deposits classified as `deposit`, `ach_credit`, or `wire_in` in the BSA-avoidance band ($8,500 to $9,999.99) within any 14-day rolling window.
+- **Statutory context:** 31 USC § 5324 (structuring is a federal crime) and 31 CFR § 1010.311 ($10K Currency Transaction Report threshold). FinCEN treats repeated just-under-$10K deposits — "smurfing" — as the textbook structuring pattern.
+- **Why it matters:** Repeat near-threshold deposits indicate the merchant may be intentionally evading CTR reporting. A federal-crime signal in MCA underwriting context: even funders who would otherwise touch the deal typically will not.
+- **Cash-only caveat:** AEGIS cannot distinguish cash from check / wire from a bank statement row. The detector fires on ANY in-band deposit; the operator interprets context. A $9,500 wire is almost never structured; a $9,500 over-the-counter deposit on a 3-in-14d cluster is the textbook signal.
+- **Threshold rationale:**
+  - Band floor $8,500 — FinCEN-typical smurfing floor. Catches the band without flagging routine business deposits below $8,500.
+  - Band ceiling $9,999.99 — last cent under the CTR threshold. $10,000 exact is reported by the bank, so no avoidance.
+  - ≥3 in 14 days — FinCEN "pattern" floor. Two in two weeks is not a pattern.
+- **How serious:** Shadow-only on first ship. Operator validates against corpus before any decline-path wiring. A confirmed cluster of cash-style descriptors is material; a cluster of wires is usually a false positive.
+- **Do:** Drill into the source rows. If they look like over-the-counter cash deposits, ask the merchant directly about the deposits' origin. If wires from known business counterparties, dismiss. If unexplained, decline-leaning and document the rationale.
+- **Source:** `src/aegis/parser/patterns.py:_detect_structured_deposit_cluster`. Source-ids on the emitted flag are the exact UUIDs of the cluster's contributing transactions.
+
+---
+
 ## Action ladder [PENDING REVIEW]
 
 This is the suggested order for reviewing a deal. *Order is operator synthesis* — needs pressure-testing against the operator's real workflow before treated as authoritative.
