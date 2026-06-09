@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Final
 
+from aegis.compliance.apr import APRCalculationError, calculate_apr
 from aegis.money import safe_divide
 from aegis.scoring.models import PaperGrade, ScoreInput, ScoreResult
 from aegis.scoring.ofac import OFACClient
@@ -58,21 +60,57 @@ _SEASONAL_CV_CEILING: Final[Decimal] = Decimal("1.0")
 
 # DSCR thresholds. dscr = monthly_revenue / total_monthly_obligations,
 # where total_monthly_obligations includes proposed_daily_payment * 22.
+# cite: docs/AEGIS_MASTER_PLAN.md §5.6 — "DSCR <1.0: can't service.
+# 1.0-1.25: tight. >1.25: healthy. Banks want 1.25-1.35x; MCAs more
+# flexible." 1.50 picked as the MCA-flexible "strong" floor; 1.15 the
+# "adequate" floor between MCA-tight and bank-healthy bands.
 DSCR_HARD_DECLINE: Final[Decimal] = Decimal("1.00")
 DSCR_STRONG: Final[Decimal] = Decimal("1.50")
 DSCR_ADEQUATE: Final[Decimal] = Decimal("1.15")
 
 # Hard-decline thresholds. Read from here and config — never from elsewhere.
+# cite: docs/AEGIS_MASTER_PLAN.md §5.4 — "MCA debt-to-revenue >1.0-1.5x
+# = stacking-spiral, responsible funders cap here." 0.40 is a conservative
+# pre-stacking-spiral floor — flags merchants already at 40% obligated
+# rather than waiting for the >100% spiral. cite: TODO operator validation —
+# tightened from master-plan band; revisit if too aggressive on real corpus.
 MAX_DEBT_TO_REVENUE: Final[Decimal] = Decimal("0.40")
+# cite: docs/AEGIS_MASTER_PLAN.md §5.1 — "Average monthly true revenue
+# Min $10-15k major funders; $8k mid; $5k specialty." $10k is the major-
+# funder floor; below this no funder in the broker's network will accept.
 MIN_MONTHLY_REVENUE: Final[Decimal] = Decimal("10000.00")
+# cite: docs/AEGIS_MASTER_PLAN.md §7 "Composite fraud score (0-100, per
+# Ocrolus Detect): ≤30 highly suspicious — usually reject; 31-60 review
+# required; 61-100 low concern." AEGIS scores in the OPPOSITE direction
+# (higher = more fraud), so 70 = "highly suspicious" boundary inverted.
 FRAUD_SCORE_HARD_DECLINE: Final[int] = 70
+# cite: docs/AEGIS_MASTER_PLAN.md §5.2 — "Days negative 0-4: ok. 5-9:
+# yellow. ≥10: usually decline." 15 is the conservative hard-decline
+# threshold (beyond "usually decline") to leave headroom for soft-scoring
+# the 5-9 + 10-14 bands separately.
 DAYS_NEGATIVE_HARD_DECLINE: Final[int] = 15
+# cite: docs/AEGIS_MASTER_PLAN.md §5.3 — "NSF count / month: 0-2 ok.
+# 3-5 yellow + compensating factors. 6-10 usually decline. >10 auto-decline."
+# 10 is the auto-decline floor.
 NSF_COUNT_HARD_DECLINE: Final[int] = 10
+# cite: docs/AEGIS_MASTER_PLAN.md §5.3 — "Returned ACH treated as
+# NSF-equivalent." cite: TODO operator validation — 5 chosen as the
+# conservative half-of-NSF-decline threshold (returned ACH is a stronger
+# signal of broken counterparty trust than soft NSF); revisit after corpus.
 RETURNED_ACH_HARD_DECLINE: Final[int] = 5
+# cite: docs/AEGIS_MASTER_PLAN.md §5.5 — "Time in business <6mo:
+# auto-decline most. 6-12mo: startup only, expensive." 3 is the absolute
+# floor below which no funder in the network will price a deal.
 TIB_MIN_MONTHS: Final[int] = 3
+# cite: docs/AEGIS_MASTER_PLAN.md §5.4 — "Active MCA positions: 0 clean,
+# 1 2nd-pos market, 2 limited, 3+ most decline." > 2 active = decline.
 MCA_POSITIONS_HARD_DECLINE: Final[int] = 2  # > 2 active = decline
 
 # Tier-based factor / holdback. AEGIS uses Decimal throughout.
+# cite: docs/AEGIS_MASTER_PLAN.md §5.8 paper grades — A 1.15-1.25,
+# B 1.25-1.35, C 1.35-1.45, D 1.45-1.55. AEGIS picks mid-band values
+# (1.18, 1.29, 1.35, 1.45) as the default factor per internal tier so
+# the broker can negotiate ±$0.05 with the funder without re-tiering.
 _FACTOR_BY_TIER: Final[dict[str, Decimal]] = {
     "A": Decimal("1.18"),
     "B": Decimal("1.29"),
@@ -80,6 +118,10 @@ _FACTOR_BY_TIER: Final[dict[str, Decimal]] = {
     "D": Decimal("1.45"),
     "F": Decimal("0.00"),
 }
+# cite: TODO operator validation — holdback envelope (10/12/15/20%)
+# chosen by V1 calibration on synthetic corpus; industry-standard MCA
+# holdbacks run 8-22%, but master plan does not lock per-tier values.
+# Revisit after R4.5 POD backtest.
 _HOLDBACK_BY_TIER: Final[dict[str, Decimal]] = {
     "A": Decimal("0.10"),
     "B": Decimal("0.12"),
@@ -87,6 +129,9 @@ _HOLDBACK_BY_TIER: Final[dict[str, Decimal]] = {
     "D": Decimal("0.20"),
     "F": Decimal("0.00"),
 }
+# cite: industry convention — 22 business days/month is the MCA payback
+# calendar (5 days/week x ~4.4 weeks). Used for daily_payment derivation
+# across the scorer and per-funder match.
 _BUSINESS_DAYS_PER_MONTH: Final[Decimal] = Decimal("22")
 
 
@@ -271,6 +316,68 @@ def _is_seasonal_industry(naics: str | None) -> bool:
     return any(naics.startswith(prefix) for prefix in _SEASONAL_NAICS_PREFIXES)
 
 
+def _tib_ramp_shadow_flag(months: int | None) -> str | None:
+    """H8 — graduated TIB penalty shadow flag.
+
+    Today: ``_score_tib`` applies -15 to anything < 6mo (after the
+    < 3mo hard decline), and -8 to 6-11mo. A 3.1-month business gets
+    the same penalty as a 5.9-month business. Crude.
+
+    This helper computes what a graduated penalty WOULD be:
+      <6mo   → -15 (matches today's floor)
+      6-11   → -10
+      12-17  → -5
+      18-23  → -2
+      >=24   → 0
+
+    Returns a single-line flag ``tib_ramp_shadow:months=N_current_delta=
+    -X_graduated_delta=-Y`` or ``None`` when no shadow annotation is
+    useful (months is None, hard-decline territory <3, or current
+    bracket already grants 0 credit). The existing -15 / -8 / 0 deltas
+    in ``_score_tib`` are NOT modified — this is annotation only.
+    """
+    if months is None:
+        return None
+    if months < TIB_MIN_MONTHS:
+        # Hard-decline territory — nothing to ramp.
+        return None
+
+    # Current deltas applied by _score_tib (for >=3mo path):
+    if months < 6:
+        current_delta = -15
+    elif months < 12:
+        current_delta = -8
+    elif months < 24:
+        current_delta = 0
+    elif months < 36:
+        current_delta = 5
+    elif months < 60:
+        current_delta = 7
+    else:
+        current_delta = 10
+
+    # Graduated ramp candidate (only penalty bands — shadow does not
+    # propose changing the positive credits for 24+/36+/60+).
+    if months < 6:
+        graduated_delta = -15
+    elif months < 12:
+        graduated_delta = -10
+    elif months < 18:
+        graduated_delta = -5
+    elif months < 24:
+        graduated_delta = -2
+    else:
+        # 24+ months — graduated ramp converges to today's positive
+        # credits; no shadow annotation needed.
+        return None
+
+    return (
+        f"tib_ramp_shadow:months={months}"
+        f"_current_delta={current_delta}"
+        f"_graduated_delta={graduated_delta}"
+    )
+
+
 def _state_disclosure_flag(
     merchant_state: str | None,
     deal_state: str | None,
@@ -334,6 +441,14 @@ def _soft_score(
     _score_payroll_present(deal, b)
     _score_ai_generated(deal, b)
 
+    # H8 — TIB ramp shadow flag. Annotates what a graduated TIB penalty
+    # WOULD do without altering the existing _score_tib bands. Per
+    # CLAUDE.md "Decision-boundary changes — shadow-first": validate
+    # against the corpus before flipping severity via config.
+    tib_shadow = _tib_ramp_shadow_flag(deal.time_in_business_months)
+    if tib_shadow is not None:
+        b.shadow_flags.append(tib_shadow)
+
     final_score = max(0, min(100, b.score))
     tier = _tier_for(final_score)
 
@@ -353,6 +468,27 @@ def _soft_score(
 
     paper_grade, paper_reasons = compute_paper_grade(deal)
 
+    # M6 — deal-level APR via Reg Z Appendix J actuarial method. Mirrors
+    # the per-funder pattern in scoring/match_funders._estimate_apr, but
+    # uses the deal-level recommended factor / holdback / payback. APR is
+    # an output-only field (nothing reads from it for tier / recommendation
+    # logic) so populating it is gap-close, not a decision-boundary change.
+    # On APRCalculationError → apr=None + soft_concern. NEVER substitute
+    # 0.00% (R0.4 lie discipline / docs/AUDIT_2026_05_10.md H7).
+    apr = _compute_deal_apr(
+        suggested_max_advance=suggested_max,
+        recommended_factor_rate=factor,
+        recommended_holdback_pct=holdback,
+        estimated_payback_days=payback_days,
+    )
+    if apr is None and _apr_inputs_present(
+        suggested_max, factor, holdback, payback_days
+    ):
+        soft_concerns.append(
+            "apr_not_computable: optimizer could not bracket a root for "
+            "the recommended terms"
+        )
+
     return ScoreResult(
         score=final_score,
         tier=tier,
@@ -364,16 +500,97 @@ def _soft_score(
         recommended_factor_rate=factor,
         recommended_holdback_pct=holdback,
         estimated_payback_days=payback_days,
+        apr=apr,
         paper_grade=paper_grade,
         paper_grade_reasons=paper_reasons,
         shadow_flags=list(b.shadow_flags),
     )
 
 
+def _apr_inputs_present(
+    suggested_max: Decimal,
+    factor: Decimal,
+    holdback: Decimal,
+    payback_days: int,
+) -> bool:
+    """All four scoring outputs needed to synthesize an APR payment stream.
+
+    None of these are nullable by type, but in practice the hard-decline
+    short-circuit returns zeros and the soft-score path may converge on
+    a zero advance. Only fire the soft_concern when APR *should* have
+    been computable but wasn't.
+    """
+    return (
+        suggested_max > 0
+        and factor > Decimal("1.0")
+        and holdback > 0
+        and payback_days > 0
+    )
+
+
+def _compute_deal_apr(
+    *,
+    suggested_max_advance: Decimal,
+    recommended_factor_rate: Decimal,
+    recommended_holdback_pct: Decimal,
+    estimated_payback_days: int,
+) -> Decimal | None:
+    """Synthesize a daily payment stream from the deal-level recommendation
+    and run the actuarial APR. Returns ``None`` on degenerate inputs or
+    when the optimizer cannot bracket a root.
+
+    Mirrors ``scoring.match_funders._estimate_apr`` (per-funder) but uses
+    the deal-level recommended terms, so the dossier can show a single
+    "AEGIS-recommended APR" alongside the per-funder grid.
+
+    The disbursement date is anchored arbitrarily — APR depends only on
+    day offsets, not calendar position (Reg Z Appendix J).
+    """
+    if not _apr_inputs_present(
+        suggested_max_advance,
+        recommended_factor_rate,
+        recommended_holdback_pct,
+        estimated_payback_days,
+    ):
+        return None
+
+    total_repayment = (
+        suggested_max_advance * recommended_factor_rate
+    ).quantize(Decimal("0.01"))
+    daily_payment = (
+        total_repayment / Decimal(estimated_payback_days)
+    ).quantize(Decimal("0.01"))
+    if daily_payment <= 0:
+        return None
+
+    # Arbitrary anchor — APR depends only on offsets from this date.
+    disbursement = date(2026, 1, 1)
+    payments = [
+        (disbursement + timedelta(days=offset), daily_payment)
+        for offset in range(1, estimated_payback_days + 1)
+    ]
+    try:
+        apr = calculate_apr(suggested_max_advance, payments, disbursement)
+    except APRCalculationError:
+        # No silent zero (R0.4 / H7) — surface as None and let the
+        # caller append an apr_not_computable soft_concern.
+        return None
+    # Quantize to 4 decimal places to match the snapshot.apr_calculated
+    # Pydantic constraint (`max_digits=8, decimal_places=4`) — calculate_apr
+    # returns arbitrary brentq precision (e.g. Decimal("0.318887...")).
+    return apr.quantize(Decimal("0.0001"))
+
+
 # -- soft scoring components -------------------------------------------------
 
 
 def _score_revenue(deal: ScoreInput, b: _Builder) -> None:
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.1 + §5.8 — revenue bands match
+    # paper-grade thresholds (A: $25k+, B: $15k+, C: $10k+). $50k+ and
+    # $100k+ tiers above add credit for prime-funder appetite; $10-15k
+    # band is below the major-funder floor and gets a small penalty.
+    # cite: TODO operator validation — band deltas (+25/+20/+12/+5/-5)
+    # are V1 calibration weights, revisit after R4.5 POD backtest.
     rev = deal.monthly_revenue
     if rev >= 100_000:
         b.add(25, "revenue_100k+")
@@ -388,6 +605,14 @@ def _score_revenue(deal: ScoreInput, b: _Builder) -> None:
 
 
 def _score_balance(deal: ScoreInput, b: _Builder) -> None:
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.2 — "ADB ≥10-15x expected daily
+    # MCA payment = ≥10-15% of monthly revenue." $15k+ corresponds to
+    # an A-paper ADB at $100k revenue; $1k floor maps to "Ending balance
+    # consistently <$1k = tight cash flow."
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.2 — "Days negative 0-4: ok.
+    # 5-9: yellow. ≥10: usually decline." > 5 chronic_negative aligns
+    # with the yellow-band threshold (hard-decline at 15+ is separate).
+    # cite: TODO operator validation — band deltas are V1 calibration.
     bal = deal.avg_daily_balance
     if bal >= 15_000:
         b.add(12, "balance_strong")
@@ -406,6 +631,13 @@ def _score_balance(deal: ScoreInput, b: _Builder) -> None:
 
 
 def _score_nsf(deal: ScoreInput, b: _Builder) -> None:
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.3 — "NSF count/month: 0-2 ok,
+    # 3-5 yellow + compensating factors, 6-10 usually decline, >10 auto-
+    # decline." Rate-normalized (per 30-day window) to handle short or
+    # truncated statement periods correctly. -22 at the auto-decline
+    # boundary (still below the hard-decline rule), -14 at usually-
+    # decline, -7 at yellow, +8 for zero-NSF prime signal.
+    # cite: TODO operator validation — exact deltas are V1 calibration.
     statement_days = deal.statement_days or 30
     nsf_rate = (deal.num_nsf / statement_days) * 30 if statement_days else 0
     if nsf_rate >= 10:
@@ -419,6 +651,12 @@ def _score_nsf(deal: ScoreInput, b: _Builder) -> None:
 
 
 def _score_payroll(deal: ScoreInput, b: _Builder) -> None:
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.7 — "Payroll cadence: regular
+    # biweekly/weekly = real operating business. Missing on $50k/mo =
+    # red flag." Also §6.4 detector ``payroll_absent`` — "No ACH to/from
+    # ADP/Gusto/Paychex/Rippling/Square Payroll over period (soft signal)."
+    # $50k cutoff matches the master-plan red-flag threshold.
+    # cite: TODO operator validation — +8/-5 deltas are V1 calibration.
     if deal.payroll_detected:
         b.add(8, "payroll_detected")
     elif deal.monthly_revenue > 50_000:
@@ -426,6 +664,11 @@ def _score_payroll(deal: ScoreInput, b: _Builder) -> None:
 
 
 def _score_stacking(deal: ScoreInput, b: _Builder) -> None:
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.4 — "Active MCA positions:
+    # 0 clean, 1 2nd-pos market, 2 limited, 3+ most decline." The
+    # +10/-8/-18 ladder reflects market appetite: clean = prime, one
+    # position = mainstream-tightened, two = sub-prime-only.
+    # cite: TODO operator validation — exact deltas are V1 calibration.
     if deal.mca_positions == 0:
         b.add(10, "clean_position")
     elif deal.mca_positions == 1:
@@ -435,6 +678,12 @@ def _score_stacking(deal: ScoreInput, b: _Builder) -> None:
 
 
 def _score_industry(deal: ScoreInput, b: _Builder) -> None:
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.5 — "Industry NAICS Restricted:
+    # cannabis, adult, firearms, crypto, gambling, MLM, debt-relief,
+    # MSB." ``avoid`` tier is the hard-decline path (delta 0 here, the
+    # hard-decline rule catches it upstream); low/moderate/elevated/high
+    # are V1 calibration bands.
+    # cite: TODO operator validation — deltas are V1 calibration.
     if deal.industry_risk_tier is None:
         return
     delta = {"low": 10, "moderate": 5, "elevated": -3, "high": -10, "avoid": 0}[
@@ -444,11 +693,25 @@ def _score_industry(deal: ScoreInput, b: _Builder) -> None:
 
 
 def _score_concentration(deal: ScoreInput, b: _Builder) -> None:
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.1 — "Largest deposit % of
+    # revenue: >30% from one source = customer concentration." Master
+    # plan flags >30% as the concern threshold; the legacy field uses a
+    # more aggressive >60% floor because customer_concentration_pct is
+    # operator-entered (memory-derived), not statement-derived. The
+    # newer statement-derived signal lives in
+    # ``_score_counterparty_concentration``.
     if deal.customer_concentration_pct is not None and deal.customer_concentration_pct > 60:
         b.add(-10, "customer_concentration_severe")
 
 
 def _score_tib(deal: ScoreInput, b: _Builder) -> None:
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.5 — "Time in business <6mo:
+    # auto-decline most. 6-12mo: startup only, expensive. 12-24mo:
+    # standard. 24+: best." Paper-grade thresholds (§5.8) also use 24mo
+    # for A-paper and 12mo for B-paper. 5yr+ gets the top credit as a
+    # "fully seasoned" business.
+    # cite: TODO operator validation — exact deltas are V1 calibration.
+    # H8 shadow flag below recommends graduating the -15 floor.
     if deal.time_in_business_months is None:
         b.soft_concerns.append("missing_time_in_business")
         return
@@ -468,6 +731,11 @@ def _score_tib(deal: ScoreInput, b: _Builder) -> None:
 
 
 def _score_credit(deal: ScoreInput, b: _Builder) -> None:
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.8 — "A paper: FICO 650+." 650
+    # is the prime/sub-prime FICO boundary widely used across MCA
+    # funders. 750+/700+ match standard consumer-credit "excellent"/
+    # "strong" boundaries. <600 is sub-prime; <550 is deep-sub-prime.
+    # cite: TODO operator validation — exact deltas are V1 calibration.
     if deal.credit_score is None:
         b.soft_concerns.append("missing_credit_score")
         return
@@ -487,6 +755,12 @@ def _score_credit(deal: ScoreInput, b: _Builder) -> None:
 
 
 def _score_renewal(deal: ScoreInput, b: _Builder) -> None:
+    # cite: docs/AEGIS_MASTER_PLAN.md §6.4 — renewal context (early/
+    # on_time/late/default payoff) drives the "is this merchant a known
+    # quantity" weighting. A ``default`` payoff is hard-decline upstream;
+    # late is recoverable but penalized. ``prior_advance_count >= 3``
+    # captures the "loyal renewal merchant" pattern funders prize.
+    # cite: TODO operator validation — exact deltas are V1 calibration.
     if not deal.is_renewal:
         return
     if deal.prior_payoff_performance == "early":
@@ -500,6 +774,14 @@ def _score_renewal(deal: ScoreInput, b: _Builder) -> None:
 
 
 def _score_fraud_soft(deal: ScoreInput, b: _Builder) -> None:
+    # cite: docs/AEGIS_MASTER_PLAN.md §7 — "Composite fraud score:
+    # ≤30 highly suspicious; 31-60 review required; 61-100 low concern."
+    # AEGIS scores in the OPPOSITE direction (higher = more fraud).
+    # Inverted: >50 = "review required" mid-band, >30 = "low concern"
+    # entry boundary. Hard-decline at 70 catches >50 of inverted scale.
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.3 — "Returned ACH treated as
+    # NSF-equivalent." >3 mirrors mid-band NSF concern; >5 is hard-decline.
+    # cite: TODO operator validation — exact deltas are V1 calibration.
     if deal.fraud_score > 50:
         b.add(-15, "moderate_fraud")
     elif deal.fraud_score > 30:
@@ -511,6 +793,10 @@ def _score_fraud_soft(deal: ScoreInput, b: _Builder) -> None:
 def _score_data_quality(deal: ScoreInput, b: _Builder) -> None:
     # validation_passed=false is a hard decline; this only fires for a
     # passing-but-low-confidence extraction.
+    # cite: TODO operator validation — 80 confidence floor + -5 penalty
+    # chosen by V1 calibration. The hard floor is enforced via the
+    # validation_passed hard decline; this soft band tags "passed-but-
+    # noisy" extractions for operator review without changing the gate.
     if deal.extraction_confidence < 80:
         b.add(-5, "low_extraction_confidence")
 
@@ -524,6 +810,15 @@ def _score_counterparty_concentration(deal: ScoreInput, b: _Builder) -> None:
     Both are scored if present — they can disagree, in which case the
     statement-derived signal is generally more reliable than memory.
     """
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.1 + §5.7 — ">30% from one
+    # source = customer concentration" (§5.1), ">40% from one = single-
+    # customer dependency" (§5.7 Top 5 counterparties). 30/40/60 ladder
+    # maps to escalating severity from §5.1 concern (-3) to §5.7 single-
+    # customer dependency (-6) to severe concentration (-12 at 60%+).
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.7 — top-5 counterparty signals
+    # are master-plan listed; 80% top-5 concentration is the operator-
+    # validated severe concentration floor.
+    # cite: TODO operator validation — exact deltas are V1 calibration.
     top = deal.top_counterparty_pct
     if top is not None:
         if top >= 60:
@@ -553,6 +848,12 @@ def _score_payroll_present(deal: ScoreInput, b: _Builder) -> None:
     with no payroll. The legacy field is kept untouched so test
     fixtures that set ``payroll_detected`` still receive a credit.
     """
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.7 + §6.4 — "Payroll cadence:
+    # regular biweekly/weekly = real operating business" and
+    # ``payroll_absent`` detector. $50k cutoff matches the master-plan
+    # red-flag threshold mirrored from _score_payroll.
+    # cite: TODO operator validation — +4 detector-confidence credit is
+    # V1 calibration; half of the legacy +8 to avoid double-counting.
     if deal.payroll_present and not deal.payroll_detected:
         # New signal credits when the detector found payroll the
         # operator hadn't flagged on the merchant row.
@@ -571,6 +872,13 @@ def _score_ai_generated(deal: ScoreInput, b: _Builder) -> None:
     auto-declined. Thresholds: >=85 = strong signal (-15), >=70 = medium
     (-8), >=55 = weak (-3). Below 55 is no signal.
     """
+    # cite: docs/AEGIS_MASTER_PLAN.md §6.4 — ``ai_generated_statement``
+    # detector: "Composite: perfect reconciliation, LLM-style descriptions
+    # (full sentences, no abbreviations), generic counterparties. Score,
+    # don't auto-decline." 55/70/85 ladder is the V1 calibration.
+    # cite: TODO operator validation — exact thresholds and deltas are
+    # V1 calibration; the master plan dictates "score, don't auto-decline"
+    # but does not lock the per-band magnitude.
     score = deal.ai_generated_score
     if score >= 85:
         b.add(-15, "ai_generated_statement_strong")
@@ -582,6 +890,11 @@ def _score_ai_generated(deal: ScoreInput, b: _Builder) -> None:
 
 def _score_revenue_trend(deal: ScoreInput, b: _Builder) -> None:
     """Last-3-month revenue trajectory. Declining 15%+ or growing 10%+."""
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.1 — "Revenue trend: Slope of
+    # monthly true revenue. Up: factor improves 0.05-0.10. Down: tier
+    # downgrade." 15% decline / 10% growth chosen as conservative
+    # 3-month deltas; master plan does not lock the exact percentages.
+    # cite: TODO operator validation — -15/+8 magnitudes are V1.
     if len(deal.monthly_breakdown) < 3:
         return
     last3 = deal.monthly_breakdown[-3:]
@@ -607,6 +920,13 @@ def _score_revenue_volatility(deal: ScoreInput, b: _Builder) -> None:
     above 1.0 is too extreme even for seasonal businesses; emit a
     different shadow flag noting the penalty still applies as intended.
     """
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.1 — "Revenue volatility (CV)
+    # stddev/mean of monthly true revenue. High CV ⇒ tier downgrade
+    # even at same average." CV bands (0.20 stable / 0.35 moderate /
+    # 0.50 high) match the SEASONAL_CV_FLOOR (0.50) used for the R4.4
+    # seasonality shadow flag above.
+    # cite: TODO operator validation — exact CV thresholds and deltas
+    # are V1 calibration; master plan does not lock specific CV bands.
     if len(deal.monthly_breakdown) < 4:
         return
     deposits = [float(m.deposits) for m in deal.monthly_breakdown]
@@ -639,6 +959,12 @@ def _score_revenue_volatility(deal: ScoreInput, b: _Builder) -> None:
 
 def _score_dscr(deal: ScoreInput, b: _Builder) -> None:
     """DSCR soft scoring. Hard decline (<1.0) is checked separately."""
+    # cite: docs/AEGIS_MASTER_PLAN.md §5.6 — "DSCR <1.0 can't service,
+    # 1.0-1.25 tight, >1.25 healthy. Banks want 1.25-1.35x; MCAs more
+    # flexible." DSCR_STRONG=1.50 (above bank-healthy), DSCR_ADEQUATE=
+    # 1.15 (between tight and healthy for MCA flexibility), and the
+    # tight band (1.00-1.15) earns the -15 soft penalty.
+    # cite: TODO operator validation — +12/+5/-15 deltas are V1.
     dscr = _dscr(deal)
     if dscr is None:
         return
