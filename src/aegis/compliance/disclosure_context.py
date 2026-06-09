@@ -72,11 +72,63 @@ from typing import Final
 
 from aegis.compliance.apr import APRCalculationError, calculate_apr
 from aegis.compliance.states import Tier1Regulation
+from aegis.logger import get_logger
 from aegis.scoring.models import ScoreInput, ScoreResult
+
+_log = get_logger(__name__)
+
+
+class APRDisclosureError(RuntimeError):
+    """Raised when APR cannot be computed for a disclosure.
+
+    Wraps ``compliance.apr.APRCalculationError`` and adds the deal-context
+    fields a compliance auditor will want (state, principal, factor,
+    term_days, disbursement_date) so the audit-log entry written by the
+    catch site is self-describing.
+
+    The disclosure router catches this and refuses to issue the
+    disclosure — silently substituting a 0.00% APR (the prior behavior)
+    is a CA DFPI §§ 940/942 material defect. The deal is routed to
+    ``needs_review`` per R0.4 of the 2026-06-08 audit remediation plan.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        state: str | None = None,
+        principal: Decimal | None = None,
+        factor: Decimal | None = None,
+        term_days: int | None = None,
+        disbursement_date: date | None = None,
+        deal_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.state = state
+        self.principal = principal
+        self.factor = factor
+        self.term_days = term_days
+        self.disbursement_date = disbursement_date
+        self.deal_id = deal_id
 
 # Default funder identification used when the caller does not supply
 # one. Replace with the per-deal funder once Phase 7B records it.
 DEFAULT_FUNDER_NAME: Final[str] = "Commera Capital"
+
+# CA SB 1235 § 22802(b)(7) — DFPI requires disclosure of estimated savings
+# vs alternative financing. AEGIS currently makes no comparable
+# alternative-financing offer (broker / single-channel MCA), so the
+# defensible default is the regulator-accepted "Not Applicable" stance
+# with rationale text. DFPI accepts N/A when there's genuinely no
+# comparable offer made, but the row MUST be rendered — it cannot be
+# omitted. When an alternative financing offer system lands, callers
+# may override the default by passing ``savings_amount`` +
+# ``savings_comparison_text`` to ``build_tier1_disclosure_context``.
+DEFAULT_SAVINGS_NA_RATIONALE: Final[str] = (
+    "Recipient was not offered an alternative financing product for "
+    "comparison; this section is not applicable. "
+    "(10 CCR § 914, Cal. Fin. Code § 22802(b)(7))"
+)
 
 # Daily-payment business-day denominator used to derive the daily
 # payment when only the term in days + total repayment are known.
@@ -190,21 +242,18 @@ def _compute_apr_for_disclosure(
     """Compute APR via scipy actuarial method. Returns Decimal fraction.
 
     Wraps ``compliance/apr.py:calculate_apr`` — never simple interest.
-    On degenerate input (where brentq can't bracket) returns
-    Decimal("0") so the disclosure still renders rather than 500-ing;
-    the template's APR row will show "0.00%" which is obviously wrong
-    and surfaces the bad input to the operator.
+    On degenerate input (where brentq can't bracket) re-raises
+    ``APRCalculationError`` so the caller can convert the failure into a
+    structured ``APRDisclosureError`` carrying the deal context (state,
+    principal, factor, term, disbursement date). The disclosure router
+    then halts for review rather than rendering "0.00%" — silently
+    substituting a zero APR is a CA DFPI §§ 940/942 material defect and
+    must NEVER ship in a delivered disclosure (R0.4 audit remediation).
     """
     payments, _, _ = _derive_payment_schedule(
         principal, factor, term_days, disbursement_date
     )
-    try:
-        return calculate_apr(principal, payments, disbursement_date)
-    except APRCalculationError:
-        # Falling back to 0 rather than raising — the disclosure
-        # endpoint should still produce a document the operator can
-        # review and reject, not a 500 that loses the audit trail.
-        return Decimal("0")
+    return calculate_apr(principal, payments, disbursement_date)
 
 
 def _payment_terms_text(
@@ -241,12 +290,23 @@ def _build_common_tier1_fields(
     rendered_at: date,
     funder_name: str,
     disbursement_date: date | None,
+    *,
+    savings_amount: Decimal | None = None,
+    savings_comparison_text: str | None = None,
 ) -> dict[str, object]:
     """Computed fields shared across all four Tier 1 templates.
 
     Derives funding_provided, finance_charge, apr (when required by the
     state), estimated_total_payment, estimated_term, payment_amount,
     and the boolean flags every template's StrictUndefined consumes.
+
+    Savings disclosure (CA SB 1235 § 22802(b)(7) — R0.3 audit fix):
+      ``savings_amount`` + ``savings_comparison_text`` populate the CA
+      template's savings row. When both are None (default — AEGIS has
+      no alternative-financing offer system today), the row renders as
+      ``Not Applicable`` with the regulator-accepted rationale text in
+      ``DEFAULT_SAVINGS_NA_RATIONALE``. DFPI accepts N/A when there is
+      genuinely no comparable offer made; the row MUST be rendered.
     """
     # Use scorer-recommended terms when present; fall back to the
     # operator-quoted requested terms otherwise. This matches the
@@ -273,9 +333,36 @@ def _build_common_tier1_fields(
     finance_charge = (total_repayment - principal).quantize(
         _CENT, rounding=ROUND_HALF_UP
     )
-    apr_fraction = _compute_apr_for_disclosure(
-        principal, factor, term_days, disbursement
-    )
+    try:
+        apr_fraction = _compute_apr_for_disclosure(
+            principal, factor, term_days, disbursement
+        )
+    except APRCalculationError as exc:
+        # NEVER silently substitute 0.00% — R0.4 audit gate. The router
+        # caller catches APRDisclosureError and halts the disclosure for
+        # operator review with a structured audit_log entry.
+        #
+        # We log a non-PII summary at error level so the operator sees
+        # the failure in tail. Merchant identifiers are NOT included
+        # (they live on `deal` which is in the caller's scope).
+        _log.error(
+            "compliance.apr.compute_failed state=%s term_days=%s factor=%s principal=%s",
+            getattr(deal, "state", "?"),
+            term_days,
+            factor,
+            principal,
+        )
+        raise APRDisclosureError(
+            f"APR computation failed for disclosure: {exc}",
+            state=getattr(deal, "state", None),
+            principal=principal,
+            factor=factor,
+            term_days=term_days,
+            disbursement_date=disbursement,
+            deal_id=(
+                str(deal.merchant_id) if getattr(deal, "merchant_id", None) else None
+            ),
+        ) from exc
     _, daily_payment, _business_days = _derive_payment_schedule(
         principal, factor, term_days, disbursement
     )
@@ -356,6 +443,22 @@ def _build_common_tier1_fields(
         "prepayment_additional_fee_text": (
             "There is no additional fee for prepayment."
         ),
+        # CA SB 1235 § 22802(b)(7) Savings disclosure (R0.3).
+        # ``has_savings_disclosure=True`` when the caller supplied a
+        # concrete savings_amount + comparison text (an alternative
+        # financing offer was made). Otherwise the row renders as
+        # "Not Applicable" with the DFPI-accepted rationale below.
+        "has_savings_disclosure": (
+            savings_amount is not None and savings_comparison_text is not None
+        ),
+        "savings_amount": (
+            _fmt_dollars(savings_amount) if savings_amount is not None else "N/A"
+        ),
+        "savings_comparison_text": (
+            savings_comparison_text
+            if savings_comparison_text is not None
+            else DEFAULT_SAVINGS_NA_RATIONALE
+        ),
         # Rendering metadata.
         "rendered_at": rendered_at.isoformat(),
     }
@@ -369,6 +472,8 @@ def build_tier1_disclosure_context(
     *,
     funder_name: str | None = None,
     disbursement_date: date | None = None,
+    savings_amount: Decimal | None = None,
+    savings_comparison_text: str | None = None,
 ) -> dict[str, object]:
     """Build the full template context for a Tier 1 state's disclosure.
 
@@ -402,7 +507,13 @@ def build_tier1_disclosure_context(
     funder = funder_name or DEFAULT_FUNDER_NAME
 
     common = _build_common_tier1_fields(
-        deal, score, rendered_at, funder, disbursement_date
+        deal,
+        score,
+        rendered_at,
+        funder,
+        disbursement_date,
+        savings_amount=savings_amount,
+        savings_comparison_text=savings_comparison_text,
     )
 
     # State-specific overlay. Each state's template's docstring lists
@@ -531,5 +642,6 @@ def _adapt_to_ga(common: dict[str, object]) -> dict[str, object]:
 
 __all__ = [
     "DEFAULT_FUNDER_NAME",
+    "APRDisclosureError",
     "build_tier1_disclosure_context",
 ]

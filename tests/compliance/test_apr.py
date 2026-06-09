@@ -19,12 +19,16 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from aegis.compliance.apr import APRCalculationError, calculate_apr
+
+if TYPE_CHECKING:
+    from aegis.scoring.models import ScoreInput, ScoreResult
 
 DISBURSE = date(2026, 1, 1)
 
@@ -238,4 +242,187 @@ def test_apr_monotonic_in_term(
     assert apr_short > apr_long, (
         f"term {term_short} should have higher APR than {term_long} "
         f"(got {apr_short} vs {apr_long}) at factor={factor}, principal={principal}"
+    )
+
+
+# -- R0.4 APR error gate ------------------------------------------------------
+#
+# The disclosure pipeline MUST halt for review on APR computation failure;
+# silently rendering 0.00% is a CA DFPI §§ 940/942 material defect. These
+# tests build payment streams that cannot repay the principal at any
+# positive rate (sum of payments <= principal) so brentq cannot bracket
+# a root, then assert the error propagates through the disclosure-context
+# builder as APRDisclosureError carrying the deal fields.
+
+
+def test_apr_calculation_error_when_payments_below_principal() -> None:
+    """Sum of payments < principal makes brentq's NPV monotonic positive;
+    APRCalculationError must fire before brentq is even called."""
+    with pytest.raises(APRCalculationError, match="must exceed"):
+        calculate_apr(
+            amount_financed=Decimal("10000"),
+            payments=[(DISBURSE + timedelta(days=30), Decimal("500"))],
+            disbursement_date=DISBURSE,
+        )
+
+
+def _valid_deal_for_ca() -> ScoreInput:
+    """Construct a passing-Pydantic ScoreInput for CA. The APR failure
+    is forced via monkeypatch in the tests below, not by violating the
+    ScoreInput constraints (factor must be > 1, term must be >= 1)."""
+    from datetime import date as _date
+    from uuid import UUID
+
+    from aegis.scoring.models import ScoreInput
+
+    return ScoreInput(
+        merchant_id=UUID("22222222-2222-4222-8222-222222222222"),
+        business_name="Broken APR Bakery LLC",
+        owner_name="Test Owner",
+        state="CA",
+        avg_daily_balance=Decimal("12500.00"),
+        true_revenue=Decimal("110000.00"),
+        monthly_revenue=Decimal("110000.00"),
+        lowest_balance=Decimal("3000.00"),
+        num_nsf=0,
+        days_negative=0,
+        mca_positions=0,
+        mca_daily_total=Decimal("0.00"),
+        debt_to_revenue=Decimal("0.00"),
+        fraud_score=10,
+        statement_period_start=_date(2026, 4, 1),
+        statement_period_end=_date(2026, 4, 30),
+        statement_days=30,
+        requested_amount=Decimal("50000.00"),
+        requested_factor=Decimal("1.30"),
+        requested_term_days=120,
+    )
+
+
+def _valid_score() -> ScoreResult:
+    from aegis.scoring.models import ScoreResult
+
+    return ScoreResult(
+        score=50,
+        tier="C",
+        recommendation="refer",
+        suggested_max_advance=Decimal("50000.00"),
+        recommended_factor_rate=Decimal("1.30"),
+        recommended_holdback_pct=Decimal("0.12"),
+        estimated_payback_days=120,
+    )
+
+
+def test_build_ca_disclosure_context_raises_apr_disclosure_error_on_optimizer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """build_tier1_disclosure_context MUST raise APRDisclosureError when
+    the underlying APR calculator fails, carrying deal context (state,
+    principal, factor, term, disbursement_date, deal_id). Critical: NO
+    0.00% APR is allowed to leak into the rendered disclosure (the prior
+    silent-substitute behavior was a CA DFPI §§ 940/942 material defect).
+
+    We force the failure by monkeypatching ``calculate_apr`` to raise the
+    same APRCalculationError brentq would raise on a degenerate input —
+    avoids the ScoreInput Pydantic constraints (factor > 1, term >= 1)
+    while exercising the exact catch path the production code uses.
+    """
+    from datetime import date as _date
+
+    from aegis.compliance import disclosure_context
+    from aegis.compliance.disclosure_context import (
+        APRDisclosureError,
+        build_tier1_disclosure_context,
+    )
+    from aegis.compliance.states import STATES, Tier1Regulation
+
+    def _boom(*args: object, **kwargs: object) -> Decimal:
+        raise APRCalculationError("brentq failed to converge: no sign change in bracket")
+
+    monkeypatch.setattr(disclosure_context, "calculate_apr", _boom)
+
+    ca = STATES["CA"]
+    assert isinstance(ca, Tier1Regulation)
+
+    with pytest.raises(APRDisclosureError) as exc_info:
+        build_tier1_disclosure_context(
+            ca,
+            _valid_deal_for_ca(),
+            _valid_score(),
+            _date(2026, 5, 13),
+            funder_name="Commera Capital",
+        )
+    err = exc_info.value
+    assert err.state == "CA"
+    assert err.principal == Decimal("50000.00")
+    assert err.factor == Decimal("1.30")
+    assert err.term_days == 120
+    # deal_id surfaced as the merchant UUID string
+    assert err.deal_id == "22222222-2222-4222-8222-222222222222"
+    # The underlying APRCalculationError is chained for full traceability.
+    assert isinstance(err.__cause__, APRCalculationError)
+
+
+def test_render_disclosure_propagates_apr_disclosure_error_for_ca(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: render_disclosure("CA", ...) with a failing APR
+    calculator must raise APRDisclosureError so the calling pipeline can
+    mark the deal ``needs_review`` rather than ship a 0.00% APR
+    disclosure to the merchant."""
+    from datetime import date as _date
+    from datetime import datetime
+
+    from aegis.compliance import disclosure_context
+    from aegis.compliance.disclosure import APRDisclosureError, render_disclosure
+
+    def _boom(*args: object, **kwargs: object) -> Decimal:
+        raise APRCalculationError("brentq failed to converge")
+
+    monkeypatch.setattr(disclosure_context, "calculate_apr", _boom)
+
+    with pytest.raises(APRDisclosureError):
+        render_disclosure(
+            "CA",
+            _valid_deal_for_ca(),
+            _valid_score(),
+            rendered_at=datetime(2026, 5, 13),
+            disbursement_date=_date(2026, 5, 13),
+        )
+
+
+def test_apr_disclosure_error_does_not_render_zero_percent_apr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Belt-and-braces: the failure path raises BEFORE any 0.00% APR
+    string can land in the rendered HTML. If this regresses, it means
+    somebody re-introduced the silent fallback — block at PR time."""
+    from datetime import date as _date
+    from datetime import datetime
+
+    from aegis.compliance import disclosure_context
+    from aegis.compliance.disclosure import APRDisclosureError, render_disclosure
+
+    def _boom(*args: object, **kwargs: object) -> Decimal:
+        raise APRCalculationError("brentq failed to converge")
+
+    monkeypatch.setattr(disclosure_context, "calculate_apr", _boom)
+
+    rendered_html: str | None = None
+    try:
+        out = render_disclosure(
+            "CA",
+            _valid_deal_for_ca(),
+            _valid_score(),
+            rendered_at=datetime(2026, 5, 13),
+            disbursement_date=_date(2026, 5, 13),
+        )
+        rendered_html = out.html
+    except APRDisclosureError:
+        # Expected — the gate fired. The render did not produce HTML.
+        pass
+
+    assert rendered_html is None, (
+        "render_disclosure must NOT return rendered HTML when APR fails; "
+        "got back a document — silent 0.00% APR regression."
     )

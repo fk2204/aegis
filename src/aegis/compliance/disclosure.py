@@ -32,7 +32,10 @@ from jinja2 import (
 from pydantic import BaseModel, ConfigDict
 
 from aegis.compliance._generic_templates import TIER2_GENERIC_ACKNOWLEDGMENT
-from aegis.compliance.disclosure_context import build_tier1_disclosure_context
+from aegis.compliance.disclosure_context import (
+    APRDisclosureError,
+    build_tier1_disclosure_context,
+)
 from aegis.compliance.renewal import (
     RenewalContext,
     RenewalContextRequiredError,
@@ -137,6 +140,12 @@ def render_disclosure(
       StateNotServed              — state not in the 45 served states.
       StateNotAudited             — state is in STATES but Tier 3.
       RenewalContextRequiredError — NY renewal without RenewalContext.
+      APRDisclosureError          — APR computation failed (degenerate
+                                    inputs, no brentq root). The caller
+                                    MUST halt the deal for operator
+                                    review and MUST NOT issue a
+                                    disclosure with a missing APR (R0.4
+                                    audit gate — CA DFPI §§ 940/942).
     """
     abbr = (state or "").upper()
     reg = STATES.get(abbr)
@@ -249,4 +258,4 @@ def _build_context(
     }
 
 
-__all__ = ["RenderedDisclosure", "render_disclosure"]
+__all__ = ["APRDisclosureError", "RenderedDisclosure", "render_disclosure"]

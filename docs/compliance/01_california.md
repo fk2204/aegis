@@ -121,6 +121,13 @@ Disclosure is a table with **9 rows and 3 columns**, exact structure below. AEGI
 - Col 2: estimated monthly cost per § 942 (or list of costs by period if varies)
 - Col 3: short explanation of derivation
 
+**Estimated Savings row — Cal. Fin. Code § 22802(b)(7).** Required row in every SB 1235 disclosure. DFPI requires either (a) a concrete estimated savings amount with a comparison narrative vs an alternative financing product the recipient was offered, OR (b) an explicit "Not Applicable" stance with rationale when no comparable alternative was offered. The row cannot be omitted.
+
+**AEGIS implementation status (R0.3, 2026-06-09):**
+- **Implemented as N/A by default.** Commera is a broker / single-channel MCA — no alternative-financing offer system today, so the regulator-accepted N/A path with rationale text fires automatically. Rendered text: `"Recipient was not offered an alternative financing product for comparison; this section is not applicable. (10 CCR § 914, Cal. Fin. Code § 22802(b)(7))"`. Constant lives at `aegis.compliance.disclosure_context.DEFAULT_SAVINGS_NA_RATIONALE`.
+- **Populate `savings_amount` + `savings_comparison_text` only when an alternative-financing offer was made.** Both kwargs flow through `build_tier1_disclosure_context(...)`. Passing concrete values flips `has_savings_disclosure=True` and the template renders the dollar figure + narrative instead of the N/A path.
+- Snapshot test: `tests/compliance/test_california_tier1.py::test_template_renders_savings_row_with_estimated_savings_label` + the broader `test_tier1_disclosure_snapshot[CA]` lock the rendered row byte-for-byte.
+
 **Footer (per § 901):** `"California Applicable law requires this information to be provided to you to help you make an informed decision."`
 
 **Term unit (per § 901):**

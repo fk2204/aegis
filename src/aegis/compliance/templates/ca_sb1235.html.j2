@@ -37,6 +37,14 @@
     monthly_cost_derivation    str   — short explanation
     prepayment_finance_charge_text str — Row 8 content
     prepayment_additional_fee_text str — Row 9 content
+    has_savings_disclosure     bool  — true when an alternative-financing
+                                       comparison was offered to the
+                                       recipient. False renders the row
+                                       as "Not Applicable" with rationale.
+                                       Per CA SB 1235 § 22802(b)(7).
+    savings_amount             str   — formatted dollars OR "N/A" string
+    savings_comparison_text    str   — comparison narrative OR DFPI-
+                                       accepted N/A rationale
     rendered_at                str   — ISO date for the rendering
 -#}
 <!DOCTYPE html>
@@ -178,6 +186,21 @@
 </tr>
 <tr>
   <td class="col2" colspan="2">{{ prepayment_additional_fee_text }}</td>
+</tr>
+
+{#- Savings disclosure — CA SB 1235 § 22802(b)(7).
+    DFPI requires disclosure of estimated savings vs an alternative
+    financing product the recipient was offered, OR an explicit "Not
+    Applicable" stance with rationale when no comparable alternative
+    was offered. The row MUST appear in the rendered disclosure; it
+    cannot be omitted. AEGIS today does not run an alternative-financing
+    offer system, so the default render is the N/A path. When an
+    alternative offer is made, the caller passes savings_amount +
+    savings_comparison_text to flip ``has_savings_disclosure`` to True. -#}
+<tr>
+  <td class="col1">Estimated Savings</td>
+  <td class="col2">{{ savings_amount }}</td>
+  <td class="col3">{{ savings_comparison_text }}</td>
 </tr>
 
 </tbody>

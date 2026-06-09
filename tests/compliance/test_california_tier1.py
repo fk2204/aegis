@@ -134,6 +134,14 @@ def _render(**overrides: object) -> str:
         "prepayment_additional_fee_text": (
             "There is no additional fee for prepayment."
         ),
+        # CA SB 1235 § 22802(b)(7) savings row (R0.3).
+        "has_savings_disclosure": False,
+        "savings_amount": "N/A",
+        "savings_comparison_text": (
+            "Recipient was not offered an alternative financing product "
+            "for comparison; this section is not applicable. "
+            "(10 CCR § 914, Cal. Fin. Code § 22802(b)(7))"
+        ),
         "rendered_at": "2026-05-09",
     }
     base_ctx.update(overrides)
@@ -230,6 +238,64 @@ def test_template_renders_via_disclosure_router_tier1_path(
         monthly_cost_derivation="",
         prepayment_finance_charge_text="x",
         prepayment_additional_fee_text="x",
+        has_savings_disclosure=False,
+        savings_amount="N/A",
+        savings_comparison_text="N/A rationale",
         rendered_at=rendered_at,
     )
     assert "10 CCR § 901" in out or "10 CCR" in out
+
+
+# --- R0.3 CA SB 1235 § 22802(b)(7) savings disclosure ----------------------
+
+
+def test_template_renders_savings_row_with_estimated_savings_label() -> None:
+    """The savings row MUST appear in every CA disclosure. § 22802(b)(7)
+    requires either a concrete savings comparison OR a "Not Applicable"
+    stance with rationale; the row itself cannot be omitted."""
+    out = _render()
+    assert "Estimated Savings" in out
+
+
+def test_template_savings_row_renders_na_rationale_by_default() -> None:
+    """When AEGIS makes no alternative-financing offer (the default
+    today — broker / single-channel MCA), the savings row renders with
+    "N/A" amount and the DFPI-accepted rationale citing § 22802(b)(7).
+    """
+    out = _render()  # base context has has_savings_disclosure=False
+    assert "N/A" in out
+    # The default rationale string carries the statute cite.
+    assert "Cal. Fin. Code § 22802(b)(7)" in out
+    assert "10 CCR § 914" in out
+    assert "not applicable" in out.lower()
+
+
+def test_template_savings_row_renders_concrete_amount_when_provided() -> None:
+    """When the caller supplies an alternative-financing comparison
+    (savings_amount + savings_comparison_text), the row renders the
+    formatted dollar savings and the operator-supplied comparison text.
+    """
+    out = _render(
+        has_savings_disclosure=True,
+        savings_amount="$3,500.00",
+        savings_comparison_text=(
+            "Compared to the alternative SBA Express loan offered at "
+            "12% APR / 24 months, estimated savings is $3,500.00."
+        ),
+    )
+    assert "Estimated Savings" in out
+    assert "$3,500.00" in out
+    assert "alternative SBA Express" in out
+
+
+def test_default_savings_na_rationale_constant_carries_statute_cites() -> None:
+    """Defensive: the constant the context builder hands the template
+    when an alternative-financing offer was NOT made must explicitly
+    cite both the regulation (10 CCR § 914) and the statute
+    (Cal. Fin. Code § 22802(b)(7)), so a regulator reading the rendered
+    disclosure sees the legal basis for the N/A stance."""
+    from aegis.compliance.disclosure_context import DEFAULT_SAVINGS_NA_RATIONALE
+
+    assert "10 CCR § 914" in DEFAULT_SAVINGS_NA_RATIONALE
+    assert "Cal. Fin. Code § 22802(b)(7)" in DEFAULT_SAVINGS_NA_RATIONALE
+    assert "not applicable" in DEFAULT_SAVINGS_NA_RATIONALE.lower()
