@@ -150,6 +150,49 @@
                   <div style="margin-top:6px;font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--approve)">No blockers</div>
                 {% endif %}
 
+                {# === Estimated terms (R4.2 + R4.3) ===
+                   Per-funder pricing guidance interpolated from the
+                   funder's typical_factor / typical_holdback envelope
+                   and the deal's score tier. ``None`` when the funder
+                   has no published envelope or the tier is out of range;
+                   block is omitted entirely in that case (no empty row).
+
+                   APR rendering: ``None`` → "unavailable" (NOT 0.00%) —
+                   R0.4 regulator-grade-lie discipline. A 0% APR next to
+                   a 1.30x factor is the lie we refuse to render. #}
+                {% if c.estimated_terms is not none %}
+                  {% set et = c.estimated_terms %}
+                  <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--rule)">
+                    <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px">Estimated terms (interpolated from funder tier)</div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(70px,1fr));gap:8px 12px;font-family:var(--serif);font-size:12px;color:var(--ink-2);line-height:1.35">
+                      <div>
+                        <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3)">Advance</div>
+                        <div class="mono-cell" style="font-size:13px;color:var(--ink);font-weight:500">{{ et.estimated_advance | whole_money }}</div>
+                      </div>
+                      <div>
+                        <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3)">Factor</div>
+                        <div class="mono-cell" style="font-size:13px;color:var(--ink);font-weight:500">{{ et.estimated_factor }}x</div>
+                      </div>
+                      <div>
+                        <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3)">Holdback</div>
+                        <div class="mono-cell" style="font-size:13px;color:var(--ink);font-weight:500">{{ et.estimated_holdback_pct | format_pct }}</div>
+                      </div>
+                      <div>
+                        <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3)">Daily</div>
+                        <div class="mono-cell" style="font-size:13px;color:var(--ink);font-weight:500">{{ et.estimated_daily_payment | whole_money }}</div>
+                      </div>
+                      <div>
+                        <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3)">APR</div>
+                        <div class="mono-cell" style="font-size:13px;color:{% if et.estimated_apr is none %}var(--ink-3){% else %}var(--ink){% endif %};font-weight:500">{{ et.estimated_apr | format_pct }}</div>
+                      </div>
+                    </div>
+                    <details style="margin-top:6px">
+                      <summary style="cursor:pointer;font-family:var(--mono);font-size:9.5px;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3)">How this was computed</summary>
+                      <div style="font-family:var(--mono);font-size:11px;color:var(--ink-2);margin-top:4px;line-height:1.5;padding:6px 0 0">{{ et.interpolation_evidence }}</div>
+                    </details>
+                  </div>
+                {% endif %}
+
                 {% if c.criteria_comparison %}
                   <details style="margin-top:10px">
                     <summary style="cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3)">{{ c.criteria_comparison|length }} criteria · compare</summary>

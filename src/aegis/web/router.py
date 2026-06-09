@@ -178,6 +178,29 @@ def _whole_money_filter(value: _MoneyLike) -> str:
     return _money_filter(value, whole=True)
 
 
+def _format_pct_filter(value: _MoneyLike) -> str:
+    """Render a Decimal fraction (0.365) as a percent (``36.5%``).
+
+    Returns ``"unavailable"`` for ``None`` rather than ``0.00%`` — per
+    the R0.4 regulator-grade-lie discipline: a 0% APR rendered next to
+    a 1.30x factor is the lie we explicitly refuse to render.
+    Estimated-terms APR may be ``None`` when the IRR optimizer cannot
+    bracket a root; surfacing that as 0% would manufacture false
+    precision the operator could then quote to a funder rep.
+    """
+    if value is None:
+        return "unavailable"
+    try:
+        d = Decimal(str(value))
+    except (ArithmeticError, ValueError):
+        return str(value)
+    pct = (d * Decimal("100")).quantize(Decimal("0.01"))
+    int_part, _, frac = str(pct).partition(".")
+    if not frac:
+        return f"{int_part}%"
+    return f"{int_part}.{frac}%"
+
+
 def _days_label_filter(value: _NumericLike) -> str:
     if value is None or value == "":
         return "—"
@@ -209,6 +232,7 @@ def _fraud_band(score: _NumericLike) -> str:
 
 templates.env.filters["money"] = _money_filter
 templates.env.filters["whole_money"] = _whole_money_filter
+templates.env.filters["format_pct"] = _format_pct_filter
 templates.env.filters["days_label"] = _days_label_filter
 templates.env.filters["fraud_band"] = _fraud_band
 templates.env.filters["humanize_flag"] = humanize_flag
@@ -4113,6 +4137,11 @@ def _match_card(
         "criteria_comparison": criteria,
         "funder_requires_coj": funder.requires_coj,
         "funder_charges_merchant_advance_fees": funder.charges_merchant_advance_fees,
+        # Per-funder pricing guidance (R4.2 + R4.3 EstimatedTerms).
+        # ``None`` when the funder has no pricing envelope or the score
+        # tier falls outside the interpolation table — template suppresses
+        # the pricing block in that case (no empty row, no placeholders).
+        "estimated_terms": match.estimated_terms,
     }
 
 
