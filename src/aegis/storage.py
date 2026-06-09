@@ -165,6 +165,15 @@ class AnalysisRow(_StrictModel):
     bank_name: str | None = None
     account_last4: str | None = Field(default=None, max_length=4)
 
+    # account_holder (migration 041 / U15) — durable holder string for
+    # the U12 cross-statement related-account detector. Nullable for
+    # the same reasons bank_name is: pass-1 occasionally fails to
+    # recover it on noisy statements, and pre-041 rows have no holder
+    # to backfill from (StatementSummary was dropped after the
+    # validation gate before this column existed). PII per CLAUDE.md —
+    # loggers MUST mask by key name.
+    account_holder: str | None = None
+
     # Cached PatternAnalysisDTO from migration 032 — drives the
     # Today / Review Queue chip-evidence drill-down without re-running
     # analyze_patterns() at render time. NULL on rows analyzed before
@@ -831,6 +840,7 @@ def _build_analysis(
         monthly_breakdown=monthly_breakdown or [],
         bank_name=summary.bank_name,
         account_last4=summary.account_last4,
+        account_holder=summary.account_holder,
         pattern_analysis=pattern_analysis_dto,
     )
 
@@ -980,6 +990,7 @@ def _analysis_to_db_row(analysis: AnalysisRow) -> dict[str, Any]:
         "monthly_breakdown": analysis.monthly_breakdown,
         "bank_name": analysis.bank_name,
         "account_last4": analysis.account_last4,
+        "account_holder": analysis.account_holder,
         # mode="json" serializes Decimal -> str and UUID -> str so the
         # resulting dict round-trips cleanly through Supabase's
         # jsonb column. None preserved (column is nullable).
@@ -1022,6 +1033,7 @@ def _db_row_to_analysis(row: dict[str, Any]) -> AnalysisRow:
         monthly_breakdown=row.get("monthly_breakdown") or [],
         bank_name=row.get("bank_name"),
         account_last4=row.get("account_last4"),
+        account_holder=row.get("account_holder"),
         pattern_analysis=(
             PatternAnalysisDTO.model_validate(row["pattern_analysis"])
             if row.get("pattern_analysis") is not None

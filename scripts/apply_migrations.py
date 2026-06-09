@@ -331,6 +331,26 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' "
         "AND table_name='funder_renewal_attestations'"
     ),
+    "041_analyses_account_holder.sql": (
+        # Probe the column directly: 041 is a single ADD COLUMN IF NOT
+        # EXISTS on analyses (U15 — durable account_holder for the U12
+        # related-account detector). Mirrors the 014 probe pattern for
+        # the bank_name / account_last4 columns this column completes
+        # the identity triple of.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='analyses' "
+        "AND column_name='account_holder'"
+    ),
+    "042_disclosure_render_events.sql": (
+        # Probe the table itself: 042 is a new top-level CREATE TABLE
+        # (U16 — persist the disclosure_status state U3 deferred). If
+        # the table exists, every column + index + RLS toggle landed
+        # together in the same migration body. Mirrors the 036 / 037 /
+        # 040 probe pattern.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' "
+        "AND table_name='disclosure_render_events'"
+    ),
 }
 
 

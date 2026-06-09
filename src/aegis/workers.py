@@ -65,6 +65,9 @@ from aegis.funders.reply_extract import (
 )
 from aegis.llm import BedrockClient, LLMClient
 from aegis.logger import configure_logging, get_logger
+from aegis.merchants.cross_statement_pipeline import (
+    run_cross_statement_detection,
+)
 from aegis.merchants.repository import MerchantRepository
 from aegis.ops.cost_tracking import CostTrackingBedrockClient
 from aegis.parser.pipeline import PipelineResult, run_pipeline
@@ -271,6 +274,21 @@ async def parse_document(
             "transaction_count": len(result.classified),
             "flag_count": len(result.all_flags),
         },
+    )
+
+    # U15 — cross-statement / related-account detection. Runs
+    # immediately after persist_parse_result so the just-stored
+    # analysis is visible to a downstream re-fetch (not used today,
+    # but keeps the contract honest) and BEFORE the storage step
+    # because the detector is in-memory only — a storage-step failure
+    # must not erase the cross-statement Pattern list either. The
+    # detector returns severity-0 shadow flags (U12 invariant); we
+    # stash them on the in-memory PipelineResult and emit one INFO
+    # log line with flag CODES only — no PII per CLAUDE.md.
+    _run_cross_statement_detection(
+        result=result,
+        document_id=document_id,
+        repository=repository,
     )
 
     # Tampering composition (operator policy 2026-06-04). The pipeline
@@ -523,6 +541,94 @@ async def _run_processor_branch(
 # branch success). Both are rowcount-gated on the audit emission so a
 # false "this changed" row never lands.
 # ===========================================================================
+
+
+def _run_cross_statement_detection(
+    *,
+    result: PipelineResult,
+    document_id: UUID,
+    repository: DocumentRepository,
+) -> None:
+    """U15 — invoke the U12 detector + stash the result on PipelineResult.
+
+    Runs after ``persist_parse_result`` so the just-stored row IS the
+    cross-statement detector's notion of "now" — the orchestrator
+    filters out the current document in the priors list so a SHA hit
+    against the row we just wrote can't false-positive.
+
+    Four early-return paths produce an empty cross_statement_patterns
+    list (and no log line):
+
+      * ``result.extraction`` is ``None`` — page-router low-confidence
+        fail-closed, OCR-oversize bail, or a validation-gate failure.
+        Nothing to compare against because we don't have a holder or
+        last4 from the failed pass-1.
+      * ``doc_after.merchant_id`` is ``None`` — bearer / orphan upload,
+        no merchant scope to query priors under.
+      * The merchant has no prior documents on file — first upload.
+      * The detector returns an empty list (no SHA collision, no
+        related-account drift).
+
+    The successful-fire path emits one INFO log: code list only,
+    NEVER holder strings or document ids per CLAUDE.md PII rules.
+    """
+    if result.extraction is None:
+        return
+
+    # Re-fetch the doc row so the merchant_id we use matches what
+    # persist_parse_result wrote (the worker-merchant migration 034
+    # flow associates merchant_id at persist time even if the
+    # document was created without one).
+    try:
+        doc_after = repository.get_document(document_id)
+    except Exception:
+        # If we can't read our own just-written row, log and skip;
+        # the parse outcome is already persisted, and the
+        # cross-statement Pattern list is informational shadow data.
+        _log.warning(
+            "worker.cross_statement.doc_lookup_failed document_id=%s",
+            document_id,
+        )
+        return
+
+    if doc_after.merchant_id is None:
+        return
+
+    summary = result.extraction.statement.summary
+
+    try:
+        patterns = run_cross_statement_detection(
+            merchant_id=doc_after.merchant_id,
+            current_document_id=document_id,
+            current_sha256=doc_after.sha256_original,
+            current_uploaded_at=doc_after.uploaded_at,
+            current_bank_name=summary.bank_name,
+            current_account_holder=summary.account_holder,
+            current_account_last4=summary.account_last4,
+            repo=repository,
+        )
+    except Exception:
+        # Detector orchestrator failure (DB blip on list_documents or
+        # get_analyses_by_document_ids) must not fail the worker.
+        # The parse + persist already succeeded.
+        _log.warning(
+            "worker.cross_statement.detector_failed document_id=%s",
+            document_id,
+            exc_info=True,
+        )
+        return
+
+    result.cross_statement_patterns = patterns
+
+    if not patterns:
+        return
+
+    codes = ",".join(p.code for p in patterns)
+    _log.info(
+        "cross_statement_signals_detected count=%d codes=%s",
+        len(patterns),
+        codes,
+    )
 
 
 def _audit_tampering_evaluation(

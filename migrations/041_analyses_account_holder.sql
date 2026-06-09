@@ -1,0 +1,40 @@
+-- Migration 041 — analyses.account_holder
+--
+-- M8 / U12 / U15 — commit 62eb3e3 landed the cross-statement detector
+-- (``src/aegis/merchants/cross_statement_detector.py``) which fires
+-- ``related_account_suspected`` when the same legal entity (same
+-- normalized ``account_holder``) appears with a NEW ``account_last4``
+-- across the merchant's prior uploads. The detector consumes
+-- ``PriorAnalysisIdentity`` records assembled from the merchant's prior
+-- ``analyses`` rows — but ``analyses`` today persists ``bank_name`` +
+-- ``account_last4`` (migration 014) and NOT ``account_holder``. Without
+-- this column the worker has no durable holder string to feed the
+-- related-account sub-detector; the detector can only fire on priors
+-- whose holder happens to still live in an unparsed StatementSummary
+-- somewhere, which is never.
+--
+-- This migration adds the column nullable, no default. Nullable because
+-- (a) pass-1 extraction occasionally fails to recover ``account_holder``
+-- on noisy statements (same reason ``bank_name`` is nullable), and
+-- (b) pre-migration ``analyses`` rows have no holder to backfill —
+-- ``StatementSummary`` was dropped after the validation gate before this
+-- column existed, so there's nothing to populate them from. A future
+-- backfill commit can populate via re-parse if the operator chooses;
+-- this migration is purely additive.
+--
+-- NOT indexed. The detector queries by ``merchant_id`` first (covered by
+-- the existing ``idx_analyses_merchant_bank`` index on
+-- (merchant_id, bank_name, account_last4)); the holder comparison runs
+-- in Python under the merchant scope so an additional Postgres index on
+-- ``account_holder`` would add write cost without read benefit.
+--
+-- Per CLAUDE.md PII rules: ``account_holder`` is PII. Loggers MUST mask
+-- it by key name; the column itself is acceptable in the database for
+-- funder review and audit. The cross-statement detector log line
+-- (``cross_statement_signals_detected``) carries flag CODES only, never
+-- holder strings.
+--
+-- Idempotent via ``IF NOT EXISTS``.
+
+ALTER TABLE analyses
+  ADD COLUMN IF NOT EXISTS account_holder TEXT;

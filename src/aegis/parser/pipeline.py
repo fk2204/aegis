@@ -66,7 +66,7 @@ from aegis.parser.page_router import (
     is_homogeneous,
     summarize,
 )
-from aegis.parser.patterns import PatternAnalysis, analyze_patterns
+from aegis.parser.patterns import Pattern, PatternAnalysis, analyze_patterns
 from aegis.parser.tampering import TamperingEvaluation, evaluate_tampering
 from aegis.parser.validate import validate_extraction
 
@@ -154,6 +154,17 @@ class PipelineResult:
     # worker writes the shadow / live audit row when this is set and
     # ``tampering_evaluation.fires`` is True.
     tampering_evaluation: TamperingEvaluation | None = None
+    # U15 — cross-statement / related-account shadow flags emitted by
+    # the U12 detector via ``aegis.merchants.cross_statement_pipeline``.
+    # Populated by the WORKER (not ``run_pipeline``) after the new
+    # analysis is persisted — the detector queries the merchant's
+    # prior parses and only the worker has the merchant context +
+    # repository. Always severity 0 per U12's shadow-only invariant;
+    # NOT merged into ``patterns.patterns`` so a future scoring change
+    # can't accidentally pull cross-document severities into the
+    # per-document ``fraud_score`` sum. Empty list on first uploads /
+    # bearer uploads / merchant_id is None.
+    cross_statement_patterns: list[Pattern] = field(default_factory=list)
 
 
 def run_pipeline(

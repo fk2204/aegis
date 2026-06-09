@@ -92,6 +92,7 @@ def _full_analysis_row() -> AnalysisRow:
         ],
         bank_name="Chase",
         account_last4="1234",
+        account_holder="Acme LLC",
         pattern_analysis=PatternAnalysisDTO(
             schema_version=1,
             patterns=[
