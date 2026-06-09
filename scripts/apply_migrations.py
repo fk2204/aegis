@@ -276,6 +276,27 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='merchants' "
         "AND column_name='status'"
     ),
+    "035_seed_funders_production.sql": (
+        # 035 is an INSERT-only seed, so probe one of the canonical
+        # seeded funder rows. 'OnDeck' is the tier-1 anchor row;
+        # presence implies the migration body executed. Other seed
+        # rows (Rapid Finance, Forward Financing, Credibly, Kapitus,
+        # Mulligan Funding, CFG Merchant Solutions, Pearl Capital)
+        # land in the same INSERT ... ON CONFLICT (name) DO NOTHING
+        # block — one row implies all rows landed.
+        "SELECT 1 FROM funders WHERE name='OnDeck'"
+    ),
+    "036_disclosure_transmissions.sql": (
+        # Probe the table itself: 036 is a new top-level CREATE TABLE,
+        # so table presence is the canonical signal. If the table exists,
+        # every column + index + RLS toggle landed together (single
+        # CREATE TABLE body + sibling CREATE INDEX statements run in
+        # the same migration script). Mirrors the 004 probe pattern
+        # for ``disclosure_transmission_log``.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' "
+        "AND table_name='disclosure_transmissions'"
+    ),
 }
 
 
