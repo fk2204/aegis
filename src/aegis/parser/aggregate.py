@@ -19,6 +19,7 @@ from uuid import UUID
 
 from aegis.logger import get_logger
 from aegis.money import safe_divide
+from aegis.parser.lender_filter import is_lender_proceed
 from aegis.parser.models import Aggregates, ClassifiedTransaction
 
 logger = get_logger(__name__)
@@ -34,6 +35,21 @@ class _Sourced:
 class _SourcedCount:
     value: int
     source_ids: list[UUID]
+
+
+@dataclass
+class _LenderExclusion:
+    """One positive-credit row knocked out of true_revenue by the lender filter.
+
+    Carries the matched key (uppercase substring from KNOWN_LENDERS) and
+    the source row uuid so the aggregator can both surface the WHY
+    (operator-visible flag with the matched name) and preserve audit
+    drill-down (source_id traceability per R0.2 requirement).
+    """
+
+    source_id: UUID
+    amount: Decimal
+    matched_name: str
 
 
 # Categories that count as revenue (deposits net of transfers and chargebacks).
@@ -78,7 +94,7 @@ def aggregate(
     avg_dbl, adb_skipped_days = _avg_daily_balance(
         transactions, beginning_balance, period_start, period_end
     )
-    revenue = _true_revenue(transactions)
+    revenue, lender_exclusions = _true_revenue(transactions)
     nsf = _num_nsf(transactions)
     days_neg = _days_negative(transactions, beginning_balance, period_start, period_end)
     mca_daily = _mca_daily_total(transactions, period_start, period_end)
@@ -95,6 +111,34 @@ def aggregate(
     flags: list[str] = []
     if adb_skipped_days > 0:
         flags.append(f"adb_partial_coverage:{adb_skipped_days}/{period_days}")
+
+    # R0.2 — lender-proceeds exclusion flag. When the deterministic
+    # substring filter knocks LLM-misclassified MCA-funder / SBA / LOC
+    # deposits out of true_revenue, the dossier must show the operator
+    # WHY revenue was reduced and by how much. Single flag keyed
+    # `lender_proceeds_excluded:{count}_${total}_({names})` keeps the
+    # rendering simple while preserving the matched-name list. Per-row
+    # source_ids stay in the excluded transactions' uuids — drillable
+    # from the transactions table via the row.id values listed below.
+    if lender_exclusions:
+        total_excluded = sum(
+            (e.amount for e in lender_exclusions), Decimal("0")
+        ).quantize(Decimal("0.01"))
+        # Preserve match-name evidence; dedupe & sort for stable rendering.
+        names = sorted({e.matched_name for e in lender_exclusions})
+        flags.append(
+            f"lender_proceeds_excluded:{len(lender_exclusions)}_"
+            f"${total_excluded}_({'|'.join(names)})"
+        )
+        for excl in lender_exclusions:
+            # Per-row source-id flag so the audit trail can drill from
+            # the dossier back to specific transactions. Keyed by name
+            # + amount + uuid so duplicate same-funder rows don't
+            # collapse into one entry.
+            flags.append(
+                f"lender_proceeds_excluded_row:{excl.matched_name}_"
+                f"${excl.amount.quantize(Decimal('0.01'))}_{excl.source_id}"
+            )
 
     # New fraud-signal insights — surface without persisting (no DB change
     # this round). Each is None when not applicable.
@@ -425,8 +469,12 @@ def _avg_daily_balance(
     return _Sourced(value=avg, source_ids=sources), skipped_days
 
 
-def _true_revenue(transactions: list[ClassifiedTransaction]) -> _Sourced:
-    """Positive deposit stream minus positive transfer/chargeback credits.
+def _true_revenue(
+    transactions: list[ClassifiedTransaction],
+) -> tuple[_Sourced, list[_LenderExclusion]]:
+    """Positive deposit stream minus positive transfer/chargeback credits
+    AND minus deposits whose descriptor matches a known lender / capital
+    platform (R0.2 — deterministic second pass over LLM classification).
 
     Revenue counts ONLY positive credits from ``_REVENUE_INCLUDED``. From
     ``_REVENUE_EXCLUDED`` (``transfer``, ``chargeback``) we subtract ONLY
@@ -444,17 +492,52 @@ def _true_revenue(transactions: list[ClassifiedTransaction]) -> _Sourced:
 
     Prior implementation subtracted ``abs(t.amount)`` regardless of sign,
     which over-penalized any merchant with outbound intra-bank transfers.
+
+    Lender-filter pass (R0.2): every positive-amount row across
+    ``_REVENUE_INCLUDED`` is also checked against ``is_lender_proceed``.
+    A descriptor match (MCA funder name, capital-platform with explicit
+    lending qualifier, SBA program, line-of-credit phrasing) excludes
+    the row from revenue regardless of LLM-assigned category. This is
+    additive to the transfer/chargeback logic above — no row is
+    subtracted twice because the filter only acts on credits that have
+    already been counted INTO ``total`` via the ``_REVENUE_INCLUDED``
+    branch. Rows already in ``_REVENUE_EXCLUDED`` are never touched by
+    the filter.
     """
     total = Decimal("0")
     sources: list[UUID] = []
+    exclusions: list[_LenderExclusion] = []
+    excluded_ids: set[UUID] = set()
     for t in transactions:
         if t.category in _REVENUE_INCLUDED and t.amount > 0:
+            matched, name = is_lender_proceed(t.description)
+            if matched and name is not None:
+                # Lender proceeds: never counted as revenue. Record the
+                # row + matched name so the dossier can surface the
+                # exclusion and the audit drill-down still works.
+                exclusions.append(
+                    _LenderExclusion(
+                        source_id=t.id,
+                        amount=t.amount,
+                        matched_name=name,
+                    )
+                )
+                excluded_ids.add(t.id)
+                continue
             total += t.amount
             sources.append(t.id)
         elif t.category in _REVENUE_EXCLUDED and t.amount > 0:
             total -= t.amount
             sources.append(t.id)
-    return _Sourced(value=total.quantize(Decimal("0.01")), source_ids=sources)
+    # Preserve traceability — every excluded row's UUID stays accessible
+    # to the caller via the exclusions list. (Not duplicated into
+    # ``sources``: ``sources`` is the contributors-to-revenue list and
+    # excluded rows did not contribute.)
+    _ = excluded_ids  # reserved for future cross-checks; intentionally kept
+    return (
+        _Sourced(value=total.quantize(Decimal("0.01")), source_ids=sources),
+        exclusions,
+    )
 
 
 def _num_nsf(transactions: list[ClassifiedTransaction]) -> _SourcedCount:
