@@ -700,6 +700,23 @@ SOFT_CONCERN_COPY: Final[dict[str, HumanReason]] = {
         ),
         confidence="best_guess",
     ),
+    # U8 — APR could not be computed for the suggested pricing terms.
+    # Emitted by score.py when ``calculate_apr`` raises APRCalculationError
+    # (scipy.optimize.brentq could not bracket a root for the deal's
+    # advance / factor / holdback / term combination). Soft-concern path:
+    # the deal still scores and tiers, but the APR disclosure block can't
+    # render a number until pricing is adjusted.
+    "apr_not_computable": HumanReason(
+        code="apr_not_computable",
+        title="APR could not be computed",
+        description=(
+            "The IRR solver could not bracket a root for the recommended "
+            "factor / holdback / term combination. The deal still scores "
+            "and tiers; APR disclosure is unavailable until pricing is "
+            "tightened. Check the suggested advance against the funder's "
+            "minimum factor envelope."
+        ),
+    ),
 }
 
 

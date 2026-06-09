@@ -45,6 +45,7 @@ _CATEGORY_DISPLAY_ORDER: Final[tuple[CategoryName, ...]] = (
     "soft",
     "math",
     "composite",
+    "shadow",
     "unknown",
 )
 
@@ -62,6 +63,7 @@ CATEGORY_LABELS: Final[dict[str, str]] = {
     "soft":           "Context signals",
     "math":           "Validation gate",
     "composite":      "Composite signals",
+    "shadow":         "Operator review signals (shadow mode)",
     "unknown":        "Unknown",
 }
 

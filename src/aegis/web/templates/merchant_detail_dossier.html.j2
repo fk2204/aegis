@@ -387,6 +387,29 @@
             {% endif %}
           </div>
         {% endif %}
+
+        {# U18 — Operator review signals (shadow mode). Discreet
+           ``<details>`` so the section stays collapsed by default and
+           does not compete with hard-decline reasoning above. Every
+           entry in this list is shadow-mode evidence (severity 0 on
+           the parser side, no tier / decline impact on the scorer
+           side). The operator-side rationale lives in the description
+           sentence per ``aegis.web._flag_labels._FLAG_REGISTRY``;
+           ``data-code`` carries the raw identifier for the audit CSV
+           + browser-dev-tools query. #}
+        {% if shadow_signals %}
+          <details class="shadow-signals marginalia" data-shadow-count="{{ shadow_signals|length }}">
+            <summary>Operator review signals (shadow mode) &mdash; {{ shadow_signals|length }}</summary>
+            <ul>
+              {% for hf in shadow_signals %}
+                <li data-code="{{ hf.code }}">
+                  <strong>{{ hf.title }}{% if hf.detail %} <span class="qual">· {{ hf.detail }}</span>{% endif %}</strong>
+                  {% if hf.description %}<span class="desc">— {{ hf.description }}</span>{% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          </details>
+        {% endif %}
       {% else %}
         <div class="marginalia">
           Score unavailable &mdash; no analyzed statement on file yet, or scoring failed during ingest. Upload at least one statement and refresh.

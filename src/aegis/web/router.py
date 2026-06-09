@@ -22,6 +22,7 @@ on localhost only.
 from __future__ import annotations
 
 import io
+import re
 import urllib.parse
 import zipfile
 from dataclasses import dataclass, replace
@@ -125,7 +126,7 @@ from aegis.parser.patterns import (
     pattern_analysis_from_dto,
 )
 from aegis.scoring.match_funders import match_funder
-from aegis.scoring.models import FunderMatch, ScoreInput
+from aegis.scoring.models import FunderMatch, ScoreInput, ScoreResult
 from aegis.scoring.multi_month import (
     detect_missing_months as _detect_missing_months,
 )
@@ -150,7 +151,7 @@ from aegis.web._attention_card import (
     categorize_flags,
     derive_fraud_band,
 )
-from aegis.web._flag_labels import humanize_audit_action, humanize_flag
+from aegis.web._flag_labels import HumanFlag, humanize_audit_action, humanize_flag
 from aegis.web._pattern_cards import (
     build_pattern_cards,
     humanize_hard_decline,
@@ -2933,6 +2934,84 @@ def _parse_funder_ids(values: list[str]) -> list[UUID]:
     return out
 
 
+_SHADOW_FLAG_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[(?:SHADOW|WARN)\]\s*"
+)
+
+
+def _collect_shadow_flags_for_dossier(
+    *,
+    latest_doc: DocumentRow | None,
+    pattern_analysis: PatternAnalysis | None,
+    score_result: ScoreResult | None,
+) -> list[HumanFlag]:
+    """Roll up humanized shadow flags across every source on the deal.
+
+    Sources:
+      * ``latest_doc.all_flags`` — the parser writes shadow-mode entries
+        as ``[SHADOW] code:detail`` (nsf_secondary R1.8, adb_coverage_thin
+        R1.7) and validation warnings as ``[WARN] code:detail``
+        (daily_balance_continuity_break R1.4,
+        transaction_id_sequence_gap R1.5). We strip both prefixes so
+        ``humanize_flag`` reaches the registry.
+      * ``pattern_analysis.shadow_patterns`` — R1.1 / R1.3 fuzzy / disguise
+        / same-day cluster + M9 structured_deposit_cluster. Stored as
+        ``Pattern(severity=0, code=..., detail=...)``; we synthesize
+        the ``code:detail`` shape ``humanize_flag`` expects.
+      * ``score_result.shadow_flags`` — R3.4 state_enforcement_concern,
+        R4.4 seasonality, R4.6 eof_policy_mismatch, H8 tib_ramp_shadow.
+        Bare ``code:detail`` strings, no prefix.
+
+    Returns a list of humanized ``HumanFlag`` objects deduped by code,
+    ordered source-by-source so the document-level flags come first,
+    then pattern-level, then score-level. Empty list when no shadow
+    signal fires on the deal — the dossier section guards on truthiness
+    and renders nothing.
+
+    Per CLAUDE.md "Decision-boundary changes — shadow-first": every
+    item in this list is informational. The dossier renders it inside
+    a collapsed ``<details>`` so it never competes with hard-decline
+    reasoning.
+    """
+    seen: set[str] = set()
+    out: list[HumanFlag] = []
+
+    def _push(raw: str) -> None:
+        if not raw:
+            return
+        cleaned = _SHADOW_FLAG_PREFIX_RE.sub("", raw, count=1).strip()
+        if not cleaned:
+            return
+        hf = humanize_flag(cleaned)
+        if hf.code in seen:
+            return
+        # Filter to shadow-class entries only — the routine doc flag
+        # cache also includes [WARN] math-failure warnings unrelated to
+        # the shadow families. Use the category as the gate so the set
+        # stays in lockstep with the registry.
+        if hf.category != "shadow":
+            return
+        seen.add(hf.code)
+        out.append(hf)
+
+    if latest_doc is not None and latest_doc.all_flags:
+        for raw in latest_doc.all_flags:
+            _push(raw)
+
+    if pattern_analysis is not None:
+        for p in pattern_analysis.shadow_patterns:
+            if p.detail:
+                _push(f"{p.code}:{p.detail}")
+            else:
+                _push(p.code)
+
+    if score_result is not None and score_result.shadow_flags:
+        for raw in score_result.shadow_flags:
+            _push(raw)
+
+    return out
+
+
 def _dossier_pattern_analysis(
     latest_analysis: AnalysisRow,
     latest_transactions: list[ClassifiedTransaction],
@@ -3173,6 +3252,17 @@ async def merchant_detail(
         pattern_analysis_for_view
     )
 
+    # U18 — humanized shadow flags rolled up across the parser /
+    # validation / scoring layers for the discreet "Operator review
+    # signals (shadow mode)" details section below the verdict. None
+    # of these affect tier / decline; the section is collapsed by
+    # default and stays out of the way of hard-decline reasoning.
+    shadow_signals = _collect_shadow_flags_for_dossier(
+        latest_doc=latest_doc,
+        pattern_analysis=pattern_analysis_for_view,
+        score_result=score_result,
+    )
+
     # Build the unified A+B+C view alongside the existing score block.
     # Pure presentation; no decline-path impact. Step 2 of the scoring
     # redesign retires fraud_score and flips A/B/C live; this commit
@@ -3213,6 +3303,7 @@ async def merchant_detail(
             "history": history,
             "close_last_orchestration_capped": close_last_orchestration_capped,
             "unified_tracks": unified_tracks,
+            "shadow_signals": shadow_signals,
         },
     )
 

@@ -325,6 +325,85 @@ These detectors emit `Pattern(severity=0)` into `PatternAnalysis.shadow_patterns
 - **Do:** Drill into the source rows. If they look like over-the-counter cash deposits, ask the merchant directly about the deposits' origin. If wires from known business counterparties, dismiss. If unexplained, decline-leaning and document the rationale.
 - **Source:** `src/aegis/parser/patterns.py:_detect_structured_deposit_cluster`. Source-ids on the emitted flag are the exact UUIDs of the cluster's contributing transactions.
 
+### `lender_proceeds_excluded:{count}_${total}_({names})` — shadow
+
+- **Lender proceeds excluded from revenue.** Deposits classified as MCA / SBA / LOC funder proceeds were filtered out of `true_revenue` so the metric reflects merchant-generated cash flow. Verify the funder names match disclosed obligations.
+- **Companion:** `lender_proceeds_excluded_row:{name}_${amount}_{uuid}` — one per excluded transaction; the source-id ties back to the audit CSV.
+- **Source:** `src/aegis/parser/aggregate.py`.
+
+### `mca_position_fuzzy_candidate:{funder}_{ratio}_{count}_{first}_{last}` — shadow
+
+- **Possible MCA stacking — descriptor variant.** Debits with descriptors that fuzzy-match a known MCA funder name (similarity ≥85%) without an exact substring hit. Likely a typo / abbreviation variant of a real position.
+- **Source:** `src/aegis/parser/patterns.py:_detect_fuzzy_mca_candidates`.
+
+### `mca_disguise_candidate:{term}_{count}_{median_days}` — shadow
+
+- **Possible MCA — generic descriptor cadence.** A product-neutral phrase ("settlement advance", "revenue based financing") appears on 10+ debits with ≤2-day median spacing — the cadence of a real MCA holdback behind generic language.
+- **Source:** `src/aegis/parser/patterns.py:_detect_disguise_candidates`.
+
+### `mca_same_day_cluster:{date}_{funder_count}_({A|B|C})` — shadow
+
+- **Multiple funders same day.** Three or more distinct MCA funders debited on the same business day — strong indicator of late-stage stacking.
+- **Source:** `src/aegis/parser/patterns.py:_detect_same_day_cluster`.
+
+### `daily_balance_continuity_break:{date}_expected_{x}_actual_{y}_diff_{d}` — shadow
+
+- **Daily balance off by cents.** A day's expected closing balance and the next day's opening balance disagree by ≥$0.01 (the routing-level check uses $1.00). Often benign rounding; can flag surgical row swaps that shift cents without breaking the looser gate.
+- **Companion:** `daily_balance_continuity_breaks_count:{N}` — summary count across the statement.
+- **Source:** `src/aegis/parser/validate.py:_shadow_check_daily_balance_continuity`.
+
+### `transaction_id_sequence_gap:{from}_{to}_{missing}` — shadow
+
+- **Transaction-id sequence gap.** A populated sequential id / reference / confirmation column skips one or more numbers. Possible evidence of deleted rows in the source PDF.
+- **Source:** `src/aegis/parser/validate.py:_shadow_check_transaction_id_sequence_gaps`.
+
+### `adb_coverage_thin:skip_ratio={n}pct_threshold={t}pct_would_route_review` — shadow
+
+- **Average daily balance — thin coverage.** More than 10% of days in the window are missing a daily-balance anchor, so `avg_daily_balance` is computed over too few days to be trusted. Under the proposed policy this would route to manual review.
+- **Source:** `src/aegis/parser/pipeline.py:_adb_coverage_thin_flag`.
+
+### `nsf_corroboration_missing:{date}_${amount}_{snippet}_would_route_review` — shadow
+
+- **NSF lacks corroboration.** An NSF-fee row fired but the surrounding evidence (negative running balance, same-day chargeback / return token) is absent. Could be misclassification.
+- **Companion:** `nsf_low_confidence:{date}_${amount}_conf{N}_{snippet}_would_route_review` — independent signal for NSF rows with classifier confidence <80.
+- **Source:** `src/aegis/parser/nsf_secondary.py`.
+
+### `state_enforcement_concern:{TX_HB700_tx_merchant_review|FL_GA_advance_fee_prohibition|FL_GA_advance_fee_prohibition_for_this_funder}` — shadow
+
+- **State enforcement concern.** Merchant state + funder profile lands on a known regulatory watchlist. Operator-side review hint only; no tier or recommendation change.
+- **Source:** `src/aegis/scoring/score.py` (R3.4); also `src/aegis/scoring/match_funders.py` for the per-funder variant.
+
+### `seasonality_recategorized:cv={cv}_naics={naics}_would_skip_volatility_penalty` — shadow
+
+- **Seasonality — penalty would be skipped.** Revenue CV is high but the merchant's NAICS prefix is on the known-seasonal list AND the CV sits inside the seasonal ceiling. Under the proposed policy the volatility penalty would be skipped.
+- **Companion:** `seasonality_observed_but_volatility_extreme:cv={cv}_naics={naics}_penalty_still_applied` — seasonal industry but CV exceeds even the seasonal ceiling; penalty stays in force.
+- **Source:** `src/aegis/scoring/score.py` (R4.4).
+
+### `eof_policy_mismatch:scorer_declines_at_2_pipeline_routes_review` — shadow
+
+- **EOF policy mismatch.** Legacy scorer hard-declines at >1 EOF marker while pipeline treats 2 EOFs as review-routing. Flag documents the divergence so the operator can flip the scorer side via config without re-deploy.
+- **Source:** `src/aegis/scoring/score.py` (R4.6).
+
+### `tib_ramp_shadow:months={N}_current_delta={X}_graduated_delta={Y}` — shadow
+
+- **Time-in-business — graduated penalty.** Documents what a graduated TIB penalty (-15 / -8 / -5 / -2 / 0 across 3-23 months) would deduct vs. the live -15 / -8 / 0 bands.
+- **Source:** `src/aegis/scoring/score.py:_tib_ramp_shadow_flag` (H8).
+
+### `duplicate_pdf_upload:sha256_match_with_doc={uuid}:uploaded={iso}[:total_prior_copies={n}]` — shadow
+
+- **Duplicate PDF upload.** Same SHA-256 already uploaded for this merchant. The second parse re-computes aggregates against byte-identical data — the dashboard then shows 2x deposits for that period.
+- **Source:** `src/aegis/merchants/cross_statement_detector.py:detect_duplicate_pdf_upload` (U12).
+
+### `related_account_suspected:holder={name}:existing_last4={a,b}:new_last4={c}` — shadow
+
+- **Related account suspected.** Same legal account holder appears with a new last-4 — either an undisclosed sibling account ("revenue hide") or an MCA-debit hideout ("solvency hide"). Request all bank account statements before submitting.
+- **Source:** `src/aegis/merchants/cross_statement_detector.py:detect_related_account_holder` (U12).
+
+### `apr_not_computable` — soft concern (not a flag; appears in `score_result.soft_concerns`)
+
+- **APR could not be computed.** The IRR solver could not bracket a root for the recommended factor / holdback / term combination. The deal still scores and tiers; APR disclosure is unavailable until pricing is tightened.
+- **Source:** `src/aegis/scoring/score.py` (U8).
+
 ---
 
 ## Action ladder [PENDING REVIEW]

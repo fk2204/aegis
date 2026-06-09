@@ -54,6 +54,7 @@ CategoryName = Literal[
     "soft",            # aggregate soft signals (informational)
     "composite",       # ai_generated_score, cluster triangulation
     "math",            # validation gate failures
+    "shadow",          # shadow-mode detectors (R0.2 / R1.x / U10 / U12 / H8 / M9)
     "unknown",         # fallback for new codes without registration
 ]
 
@@ -110,6 +111,14 @@ class HumanFlag:
     severity_band: SeverityBand
     cluster_signals: list[HumanFlag] | None = None
     source_transactions: list[FlagSourceTransaction] | None = None
+    description: str = ""
+    """One-sentence explanation of what fired and what the operator does next.
+
+    Populated for the U18 shadow-flag families (R0.2 / R1.x / U10 / U12 /
+    H8 / M9) so the discreet "Operator review signals (shadow mode)"
+    section on the dossier can render a worker-readable rationale next
+    to the title + detail. Empty string for the legacy chip-only flags
+    where the title + detail already say what the chip means."""
 
     @property
     def chip_class(self) -> str:
@@ -445,6 +454,286 @@ def _fmt_classification_confidence_below_floor(raw: str) -> str:
     return raw
 
 
+# --- U18 shadow-flag families (R0.2 / R1.x / R3.4 / R4.4 / R4.6 / U10 /
+#       U12 / H8 / M9 / R0.4 H7) ----------------------------------------
+#
+# Detail-string formats are documented at the emission site; the
+# formatters below mirror those formats line-for-line. When a regex
+# misses (parser-side format drift) the formatters return ``raw``
+# verbatim — same fallback contract the legacy formatters use, so
+# shadow chips stay readable even when the parser ships a new field.
+
+
+def _fmt_lender_proceeds_excluded(raw: str) -> str:
+    # "{count}_${total}_({name1|name2|...})" — emitted by aggregate.py
+    # when an LLM-misclassified MCA / SBA / LOC deposit is filtered out
+    # of true_revenue. ``names`` are joined with ``|`` to keep them
+    # parseable; we render them comma-joined for the chip text.
+    m = re.match(r"(\d+)_\$([\d.,]+)_\((?P<names>[^)]*)\)", raw)
+    if m:
+        count = int(m.group(1))
+        total = _short_money(m.group(2))
+        names_raw = m.group("names")
+        names = ", ".join(n.strip() for n in names_raw.split("|") if n.strip())
+        if names:
+            return f"{_plural(count, 'deposit')} excluded · ${total} · {names}"
+        return f"{_plural(count, 'deposit')} excluded · ${total}"
+    return raw
+
+
+def _fmt_lender_proceeds_excluded_row(raw: str) -> str:
+    # "{matched_name}_${amount}_{source_id}" — one per excluded row.
+    # Detail-only flag; surfaced on the audit CSV and the shadow dossier
+    # panel for drill-down. UUIDs are noise on a chip; strip them.
+    m = re.match(r"(?P<name>[^_]+(?:_[^_$]+)*)_\$(?P<amount>[\d.,]+)_(?P<uuid>[^_]+)$", raw)
+    if m:
+        amount = _short_money(m.group("amount"))
+        return f"{m.group('name')} · ${amount}"
+    return raw
+
+
+def _fmt_mca_position_fuzzy_candidate(raw: str) -> str:
+    # "{funder}_{ratio}_{count}_{first_iso}_{last_iso}" — emitted by
+    # patterns._detect_fuzzy_mca_candidates. ``ratio`` is the best
+    # fuzzy-match similarity (0..1) rendered as ``0.91`` etc.
+    m = re.match(
+        r"(?P<funder>[^_]+)_(?P<ratio>[\d.]+)_(?P<count>\d+)_"
+        r"(?P<first>\d{4}-\d{2}-\d{2})_(?P<last>\d{4}-\d{2}-\d{2})$",
+        raw,
+    )
+    if m:
+        ratio_pct = round(float(m.group("ratio")) * 100)
+        return (
+            f"{m.group('funder')} · {m.group('count')} hits · "
+            f"{ratio_pct}% similarity · {m.group('first')}→{m.group('last')}"
+        )
+    return raw
+
+
+def _fmt_mca_disguise_candidate(raw: str) -> str:
+    # "{term}_{count}_{median_int}" — emitted by
+    # patterns._detect_disguise_candidates. ``median_int`` is the median
+    # spacing between debits in days, rounded to int.
+    m = re.match(r"(?P<term>.+?)_(?P<count>\d+)_(?P<median>\d+)$", raw)
+    if m:
+        return (
+            f"'{m.group('term')}' · {m.group('count')} debits · "
+            f"{m.group('median')}d median cadence"
+        )
+    return raw
+
+
+def _fmt_mca_same_day_cluster(raw: str) -> str:
+    # "{iso_date}_{funder_count}_({A|B|C})" — emitted by
+    # patterns._detect_same_day_cluster. Funder names joined with ``|``.
+    m = re.match(
+        r"(?P<date>\d{4}-\d{2}-\d{2})_(?P<count>\d+)_\((?P<funders>[^)]*)\)$",
+        raw,
+    )
+    if m:
+        funders = ", ".join(
+            f.strip() for f in m.group("funders").split("|") if f.strip()
+        )
+        return f"{m.group('date')} · {m.group('count')} funders · {funders}"
+    return raw
+
+
+def _fmt_daily_balance_continuity_break(raw: str) -> str:
+    # "{iso_date}_expected_{x}_actual_{y}_diff_{d}" — emitted by
+    # validate._shadow_check_daily_balance_continuity. All three monies
+    # are Decimal strings. Tight chip text — full numbers stay in the
+    # description.
+    m = re.match(
+        r"(?P<date>\d{4}-\d{2}-\d{2})_expected_(?P<exp>[-\d.]+)"
+        r"_actual_(?P<act>[-\d.]+)_diff_(?P<diff>[-\d.]+)$",
+        raw,
+    )
+    if m:
+        return f"{m.group('date')} · off by ${m.group('diff')}"
+    return raw
+
+
+def _fmt_daily_balance_continuity_breaks_count(raw: str) -> str:
+    # "{N}" — summary count emitted alongside the per-day breaks.
+    m = re.match(r"(\d+)$", raw)
+    if m:
+        return _plural(int(m.group(1)), "day off-by-cents")
+    return raw
+
+
+def _fmt_transaction_id_sequence_gap(raw: str) -> str:
+    # "{from}_{to}_{missing}" — emitted by
+    # validate._shadow_check_transaction_id_sequence_gaps.
+    m = re.match(r"(?P<frm>\d+)_(?P<to>\d+)_(?P<missing>\d+)$", raw)
+    if m:
+        return (
+            f"id {m.group('frm')}→{m.group('to')} · "
+            f"{_plural(int(m.group('missing')), 'row')} missing"
+        )
+    return raw
+
+
+def _fmt_adb_coverage_thin(raw: str) -> str:
+    # "skip_ratio={n}pct_threshold={t}pct_would_route_review" — emitted
+    # by pipeline._adb_coverage_thin_flag.
+    m = re.match(
+        r"skip_ratio=(?P<ratio>\d+)pct_threshold=(?P<thresh>\d+)pct",
+        raw,
+    )
+    if m:
+        return (
+            f"{m.group('ratio')}% of days skipped "
+            f"(threshold {m.group('thresh')}%)"
+        )
+    return raw
+
+
+def _fmt_nsf_corroboration_missing(raw: str) -> str:
+    # "{iso_date}_${amount}_{snippet}_would_route_review" — emitted by
+    # nsf_secondary. ``snippet`` is a short description fragment.
+    m = re.match(
+        r"(?P<date>\d{4}-\d{2}-\d{2})_\$(?P<amount>[\d.,]+)_(?P<rest>.+)$",
+        raw,
+    )
+    if m:
+        amount = _short_money(m.group("amount"))
+        snippet = m.group("rest").replace("_would_route_review", "").strip("_")
+        if snippet:
+            return f"{m.group('date')} · ${amount} · {snippet}"
+        return f"{m.group('date')} · ${amount}"
+    return raw
+
+
+def _fmt_nsf_low_confidence(raw: str) -> str:
+    # "{iso_date}_${amount}_conf{N}_{snippet}_would_route_review"
+    m = re.match(
+        r"(?P<date>\d{4}-\d{2}-\d{2})_\$(?P<amount>[\d.,]+)"
+        r"_conf(?P<conf>\d+)_(?P<rest>.+)$",
+        raw,
+    )
+    if m:
+        amount = _short_money(m.group("amount"))
+        snippet = m.group("rest").replace("_would_route_review", "").strip("_")
+        if snippet:
+            return (
+                f"{m.group('date')} · ${amount} · "
+                f"classifier {m.group('conf')}% · {snippet}"
+            )
+        return f"{m.group('date')} · ${amount} · classifier {m.group('conf')}%"
+    return raw
+
+
+def _fmt_state_enforcement_concern(raw: str) -> str:
+    # Three known suffixes:
+    #   TX_HB700_tx_merchant_review
+    #   FL_GA_advance_fee_prohibition
+    #   FL_GA_advance_fee_prohibition_for_this_funder
+    # Spell them out rather than de-snake-casing programmatically so the
+    # chip reads cleanly.
+    if raw == "TX_HB700_tx_merchant_review":
+        return "Texas HB 700 — merchant review"
+    if raw == "FL_GA_advance_fee_prohibition":
+        return "FL / GA advance-fee prohibition"
+    if raw == "FL_GA_advance_fee_prohibition_for_this_funder":
+        return "FL / GA advance-fee prohibition (this funder)"
+    return raw
+
+
+def _fmt_seasonality_recategorized(raw: str) -> str:
+    # "cv={cv}_naics={naics}_would_skip_volatility_penalty"
+    m = re.match(
+        r"cv=(?P<cv>[\d.]+)_naics=(?P<naics>[^_]+)",
+        raw,
+    )
+    if m:
+        return f"CV {m.group('cv')} · NAICS {m.group('naics')} · seasonal"
+    return raw
+
+
+def _fmt_seasonality_observed_but_volatility_extreme(raw: str) -> str:
+    # "cv={cv}_naics={naics}_penalty_still_applied"
+    m = re.match(
+        r"cv=(?P<cv>[\d.]+)_naics=(?P<naics>[^_]+)",
+        raw,
+    )
+    if m:
+        return f"CV {m.group('cv')} · NAICS {m.group('naics')} · extreme"
+    return raw
+
+
+def _fmt_eof_policy_mismatch(raw: str) -> str:
+    # Exactly one known detail today:
+    # "scorer_declines_at_2_pipeline_routes_review"
+    if raw == "scorer_declines_at_2_pipeline_routes_review":
+        return "scorer declines at 2 EOF; pipeline routes to review"
+    return raw
+
+
+def _fmt_tib_ramp_shadow(raw: str) -> str:
+    # "months={N}_current_delta={X}_graduated_delta={Y}" — both deltas
+    # are signed integers (e.g. -15, -8, -5, -2, 0).
+    m = re.match(
+        r"months=(?P<m>\d+)_current_delta=(?P<cur>-?\d+)"
+        r"_graduated_delta=(?P<grad>-?\d+)$",
+        raw,
+    )
+    if m:
+        return (
+            f"{m.group('m')} mo · current {m.group('cur')} → "
+            f"graduated {m.group('grad')}"
+        )
+    return raw
+
+
+def _fmt_structured_deposit_cluster(raw: str) -> str:
+    # "N_deposits_in_14_day_window_dates=YYYYMMDD,YYYYMMDD,..."
+    m = re.match(
+        r"(?P<n>\d+)_deposits_in_(?P<window>\d+)_day_window_dates=(?P<dates>.+)$",
+        raw,
+    )
+    if m:
+        dates = m.group("dates").split(",")
+        return (
+            f"{m.group('n')} in-band deposits · {m.group('window')}d window · "
+            f"first {dates[0]}"
+        )
+    return raw
+
+
+def _fmt_duplicate_pdf_upload(raw: str) -> str:
+    # "sha256_match_with_doc={uuid}:uploaded={iso}[:total_prior_copies={n}]"
+    # Built by joining ``:``-separated key=value parts. UUIDs are noise;
+    # surface the upload timestamp + copy count.
+    parts = raw.split(":")
+    pieces: dict[str, str] = {}
+    for part in parts:
+        if "=" in part:
+            k, v = part.split("=", 1)
+            pieces[k.strip()] = v.strip()
+    uploaded = pieces.get("uploaded", "")
+    copies = pieces.get("total_prior_copies", "")
+    if uploaded and copies:
+        return f"prior upload {uploaded} · {copies} prior copies"
+    if uploaded:
+        return f"prior upload {uploaded}"
+    return raw
+
+
+def _fmt_related_account_suspected(raw: str) -> str:
+    # "holder={name}:existing_last4={a,b}:new_last4={c}"
+    pieces: dict[str, str] = {}
+    for part in raw.split(":"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            pieces[k.strip()] = v.strip()
+    holder = pieces.get("holder", "")
+    existing = pieces.get("existing_last4", "")
+    new_last4 = pieces.get("new_last4", "")
+    if holder and existing and new_last4:
+        return f"{holder} · prior last4 {existing} · new last4 {new_last4}"
+    return raw
+
+
 # --- helpers ---------------------------------------------------------------
 
 
@@ -497,6 +786,7 @@ class _FlagSpec:
     category: CategoryName
     severity_band: SeverityBand
     formatter: Callable[[str], str] | None
+    description: str = ""
 
 
 def _spec(
@@ -504,14 +794,22 @@ def _spec(
     category: CategoryName,
     severity_band: SeverityBand,
     formatter: Callable[[str], str] | None,
+    description: str = "",
 ) -> _FlagSpec:
     """Tiny wrapper so the registry entries stay readable under ruff's
-    100-char line limit."""
+    100-char line limit.
+
+    ``description`` is the operator-facing one-sentence rationale the
+    discreet "Operator review signals (shadow mode)" dossier section
+    renders next to title + detail for the U18 shadow-flag families.
+    Empty string for legacy chip-only flags where the title + detail
+    suffice."""
     return _FlagSpec(
         title=title,
         category=category,
         severity_band=severity_band,
         formatter=formatter,
+        description=description,
     )
 
 
@@ -668,6 +966,233 @@ _FLAG_REGISTRY: Final[dict[str, _FlagSpec]] = {
         "Fraud cluster triangulated", "composite", "decline",
         _fmt_fraud_cluster_triangulation,
     ),
+
+    # === U18 shadow-mode families ======================================
+    # Severity band is ``context`` so the chips render muted; every entry
+    # carries a one-sentence description for the discreet "Operator
+    # review signals (shadow mode)" dossier section. None of these
+    # contribute to fraud_score / hard-decline / tier — shadow only.
+
+    # -- R0.2 lender-proceeds exclusion (aggregate.py) -------------------
+    "lender_proceeds_excluded": _spec(
+        "Lender proceeds excluded from revenue", "shadow", "context",
+        _fmt_lender_proceeds_excluded,
+        description=(
+            "Deposits classified as MCA / SBA / LOC funder proceeds were "
+            "filtered out of true_revenue. Verify the funder names match "
+            "the merchant's disclosed obligations and that the exclusion "
+            "isn't double-counting a legitimate refund."
+        ),
+    ),
+    "lender_proceeds_excluded_row": _spec(
+        "Lender proceeds excluded — row", "shadow", "context",
+        _fmt_lender_proceeds_excluded_row,
+        description=(
+            "Per-row evidence for the lender-proceeds exclusion above. "
+            "One entry per excluded transaction; the source-id ties back "
+            "to the audit CSV."
+        ),
+    ),
+
+    # -- R1.1 fuzzy MCA-funder candidates (patterns.py) ------------------
+    "mca_position_fuzzy_candidate": _spec(
+        "Possible MCA stacking — descriptor variant", "shadow", "context",
+        _fmt_mca_position_fuzzy_candidate,
+        description=(
+            "Debits with descriptors that fuzzy-match a known MCA funder "
+            "name (similarity score ≥85%) without an exact substring hit. "
+            "Likely a typo / abbreviation variant of a real position; "
+            "confirm whether the merchant disclosed this funder."
+        ),
+    ),
+    "mca_disguise_candidate": _spec(
+        "Possible MCA — generic descriptor cadence", "shadow", "context",
+        _fmt_mca_disguise_candidate,
+        description=(
+            "A product-neutral phrase ('settlement advance', 'revenue "
+            "based financing', etc.) appears on 10+ debits with ≤2-day "
+            "median spacing — the cadence of a real MCA holdback hiding "
+            "behind generic language. Confirm with the merchant."
+        ),
+    ),
+
+    # -- R1.3 same-day funder cluster (patterns.py) ----------------------
+    "mca_same_day_cluster": _spec(
+        "Multiple funders same day", "shadow", "context",
+        _fmt_mca_same_day_cluster,
+        description=(
+            "Three or more distinct MCA funders debited on the same "
+            "business day — strong indicator of late-stage stacking. "
+            "Cross-check against the disclosed position list."
+        ),
+    ),
+
+    # -- R1.4 daily balance continuity (validate.py) ---------------------
+    "daily_balance_continuity_break": _spec(
+        "Daily balance off by cents", "shadow", "context",
+        _fmt_daily_balance_continuity_break,
+        description=(
+            "A day's expected closing balance and the next day's opening "
+            "balance disagree by ≥$0.01 (the routing-level check uses "
+            "$1.00). Often a benign rounding artifact, but can flag "
+            "surgical row swaps that shift cents without breaking the "
+            "looser gate."
+        ),
+    ),
+    "daily_balance_continuity_breaks_count": _spec(
+        "Daily balance — break count", "shadow", "context",
+        _fmt_daily_balance_continuity_breaks_count,
+        description=(
+            "Summary count of per-day continuity breaks across the "
+            "statement. One break is usually noise; a cluster is worth "
+            "a second look."
+        ),
+    ),
+
+    # -- R1.5 transaction-id gaps (validate.py) --------------------------
+    "transaction_id_sequence_gap": _spec(
+        "Transaction-id sequence gap", "shadow", "context",
+        _fmt_transaction_id_sequence_gap,
+        description=(
+            "A populated sequential id / reference / confirmation column "
+            "skips one or more numbers. Possible evidence of deleted "
+            "rows in the source PDF — verify against an alternate "
+            "statement format if available."
+        ),
+    ),
+
+    # -- R1.7 ADB coverage thin (pipeline.py) ----------------------------
+    "adb_coverage_thin": _spec(
+        "Average daily balance — thin coverage", "shadow", "context",
+        _fmt_adb_coverage_thin,
+        description=(
+            "More than 10% of days in the statement window are missing "
+            "a daily-balance anchor, so the avg_daily_balance metric is "
+            "computed over too few days to be trusted. Under the "
+            "shadow-mode policy this would route the doc to manual "
+            "review; ship it past once the operator has corpus-validated "
+            "the threshold."
+        ),
+    ),
+
+    # -- R1.8 NSF secondary (nsf_secondary.py) ---------------------------
+    "nsf_corroboration_missing": _spec(
+        "NSF lacks corroboration", "shadow", "context",
+        _fmt_nsf_corroboration_missing,
+        description=(
+            "An NSF-fee row fired but the surrounding evidence (negative "
+            "running balance, same-day or day-1 chargeback / return "
+            "token) is absent. Could be a misclassification — confirm "
+            "the row is a real NSF before letting it drive the NSF "
+            "count metrics."
+        ),
+    ),
+    "nsf_low_confidence": _spec(
+        "NSF — classifier low confidence", "shadow", "context",
+        _fmt_nsf_low_confidence,
+        description=(
+            "An NSF-fee row was emitted with a classification confidence "
+            "below 80. Same row may also fire 'NSF lacks corroboration' "
+            "(independent signals). Spot-check the description before "
+            "trusting the NSF count."
+        ),
+    ),
+
+    # -- R3.4 state-by-state enforcement signals (score.py) --------------
+    "state_enforcement_concern": _spec(
+        "State enforcement concern", "shadow", "context",
+        _fmt_state_enforcement_concern,
+        description=(
+            "Merchant state + funder profile lands on a known regulatory "
+            "watchlist (TX HB 700 merchant review, FL / GA advance-fee "
+            "prohibition). Operator-side review hint only; no tier or "
+            "recommendation change."
+        ),
+    ),
+
+    # -- R4.4 industry-aware seasonality (score.py) ----------------------
+    "seasonality_recategorized": _spec(
+        "Seasonality — penalty would be skipped", "shadow", "context",
+        _fmt_seasonality_recategorized,
+        description=(
+            "Revenue CV is high but the merchant's NAICS prefix is on "
+            "the known-seasonal list AND the CV sits inside the seasonal "
+            "ceiling. Under the proposed policy the volatility penalty "
+            "would be skipped for this deal; current scoring still "
+            "applies the penalty until the operator flips the rule live."
+        ),
+    ),
+    "seasonality_observed_but_volatility_extreme": _spec(
+        "Seasonality — penalty still applied", "shadow", "context",
+        _fmt_seasonality_observed_but_volatility_extreme,
+        description=(
+            "Merchant is in a known-seasonal industry, but the revenue "
+            "CV exceeds even the seasonal ceiling. The volatility "
+            "penalty stays in force; the shadow flag documents that "
+            "seasonality was considered and rejected."
+        ),
+    ),
+
+    # -- R4.6 EOF policy mismatch (score.py) -----------------------------
+    "eof_policy_mismatch": _spec(
+        "EOF policy mismatch", "shadow", "context",
+        _fmt_eof_policy_mismatch,
+        description=(
+            "The legacy scorer hard-declines at >1 EOF marker while the "
+            "pipeline treats 2 EOFs as a review-routing signal. Flag "
+            "documents the divergence so the operator can flip the "
+            "scorer side via config without re-deploy."
+        ),
+    ),
+
+    # -- H8 graduated TIB penalty (score.py) -----------------------------
+    "tib_ramp_shadow": _spec(
+        "Time-in-business — graduated penalty", "shadow", "context",
+        _fmt_tib_ramp_shadow,
+        description=(
+            "Documents what a graduated TIB penalty (-15 / -8 / -5 / -2 / "
+            "0 across 3-23 months) would deduct for this merchant vs. "
+            "the live -15 / -8 / 0 bands. Operator validates against the "
+            "corpus before flipping severity via config."
+        ),
+    ),
+
+    # -- M9 BSA structured-deposit cluster (patterns.py) -----------------
+    "structured_deposit_cluster": _spec(
+        "Possible deposit structuring", "shadow", "context",
+        _fmt_structured_deposit_cluster,
+        description=(
+            "Three or more deposits in the $8,500 - $9,999.99 band "
+            "within a 14-day rolling window — the FinCEN textbook "
+            "structuring pattern (31 USC §5324). Cash-only caveat: "
+            "AEGIS can't distinguish cash from wires from a bank "
+            "statement row. Drill into the source rows before treating "
+            "as a real signal."
+        ),
+    ),
+
+    # -- U12 cross-statement detector (merchants/cross_statement_detector.py)
+    "duplicate_pdf_upload": _spec(
+        "Duplicate PDF upload", "shadow", "context",
+        _fmt_duplicate_pdf_upload,
+        description=(
+            "Same SHA-256 already uploaded for this merchant. The second "
+            "parse re-computes aggregates against byte-identical data — "
+            "the dashboard then shows 2x deposits for that period. "
+            "Reconcile uploads before trusting any merchant-aggregated "
+            "metric."
+        ),
+    ),
+    "related_account_suspected": _spec(
+        "Related account suspected", "shadow", "context",
+        _fmt_related_account_suspected,
+        description=(
+            "Same legal account holder appears with a new last-4 — "
+            "either an undisclosed sibling account ('revenue hide') or "
+            "an MCA-debit hideout ('solvency hide'). Request all bank "
+            "account statements before submitting."
+        ),
+    ),
 }
 
 # Default category + band when a recognized prefix carries an unknown code.
@@ -784,6 +1309,7 @@ def humanize_flag(raw: str) -> HumanFlag:
             category=spec.category,
             severity_band=spec.severity_band,
             cluster_signals=cluster_signals,
+            description=spec.description,
         )
 
     # Unknown code — graceful fallback. Title comes from the code itself
