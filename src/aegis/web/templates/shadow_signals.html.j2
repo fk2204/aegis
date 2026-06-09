@@ -1,0 +1,133 @@
+{% extends "base.html.j2" %}
+{% set active = 'Triage' %}
+{% block title %}Shadow signals — AEGIS{% endblock %}
+
+{# Cross-merchant shadow-signal triage view (U24).
+
+   Global table over ``merchants_shadow_signals`` (migration 044 / U22)
+   with filters for ``signal_code``, ``merchant_id``, and window. The
+   per-merchant dossier remains the place to see one merchant's full
+   signal history; this page is for "what fired across every merchant
+   in the last N days".
+
+   Surface contract: the route populates ``rows`` (list of dicts with
+   ``record`` (MerchantShadowSignalRecord) and ``humanized`` (HumanFlag)),
+   ``from_date``, ``to_date``, ``window_days``, ``filter_code``,
+   ``filter_merchant``. Empty rows render the empty-state copy.
+#}
+
+{% block deck %}
+{% set title = "Shadow signals" %}
+{% set subtitle = "· cross-merchant view · " ~ window_days ~ "-day window" %}
+{% set meta %}
+  From {{ from_date.isoformat() }} to {{ to_date.isoformat() }}
+  &nbsp;·&nbsp;
+  {{ rows|length }} signal{{ '' if rows|length == 1 else 's' }}
+  {% if filter_code %}· code = <code>{{ filter_code }}</code>{% endif %}
+  {% if filter_merchant %}· merchant = <code>{{ filter_merchant|truncate(8, True, '') }}</code>{% endif %}
+{% endset %}
+{% set actions = [
+    {"label": "Triage", "href": "/ui/triage"},
+    {"label": "Portfolio", "href": "/ui/portfolio"},
+] %}
+{% include "_page_header.html.j2" %}
+
+{# Filter form — GET so the URL stays bookmarkable. Empty string = no
+   filter on that field. ``days`` is bounded by the route (1..365). #}
+<form method="get" action="/ui/shadow-signals" class="inline-form" style="margin: 0.5rem 0 1rem;">
+  <label class="sub" for="signals_code">Code</label>
+  <input type="text" id="signals_code" name="code" value="{{ filter_code }}" placeholder="e.g. related_account_suspected">
+  <label class="sub" for="signals_merchant">Merchant ID</label>
+  <input type="text" id="signals_merchant" name="merchant" value="{{ filter_merchant }}" placeholder="UUID">
+  <label class="sub" for="signals_days">Window (days)</label>
+  <input type="number" id="signals_days" name="days" min="1" max="365" value="{{ window_days }}">
+  <button type="submit">Apply</button>
+</form>
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+
+  {# Operator-context banner. Shadow signals are AEGIS internal — they
+     surface cross-statement evidence the parser detected but the
+     scoring layer has NOT promoted to a decline (per the U12 shadow
+     contract, severity stays at 0 until the operator validates the
+     detector against the corpus). #}
+  <div>
+    <div class="empty" role="note" style="margin-bottom:1rem">
+      <strong>Cross-statement evidence in shadow mode.</strong>
+      <span class="copy">
+        Shadow signals are non-decisional today — the U12 cross-statement
+        detector emits them at severity 0 so the operator can validate
+        the catch rate before any decline boundary moves. Drill into the
+        merchant dossier to see the full signal context; this page is the
+        cross-merchant roll-up.
+      </span>
+    </div>
+
+    <header class="sect-head">
+      <h2>Signals</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ rows|length }} signal{{ '' if rows|length == 1 else 's' }}</div>
+    </header>
+
+    {% if not rows %}
+      <div class="empty">
+        No shadow signals matching the current filter
+        <span class="copy">
+          Widen the window with <code>?days=N</code>, clear the code
+          filter, or check the merchant UUID. The per-merchant dossier
+          shows the full signal history for that one merchant.
+        </span>
+      </div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Detected at</th>
+            <th>Merchant</th>
+            <th>Signal</th>
+            <th>Detail</th>
+            <th>Source document</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry in rows %}
+            {% set r = entry.record %}
+            {% set h = entry.humanized %}
+            <tr>
+              <td class="mono-cell">{{ r.detected_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
+              <td class="merchant">
+                <a href="/ui/merchants/{{ r.merchant_id }}">
+                  {{ r.merchant_id|string|truncate(8, True, '') }}
+                </a>
+              </td>
+              <td>
+                <strong>{{ h.title }}</strong>
+                <div class="sub"><code>{{ r.signal_code }}</code></div>
+              </td>
+              <td class="sub">
+                {% if h.detail %}
+                  {{ h.detail }}
+                {% elif r.detail %}
+                  {{ r.detail }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td class="mono-cell">
+                {% if r.source_document_id %}
+                  {{ r.source_document_id|string|truncate(8, True, '') }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+</section>
+{% endblock %}

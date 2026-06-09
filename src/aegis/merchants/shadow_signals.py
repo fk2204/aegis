@@ -53,7 +53,7 @@ writes severity > 0.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
 
@@ -140,6 +140,29 @@ class MerchantShadowSignalRepository(Protocol):
         duplicate_pdf_upload across all merchants in the last week").
         """
 
+    def list_in_window(
+        self,
+        *,
+        from_date: date,
+        to_date: date,
+        signal_code: str | None = None,
+        merchant_id: UUID | None = None,
+        limit: int = 500,
+    ) -> list[MerchantShadowSignalRecord]:
+        """Return shadow signals whose ``detected_at`` falls in the window.
+
+        Drives the U24 ``/ui/shadow-signals`` cross-merchant view + the
+        ``/ui/triage`` aggregator. ``to_date`` is inclusive — implementations
+        expand it to ``to_date + 1 day at 00:00`` (or equivalent) so a row
+        stamped at ``23:59:59`` on ``to_date`` is included. Sorted
+        newest-first.
+
+        ``signal_code`` filters to a single code when set; ``None`` returns
+        all codes. ``merchant_id`` filters to a single merchant when set;
+        ``None`` returns all merchants. Both apply server-side on the
+        Supabase backend.
+        """
+
 
 def _validate_severity(severity: int) -> int:
     """Defensive bounds check. SMALLINT range is well below int max but
@@ -215,6 +238,35 @@ class InMemoryMerchantShadowSignalRepository:
     ) -> list[MerchantShadowSignalRecord]:
         norm = _normalize_code(signal_code)
         matches = [r for r in self.rows if r.signal_code == norm]
+        matches.sort(key=lambda r: r.detected_at, reverse=True)
+        return matches[: max(0, limit)]
+
+    def list_in_window(
+        self,
+        *,
+        from_date: date,
+        to_date: date,
+        signal_code: str | None = None,
+        merchant_id: UUID | None = None,
+        limit: int = 500,
+    ) -> list[MerchantShadowSignalRecord]:
+        norm = _normalize_code(signal_code) if signal_code is not None else None
+        # Inclusive window — every wall-clock instant on ``to_date`` is
+        # in-range, so the comparison is against ``to_date`` end-of-day.
+        upper = datetime.combine(to_date, time.max, tzinfo=UTC)
+        lower = datetime.combine(from_date, time.min, tzinfo=UTC)
+        matches: list[MerchantShadowSignalRecord] = []
+        for r in self.rows:
+            ts = r.detected_at
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            if ts < lower or ts > upper:
+                continue
+            if norm is not None and r.signal_code != norm:
+                continue
+            if merchant_id is not None and r.merchant_id != merchant_id:
+                continue
+            matches.append(r)
         matches.sort(key=lambda r: r.detected_at, reverse=True)
         return matches[: max(0, limit)]
 
@@ -328,6 +380,49 @@ class SupabaseMerchantShadowSignalRepository:
             _log.warning(
                 "merchants.shadow_signal.list_by_code_failed code=%s",
                 norm,
+            )
+            return []
+        rows = cast(list[dict[str, Any]], result.data or [])
+        return [_row_to_record(r) for r in rows]
+
+    def list_in_window(
+        self,
+        *,
+        from_date: date,
+        to_date: date,
+        signal_code: str | None = None,
+        merchant_id: UUID | None = None,
+        limit: int = 500,
+    ) -> list[MerchantShadowSignalRecord]:
+        norm = _normalize_code(signal_code) if signal_code is not None else None
+        # Inclusive window — Postgres TIMESTAMPTZ comparison against
+        # ``to_date`` alone would exclude same-day rows after 00:00, so
+        # the upper bound is end-of-day ISO. Mirrors the U16 repository.
+        lower = datetime.combine(from_date, time.min, tzinfo=UTC).isoformat()
+        upper = datetime.combine(to_date, time.max, tzinfo=UTC).isoformat()
+        try:
+            builder = (
+                get_supabase()
+                .table("merchants_shadow_signals")
+                .select("*")
+                .gte("detected_at", lower)
+                .lte("detected_at", upper)
+                .order("detected_at", desc=True)
+                .limit(max(1, limit))
+            )
+            if norm is not None:
+                builder = builder.eq("signal_code", norm)
+            if merchant_id is not None:
+                builder = builder.eq("merchant_id", str(merchant_id))
+            result = builder.execute()
+        except Exception:
+            _log.warning(
+                "merchants.shadow_signal.list_in_window_failed "
+                "from=%s to=%s code=%s merchant_id=%s",
+                from_date,
+                to_date,
+                norm,
+                merchant_id,
             )
             return []
         rows = cast(list[dict[str, Any]], result.data or [])

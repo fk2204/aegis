@@ -63,6 +63,11 @@ from aegis.merchants.shadow_signals import (
     SupabaseMerchantShadowSignalRepository,
 )
 from aegis.scoring.ofac import OFACClient
+from aegis.scoring_v2.shadow_disagreements import (
+    InMemoryScoringDisagreementRepository,
+    ScoringDisagreementRepository,
+    SupabaseScoringDisagreementRepository,
+)
 from aegis.storage import (
     DocumentRepository,
     InMemoryDocumentRepository,
@@ -200,6 +205,20 @@ def get_submission_repository() -> SubmissionRepository:
 
 
 @lru_cache(maxsize=1)
+def get_scoring_disagreement_repository() -> ScoringDisagreementRepository:
+    """Process-wide ScoringDisagreementRepository (U4 — migration 037+038).
+
+    Drives the U24 ``/ui/triage`` aggregate KPI tile for the scoring
+    shadow-comparison backlog. Same memory / supabase toggle as the
+    other repositories. The U4 triage CLI continues to own the write
+    paths; this factory is for the read-only dashboard surface.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryScoringDisagreementRepository()
+    return SupabaseScoringDisagreementRepository()
+
+
+@lru_cache(maxsize=1)
 def get_decision_snapshot() -> DecisionSnapshot:
     """Process-wide DecisionSnapshot writer (mp Phase 2).
 
@@ -247,6 +266,7 @@ def reset_dependency_caches() -> None:
     get_audit.cache_clear()
     get_decision_snapshot.cache_clear()
     get_disclosure_render_event_repository.cache_clear()
+    get_scoring_disagreement_repository.cache_clear()
     get_submission_repository.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
@@ -268,6 +288,7 @@ __all__ = [
     "get_override_repository",
     "get_renewal_attestation_repository",
     "get_repository",
+    "get_scoring_disagreement_repository",
     "get_submission_repository",
     "reset_dependency_caches",
 ]

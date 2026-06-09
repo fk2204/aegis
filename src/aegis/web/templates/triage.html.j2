@@ -1,0 +1,171 @@
+{% extends "base.html.j2" %}
+{% set active = 'Triage' %}
+{% block title %}Triage backlog — AEGIS{% endblock %}
+
+{# Operator triage backlog (U24).
+
+   Three KPI tiles consolidating the disagreement / render-event / shadow-
+   signal queues. Read-only — actual triage actions happen on the linked-out
+   surfaces (the U4 CLI for disagreements, /ui/disclosure-events for render
+   events, /ui/shadow-signals for shadow signals).
+
+   Surface contract: route handler populates ``backlog`` (TriageBacklog)
+   and ``window_days``. Empty backlog renders the "no triage pending"
+   banner; otherwise every tile renders its count + breakdown + Triage →
+   link. The .strip layout matches portfolio.html.j2's KPI strip idiom.
+#}
+
+{% block deck %}
+{% set title = "Triage backlog" %}
+{% set subtitle = "· operator visibility · " ~ window_days ~ "-day window" %}
+{% set meta %}
+  From {{ backlog.from_date.isoformat() }} to {{ backlog.to_date.isoformat() }}
+  &nbsp;·&nbsp;
+  {{ backlog.total_actionable }} actionable item{{ '' if backlog.total_actionable == 1 else 's' }}
+{% endset %}
+{% set actions = [
+    {"label": "Portfolio", "href": "/ui/portfolio"},
+    {"label": "Today", "href": "/ui/"},
+] %}
+{% include "_page_header.html.j2" %}
+
+{# Window form — GET so the URL stays bookmarkable. Only ``days`` is
+   tunable; the route resolves the from/to dates from "today" each time
+   so the operator's bookmark always shows the current N-day window. #}
+<form method="get" action="/ui/triage" class="inline-form" style="margin: 0.5rem 0 1rem;">
+  <label class="sub" for="triage_days">Window (days)</label>
+  <input type="number" id="triage_days" name="days" min="1" max="365" value="{{ window_days }}">
+  <button type="submit">Apply</button>
+</form>
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+
+  {# Operator-context banner — distinguishes the three queues so the
+     reader knows which surface owns each backlog. #}
+  <div>
+    <div class="empty" role="note" style="margin-bottom:1rem">
+      <strong>Operator triage backlog.</strong>
+      <span class="copy">
+        Three independent queues consolidated here for visibility:
+        scoring shadow-comparison disagreements (corpus run), disclosure
+        render-event failures (APR convergence / template issues), and
+        cross-merchant shadow signals (cross-statement detectors).
+        Drill into each tile to resolve. This page is read-only — open
+        the linked surface to take action.
+      </span>
+    </div>
+
+    {% if backlog.is_empty %}
+      <div class="empty" role="status" style="margin-bottom:1rem">
+        <strong>No triage pending.</strong>
+        <span class="copy">
+          Every queue is empty inside the current window. Widen the
+          window with <code>?days=N</code> to inspect older rows or
+          come back when the next corpus / upload run produces fresh
+          signals.
+        </span>
+      </div>
+    {% endif %}
+  </div>
+
+  {# Three KPI tiles. Same .strip / .cell layout as the portfolio page;
+     each cell shows count + breakdown + Triage → link. Tiles always
+     render (zero is meaningful — "this queue is clean") so the
+     operator's eye sweeps a consistent layout regardless of which
+     surface has the loudest signal today. #}
+  <section class="strip" style="margin-top:1rem">
+
+    {# Tile 1 — Scoring disagreements. Links out to the CLI because no
+       dashboard surface exists yet (R4.1 deferred). The breakdown
+       reads regression-sentinel first. #}
+    <div class="cell">
+      <div class="k">Scoring disagreements</div>
+      <div class="v {{ 'warn' if backlog.scoring_disagreements_open_count > 0 else '' }}">
+        {{ backlog.scoring_disagreements_open_count }}
+      </div>
+      <div class="sub">
+        {% for cat, count in backlog.scoring_disagreements_by_category.items() %}
+          {% if count > 0 %}
+            <div>
+              {% if cat == 'old-caught-something-new-misses' %}
+                <span class="chip neg">REGRESSION</span>
+              {% elif cat == 'new-is-better' %}
+                <span class="chip pos">NEW BETTER</span>
+              {% elif cat == 'genuinely-ambiguous' %}
+                <span class="chip warn">AMBIGUOUS</span>
+              {% elif cat == 'agreement' %}
+                <span class="chip info">AGREEMENT</span>
+              {% elif cat == 'insufficient-new-data' %}
+                <span class="chip info">INSUFFICIENT</span>
+              {% else %}
+                <span class="chip info">{{ cat|upper }}</span>
+              {% endif %}
+              {{ count }}
+            </div>
+          {% endif %}
+        {% endfor %}
+        <div style="margin-top:0.4rem">
+          {% if backlog.scoring_disagreements_open_count == 0 %}
+            <span class="sub">No open disagreements.</span>
+          {% else %}
+            Triage via CLI →
+            <code>uv run python scripts/triage_disagreement.py list</code>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    {# Tile 2 — Disclosure render events. Links to /ui/disclosure-events. #}
+    <div class="cell">
+      <div class="k">Disclosure render events</div>
+      <div class="v {{ 'warn' if backlog.render_events_actionable_count > 0 else '' }}">
+        {{ backlog.render_events_actionable_count }}
+      </div>
+      <div class="sub">
+        <div>
+          <span class="chip warn">NEEDS REVIEW</span>
+          {{ backlog.render_events_by_status.get('needs_review', 0) }}
+        </div>
+        <div>
+          <span class="chip neg">APR FAILED</span>
+          {{ backlog.render_events_by_status.get('apr_compute_failed', 0) }}
+        </div>
+        <div>
+          <span class="chip info">OK</span>
+          {{ backlog.render_events_by_status.get('ok', 0) }}
+        </div>
+        <div style="margin-top:0.4rem">
+          <a href="/ui/disclosure-events">Triage →</a>
+        </div>
+      </div>
+    </div>
+
+    {# Tile 3 — Shadow signals. Links to /ui/shadow-signals. #}
+    <div class="cell">
+      <div class="k">Shadow signals</div>
+      <div class="v {{ 'warn' if backlog.shadow_signals_count_in_window > 0 else '' }}">
+        {{ backlog.shadow_signals_count_in_window }}
+      </div>
+      <div class="sub">
+        {% if backlog.shadow_signals_by_code %}
+          {% for code, count in backlog.shadow_signals_by_code.items() %}
+            <div>
+              <code>{{ code }}</code>
+              {{ count }}
+            </div>
+          {% endfor %}
+        {% else %}
+          <span class="sub">No shadow signals in window.</span>
+        {% endif %}
+        <div style="margin-top:0.4rem">
+          <a href="/ui/shadow-signals">Triage →</a>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+</section>
+{% endblock %}
