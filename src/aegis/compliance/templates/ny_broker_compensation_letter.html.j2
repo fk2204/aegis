@@ -1,0 +1,135 @@
+{#-
+  New York § 600.21(f) — Broker Compensation Disclosure Letter.
+
+  Source-of-truth dossier: docs/compliance/02_new_york.md, section
+  "Broker compensation: REQUIRED disclosure in NY (§ 600.21(f))":
+
+      "When a broker is involved, the provider must inform the
+       recipient in writing how, and by whom, the broker is compensated
+       for their role in the transaction."
+
+  NYDFS Assessment of Public Comments quoted in the dossier:
+      "This general provision does not specify a form of disclosure.
+       Financers have the discretion to explain broking fees, in
+       writing, so long as their disclosures are accurate."
+
+  This letter travels alongside (NOT inside) the standardized § 600.6
+  disclosure. AEGIS is the broker; the funder is the provider. AEGIS
+  delivers the letter on behalf of the funder relationship. The
+  rendered HTML is locked by a snapshot test in
+  tests/compliance/test_broker_compensation_letter.py.
+
+  Visual idiom mirrors ny_cfdl.html.j2 (same masthead, fonts, footer
+  metadata) so a recipient sees the two artifacts as a single package.
+
+  Required context variables:
+    broker_name                              str
+    broker_registration                      str | None  — license / registration
+                                                          identifier; row omitted
+                                                          when None
+    funder_name                              str
+    recipient_name                           str
+    transaction_id                           str
+    letter_date                              str   — ISO date (rendered_at)
+    total_compensation                       str   — pre-formatted "$X,XXX.XX"
+    compensation_paid_by_funder              str   — "$X,XXX.XX"
+    compensation_paid_by_recipient           str   — "$X,XXX.XX"
+    contingent_compensation_description      str   — descriptive text or
+                                                     "None" when no contingent
+                                                     component exists
+-#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Broker Compensation Disclosure — New York (§ 600.21(f))</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 760px; margin: 24px auto;
+         color: #111; }
+  h1   { font-size: 18px; }
+  h2   { font-size: 14px; margin-top: 18px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th, td { border: 1px solid #555; padding: 8px 10px; vertical-align: top;
+           font-size: 12px; }
+  th    { background: #f0f0f0; text-align: left; }
+  .col1 { width: 44%; font-weight: 600; }
+  .col2 { width: 56%; }
+  .statute { background: #f7f7f7; border-left: 3px solid #555;
+             padding: 10px 12px; margin: 12px 0; font-size: 11px;
+             font-family: "SFMono-Regular", Menlo, Consolas, monospace; }
+  .footer { margin-top: 16px; font-size: 11px; color: #333; }
+  .meta   { font-size: 10px; color: #666; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Broker Compensation Disclosure</h1>
+<p class="meta">New York — 23 NYCRR § 600.21(f). Provider: {{ funder_name }}.
+Transaction: {{ transaction_id }}. Date: {{ letter_date }}.</p>
+
+<p>To: {{ recipient_name }}</p>
+
+<p>This written disclosure accompanies the Commercial Financing Disclosure
+issued under 23 NYCRR § 600.6. It informs you how, and by whom,
+{{ broker_name }} (the &ldquo;broker&rdquo;) is compensated in connection with the
+financing offered to you by {{ funder_name }} (the &ldquo;provider&rdquo;).</p>
+
+<h2>Broker identification</h2>
+<table>
+<tbody>
+<tr>
+  <td class="col1">Broker name</td>
+  <td class="col2">{{ broker_name }}</td>
+</tr>
+{%- if broker_registration %}
+<tr>
+  <td class="col1">Broker license / registration</td>
+  <td class="col2">{{ broker_registration }}</td>
+</tr>
+{%- endif %}
+<tr>
+  <td class="col1">Provider (financer)</td>
+  <td class="col2">{{ funder_name }}</td>
+</tr>
+</tbody>
+</table>
+
+<h2>Broker compensation for this transaction</h2>
+<table>
+<tbody>
+<tr>
+  <td class="col1">Total compensation the broker receives in connection
+      with this transaction</td>
+  <td class="col2">{{ total_compensation }}</td>
+</tr>
+<tr>
+  <td class="col1">Amount paid by the provider to the broker</td>
+  <td class="col2">{{ compensation_paid_by_funder }}</td>
+</tr>
+<tr>
+  <td class="col1">Amount paid by the recipient to the broker</td>
+  <td class="col2">{{ compensation_paid_by_recipient }}</td>
+</tr>
+<tr>
+  <td class="col1">Contingent or variable compensation</td>
+  <td class="col2">{{ contingent_compensation_description }}</td>
+</tr>
+</tbody>
+</table>
+
+<p>You may request a written copy of this disclosure from the provider at
+any time. Brokerage fees treated as prepaid finance charges are also
+reflected in the finance charge of the accompanying § 600.6 disclosure,
+as required by 23 NYCRR § 600.17.</p>
+
+<p class="statute">23 NYCRR § 600.21(f): &ldquo;When a broker is involved, the
+provider must inform the recipient in writing how, and by whom, the
+broker is compensated for their role in the transaction.&rdquo;</p>
+
+<p class="footer">New York Applicable law requires this information to be
+provided to you to help you make an informed decision.</p>
+
+<p class="meta">Generated by AEGIS on {{ letter_date }}. Per 23 NYCRR
+Part 600 (§ 600.21(f)).</p>
+</body>
+</html>
