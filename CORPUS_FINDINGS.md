@@ -74,6 +74,77 @@ All 56 PDFs + the `real/` README check pass under `make test-fast`
   PDF. Manifest schema unchanged.
 - **Commit:** initial corpus commit (2026-05-09).
 
+## 2026-06-09 — R4.7 regional-bank layout expansion
+
+Added three new synthetic layouts to `scripts/generate_corpus.py` to close
+audit finding H13 ("Brex / Mercury / community-CU layouts untested"). The
+generator now emits three additional bank slugs alongside the legacy six:
+
+| Slug                   | Display name                       | Idiom                                                                                       |
+|------------------------|------------------------------------|---------------------------------------------------------------------------------------------|
+| `brex_business`        | Brex Inc                           | Modern fintech. Dark banner, period summary block, single transaction table with `Running Balance` column, footer "Statement generated electronically — Brex Inc." |
+| `mercury_business`     | Mercury                            | Minimalist sans-serif. Left-aligned account header (`Mercury` · `Acme Demo LLC` · `Account ····5512`), thin grey rule, transactions grouped by date with the date as a small subheader, period summary at the bottom of the last page |
+| `community_cu_legacy`  | Members Community Credit Union     | Older dense format. Multi-column header (`Statement Date` / `Account Number` / `Customer ID` / `Page X of Y`), 7pt body font, deposits and withdrawals rendered as two separate sub-tables, closing-balance box at the bottom |
+
+Recipes added: 5 scenarios per layout (15 new fixtures, seeds 70001-70005,
+80001-80005, 90101-90105) — `clean_profitable`, `nsf_heavy`, one stress
+scenario each (Brex: `mca_stacked` + `processor_holdback`; Mercury:
+`mca_stacked` + `customer_concentration`; Community CU: `cash_heavy_retail`
++ `declining_revenue`), and a `math_tampered` to exercise the validator on
+each layout. Total corpus is now **71 synthetic PDFs** (was 56).
+
+**Generator surface:** `BankLayout` gained an optional `renderer` callable
+that overrides the default `_render_pdf`. The three R4.7 layouts each ship
+a dedicated `_render_<format>_statement` function; legacy layouts keep
+the shared renderer. Dispatch happens in `_write_pair`:
+
+```python
+renderer = layout.renderer if layout.renderer is not None else _render_pdf
+renderer(stmt, layout, pdf_path)
+```
+
+**Determinism:** verified across three consecutive `python -m
+scripts.generate_corpus --clean` runs — SHA-256 hashes of all 71 PDFs
+matched run-over-run. `canvas.Canvas(invariant=True)` is preserved on the
+new renderers; metadata-tamper hook (`_maybe_append_eof`) reuses the
+single-line append path so `math_tampered_*` and any future
+`metadata_tampered_*` recipe behaves identically across layouts.
+
+**Tests:** new `tests/parser/test_regional_bank_formats.py` (106 cases =
+15 fixtures × 7 parametric checks + 1 coverage assertion). Covers:
+
+1. Text layer is extractable via `pymupdf` (no accidental image-only drop).
+2. Bank-identifying strings (`Brex Inc`, `Mercury`, `Members Community
+   Credit Union`, plus layout-specific markers like `CLOSING BALANCE` /
+   `Deposits & Credits`) are present in the rendered text.
+3. Every manifest transaction amount appears in the text layer (catches
+   row-dropping pagination bugs).
+4. `source_page` and `source_line` are non-null on every transaction
+   (AEGIS auditability rule).
+5. Manifest-feed pipeline matches the manifest's expected status: 12
+   clean / nsf / mca / processor / concentration / declining /
+   cash-heavy fixtures hit `validation_passed=True`; 3 `math_tampered`
+   fixtures correctly trip `reconciliation_failed`.
+6. `true_revenue` stays within the $1 corpus tolerance of `deposit_total`
+   and carries non-empty `source_ids` whenever non-zero.
+7. Negative-case: layouts MUST NOT contain `Chase Business` / `Bank of
+   America` / `Wells Fargo` in their text (guards against the dispatcher
+   regressing to `_render_pdf` for the new slugs).
+
+Existing `tests/test_corpus.py` discovery is `rglob("*.manifest.json")`, so
+the 15 new fixtures are picked up by the legacy corpus runner too —
+yielding 72 corpus items there (was 57). Both suites green.
+
+**Parser regressions discovered:** none in the deterministic
+manifest-feed pipeline. Real-LLM-mode validation (Bedrock `bank_name`
+extraction from the new layouts) was NOT run — that's the `CORPUS_REAL_LLM=1`
+gate and lives outside this commit. Operator follow-up: run the pre-deploy
+real-LLM corpus pass and confirm Claude pulls the correct `bank_name`
+("Brex Inc" / "Mercury" / "Members Community Credit Union") on at least
+one fixture per layout. If any layout produces `bank_name=None` or a
+generic string, file as a follow-up and tune the extraction prompt — do
+NOT relax the test.
+
 ## Conventions for future entries
 
 Each new finding gets a heading + the four-line shape above (Surface /

@@ -1,0 +1,155 @@
+{
+  "bank": "mercury_business",
+  "expected": {
+    "fraud_score": {
+      "max": 25
+    },
+    "hard_decline_reasons": [],
+    "recommendation": "approve",
+    "validation_passed": true
+  },
+  "scenario": "clean_profitable",
+  "seed": 80001,
+  "summary": {
+    "beginning_balance": "5000.00",
+    "deposit_total": "9528.00",
+    "ending_balance": "8484.00",
+    "period_end": "2026-04-30",
+    "period_start": "2026-04-01",
+    "printed_transaction_count": 14,
+    "withdrawal_total": "6044.00"
+  },
+  "tolerances": {
+    "fraud_score": 5,
+    "money": "1.00"
+  },
+  "transactions": [
+    {
+      "amount": "-462.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-02",
+      "running_balance": "4538.00",
+      "source_line": 2,
+      "source_page": 1
+    },
+    {
+      "amount": "2095.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT CUSTOMER PAYMENTS",
+      "posted_date": "2026-04-06",
+      "running_balance": "6633.00",
+      "source_line": 4,
+      "source_page": 1
+    },
+    {
+      "amount": "-149.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-07",
+      "running_balance": "6484.00",
+      "source_line": 6,
+      "source_page": 1
+    },
+    {
+      "amount": "-244.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-09",
+      "running_balance": "6240.00",
+      "source_line": 8,
+      "source_page": 1
+    },
+    {
+      "amount": "2405.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT CUSTOMER PAYMENTS",
+      "posted_date": "2026-04-13",
+      "running_balance": "8645.00",
+      "source_line": 10,
+      "source_page": 1
+    },
+    {
+      "amount": "-455.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-14",
+      "running_balance": "8190.00",
+      "source_line": 12,
+      "source_page": 1
+    },
+    {
+      "amount": "-3500.00",
+      "category": "payroll",
+      "description": "PAYROLL ADP",
+      "posted_date": "2026-04-15",
+      "running_balance": "4690.00",
+      "source_line": 14,
+      "source_page": 1
+    },
+    {
+      "amount": "-150.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-16",
+      "running_balance": "4540.00",
+      "source_line": 16,
+      "source_page": 1
+    },
+    {
+      "amount": "1991.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT CUSTOMER PAYMENTS",
+      "posted_date": "2026-04-20",
+      "running_balance": "6531.00",
+      "source_line": 18,
+      "source_page": 1
+    },
+    {
+      "amount": "-124.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-21",
+      "running_balance": "6407.00",
+      "source_line": 20,
+      "source_page": 1
+    },
+    {
+      "amount": "-408.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-23",
+      "running_balance": "5999.00",
+      "source_line": 22,
+      "source_page": 1
+    },
+    {
+      "amount": "3037.00",
+      "category": "ach_credit",
+      "description": "ACH DEPOSIT CUSTOMER PAYMENTS",
+      "posted_date": "2026-04-27",
+      "running_balance": "9036.00",
+      "source_line": 24,
+      "source_page": 1
+    },
+    {
+      "amount": "-295.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-28",
+      "running_balance": "8741.00",
+      "source_line": 26,
+      "source_page": 1
+    },
+    {
+      "amount": "-257.00",
+      "category": "fee",
+      "description": "VENDOR PAYMENT",
+      "posted_date": "2026-04-30",
+      "running_balance": "8484.00",
+      "source_line": 28,
+      "source_page": 1
+    }
+  ],
+  "version": "1"
+}

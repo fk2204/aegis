@@ -26,6 +26,9 @@ Supported banks
 - ``capital_one_spark``        — Capital One Spark Business
 - ``regional_community_bank``  — generic regional community bank
 - ``credit_union_business``    — generic credit union business account
+- ``brex_business``            — Brex modern-fintech table-centric layout (R4.7)
+- ``mercury_business``         — Mercury minimalist sans-serif layout (R4.7)
+- ``community_cu_legacy``      — Community Credit Union dense multi-column (R4.7)
 
 Supported scenarios
 -------------------
@@ -765,11 +768,19 @@ _SCENARIO_BUILDERS: Final[dict[str, _ScenarioBuilder]] = {
 # --- bank renderers ---------------------------------------------------------
 
 
+_PdfRenderer = Callable[["SyntheticStatement", "BankLayout", Path], None]
+
+
 @dataclass
 class BankLayout:
     name: str
     display_name: str
     header_color: tuple[float, float, float]
+    # Dispatcher to the layout-specific renderer. Defaults to the legacy
+    # ``_render_pdf`` (Chase/BoA/Wells/CapOne/regional/CU share that). R4.7
+    # introduced format-specific renderers for Brex / Mercury / Community CU
+    # so the parser is exercised against visually distinguishable layouts.
+    renderer: _PdfRenderer | None = None
 
 
 CHASE = BankLayout("chase_business", "Chase Business", (0.0, 0.36, 0.65))
@@ -869,6 +880,399 @@ def _render_pdf(statement: SyntheticStatement, layout: BankLayout, out_path: Pat
             f.write(b"\n%%EOF\n")
 
 
+def _maybe_append_eof(statement: SyntheticStatement, out_path: Path) -> None:
+    """Shared tamper-eof tail used by all layout renderers."""
+    if statement.tamper_extra_eof:
+        with out_path.open("ab") as f:
+            f.write(b"\n%%EOF\n")
+
+
+def _assign_source_locations(
+    statement: SyntheticStatement,
+    page_for_index: list[int],
+    line_for_index: list[int],
+) -> None:
+    """Apply page/line numbers computed during layout to the manifest rows."""
+    for idx, tx in enumerate(statement.transactions):
+        tx.source_page = page_for_index[idx]
+        tx.source_line = line_for_index[idx]
+
+
+def _render_brex_statement(
+    statement: SyntheticStatement, layout: BankLayout, out_path: Path
+) -> None:
+    """Brex layout — modern fintech, table-centric, single Running Balance column.
+
+    Visual idiom: top banner reads "Brex Inc · Statement for [period]"; one
+    transaction table spanning the page (Date | Description | Amount | Running
+    Balance); footer reads "Statement generated electronically — Brex Inc.".
+    Sans-serif throughout (Helvetica).
+    """
+    c = canvas.Canvas(str(out_path), pagesize=LETTER, invariant=True)
+    width, height = LETTER
+
+    page_num = 1
+    line_in_page = 1
+    page_for_index: list[int] = []
+    line_for_index: list[int] = []
+
+    def _draw_header() -> None:
+        c.setFillColorRGB(*layout.header_color)
+        c.rect(0, height - 0.75 * inch, width, 0.75 * inch, fill=1, stroke=0)
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(0.5 * inch, height - 0.5 * inch, "Brex Inc")
+        c.setFont("Helvetica", 10)
+        c.drawRightString(
+            width - 0.5 * inch,
+            height - 0.5 * inch,
+            f"Statement for {statement.period_start} — {statement.period_end}",
+        )
+
+    def _draw_summary() -> float:
+        c.setFillColor(colors.black)
+        top = height - 1.2 * inch
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(0.5 * inch, top, "Period summary")
+        c.setFont("Helvetica", 10)
+        lines = [
+            f"Beginning balance: ${statement.beginning_balance}",
+            f"Total deposits and additions: ${statement.deposit_total}",
+            f"Total withdrawals: ${statement.withdrawal_total}",
+            f"Ending balance: ${statement.ending_balance}",
+        ]
+        for i, ln in enumerate(lines):
+            c.drawString(0.5 * inch, top - (0.18 * inch * (i + 1)), ln)
+        return float(top - (0.18 * inch * (len(lines) + 1)))
+
+    def _draw_table_header(y: float) -> float:
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(0.5 * inch, y, "Date")
+        c.drawString(1.2 * inch, y, "Description")
+        c.drawRightString(5.3 * inch, y, "Amount")
+        c.drawRightString(7.0 * inch, y, "Running Balance")
+        c.line(0.5 * inch, y - 0.05 * inch, 7.0 * inch, y - 0.05 * inch)
+        return float(y - 0.25 * inch)
+
+    _draw_header()
+    summary_bottom = _draw_summary()
+    row_y = _draw_table_header(summary_bottom - 0.25 * inch)
+
+    c.setFont("Helvetica", 9)
+    for tx in statement.transactions:
+        if row_y < 0.9 * inch:
+            c.setFont("Helvetica-Oblique", 8)
+            c.setFillColor(colors.grey)
+            c.drawCentredString(
+                width / 2, 0.5 * inch, "Statement generated electronically — Brex Inc."
+            )
+            c.setFillColor(colors.black)
+            c.showPage()
+            page_num += 1
+            line_in_page = 1
+            _draw_header()
+            row_y = _draw_table_header(height - 1.2 * inch)
+            c.setFont("Helvetica", 9)
+
+        page_for_index.append(page_num)
+        line_for_index.append(line_in_page)
+
+        c.drawString(0.5 * inch, row_y, tx.posted_date.isoformat())
+        c.drawString(1.2 * inch, row_y, tx.description[:48])
+        c.drawRightString(5.3 * inch, row_y, f"${tx.amount}")
+        c.drawRightString(7.0 * inch, row_y, f"${tx.running_balance}")
+        row_y -= 0.18 * inch
+        line_in_page += 1
+
+    # Final-page footer.
+    c.setFont("Helvetica-Oblique", 8)
+    c.setFillColor(colors.grey)
+    c.drawCentredString(
+        width / 2, 0.5 * inch, "Statement generated electronically — Brex Inc."
+    )
+
+    _assign_source_locations(statement, page_for_index, line_for_index)
+    c.save()
+    _maybe_append_eof(statement, out_path)
+
+
+def _render_mercury_statement(
+    statement: SyntheticStatement, layout: BankLayout, out_path: Path
+) -> None:
+    """Mercury layout — minimalist sans-serif with grouped-by-date subheaders.
+
+    Visual idiom: left-aligned bank header block (Mercury · account holder ·
+    account_last4), thin rule, then transactions grouped by date with the
+    date as a small subheader and the rows underneath. Period summary lives
+    at the bottom of the final page (not the top).
+    """
+    c = canvas.Canvas(str(out_path), pagesize=LETTER, invariant=True)
+    width, height = LETTER
+
+    page_num = 1
+    line_in_page = 1
+    page_for_index: list[int] = []
+    line_for_index: list[int] = []
+
+    def _draw_account_header() -> float:
+        c.setFillColor(colors.black)
+        top = height - 0.6 * inch
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(0.5 * inch, top, "Mercury")
+        c.setFont("Helvetica", 10)
+        c.drawString(0.5 * inch, top - 0.22 * inch, "Acme Demo LLC")
+        c.drawString(0.5 * inch, top - 0.40 * inch, "Account ····5512")
+        c.drawRightString(
+            width - 0.5 * inch,
+            top,
+            f"{statement.period_start} — {statement.period_end}",
+        )
+        rule_y = top - 0.60 * inch
+        c.setStrokeColor(colors.lightgrey)
+        c.line(0.5 * inch, rule_y, width - 0.5 * inch, rule_y)
+        c.setStrokeColor(colors.black)
+        return float(rule_y - 0.2 * inch)
+
+    def _draw_summary(y: float) -> None:
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(0.5 * inch, y, "Period summary")
+        c.setFont("Helvetica", 9)
+        lines = [
+            f"Beginning balance: ${statement.beginning_balance}",
+            f"Total deposits and additions: ${statement.deposit_total}",
+            f"Total withdrawals: ${statement.withdrawal_total}",
+            f"Ending balance: ${statement.ending_balance}",
+        ]
+        for i, ln in enumerate(lines):
+            c.drawString(0.5 * inch, y - (0.16 * inch * (i + 1)), ln)
+
+    row_y = _draw_account_header()
+    last_date: date | None = None
+    c.setFont("Helvetica", 9)
+    for tx in statement.transactions:
+        # Reserve 1.5" at the bottom for the period summary on the last page.
+        if row_y < 1.5 * inch:
+            c.showPage()
+            page_num += 1
+            line_in_page = 1
+            row_y = _draw_account_header()
+            last_date = None
+            c.setFont("Helvetica", 9)
+
+        if tx.posted_date != last_date:
+            c.setFont("Helvetica-Bold", 9)
+            c.setFillColor(colors.grey)
+            c.drawString(0.5 * inch, row_y, tx.posted_date.isoformat())
+            c.setFillColor(colors.black)
+            c.setFont("Helvetica", 9)
+            row_y -= 0.16 * inch
+            line_in_page += 1
+            last_date = tx.posted_date
+
+        page_for_index.append(page_num)
+        line_for_index.append(line_in_page)
+
+        c.drawString(0.7 * inch, row_y, tx.description[:55])
+        c.drawRightString(5.6 * inch, row_y, f"${tx.amount}")
+        c.drawRightString(7.0 * inch, row_y, f"${tx.running_balance}")
+        row_y -= 0.16 * inch
+        line_in_page += 1
+
+    # Period summary at the bottom of the last page.
+    _draw_summary(1.2 * inch)
+
+    _assign_source_locations(statement, page_for_index, line_for_index)
+    c.save()
+    _maybe_append_eof(statement, out_path)
+
+
+def _render_community_cu_statement(
+    statement: SyntheticStatement, layout: BankLayout, out_path: Path
+) -> None:
+    """Community CU layout — older dense format with split deposit/withdrawal tables.
+
+    Visual idiom: multi-column header (Statement Date / Account Number /
+    Customer ID / Page X of Y), smaller font, deposits and withdrawals
+    rendered in two separate sub-tables, closing balance in a prominent
+    bottom box.
+    """
+    c = canvas.Canvas(str(out_path), pagesize=LETTER, invariant=True)
+    width, height = LETTER
+
+    deposits = [t for t in statement.transactions if t.amount > 0]
+    withdrawals = [t for t in statement.transactions if t.amount < 0]
+
+    # Two passes: pass 1 lays out to compute total pages; pass 2 emits the
+    # PDF with "Page X of Y" filled in. We approximate Y by simulating the
+    # layout once with the same row heights.
+    def _simulate_pages() -> int:
+        rows_per_page_first = 36  # accounting for tighter header on page 1
+        rows_per_page_rest = 44
+        # +2 section headers and +1 closing-balance footer treated as rows.
+        total_rows = len(deposits) + len(withdrawals) + 3
+        if total_rows <= rows_per_page_first:
+            return 1
+        remaining = total_rows - rows_per_page_first
+        return 1 + ((remaining + rows_per_page_rest - 1) // rows_per_page_rest)
+
+    total_pages = _simulate_pages()
+    page_num = 1
+    line_in_page = 1
+    # Map transaction object id -> idx into statement.transactions so we
+    # can record page/line into the manifest's original order even though
+    # we render deposits and withdrawals in two separate sub-tables.
+    tx_index = {id(t): i for i, t in enumerate(statement.transactions)}
+    pending_pages: list[int | None] = [None] * len(statement.transactions)
+    pending_lines: list[int | None] = [None] * len(statement.transactions)
+
+    def _draw_header() -> float:
+        c.setFillColorRGB(*layout.header_color)
+        c.rect(0, height - 0.6 * inch, width, 0.6 * inch, fill=1, stroke=0)
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 13)
+        c.drawString(0.4 * inch, height - 0.4 * inch, layout.display_name)
+        c.setFillColor(colors.black)
+        # Multi-column meta row
+        meta_top = height - 0.85 * inch
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(0.4 * inch, meta_top, "Statement Date")
+        c.drawString(2.0 * inch, meta_top, "Account Number")
+        c.drawString(4.0 * inch, meta_top, "Customer ID")
+        c.drawString(6.0 * inch, meta_top, "Page")
+        c.setFont("Helvetica", 8)
+        c.drawString(
+            0.4 * inch, meta_top - 0.14 * inch, statement.period_end.isoformat()
+        )
+        c.drawString(2.0 * inch, meta_top - 0.14 * inch, "··········7741")
+        c.drawString(4.0 * inch, meta_top - 0.14 * inch, "CU-00482")
+        c.drawString(
+            6.0 * inch,
+            meta_top - 0.14 * inch,
+            f"{page_num} of {total_pages}",
+        )
+        c.line(0.4 * inch, meta_top - 0.22 * inch, width - 0.4 * inch, meta_top - 0.22 * inch)
+        return float(meta_top - 0.42 * inch)
+
+    row_y = _draw_header()
+
+    def _draw_section_title(label: str, y: float) -> float:
+        nonlocal line_in_page
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(0.4 * inch, y, label)
+        c.setFont("Helvetica-Bold", 7)
+        c.drawString(0.4 * inch, y - 0.14 * inch, "Date")
+        c.drawString(1.0 * inch, y - 0.14 * inch, "Description")
+        c.drawRightString(5.0 * inch, y - 0.14 * inch, "Amount")
+        c.drawRightString(7.0 * inch, y - 0.14 * inch, "Balance")
+        c.line(0.4 * inch, y - 0.18 * inch, 7.0 * inch, y - 0.18 * inch)
+        line_in_page += 1  # section header counts as a layout line
+        return float(y - 0.30 * inch)
+
+    def _maybe_page_break(y: float) -> float:
+        nonlocal page_num, line_in_page, row_y
+        if y >= 0.9 * inch:
+            return y
+        c.setFont("Helvetica-Oblique", 7)
+        c.setFillColor(colors.grey)
+        c.drawCentredString(
+            width / 2, 0.45 * inch, "Members Community Credit Union · Confidential"
+        )
+        c.setFillColor(colors.black)
+        c.showPage()
+        page_num += 1
+        line_in_page = 1
+        return _draw_header()
+
+    # Deposits section
+    row_y = _draw_section_title("Deposits & Credits", row_y)
+    c.setFont("Helvetica", 7)
+    for tx in deposits:
+        row_y = _maybe_page_break(row_y)
+        idx = tx_index[id(tx)]
+        pending_pages[idx] = page_num
+        pending_lines[idx] = line_in_page
+        c.drawString(0.4 * inch, row_y, tx.posted_date.isoformat())
+        c.drawString(1.0 * inch, row_y, tx.description[:60])
+        c.drawRightString(5.0 * inch, row_y, f"${tx.amount}")
+        c.drawRightString(7.0 * inch, row_y, f"${tx.running_balance}")
+        row_y -= 0.13 * inch
+        line_in_page += 1
+
+    # Withdrawals section
+    row_y -= 0.15 * inch
+    row_y = _maybe_page_break(row_y)
+    row_y = _draw_section_title("Withdrawals & Debits", row_y)
+    c.setFont("Helvetica", 7)
+    for tx in withdrawals:
+        row_y = _maybe_page_break(row_y)
+        idx = tx_index[id(tx)]
+        pending_pages[idx] = page_num
+        pending_lines[idx] = line_in_page
+        c.drawString(0.4 * inch, row_y, tx.posted_date.isoformat())
+        c.drawString(1.0 * inch, row_y, tx.description[:60])
+        c.drawRightString(5.0 * inch, row_y, f"${tx.amount}")
+        c.drawRightString(7.0 * inch, row_y, f"${tx.running_balance}")
+        row_y -= 0.13 * inch
+        line_in_page += 1
+
+    # Closing balance prominent box
+    row_y -= 0.30 * inch
+    row_y = _maybe_page_break(row_y - 0.4 * inch) - (-0.4 * inch)  # keep box together
+    c.setStrokeColor(colors.black)
+    c.setLineWidth(1.0)
+    c.rect(0.4 * inch, row_y - 0.4 * inch, width - 0.8 * inch, 0.4 * inch)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(0.5 * inch, row_y - 0.25 * inch, "CLOSING BALANCE")
+    c.drawRightString(
+        width - 0.5 * inch, row_y - 0.25 * inch, f"${statement.ending_balance}"
+    )
+
+    # Final footer
+    c.setFont("Helvetica-Oblique", 7)
+    c.setFillColor(colors.grey)
+    c.drawCentredString(
+        width / 2, 0.45 * inch, "Members Community Credit Union · Confidential"
+    )
+
+    # Materialize the page/line assignments back onto statement.transactions
+    # in manifest order (deposits and withdrawals were drawn in two passes
+    # but pending_* arrays were indexed by the manifest position).
+    final_pages: list[int] = []
+    final_lines: list[int] = []
+    for i in range(len(statement.transactions)):
+        p = pending_pages[i]
+        ln = pending_lines[i]
+        if p is None or ln is None:  # pragma: no cover — defensive
+            raise RuntimeError(
+                f"community_cu renderer: transaction {i} was not laid out"
+            )
+        final_pages.append(p)
+        final_lines.append(ln)
+    _assign_source_locations(statement, final_pages, final_lines)
+    c.save()
+    _maybe_append_eof(statement, out_path)
+
+
+BREX = BankLayout(
+    "brex_business",
+    "Brex Inc",
+    (0.10, 0.10, 0.12),
+    renderer=_render_brex_statement,
+)
+MERCURY = BankLayout(
+    "mercury_business",
+    "Mercury",
+    (0.00, 0.00, 0.00),
+    renderer=_render_mercury_statement,
+)
+COMMUNITY_CU = BankLayout(
+    "community_cu_legacy",
+    "Members Community Credit Union",
+    (0.18, 0.30, 0.45),
+    renderer=_render_community_cu_statement,
+)
+
+
 # --- corpus recipes ---------------------------------------------------------
 
 
@@ -947,6 +1351,28 @@ CORPUS_RECIPES: Final[tuple[Recipe, ...]] = (
     Recipe("credit_union_business", "declining_revenue", 60003),
     Recipe("credit_union_business", "customer_concentration", 60004),
     Recipe("credit_union_business", "preloan_spike", 60005),
+
+    # R4.7 — Brex modern-fintech layout (5-scenario subset; same shapes
+    # as the legacy banks so existing parsed-totals assertions don't drift).
+    Recipe("brex_business", "clean_profitable", 70001),
+    Recipe("brex_business", "nsf_heavy", 70002),
+    Recipe("brex_business", "mca_stacked", 70003),
+    Recipe("brex_business", "processor_holdback", 70004),
+    Recipe("brex_business", "math_tampered", 70005),
+
+    # R4.7 — Mercury minimalist sans-serif layout (5-scenario subset).
+    Recipe("mercury_business", "clean_profitable", 80001),
+    Recipe("mercury_business", "nsf_heavy", 80002),
+    Recipe("mercury_business", "mca_stacked", 80003),
+    Recipe("mercury_business", "customer_concentration", 80004),
+    Recipe("mercury_business", "math_tampered", 80005),
+
+    # R4.7 — Community CU dense legacy layout (5-scenario subset).
+    Recipe("community_cu_legacy", "clean_profitable", 90101),
+    Recipe("community_cu_legacy", "nsf_heavy", 90102),
+    Recipe("community_cu_legacy", "cash_heavy_retail", 90103),
+    Recipe("community_cu_legacy", "declining_revenue", 90104),
+    Recipe("community_cu_legacy", "math_tampered", 90105),
 )
 
 _BANK_LAYOUTS: Final[dict[str, BankLayout]] = {
@@ -956,6 +1382,9 @@ _BANK_LAYOUTS: Final[dict[str, BankLayout]] = {
     "capital_one_spark": CAPITAL_ONE,
     "regional_community_bank": REGIONAL,
     "credit_union_business": CREDIT_UNION,
+    "brex_business": BREX,
+    "mercury_business": MERCURY,
+    "community_cu_legacy": COMMUNITY_CU,
 }
 
 
@@ -977,7 +1406,8 @@ def _write_pair(stmt: SyntheticStatement, out_dir: Path) -> tuple[Path, Path]:
     manifest_path = out_dir / f"{stmt.slug}.manifest.json"
 
     layout = _BANK_LAYOUTS[stmt.bank]
-    _render_pdf(stmt, layout, pdf_path)
+    renderer = layout.renderer if layout.renderer is not None else _render_pdf
+    renderer(stmt, layout, pdf_path)
 
     manifest: dict[str, Any] = {
         "version": MANIFEST_VERSION,
