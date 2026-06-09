@@ -158,9 +158,37 @@ def severity_for_lowest_balance(lowest_balance: Money) -> SignalSeverity:
 # Concentration thresholds. Track C surfaces concentration as
 # DURABILITY, not fraud; Track B reads it as a BAND-MODIFYING factor
 # — high concentration nudges the band up by one notch from
-# cashflow-only signals. The international floor (30%) matches Track
-# C's _DURABILITY_SHARE_FLOOR_PCT to keep the two tracks aligned.
+# cashflow-only signals.
+#
+# cite: docs/AEGIS_MASTER_PLAN.md §6.4 (`customer_concentration`
+#   detector — "One counterparty >30% of revenue") and the §5 Industry
+#   Statement-Analysis Standards row ("Largest deposit % of revenue —
+#   >30% from one source = customer concentration"). The 30% floor
+#   also matches Track C's `_DURABILITY_SHARE_FLOOR_PCT`
+#   (src/aegis/scoring_v2/track_c/framing.py:42) so the two tracks
+#   stay aligned: below 30% the concentration is informational only.
+# rationale: 30% = floor at which a single international counterparty
+#   becomes a meaningful durability question — would the merchant
+#   survive losing that one revenue stream? Below this, Track C marks
+#   the row `info` and Track B treats it as `neutral`.
+# Re-validate quarterly per the research-currency note in
+#   docs/SCORING_REDESIGN_CONTINUATION.md:20 (baseline 2026-06-04).
 _INTERNATIONAL_CONCENTRATION_CONCERN: Final[Decimal] = Decimal("30")
+
+# cite: docs/AEGIS_MASTER_PLAN.md §6.4 — `customer_concentration`
+#   detector severity ladder ("31-40 = mild (10), 41-60 = moderate
+#   (20), 61+ = severe (30)"), echoed in
+#   src/aegis/web/_pattern_cards.py:226-231 ("severity 10 / 20 / 30 at
+#   30% / 40% / 60%") and in src/aegis/scoring_v2/track_c/__init__.py:22
+#   ("if 60% of revenue is from one named end customer, the deal lives
+#   or dies on that one relationship").
+# rationale: 60% = the operator's "elevated" trigger for international
+#   concentration risk; above this the band sits at `elevated`
+#   regardless of cashflow strength. Capped at `elevated` (never
+#   `critical`) because international wires are revenue, not fraud
+#   — see severity_for_international_concentration docstring below.
+# Re-validate quarterly per the research-currency note in
+#   docs/SCORING_REDESIGN_CONTINUATION.md:20 (baseline 2026-06-04).
 _INTERNATIONAL_CONCENTRATION_ELEVATED: Final[Decimal] = Decimal("60")
 
 
