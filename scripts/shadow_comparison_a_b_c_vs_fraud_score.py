@@ -1,8 +1,16 @@
 """Step 2a — SHADOW COMPARISON of the new A/B/C tracks vs the live
 ``fraud_score`` decision path.
 
-READ-ONLY. Zero writes. Zero database mutations. Does not touch the live
-decline path, does not modify ``fraud_score``, does not change scoring.
+DEFAULT MODE: read-only. Zero writes. Zero database mutations. Walks every
+merchant in the corpus, prints the comparison to stdout.
+
+``--persist`` MODE (R1.6, operator-side cutover prep): in addition to
+printing, persists each disagreement into ``scoring_shadow_disagreements``
+(migration 037) via the Supabase repository helper in
+``aegis.scoring_v2.shadow_disagreements``. The open-triage view
+``scoring_disagreements_open`` (migration 038) is the operator's
+triage queue.
+
 For each merchant in the corpus, compares:
 
 1. LIVE: what does the existing ``score_deal`` pipeline decide today?
@@ -25,22 +33,31 @@ For each merchant in the corpus, compares:
        * **genuinely-ambiguous**          — differing but neither
                                             obviously better.  Needs an
                                             operator judgment call.
+       * **insufficient-new-data**        — neither surface actionable.
 
 This script lives at ``scripts/`` (flat) — read-only prod diagnostics
 sit here alongside ``check_vu7722_status.py`` /
 ``vu_cross_account_analysis.py``. ``scripts/audit/`` is reserved for
 prod-WRITE / side-effect / external-API-cost scripts (seeds, reparses,
-captures, Bedrock probes).
+captures, Bedrock probes). The ``--persist`` flag explicitly opts in to
+writes against the triage-queue table.
+
+Idempotency: re-running ``--persist`` on the same merchant on the same
+UTC day with identical evidence does NOT create duplicate rows. The
+repository pre-queries an idempotency anchor of
+``(merchant_id, comparison_run_at::date, category, sha256(evidence))``.
 
 Usage on the box, with ``/etc/aegis/aegis.env`` sourced::
 
     set -a; source /etc/aegis/aegis.env; set +a
     cd /opt/aegis
     .venv/bin/python scripts/shadow_comparison_a_b_c_vs_fraud_score.py
+    .venv/bin/python scripts/shadow_comparison_a_b_c_vs_fraud_score.py --persist
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 import traceback
 from collections.abc import Iterable
@@ -56,6 +73,12 @@ from aegis.scoring.models import ScoreResult
 from aegis.scoring.multi_month import score_input_multi_month
 from aegis.scoring.score import score_deal
 from aegis.scoring_v2.dossier_panel import UnifiedTracksView, build_unified_tracks_view
+from aegis.scoring_v2.shadow_disagreements import (
+    ScoringDisagreementRepository,
+    ScoringDisagreementWriteError,
+    SupabaseScoringDisagreementRepository,
+    record_disagreement,
+)
 from aegis.storage import AnalysisRow, DocumentRow, SupabaseDocumentRepository
 
 # ─────────────────────────────────────────────────────────────────────
@@ -562,11 +585,117 @@ def _print_per_merchant_detail(rows: list[MerchantComparison]) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Persistence (R1.6 — --persist flag)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _evidence_from_row(row: MerchantComparison) -> dict[str, Any]:
+    """Pack the categorisation inputs into the JSONB ``evidence`` shape.
+
+    Self-contained snapshot: future operator review must be able to read
+    the row without re-running the script. PII-free by construction —
+    every value is an enum, a factor name, a numeric share, or a
+    category-internal error string. No business name, no transaction
+    descriptions, no account numbers.
+    """
+    return {
+        "rationale": row.rationale,
+        "live_hard_reasons": list(row.live_hard_reasons),
+        "live_soft_concerns": list(row.live_soft_concerns),
+        "track_a_branches": list(row.new_integrity_branches),
+        "track_b_factors": list(row.new_band_factors),
+        "track_b_action": row.new_band_action,
+        "track_b_top_severity": row.new_track_b_top_severity,
+        "intl_share_pct": row.new_intl_share_pct,
+        "revenue_basis": (
+            str(row.new_revenue_basis) if row.new_revenue_basis is not None else None
+        ),
+        "unified_insufficient_reason": row.new_unified_insufficient_reason,
+        "live_error": row.live_error,
+        "new_error": row.new_error,
+    }
+
+
+def _track_c_panel_payload(row: MerchantComparison) -> dict[str, Any] | None:
+    """Minimal Track C snapshot for the row. ``None`` when no panel was built."""
+    if row.new_revenue_basis is None and row.new_intl_share_pct is None:
+        return None
+    return {
+        "revenue_basis": (
+            str(row.new_revenue_basis) if row.new_revenue_basis is not None else None
+        ),
+        "international_share_pct": row.new_intl_share_pct,
+    }
+
+
+def _persist_rows(
+    rows: Iterable[MerchantComparison],
+    repo: ScoringDisagreementRepository,
+) -> tuple[int, int]:
+    """Write each comparison row through the repository.
+
+    Returns ``(written, failed)``. Each call is independent — one
+    failure does not abort the rest. Idempotency is enforced by the
+    repository's pre-query against (merchant_id, day, category,
+    evidence-hash); re-running ``--persist`` on the same UTC day with
+    the same evidence returns the existing row instead of inserting.
+    """
+    written = 0
+    failed = 0
+    for row in rows:
+        try:
+            record_disagreement(
+                repo,
+                merchant_id=row.merchant_id,
+                deal_id=None,
+                category=row.category,
+                legacy_fraud_score=row.live_score,
+                legacy_tier=row.live_tier,
+                legacy_recommendation=row.live_recommendation,
+                legacy_hard_declines=list(row.live_hard_reasons) or None,
+                track_a_verdict=row.new_integrity,
+                track_b_band=row.new_band,
+                track_c_panel=_track_c_panel_payload(row),
+                evidence=_evidence_from_row(row),
+            )
+            written += 1
+        except ScoringDisagreementWriteError as exc:
+            failed += 1
+            print(
+                f"[persist] WRITE FAILED merchant={row.merchant_id} "
+                f"category={row.category}: {exc!r}",
+                file=sys.stderr,
+            )
+        except Exception as exc:
+            failed += 1
+            print(
+                f"[persist] UNEXPECTED ERROR merchant={row.merchant_id} "
+                f"category={row.category}: {exc!r}",
+                file=sys.stderr,
+            )
+    return written, failed
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help=(
+            "Persist every disagreement into scoring_shadow_disagreements "
+            "via the Supabase repository. Default is read-only (print only)."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
     merchant_repo = SupabaseMerchantRepository()
     docs = SupabaseDocumentRepository()
     try:
@@ -609,6 +738,20 @@ def main() -> int:
     _print_summary(rows)
     _print_table(rows)
     _print_per_merchant_detail(rows)
+
+    if args.persist:
+        print()
+        print("─" * 88)
+        print("PERSIST · writing disagreements to scoring_shadow_disagreements")
+        print("─" * 88)
+        repo: ScoringDisagreementRepository = SupabaseScoringDisagreementRepository()
+        written, failed = _persist_rows(rows, repo)
+        print(f"  rows written : {written}")
+        print(f"  rows failed  : {failed}")
+        if failed > 0:
+            print()
+            print("EXIT: persist had failures → exit 4")
+            return 4
 
     # Exit non-zero if regression-risk rows exist — makes the script
     # cheap to bolt into a CI/scheduled check later.

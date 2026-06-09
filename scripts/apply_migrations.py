@@ -297,6 +297,22 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' "
         "AND table_name='disclosure_transmissions'"
     ),
+    "037_scoring_shadow_disagreements.sql": (
+        # Probe the table itself: 037 is a new top-level CREATE TABLE
+        # (R1.6 Step 2 cutover-prep triage queue). If the table exists,
+        # every column + index + RLS toggle landed together in the same
+        # migration body. Mirrors the 036 probe pattern.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' "
+        "AND table_name='scoring_shadow_disagreements'"
+    ),
+    "038_scoring_disagreements_open_view.sql": (
+        # Probe the view itself: 038 is a single CREATE OR REPLACE VIEW
+        # over the 037 table. View presence is the canonical signal.
+        "SELECT 1 FROM information_schema.views "
+        "WHERE table_schema='public' "
+        "AND table_name='scoring_disagreements_open'"
+    ),
 }
 
 
