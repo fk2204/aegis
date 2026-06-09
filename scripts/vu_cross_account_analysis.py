@@ -67,6 +67,9 @@ def main() -> None:
         print(f"\n--- account {label} ---")
         # cast Any-shaped JSON rows from supabase-py to a concrete dict shape
         # so mypy --strict can verify the field accesses below.
+        # Defensive merchant_id filter: if a doc_id was wrong / belongs to a
+        # different merchant, this returns empty for that doc rather than
+        # silently mixing data from the wrong merchant.
         anals = cast(
             list[dict[str, Any]],
             sb.table("analyses")
@@ -76,10 +79,18 @@ def main() -> None:
                 "num_nsf,days_negative,bank_name,account_last4"
             )
             .in_("document_id", ids)
+            .eq("merchant_id", MERCHANT_ID)
             .execute()
             .data
             or [],
         )
+        seen_doc_ids = {str(a["document_id"]) for a in anals}
+        for missing in ids:
+            if missing not in seen_doc_ids:
+                print(
+                    f"  WARNING: doc {missing} not found under merchant "
+                    f"{MERCHANT_ID} -- possible doc-id error"
+                )
         for a in sorted(
             anals, key=lambda x: str(x.get("statement_period_start") or "")
         ):
@@ -96,6 +107,9 @@ def main() -> None:
             )
 
     # 2. Pull all transfers from both sets
+    # Defensive merchant_id filter: same rationale as the analyses query above
+    # -- any doc_id that doesn't belong to MERCHANT_ID is silently skipped
+    # rather than allowed to contaminate the reconciliation.
     all_ids = ACCT_7719_DOC_IDS + ACCT_7722_DOC_IDS
     txns = cast(
         list[dict[str, Any]],
@@ -104,11 +118,24 @@ def main() -> None:
             "document_id,id,posted_date,amount,description,category"
         )
         .in_("document_id", all_ids)
+        .eq("merchant_id", MERCHANT_ID)
         .eq("category", "transfer")
         .execute()
         .data
         or [],
     )
+    txn_doc_ids = {str(t["document_id"]) for t in txns}
+    for missing in all_ids:
+        if missing not in txn_doc_ids:
+            # Note: a doc with zero transfer-category rows is legitimately
+            # possible; this warning fires for both "wrong merchant" AND
+            # "no transfers in this statement" cases. Operator inspection
+            # against the analyses-block warnings above disambiguates.
+            print(
+                f"  NOTE: doc {missing} has no transfer-category rows under "
+                f"merchant {MERCHANT_ID} (wrong merchant or simply no "
+                f"transfers in that statement)"
+            )
 
     # 3. Split by account + direction
     in_7719 = ACCT_7719_DOC_IDS
