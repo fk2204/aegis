@@ -36,6 +36,7 @@ from aegis.api.deps import (
     get_funder_reply_repository,
     get_llm,
     get_merchant_repository,
+    get_merchant_shadow_signal_repository,
     get_repository,
 )
 from aegis.api.routes.upload import EnqueueParse, persist_pdf_upload
@@ -69,6 +70,10 @@ from aegis.merchants.cross_statement_pipeline import (
     run_cross_statement_detection,
 )
 from aegis.merchants.repository import MerchantRepository
+from aegis.merchants.shadow_signals import (
+    MerchantShadowSignalRepository,
+    record_shadow_signal,
+)
 from aegis.ops.cost_tracking import CostTrackingBedrockClient
 from aegis.parser.pipeline import PipelineResult, run_pipeline
 from aegis.parser.processor import (
@@ -102,6 +107,14 @@ async def parse_document(
     # inject an in-memory repo via the ctx dict.
     merchants_repo: MerchantRepository = (
         ctx.get("merchants") or get_merchant_repository()
+    )
+    # U22 — merchant-scope shadow-signal persistence. Pulled here so
+    # tests can inject an in-memory repo via the ctx dict, mirroring
+    # the ``merchants`` slot above. The U15 worker hook
+    # (``_run_cross_statement_detection``) reads this off the local and
+    # writes one row per emitted Pattern.
+    shadow_signals_repo: MerchantShadowSignalRepository = (
+        ctx.get("shadow_signals") or get_merchant_shadow_signal_repository()
     )
 
     # Wrap the production BedrockClient with cost tracking so every
@@ -289,6 +302,8 @@ async def parse_document(
         result=result,
         document_id=document_id,
         repository=repository,
+        shadow_signals_repo=shadow_signals_repo,
+        audit=audit,
     )
 
     # Tampering composition (operator policy 2026-06-04). The pipeline
@@ -548,8 +563,16 @@ def _run_cross_statement_detection(
     result: PipelineResult,
     document_id: UUID,
     repository: DocumentRepository,
+    shadow_signals_repo: MerchantShadowSignalRepository,
+    audit: AuditLog,
 ) -> None:
     """U15 — invoke the U12 detector + stash the result on PipelineResult.
+
+    U22 extends the U15 hook to persist each emitted Pattern as a row
+    in ``merchants_shadow_signals`` (migration 044). The in-memory
+    ``PipelineResult.cross_statement_patterns`` field is preserved for
+    tests + log emission; the durable channel is the new table read by
+    the dossier render.
 
     Runs after ``persist_parse_result`` so the just-stored row IS the
     cross-statement detector's notion of "now" — the orchestrator
@@ -557,7 +580,7 @@ def _run_cross_statement_detection(
     against the row we just wrote can't false-positive.
 
     Four early-return paths produce an empty cross_statement_patterns
-    list (and no log line):
+    list (and no log line / no persistence):
 
       * ``result.extraction`` is ``None`` — page-router low-confidence
         fail-closed, OCR-oversize bail, or a validation-gate failure.
@@ -569,8 +592,14 @@ def _run_cross_statement_detection(
       * The detector returns an empty list (no SHA collision, no
         related-account drift).
 
-    The successful-fire path emits one INFO log: code list only,
-    NEVER holder strings or document ids per CLAUDE.md PII rules.
+    The successful-fire path emits one INFO log (code list only — NEVER
+    holder strings or document ids per CLAUDE.md PII rules) and writes
+    one ``merchants_shadow_signals`` row per Pattern via
+    ``record_shadow_signal``. Each persistence attempt is wrapped in
+    try/except so a Supabase blip on the shadow-signal write doesn't
+    fail the upload — the parse + persist already succeeded, and the
+    cross-statement Pattern list is informational shadow data per the
+    U12 contract.
     """
     if result.extraction is None:
         return
@@ -629,6 +658,38 @@ def _run_cross_statement_detection(
         len(patterns),
         codes,
     )
+
+    # U22 — persist each Pattern as one merchants_shadow_signals row.
+    # Persistence is best-effort per the U12 shadow contract: a
+    # Supabase failure on a shadow-signal write must NOT abort the
+    # upload (the parse + persist already succeeded, and the in-memory
+    # ``cross_statement_patterns`` list is still available to callers
+    # that read it directly). Each Pattern gets its own try/except so
+    # a partial-failure case still persists the signals that did land.
+    for pattern in patterns:
+        try:
+            record_shadow_signal(
+                shadow_signals_repo,
+                audit,
+                merchant_id=doc_after.merchant_id,
+                signal_code=pattern.code,
+                signal_severity=pattern.severity,
+                detail=pattern.detail,
+                source_document_id=document_id,
+                source_ids=list(pattern.source_ids),
+                metadata={"emitted_by": "cross_statement_detector"},
+                detected_by="worker",
+            )
+        except Exception:
+            # Code-only log line — NEVER include pattern.detail (may
+            # carry holder PII for related_account_suspected) or the
+            # merchant_id (mid-PII; the dossier path renders the
+            # signals so the operator already has the surface).
+            _log.warning(
+                "worker.cross_statement.persistence_failed code=%s",
+                pattern.code,
+                exc_info=True,
+            )
 
 
 def _audit_tampering_evaluation(

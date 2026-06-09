@@ -351,6 +351,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' "
         "AND table_name='disclosure_render_events'"
     ),
+    "044_merchants_shadow_signals.sql": (
+        # Probe the table itself: 044 is a new top-level CREATE TABLE
+        # (U22 — persist the cross-statement Pattern list U15 deferred).
+        # If the table exists, every column + index + RLS toggle landed
+        # together in the same migration body. Mirrors the 036 / 037 /
+        # 040 / 042 probe pattern.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' "
+        "AND table_name='merchants_shadow_signals'"
+    ),
 }
 
 

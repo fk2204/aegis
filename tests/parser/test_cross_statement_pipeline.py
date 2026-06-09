@@ -36,6 +36,9 @@ from aegis.merchants.cross_statement_pipeline import (
     run_cross_statement_detection,
 )
 from aegis.merchants.repository import InMemoryMerchantRepository
+from aegis.merchants.shadow_signals import (
+    InMemoryMerchantShadowSignalRepository,
+)
 from aegis.parser.metadata import MetadataAnalysis
 from aegis.parser.models import (
     Aggregates,
@@ -521,5 +524,202 @@ async def test_worker_both_detectors_fire_together(
     assert "related_account_suspected" in codes
     for p in fake_result.cross_statement_patterns:
         assert p.severity == 0
+
+
+# ---------------------------------------------------------------------------
+# U22 — worker hook persistence to merchants_shadow_signals (migration 044)
+
+
+async def test_worker_persists_one_shadow_signal_row_per_emitted_pattern(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """After the worker hook fires, ``merchants_shadow_signals`` has
+    ONE row per emitted Pattern. Setup mirrors
+    ``test_worker_both_detectors_fire_together`` so both sub-detectors
+    fire; the assertion is on the persisted side rather than the
+    in-memory PipelineResult.
+
+    Per U22: code = pattern.code, severity = pattern.severity (always
+    0), detail = pattern.detail, source_document_id = current doc,
+    source_ids = pattern.source_ids,
+    metadata = {"emitted_by": "cross_statement_detector"}.
+    """
+    docs_repo = InMemoryDocumentRepository()
+    merchants_repo = InMemoryMerchantRepository()
+    shadow_signals_repo = InMemoryMerchantShadowSignalRepository()
+    audit = InMemoryAuditLog()
+    merchant = merchants_repo.create_provisional()
+    shared_sha = "f" * 64
+
+    # Prior doc with the shared SHA + analysis holder collision.
+    p1 = docs_repo.create_document(
+        file_hash="p1" + "0" * 62,
+        byte_size=100,
+        original_filename="p1.pdf",
+        merchant_id=merchant.id,
+    )
+    docs_repo.persist_storage_metadata(
+        p1.id,
+        storage_path="merchants/x/documents/p1.pdf.enc",
+        sha256_original=shared_sha,
+        encryption_key_version=1,
+        retention_until=datetime.now(UTC),
+    )
+    docs_repo.persist_parse_result(
+        p1.id,
+        result=_build_pipeline_result(
+            account_holder="Acme LLC", account_last4="9999"
+        ),
+        merchant_id=merchant.id,
+    )
+
+    # Current upload: shared SHA, same holder, NEW last4 → both detectors fire.
+    current = docs_repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="current.pdf",
+        merchant_id=merchant.id,
+    )
+    docs_repo.persist_storage_metadata(
+        current.id,
+        storage_path="merchants/x/documents/current.pdf.enc",
+        sha256_original=shared_sha,
+        encryption_key_version=1,
+        retention_until=datetime.now(UTC),
+    )
+
+    fake_result = _build_pipeline_result(
+        account_holder="Acme LLC", account_last4="1234"
+    )
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda _p, _l, today=None: fake_result,
+    )
+
+    await parse_document(
+        {
+            "repository": docs_repo,
+            "audit": audit,
+            "llm": object(),
+            "merchants": merchants_repo,
+            "shadow_signals": shadow_signals_repo,
+        },
+        str(current.id),
+        str(fake_pdf),
+    )
+
+    rows = shadow_signals_repo.list_by_merchant(merchant_id=merchant.id)
+    codes = sorted(r.signal_code for r in rows)
+    assert codes == ["duplicate_pdf_upload", "related_account_suspected"]
+    for r in rows:
+        # Shadow-only contract.
+        assert r.signal_severity == 0
+        assert r.source_document_id == current.id
+        assert r.metadata == {"emitted_by": "cross_statement_detector"}
+        # source_ids non-empty — both sub-detectors point at prior docs.
+        assert len(r.source_ids) >= 1
+        # detail is non-empty per the U12 detector contract.
+        assert r.detail is not None and len(r.detail) > 0
+
+    # Audit log carries one shadow_signal_detected entry per row, code-only.
+    actions = [
+        e for e in audit.entries if e["action"] == "shadow_signal_detected"
+    ]
+    assert len(actions) == 2
+    for entry in actions:
+        assert entry["subject_type"] == "merchant"
+        assert entry["subject_id"] == str(merchant.id)
+        # PII canary: details carries CODE / severity / source_document_id
+        # only — never the raw Pattern.detail string.
+        assert "detail" not in entry["details"]
+        assert "holder" not in repr(entry["details"]).lower()
+
+
+async def test_worker_persistence_supabase_failure_does_not_abort_upload(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """A Supabase blip on ``record_shadow_signal`` MUST NOT raise out of
+    the worker. The parse + persist already succeeded by then; the
+    cross-statement Pattern list is informational shadow data per the
+    U12 contract.
+
+    We inject a shadow-signals repo whose ``record`` always raises and
+    assert ``parse_document`` returns normally with the in-memory
+    PipelineResult still carrying the Pattern list (so the operator
+    surface in this session is degraded but not lost).
+    """
+    docs_repo = InMemoryDocumentRepository()
+    merchants_repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+    merchant = merchants_repo.create_provisional()
+    shared_sha = "c" * 64
+
+    # Seed a duplicate-fire setup.
+    prior = docs_repo.create_document(
+        file_hash="prior" + "0" * 59,
+        byte_size=100,
+        original_filename="prior.pdf",
+        merchant_id=merchant.id,
+    )
+    docs_repo.persist_storage_metadata(
+        prior.id,
+        storage_path="merchants/x/documents/prior.pdf.enc",
+        sha256_original=shared_sha,
+        encryption_key_version=1,
+        retention_until=datetime.now(UTC),
+    )
+
+    current = docs_repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="current.pdf",
+        merchant_id=merchant.id,
+    )
+    docs_repo.persist_storage_metadata(
+        current.id,
+        storage_path="merchants/x/documents/current.pdf.enc",
+        sha256_original=shared_sha,
+        encryption_key_version=1,
+        retention_until=datetime.now(UTC),
+    )
+
+    fake_result = _build_pipeline_result(account_holder="Acme LLC")
+    monkeypatch.setattr(
+        "aegis.workers.run_pipeline",
+        lambda _p, _l, today=None: fake_result,
+    )
+
+    # Broken repository: every record() raises. The worker hook must
+    # swallow and continue.
+    class _BrokenRepo:
+        def record(self, **_kwargs: Any) -> Any:
+            raise RuntimeError("simulated supabase failure")
+
+        def list_by_merchant(self, **_kwargs: Any) -> list[Any]:
+            return []
+
+        def list_by_code(self, **_kwargs: Any) -> list[Any]:
+            return []
+
+    broken_repo = _BrokenRepo()
+
+    result = await parse_document(
+        {
+            "repository": docs_repo,
+            "audit": audit,
+            "llm": object(),
+            "merchants": merchants_repo,
+            "shadow_signals": broken_repo,
+        },
+        str(current.id),
+        str(fake_pdf),
+    )
+
+    # Upload succeeded.
+    assert result["parse_status"] == "proceed"
+    # In-memory channel still carries the Pattern list — the operator
+    # surface degrades gracefully when the durable channel is offline.
+    codes = [p.code for p in fake_result.cross_statement_patterns]
+    assert "duplicate_pdf_upload" in codes
 
 
