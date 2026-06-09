@@ -51,14 +51,17 @@ from aegis.api.deps import (
     get_audit,
     get_deal_repository,
     get_decision_snapshot,
+    get_disclosure_render_event_repository,
     get_funder_reply_repository,
     get_funder_repository,
     get_llm,
     get_merchant_repository,
+    get_merchant_shadow_signal_repository,
     get_ofac_client,
     get_override_repository,
     get_renewal_attestation_repository,
     get_repository,
+    get_submission_repository,
 )
 
 # ``aegis.api.routes.upload`` imported lazily inside ``_persist_uploaded_files``
@@ -79,6 +82,12 @@ from aegis.compliance.overrides import (
     OverridePayload,
     OverrideRepository,
     record_override,
+)
+from aegis.compliance.render_events import (
+    RENDER_EVENT_STATUS_APR_FAILED,
+    RENDER_EVENT_STATUS_NEEDS_REVIEW,
+    RENDER_EVENT_STATUS_OK,
+    DisclosureRenderEventRepository,
 )
 from aegis.compliance.snapshot import (
     DecisionSnapshot,
@@ -118,6 +127,10 @@ from aegis.merchants.repository import (
     MerchantRepository,
     list_upcoming_renewals,
 )
+from aegis.merchants.shadow_signals import (
+    MerchantShadowSignalRecord,
+    MerchantShadowSignalRepository,
+)
 from aegis.ops.operators import resolve_operator_email
 from aegis.parser.models import ClassifiedTransaction
 from aegis.parser.patterns import (
@@ -141,6 +154,12 @@ from aegis.storage import (
     DocumentNotFoundError,
     DocumentRepository,
     DocumentRow,
+)
+from aegis.submissions import (
+    SubmissionConflictError,
+    SubmissionRepository,
+    SubmissionWriteError,
+    record_submission,
 )
 from aegis.web._attention_card import (
     CATEGORY_LABELS,
@@ -2509,6 +2528,9 @@ async def merchant_submit_to_funders(
     funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    submissions_repo: Annotated[
+        SubmissionRepository, Depends(get_submission_repository)
+    ],
     funder_ids: Annotated[list[str], Form()],
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> Response:
@@ -2621,6 +2643,67 @@ async def merchant_submit_to_funders(
             "dossier_pdf_filename": dossier_filename,
         },
     )
+
+    # U20: persist one durable submissions row per matched funder. The
+    # most-recent analyzed document is the "anchor" doc_id for the
+    # natural key ``(merchant_id, document_id, funder_id)``. Proposed
+    # terms snapshot the score-result envelope (suggested_max_advance,
+    # recommended_factor_rate, recommended_holdback_pct) or fall back
+    # to the operator-requested values when the scorer left them at
+    # zero (a no-recommendation result).
+    anchor_doc = items[0][0]
+    proposed_amount = (
+        score_result.suggested_max_advance
+        if score_result.suggested_max_advance > 0
+        else score_input.requested_amount
+    )
+    proposed_factor = (
+        score_result.recommended_factor_rate
+        if score_result.recommended_factor_rate > Decimal("1")
+        else score_input.requested_factor
+    )
+    proposed_holdback = (
+        score_result.recommended_holdback_pct
+        if score_result.recommended_holdback_pct > 0
+        else Decimal("0.1200")
+    )
+    submitter = actor_email or "dashboard"
+    for sub_file in files:
+        try:
+            record_submission(
+                submissions_repo,
+                audit,
+                merchant_id=merchant.id,
+                document_id=anchor_doc.id,
+                funder_id=UUID(sub_file.funder_id),
+                submitted_by=submitter,
+                csv_bytes=sub_file.csv_bytes,
+                csv_filename=sub_file.filename,
+                proposed_amount=proposed_amount,
+                proposed_factor=proposed_factor,
+                proposed_holdback=proposed_holdback,
+                actor_email=actor_email,
+            )
+        except SubmissionConflictError:
+            # Re-submission to the same funder for the same doc — the
+            # durable row already exists. Audit row above captured the
+            # event; leave the existing submission untouched (Phase 7C
+            # adds an explicit re-submit UPDATE path).
+            from aegis.logger import get_logger
+
+            get_logger(__name__).info(
+                "submission.duplicate merchant_id=%s funder_id=%s document_id=%s",
+                merchant.id,
+                sub_file.funder_id,
+                anchor_doc.id,
+            )
+        except SubmissionWriteError as exc:
+            # Durable persistence failure → 503. The operator can retry;
+            # the submit_to_funders audit row above is the cross-reference.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"submission_persistence_unavailable: {exc}",
+            ) from exc
 
     # Update tracking fields (in-memory implementations only — Supabase
     # path round-trips lose these; durable record is the audit row above).
@@ -3012,6 +3095,55 @@ def _collect_shadow_flags_for_dossier(
     return out
 
 
+@dataclass(frozen=True)
+class MerchantShadowSignalView:
+    """Dossier-render shape for one persisted merchant-scope shadow signal.
+
+    Pairs the U18-humanized ``HumanFlag`` (title + detail + description
+    via the same registry the per-document section consumes) with the
+    persisted timestamp + raw record id from ``merchants_shadow_signals``.
+    Lets the template show "Duplicate PDF upload — uploaded 2026-06-08
+    14:32" instead of a bare code, and the ``data-signal-id`` attribute
+    keeps the audit drill-down clickable.
+    """
+
+    record: MerchantShadowSignalRecord
+    humanized: HumanFlag
+
+
+def _humanize_merchant_shadow_signals(
+    rows: list[MerchantShadowSignalRecord],
+) -> list[MerchantShadowSignalView]:
+    """Run each persisted merchant-scope shadow row through the U18
+    humanizer so the dossier section uses the same title / detail /
+    description registry as the per-document signals above it.
+
+    The persisted ``detail`` string was produced by the U12 detector
+    in the ``code:detail`` shape the humanizer expects (e.g.
+    ``duplicate_pdf_upload:sha256_match_with_doc=...:uploaded=...``);
+    we reassemble it from ``record.signal_code`` + ``record.detail`` so
+    the humanizer's per-code formatter fires cleanly. Rows whose
+    ``detail`` is ``None`` (defensive — the detector always emits one
+    today, but the column is nullable) humanize on the bare code.
+
+    Returns the list in input order so the repository's newest-first
+    sort survives to the template.
+    """
+    out: list[MerchantShadowSignalView] = []
+    for row in rows:
+        if row.detail:
+            raw = f"{row.signal_code}:{row.detail}"
+        else:
+            raw = row.signal_code
+        out.append(
+            MerchantShadowSignalView(
+                record=row,
+                humanized=humanize_flag(raw),
+            )
+        )
+    return out
+
+
 def _dossier_pattern_analysis(
     latest_analysis: AnalysisRow,
     latest_transactions: list[ClassifiedTransaction],
@@ -3054,6 +3186,10 @@ async def merchant_detail(
     docs: Annotated[DocumentRepository, Depends(get_repository)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    shadow_signals_repo: Annotated[
+        MerchantShadowSignalRepository,
+        Depends(get_merchant_shadow_signal_repository),
+    ],
 ) -> HTMLResponse:
     try:
         merchant = merchants.get(merchant_id)
@@ -3263,6 +3399,21 @@ async def merchant_detail(
         score_result=score_result,
     )
 
+    # U22 — merchant-level shadow signals persisted by the worker hook
+    # in ``merchants_shadow_signals`` (migration 044). These are the
+    # cross-statement / related-account signals U15 emitted at upload
+    # time. We hand each row through the SAME U18 humanizer the
+    # per-document signals use (``humanize_flag(code:detail)``) so the
+    # dossier section reads consistently. The row also carries the raw
+    # ``MerchantShadowSignalRecord`` so the template can show the
+    # ``detected_at`` timestamp the per-document section lacks.
+    merchant_shadow_signal_rows = shadow_signals_repo.list_by_merchant(
+        merchant_id=merchant_id, limit=50
+    )
+    merchant_shadow_signals = _humanize_merchant_shadow_signals(
+        merchant_shadow_signal_rows
+    )
+
     # Build the unified A+B+C view alongside the existing score block.
     # Pure presentation; no decline-path impact. Step 2 of the scoring
     # redesign retires fraud_score and flips A/B/C live; this commit
@@ -3304,6 +3455,7 @@ async def merchant_detail(
             "close_last_orchestration_capped": close_last_orchestration_capped,
             "unified_tracks": unified_tracks,
             "shadow_signals": shadow_signals,
+            "merchant_shadow_signals": merchant_shadow_signals,
         },
     )
 
@@ -5015,6 +5167,13 @@ async def portfolio_view(
     docs_repo: Annotated[DocumentRepository, Depends(get_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
     snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
+    render_events_repo: Annotated[
+        DisclosureRenderEventRepository,
+        Depends(get_disclosure_render_event_repository),
+    ],
+    submissions_repo: Annotated[
+        SubmissionRepository, Depends(get_submission_repository)
+    ],
     from_: Annotated[
         str | None,
         Query(
@@ -5065,6 +5224,43 @@ async def portfolio_view(
         audit, snapshot, date_range
     )
 
+    # Render-event records for the disclosure_render_queue tile (U21).
+    # Defensive try/except — a repo whose backend is unreachable should
+    # render the tile as a zero state rather than 500 the whole page.
+    try:
+        render_event_records = render_events_repo.list_in_window(
+            from_date=date_range.from_date,
+            to_date=date_range.to_date,
+        )
+    except Exception:
+        from aegis.logger import get_logger
+
+        get_logger(__name__).warning(
+            "portfolio.render_events_fetch_failed window=%s..%s",
+            date_range.from_date,
+            date_range.to_date,
+        )
+        render_event_records = []
+
+    # U20: durable submissions table replaces the audit_log fallback for
+    # per-funder submission counts. Same defensive try/except — table
+    # outage should render the funder approval panel empty rather than
+    # 500 the whole page.
+    try:
+        submissions_records = submissions_repo.list_in_window(
+            from_date=date_range.from_date,
+            to_date=date_range.to_date,
+        )
+    except Exception:
+        from aegis.logger import get_logger
+
+        get_logger(__name__).warning(
+            "portfolio.submissions_fetch_failed window=%s..%s",
+            date_range.from_date,
+            date_range.to_date,
+        )
+        submissions_records = []
+
     metrics = compute_portfolio_metrics(
         merchants=merchants_list,
         funders=funders_list,
@@ -5073,6 +5269,8 @@ async def portfolio_view(
         audit_rows=audit_rows,
         date_range=date_range,
         decision_rows=decision_rows,
+        submissions=submissions_records,
+        render_events=render_event_records,
     )
 
     return cast(
@@ -5083,6 +5281,226 @@ async def portfolio_view(
             {
                 "active": "Portfolio",
                 "metrics": metrics,
+                "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+            },
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# /disclosure-events — operator triage page for disclosure_render_events
+# (U21, persistence in migration 042 / U16).
+#
+# Read-only — render events are diagnostic only. The operator cannot
+# "resolve" a row in place; once the deal renders cleanly next time, a
+# new ``ok`` event is recorded alongside the failing one. This page is
+# the surface that operationalizes the persistence shipped in U16.
+#
+# Per .claude/rules/compliance.md SCOPE NOTE: these are AEGIS internal
+# pre-flight records. The funder owns regulator-facing disclosure
+# issuance — the page banner makes that explicit so the operator does
+# not mis-read an ``apr_compute_failed`` as a regulator-side incident.
+# ---------------------------------------------------------------------------
+
+
+_DISCLOSURE_EVENTS_DEFAULT_WINDOW_DAYS: Final[int] = 14
+_DISCLOSURE_EVENTS_MAX_WINDOW_DAYS: Final[int] = 365
+_DISCLOSURE_EVENTS_LIMIT: Final[int] = 500
+
+# Status filter values surfaced in the dropdown. The empty string
+# represents "all statuses" (a route-level convention — the repo's
+# list_in_window accepts ``status=None``).
+_DISCLOSURE_EVENTS_STATUS_OPTIONS: Final[tuple[tuple[str, str], ...]] = (
+    (RENDER_EVENT_STATUS_NEEDS_REVIEW, "needs_review"),
+    (RENDER_EVENT_STATUS_APR_FAILED, "apr_compute_failed"),
+    (RENDER_EVENT_STATUS_OK, "ok"),
+    ("", "all"),
+)
+
+
+def _resolve_disclosure_events_window(
+    from_str: str | None,
+    to_str: str | None,
+) -> tuple[date, date]:
+    """Parse ``?from=&to=``. Defaults to last 14 days. Clamps to 365.
+
+    Raises ``ValueError`` on malformed input — the route turns the
+    failure into a 400 with the parser message.
+    """
+    from datetime import timedelta as _timedelta
+
+    today = datetime.now(UTC).date()
+    parsed_to = (
+        datetime.fromisoformat(to_str.strip()).date() if to_str else today
+    )
+    parsed_from = (
+        datetime.fromisoformat(from_str.strip()).date()
+        if from_str
+        else parsed_to
+        - _timedelta(days=_DISCLOSURE_EVENTS_DEFAULT_WINDOW_DAYS)
+    )
+    if parsed_to < parsed_from:
+        raise ValueError(
+            f"to_date {parsed_to.isoformat()} is earlier than from_date "
+            f"{parsed_from.isoformat()}"
+        )
+    span = (parsed_to - parsed_from).days
+    if span > _DISCLOSURE_EVENTS_MAX_WINDOW_DAYS:
+        parsed_from = parsed_to - _timedelta(
+            days=_DISCLOSURE_EVENTS_MAX_WINDOW_DAYS
+        )
+    return parsed_from, parsed_to
+
+
+@router.get("/disclosure-events", response_class=HTMLResponse)
+async def disclosure_events_view(
+    request: Request,
+    render_events_repo: Annotated[
+        DisclosureRenderEventRepository,
+        Depends(get_disclosure_render_event_repository),
+    ],
+    status_param: Annotated[
+        str,
+        Query(
+            alias="status",
+            description=(
+                "Filter by render-event status. One of ``needs_review`` / "
+                "``apr_compute_failed`` / ``ok`` / ``all`` (empty string). "
+                "Default: ``needs_review`` so the triage queue is the "
+                "first thing the operator sees."
+            ),
+        ),
+    ] = RENDER_EVENT_STATUS_NEEDS_REVIEW,
+    from_: Annotated[
+        str | None,
+        Query(
+            alias="from",
+            description=(
+                "Window start (YYYY-MM-DD). Defaults to today minus 14 days."
+            ),
+        ),
+    ] = None,
+    to: Annotated[
+        str | None,
+        Query(
+            description=("Window end (YYYY-MM-DD). Defaults to today."),
+        ),
+    ] = None,
+) -> HTMLResponse:
+    """Render-event triage page.
+
+    Default view: ``status=needs_review`` over the last 14 days. The
+    table mirrors the renewals.html.j2 idiom — one row per event with
+    a "View details →" link to the per-event subroute.
+    """
+    try:
+        from_date, to_date = _resolve_disclosure_events_window(from_, to)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid date range: {exc}",
+        ) from exc
+
+    # Empty string → "all" filter; validate any non-empty value lands in
+    # the known set so a bad query param surfaces as 400 rather than a
+    # silent empty page.
+    allowed = {opt[0] for opt in _DISCLOSURE_EVENTS_STATUS_OPTIONS}
+    if status_param not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"invalid status {status_param!r}; expected one of "
+                f"{sorted(allowed)!r}"
+            ),
+        )
+    effective_status: str | None = status_param if status_param else None
+
+    try:
+        rows = render_events_repo.list_in_window(
+            from_date=from_date,
+            to_date=to_date,
+            status=effective_status,
+            limit=_DISCLOSURE_EVENTS_LIMIT,
+        )
+    except Exception:
+        from aegis.logger import get_logger
+
+        get_logger(__name__).warning(
+            "disclosure_events.fetch_failed window=%s..%s status=%s",
+            from_date,
+            to_date,
+            status_param,
+        )
+        rows = []
+
+    status_options = [
+        {"value": value, "label": label}
+        for value, label in _DISCLOSURE_EVENTS_STATUS_OPTIONS
+    ]
+
+    return cast(
+        "HTMLResponse",
+        templates.TemplateResponse(
+            request,
+            "disclosure_events.html.j2",
+            {
+                "active": "DisclosureEvents",
+                "rows": rows,
+                "status": status_param,
+                "from_date": from_date,
+                "to_date": to_date,
+                "status_options": status_options,
+                "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+            },
+        ),
+    )
+
+
+@router.get("/disclosure-events/{event_id}", response_class=HTMLResponse)
+async def disclosure_event_detail(
+    request: Request,
+    event_id: UUID,
+    render_events_repo: Annotated[
+        DisclosureRenderEventRepository,
+        Depends(get_disclosure_render_event_repository),
+    ],
+) -> HTMLResponse:
+    """Detail subroute — every column on one render event.
+
+    Read-only. Render events have no triage state machine (the next
+    clean APR converge produces a new ``ok`` row rather than mutating
+    the failing one), so this page does not surface any forms.
+    """
+    import json as _json
+
+    record = render_events_repo.get(event_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"no render event with id={event_id}",
+        )
+
+    details_json = (
+        _json.dumps(record.details, indent=2, default=str)
+        if record.details is not None
+        else "(none)"
+    )
+    metadata_json = (
+        _json.dumps(record.metadata, indent=2, default=str)
+        if record.metadata is not None
+        else "(none)"
+    )
+
+    return cast(
+        "HTMLResponse",
+        templates.TemplateResponse(
+            request,
+            "disclosure_event_detail.html.j2",
+            {
+                "active": "DisclosureEvents",
+                "record": record,
+                "details_json": details_json,
+                "metadata_json": metadata_json,
                 "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             },
         ),

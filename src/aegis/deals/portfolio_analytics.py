@@ -76,9 +76,17 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from aegis.compliance.render_events import (
+    RENDER_EVENT_STATUS_APR_FAILED,
+    RENDER_EVENT_STATUS_NEEDS_REVIEW,
+    RENDER_EVENT_STATUS_OK,
+    DisclosureRenderEventRecord,
+    DisclosureRenderEventRepository,
+)
 from aegis.funders.models import FunderRow
 from aegis.merchants.models import MerchantRow
 from aegis.storage import DocumentRow
+from aegis.submissions.models import SubmissionRow
 
 # Maximum date-range span the route accepts. Bounds query cost — every
 # downstream query (audit_log scan, funder_replies scan) is filtered to
@@ -253,6 +261,30 @@ class RecentDeal(_StrictModel):
     scored_at: datetime | None
 
 
+class DisclosureRenderQueueCounts(_StrictModel):
+    """Disclosure render-event queue tile (U21).
+
+    Surfaces the count of ``needs_review`` + ``apr_compute_failed`` events
+    the operator should triage at ``/ui/disclosure-events``. ``ok_count``
+    is informational — the operator does not act on it, but having the
+    denominator visible distinguishes "zero events because nothing
+    rendered" from "zero events because everything rendered clean."
+
+    All four counters are bounded to the same date window as the rest of
+    ``PortfolioMetrics`` (handler-side filter on ``rendered_at``).
+    """
+
+    needs_review_count: int = Field(ge=0)
+    apr_compute_failed_count: int = Field(ge=0)
+    ok_count: int = Field(ge=0)
+    total_in_window: int = Field(ge=0)
+
+    @property
+    def actionable_count(self) -> int:
+        """Sum of the two operator-actionable buckets — the tile chip value."""
+        return self.needs_review_count + self.apr_compute_failed_count
+
+
 class PortfolioMetrics(_StrictModel):
     """Top-level shape returned by ``compute_portfolio_metrics``."""
 
@@ -299,6 +331,11 @@ class PortfolioMetrics(_StrictModel):
     fraud_catch_rate_pct: int | None
     """``fraud_catch_count / fraud_total_scored`` as a percentage,
     rounded. ``None`` when zero documents were scored in the window."""
+
+    disclosure_render_queue: DisclosureRenderQueueCounts
+    """Render-event triage tile (U21). Operator-actionable buckets:
+    ``needs_review_count`` + ``apr_compute_failed_count``. Drives the
+    KPI tile + "Triage →" link to ``/ui/disclosure-events``."""
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +418,8 @@ def compute_portfolio_metrics(
     audit_rows: Iterable[dict[str, Any]],
     decision_rows: Iterable[dict[str, Any]],
     date_range: DateRange,
+    submissions: Iterable[SubmissionRow] | None = None,
+    render_events: Iterable[DisclosureRenderEventRecord] | None = None,
 ) -> PortfolioMetrics:
     """Pure aggregation. No I/O.
 
@@ -425,7 +464,10 @@ def compute_portfolio_metrics(
     docs_by_merchant = _group_documents_by_merchant(documents_list)
     pipeline = _compute_pipeline_counts(merchants_list, docs_by_merchant, audit_list)
 
-    funder_table = _compute_funder_table(funders_list, audit_list, replies_list)
+    submissions_list = list(submissions) if submissions is not None else []
+    funder_table = _compute_funder_table(
+        funders_list, submissions_list, replies_list
+    )
     decided_total = sum(r.approved + r.declined + r.countered for r in funder_table)
     approved_total = sum(r.approved for r in funder_table)
     declined_total = sum(r.declined for r in funder_table)
@@ -456,6 +498,10 @@ def compute_portfolio_metrics(
         else None
     )
 
+    render_queue = _compute_render_queue_counts_from_records(
+        list(render_events) if render_events is not None else []
+    )
+
     return PortfolioMetrics(
         from_date=date_range.from_date,
         to_date=date_range.to_date,
@@ -471,6 +517,7 @@ def compute_portfolio_metrics(
         fraud_catch_count=fraud_catch_count,
         fraud_total_scored=fraud_total_scored,
         fraud_catch_rate_pct=fraud_catch_rate_pct,
+        disclosure_render_queue=render_queue,
     )
 
 
@@ -624,35 +671,29 @@ def _compute_pipeline_counts(
 
 def _compute_funder_table(
     funders: list[FunderRow],
-    audit_rows: list[dict[str, Any]],
+    submissions: list[SubmissionRow],
     reply_rows: list[dict[str, Any]],
 ) -> list[FunderApprovalRow]:
     """Build the per-funder submission + reply counters.
 
-    Submissions: audit_log ``deal.submit_to_funders`` rows record a
-    ``details.funder_ids`` list of UUID strings (per the existing
-    submission flow in ``aegis.scoring.submission_package``). Each
-    funder_id in the list counts as one submission to that funder.
+    Submissions (U20): durable ``submissions`` table (migration 013).
+    The U11 / U13 audit_log JSON-parsing fallback is gone — same
+    regression-prevention pattern U17 applied to tier counts. One row
+    per (merchant, document, funder) tuple is one submission; counting
+    the rows replaces parsing ``deal.submit_to_funders`` details.
 
     Replies: ``funder_replies.funder_id`` + ``status`` aggregated per
-    funder. Sourced from migration 021.
+    funder. Sourced from migration 021. Kept as a separate signal —
+    a funder reply may land outside the date window when the operator
+    backfills, and the submissions row carries its own
+    ``funder_response_at`` lifecycle field for the eventual rewire.
     """
     funder_by_id = {f.id: f for f in funders}
     submitted_per_funder: dict[UUID, int] = {}
-    for r in audit_rows:
-        if r.get("action") != "deal.submit_to_funders":
-            continue
-        details = r.get("details")
-        if not isinstance(details, dict):
-            continue
-        funder_ids_raw = details.get("funder_ids", [])
-        if not isinstance(funder_ids_raw, list):
-            continue
-        for fid_str in funder_ids_raw:
-            fid = _to_uuid(fid_str)
-            if fid is None:
-                continue
-            submitted_per_funder[fid] = submitted_per_funder.get(fid, 0) + 1
+    for s in submissions:
+        submitted_per_funder[s.funder_id] = (
+            submitted_per_funder.get(s.funder_id, 0) + 1
+        )
 
     replies_per_funder: dict[UUID, dict[str, int]] = {}
     for r in reply_rows:
@@ -902,6 +943,92 @@ def _compute_fraud_counts(documents: list[DocumentRow]) -> tuple[int, int]:
     return catches, total
 
 
+# ---------------------------------------------------------------------------
+# Disclosure render queue counts (U21)
+#
+# The tile on /ui/portfolio summarizes recent disclosure_render_events
+# (migration 042) by status so the operator sees how many ``needs_review``
+# / ``apr_compute_failed`` rows are waiting at /ui/disclosure-events.
+#
+# Two access paths:
+#   * ``_compute_render_queue_counts(repo, ...)`` — fetches records via
+#     the repository's list_in_window and tallies them. The route uses
+#     this so the in-memory backend and supabase backend share the same
+#     code path.
+#   * ``_compute_render_queue_counts_from_records(...)`` — pure tally
+#     over an explicit record list, exercised by the route after the
+#     fetch + by unit tests that inject fixture records.
+# ---------------------------------------------------------------------------
+
+
+def _compute_render_queue_counts_from_records(
+    records: list[DisclosureRenderEventRecord],
+) -> DisclosureRenderQueueCounts:
+    """Pure tally — caller supplies already-fetched records.
+
+    Statuses outside ``{ok, needs_review, apr_compute_failed}`` are
+    counted into ``total_in_window`` but do not bump the actionable
+    buckets. ``template_render_failed`` is folded into the bucket plain
+    arithmetic produces (i.e. it does NOT auto-promote to needs_review).
+    Reading the four counts is the operator's first signal; the
+    /ui/disclosure-events page is the second.
+    """
+    needs_review = 0
+    apr_failed = 0
+    ok = 0
+    for record in records:
+        if record.status == RENDER_EVENT_STATUS_NEEDS_REVIEW:
+            needs_review += 1
+        elif record.status == RENDER_EVENT_STATUS_APR_FAILED:
+            apr_failed += 1
+        elif record.status == RENDER_EVENT_STATUS_OK:
+            ok += 1
+    return DisclosureRenderQueueCounts(
+        needs_review_count=needs_review,
+        apr_compute_failed_count=apr_failed,
+        ok_count=ok,
+        total_in_window=len(records),
+    )
+
+
+def _compute_render_queue_counts(
+    render_events_repo: DisclosureRenderEventRepository,
+    *,
+    from_date: date,
+    to_date: date,
+) -> DisclosureRenderQueueCounts:
+    """Repository-facing tally — fetches via ``list_in_window`` then tallies.
+
+    A repo whose backend is unreachable raises out of ``list_in_window``;
+    we trap that and render the tile as zero counts rather than 500-ing
+    the page (mirrors the broader ``portfolio.fetch_failed`` branch).
+    The Protocol contract lives in
+    ``aegis.compliance.render_events.DisclosureRenderEventRepository``.
+    """
+    try:
+        records = render_events_repo.list_in_window(
+            from_date=from_date, to_date=to_date
+        )
+    except Exception:
+        # The route handler logs portfolio.fetch_failed for the broader
+        # window; a render-queue fetch failure follows the same pattern
+        # rather than 500-ing the page.
+        from aegis.logger import get_logger
+
+        get_logger(__name__).warning(
+            "portfolio.render_queue_fetch_failed window=%s..%s",
+            from_date,
+            to_date,
+        )
+        return DisclosureRenderQueueCounts(
+            needs_review_count=0,
+            apr_compute_failed_count=0,
+            ok_count=0,
+            total_in_window=0,
+        )
+    return _compute_render_queue_counts_from_records(list(records))
+
+
 __all__ = [
     "DEFAULT_WINDOW_DAYS",
     "FRAUD_CATCH_THRESHOLD",
@@ -911,6 +1038,7 @@ __all__ = [
     "TIER_ORDER",
     "TOP_STATES_LIMIT",
     "DateRange",
+    "DisclosureRenderQueueCounts",
     "FunderApprovalRow",
     "PipelineCounts",
     "PipelineState",

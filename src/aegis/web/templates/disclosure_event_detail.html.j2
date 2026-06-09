@@ -1,0 +1,99 @@
+{% extends "base.html.j2" %}
+{% set active = 'DisclosureEvents' %}
+{% block title %}Disclosure render event {{ record.id|string|truncate(8, True, '') }} — AEGIS{% endblock %}
+
+{# Disclosure render-event detail subroute (U21).
+
+   Read-only — render events are diagnostic only. Once the deal's APR
+   converges next time, a new ``ok`` event is recorded; the failing row
+   stays in place for historical context.
+
+   Surface contract: the route populates ``record`` (a single
+   DisclosureRenderEventRecord), ``details_json`` (pretty-printed
+   string), ``metadata_json`` (pretty-printed string).
+#}
+
+{% block deck %}
+{% set title = "Render event " ~ record.id|string|truncate(8, True, '') %}
+{% set subtitle = "· " ~ record.status %}
+{% set meta = "rendered at " ~ record.rendered_at.strftime('%Y-%m-%d %H:%M UTC') %}
+{% set actions = [
+    {"label": "Back to events", "href": "/ui/disclosure-events"},
+    {"label": "Portfolio", "href": "/ui/portfolio"},
+] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+
+  <div>
+    <header class="sect-head">
+      <h2>Event row</h2>
+      <div class="rule"></div>
+      <div class="meta">read-only diagnostic record</div>
+    </header>
+
+    <table class="queue">
+      <tbody>
+        <tr><td>id</td><td class="mono-cell">{{ record.id }}</td></tr>
+        <tr>
+          <td>status</td>
+          <td>
+            {% if record.status == 'ok' %}
+              <span class="chip pos">OK</span>
+            {% elif record.status == 'needs_review' %}
+              <span class="chip warn">NEEDS REVIEW</span>
+            {% elif record.status == 'apr_compute_failed' %}
+              <span class="chip neg">APR FAILED</span>
+            {% elif record.status == 'template_render_failed' %}
+              <span class="chip neg">TEMPLATE FAILED</span>
+            {% else %}
+              <span class="chip info">{{ record.status|upper }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        <tr><td>status_reason</td><td>{{ record.status_reason or '—' }}</td></tr>
+        <tr><td>rendered_at</td><td class="mono-cell">{{ record.rendered_at.isoformat() }}</td></tr>
+        <tr><td>rendered_by</td><td class="mono-cell">{{ record.rendered_by or '—' }}</td></tr>
+        <tr><td>state</td><td class="mono-cell">{{ record.state or '—' }}</td></tr>
+        <tr><td>template_path</td><td class="sub">{{ record.template_path or '—' }}</td></tr>
+        <tr>
+          <td>deal_id</td>
+          <td class="mono-cell">{{ record.deal_id if record.deal_id else '—' }}</td>
+        </tr>
+        <tr>
+          <td>merchant_id</td>
+          <td class="mono-cell">
+            {% if record.merchant_id %}
+              <a href="/ui/merchants/{{ record.merchant_id }}">{{ record.merchant_id }}</a>
+            {% else %}
+              —
+            {% endif %}
+          </td>
+        </tr>
+        <tr><td>recipient_email</td><td>{{ record.recipient_email or '—' }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div>
+    <header class="sect-head">
+      <h2>Details</h2>
+      <div class="rule"></div>
+      <div class="meta">structured non-PII context (numeric APR inputs, term, factor)</div>
+    </header>
+    <pre class="mono-cell" style="white-space: pre-wrap; padding: 0.75rem; background: var(--paper); border: 1px solid var(--sage); border-radius: 4px;">{{ details_json }}</pre>
+  </div>
+
+  <div>
+    <header class="sect-head">
+      <h2>Metadata</h2>
+      <div class="rule"></div>
+      <div class="meta">free-form operator-discretion fields</div>
+    </header>
+    <pre class="mono-cell" style="white-space: pre-wrap; padding: 0.75rem; background: var(--paper); border: 1px solid var(--sage); border-radius: 4px;">{{ metadata_json }}</pre>
+  </div>
+
+</section>
+{% endblock %}

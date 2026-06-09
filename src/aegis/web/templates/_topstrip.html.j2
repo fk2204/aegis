@@ -14,9 +14,9 @@
   Inputs (all optional):
     active — one of "Today" | "Deals" | "Merchants" | "Funders"
              | "Upload" | "Intake" | "Review" | "CloseQueue"
-             | "Portfolio"; the matching link gets `class="is-active"`.
-             Pages that do not highlight any nav (e.g. the dossier)
-             simply omit `active`.
+             | "Portfolio" | "DisclosureEvents"; the matching link gets
+             `class="is-active"`. Pages that do not highlight any nav
+             (e.g. the dossier) simply omit `active`.
     now    — display string for the right-hand view-toggle span. Same
              default convention as base.html.j2 (falls back to '').
 #}
@@ -32,6 +32,7 @@
     <a href="/ui/review"    {% if _active == 'Review'    %}class="is-active"{% endif %}>Review queue</a>
     <a href="/ui/close-queue" {% if _active == 'CloseQueue' %}class="is-active"{% endif %}>Close queue</a>
     <a href="/ui/portfolio" {% if _active == 'Portfolio' %}class="is-active"{% endif %}>Portfolio</a>
+    <a href="/ui/disclosure-events" {% if _active == 'DisclosureEvents' %}class="is-active"{% endif %}>Disclosure events</a>
   </div>
   <div class="view-toggle">
     <span style="color:var(--sage)">aegis · {{ now|default('') }}</span>

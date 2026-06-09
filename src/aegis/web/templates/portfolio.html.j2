@@ -73,6 +73,22 @@
       {% if metrics.fraud_catch_rate_pct is not none %}{{ metrics.fraud_catch_rate_pct }}%{% else %}—{% endif %}
     </div>
   </div>
+  {# Disclosure render queue tile (U21). Counts ``needs_review`` +
+     ``apr_compute_failed`` events in the same window; the "Triage →"
+     link routes to /ui/disclosure-events for the per-row triage page.
+     Two-line breakdown so the operator sees which bucket needs
+     attention at a glance. #}
+  <div class="cell">
+    <div class="k">Disclosure render queue</div>
+    <div class="v {{ 'warn' if metrics.disclosure_render_queue.actionable_count > 0 else '' }}">
+      {{ metrics.disclosure_render_queue.actionable_count }}<span class="sub"> / {{ metrics.disclosure_render_queue.total_in_window }}</span>
+    </div>
+    <div class="sub">
+      needs_review {{ metrics.disclosure_render_queue.needs_review_count }}
+      · apr_failed {{ metrics.disclosure_render_queue.apr_compute_failed_count }}
+      · <a href="/ui/disclosure-events">Triage →</a>
+    </div>
+  </div>
 </section>
 {% endblock %}
 

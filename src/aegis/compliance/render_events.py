@@ -48,7 +48,7 @@ both).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
 
@@ -157,6 +157,33 @@ class DisclosureRenderEventRepository(Protocol):
         reads predictable.
         """
 
+    def list_in_window(
+        self,
+        *,
+        from_date: date,
+        to_date: date,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> list[DisclosureRenderEventRecord]:
+        """Return render events whose ``rendered_at`` falls in the window.
+
+        Drives the operator-facing triage page + the portfolio KPI tile.
+        ``to_date`` is inclusive — implementations expand it to
+        ``to_date + 1 day at 00:00`` (or equivalent) so a row stamped at
+        ``23:59:59`` on ``to_date`` is included. Sorted newest-first.
+
+        ``status`` filters to a single status when set; ``None`` returns
+        all statuses.
+        """
+
+    def get(self, event_id: UUID) -> DisclosureRenderEventRecord | None:
+        """Return the single render event with ``event_id`` or ``None``.
+
+        Drives the operator-facing detail subroute at
+        ``/ui/disclosure-events/{id}``. ``None`` is the not-found signal
+        the route turns into a 404.
+        """
+
 
 def _normalize_state(state: str | None) -> str | None:
     """USPS 2-letter uppercase, or ``None`` when caller did not supply one."""
@@ -225,6 +252,39 @@ class InMemoryDisclosureRenderEventRepository:
         matches = [r for r in self.rows if r.status == status]
         matches.sort(key=lambda r: r.rendered_at, reverse=True)
         return matches[: max(0, limit)]
+
+    def list_in_window(
+        self,
+        *,
+        from_date: date,
+        to_date: date,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> list[DisclosureRenderEventRecord]:
+        if status is not None:
+            _validate_status(status)
+        # Inclusive window — every wall-clock instant on ``to_date`` is
+        # in-range, so the comparison is against ``to_date`` end-of-day.
+        upper = datetime.combine(to_date, time.max, tzinfo=UTC)
+        lower = datetime.combine(from_date, time.min, tzinfo=UTC)
+        matches: list[DisclosureRenderEventRecord] = []
+        for r in self.rows:
+            ts = r.rendered_at
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            if ts < lower or ts > upper:
+                continue
+            if status is not None and r.status != status:
+                continue
+            matches.append(r)
+        matches.sort(key=lambda r: r.rendered_at, reverse=True)
+        return matches[: max(0, limit)]
+
+    def get(self, event_id: UUID) -> DisclosureRenderEventRecord | None:
+        for r in self.rows:
+            if r.id == event_id:
+                return r
+        return None
 
 
 class SupabaseDisclosureRenderEventRepository:
@@ -319,6 +379,67 @@ class SupabaseDisclosureRenderEventRepository:
             return []
         rows = cast(list[dict[str, Any]], result.data or [])
         return [_row_to_record(r) for r in rows]
+
+    def list_in_window(
+        self,
+        *,
+        from_date: date,
+        to_date: date,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> list[DisclosureRenderEventRecord]:
+        if status is not None:
+            _validate_status(status)
+        # Inclusive window — Postgres TIMESTAMPTZ comparison against
+        # ``to_date`` alone would exclude same-day rows after 00:00, so
+        # the upper bound is end-of-day ISO. Mirrors the portfolio route.
+        lower = datetime.combine(from_date, time.min, tzinfo=UTC).isoformat()
+        upper = datetime.combine(to_date, time.max, tzinfo=UTC).isoformat()
+        try:
+            builder = (
+                get_supabase()
+                .table("disclosure_render_events")
+                .select("*")
+                .gte("rendered_at", lower)
+                .lte("rendered_at", upper)
+                .order("rendered_at", desc=True)
+                .limit(max(1, limit))
+            )
+            if status is not None:
+                builder = builder.eq("status", status)
+            result = builder.execute()
+        except Exception:
+            _log.warning(
+                "compliance.disclosure_render_event.list_in_window_failed "
+                "from=%s to=%s status=%s",
+                from_date,
+                to_date,
+                status,
+            )
+            return []
+        rows = cast(list[dict[str, Any]], result.data or [])
+        return [_row_to_record(r) for r in rows]
+
+    def get(self, event_id: UUID) -> DisclosureRenderEventRecord | None:
+        try:
+            result = (
+                get_supabase()
+                .table("disclosure_render_events")
+                .select("*")
+                .eq("id", str(event_id))
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            _log.warning(
+                "compliance.disclosure_render_event.get_failed id=%s",
+                event_id,
+            )
+            return None
+        rows = cast(list[dict[str, Any]], result.data or [])
+        if not rows:
+            return None
+        return _row_to_record(rows[0])
 
 
 def _row_to_record(row: dict[str, Any]) -> DisclosureRenderEventRecord:

@@ -57,11 +57,21 @@ from aegis.merchants.repository import (
     MerchantRepository,
     SupabaseMerchantRepository,
 )
+from aegis.merchants.shadow_signals import (
+    InMemoryMerchantShadowSignalRepository,
+    MerchantShadowSignalRepository,
+    SupabaseMerchantShadowSignalRepository,
+)
 from aegis.scoring.ofac import OFACClient
 from aegis.storage import (
     DocumentRepository,
     InMemoryDocumentRepository,
     SupabaseDocumentRepository,
+)
+from aegis.submissions import (
+    InMemorySubmissionRepository,
+    SubmissionRepository,
+    SupabaseSubmissionRepository,
 )
 
 
@@ -98,6 +108,19 @@ def get_renewal_attestation_repository() -> RenewalAttestationRepository:
     if get_settings().aegis_storage_backend == "memory":
         return InMemoryRenewalAttestationRepository()
     return SupabaseRenewalAttestationRepository()
+
+
+@lru_cache(maxsize=1)
+def get_merchant_shadow_signal_repository() -> MerchantShadowSignalRepository:
+    """Process-wide MerchantShadowSignalRepository (U22 — migration 044).
+
+    Persists the cross-statement Pattern list that U15 stashes on
+    ``PipelineResult.cross_statement_patterns``. Same memory / supabase
+    toggle as the other repositories.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryMerchantShadowSignalRepository()
+    return SupabaseMerchantShadowSignalRepository()
 
 
 @lru_cache(maxsize=1)
@@ -163,6 +186,20 @@ def get_funder_reply_repository() -> FunderReplyRepository:
 
 
 @lru_cache(maxsize=1)
+def get_submission_repository() -> SubmissionRepository:
+    """Process-wide SubmissionRepository (U20 — migration 013).
+
+    Same memory / supabase toggle as the other repositories. The
+    dashboard ``merchant_submit_to_funders`` handler uses this to persist
+    one row per matched funder so the portfolio funder-approval panel
+    reads from a durable table instead of audit_log JSON.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemorySubmissionRepository()
+    return SupabaseSubmissionRepository()
+
+
+@lru_cache(maxsize=1)
 def get_decision_snapshot() -> DecisionSnapshot:
     """Process-wide DecisionSnapshot writer (mp Phase 2).
 
@@ -202,6 +239,7 @@ def reset_dependency_caches() -> None:
     get_repository.cache_clear()
     get_merchant_repository.cache_clear()
     get_renewal_attestation_repository.cache_clear()
+    get_merchant_shadow_signal_repository.cache_clear()
     get_funder_repository.cache_clear()
     get_deal_repository.cache_clear()
     get_funder_reply_repository.cache_clear()
@@ -209,6 +247,7 @@ def reset_dependency_caches() -> None:
     get_audit.cache_clear()
     get_decision_snapshot.cache_clear()
     get_disclosure_render_event_repository.cache_clear()
+    get_submission_repository.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
     get_close_client.cache_clear()
@@ -224,9 +263,11 @@ __all__ = [
     "get_funder_repository",
     "get_llm",
     "get_merchant_repository",
+    "get_merchant_shadow_signal_repository",
     "get_ofac_client",
     "get_override_repository",
     "get_renewal_attestation_repository",
     "get_repository",
+    "get_submission_repository",
     "reset_dependency_caches",
 ]

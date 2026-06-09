@@ -24,7 +24,7 @@
      page renders unstyled. Same load order as base.html.j2: system first,
      then dossier, then tool. ?v= bumps to match base. #}
   <link rel="stylesheet" href="/ui/static/aegis-system.css?v=5">
-  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=11">
+  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=12">
   <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=14">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   <script src="/ui/static/evidence_copy.js?v=1" defer></script>
@@ -416,6 +416,31 @@
         </div>
       {% endif %}
 
+      {# U22 — Merchant-level shadow signals persisted by the worker
+         hook in ``merchants_shadow_signals`` (migration 044). Renders
+         immediately after the U18 "Operator review signals" section
+         above (and after the no-score "Score unavailable" branch) so
+         the cross-statement / related-account signals U15 emitted at
+         upload time are visible on the dossier regardless of whether
+         the deal has reached the scoring step. Same humanizer + same
+         shadow-only framing as the U18 section; ``detected_at`` is the
+         persisted timestamp, ``data-signal-id`` ties the entry to its
+         ``merchants_shadow_signals`` row for operator audit drill-down. #}
+      {% if merchant_shadow_signals %}
+        <details class="shadow-signals marginalia" data-merchant-shadow-count="{{ merchant_shadow_signals|length }}">
+          <summary>Merchant-level shadow signals &mdash; {{ merchant_shadow_signals|length }}</summary>
+          <ul>
+            {% for mss in merchant_shadow_signals %}
+              <li data-code="{{ mss.humanized.code }}" data-signal-id="{{ mss.record.id }}">
+                <strong>{{ mss.humanized.title }}{% if mss.humanized.detail %} <span class="qual">· {{ mss.humanized.detail }}</span>{% endif %}</strong>
+                {% if mss.humanized.description %}<span class="desc">— {{ mss.humanized.description }}</span>{% endif %}
+                <span class="qual"> · detected {{ mss.record.detected_at.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        </details>
+      {% endif %}
+
       {# Unified A+B+C tracks panel — informational, additive.
          Renders alongside the score block above; Step 2 of the
          scoring redesign retires fraud_score and flips this live. #}
@@ -601,6 +626,10 @@
                 {% for lender, lender_debits in (stacking.debits|sort(attribute='lender_label'))|groupby('lender_label') %}
                   <details class="lender-group" open>
                     <summary>{{ lender }} &mdash; {{ lender_debits|length }} debit{{ '' if lender_debits|length == 1 else 's' }}</summary>
+                    {# R4.8 (2026-06-09): table-scroll wrapper allows the
+                       ledger to scroll horizontally on phones without
+                       breaking the dossier's main column layout. #}
+                    <div class="table-scroll">
                     <table class="ledger">
                       <thead>
                         <tr><th>Date</th><th>Amount</th><th>Source</th></tr>
@@ -615,6 +644,7 @@
                         {% endfor %}
                       </tbody>
                     </table>
+                    </div>
                   </details>
                 {% endfor %}
               </details>
@@ -756,6 +786,9 @@
         <h2>Statements <em>· ledger</em></h2>
         <span class="footnote">{{ documents|length }} on file · click any row → full detail</span>
       </header>
+      {# R4.8 (2026-06-09): table-scroll wrapper — statements ledger has
+         8 columns and will not fit on a phone viewport. #}
+      <div class="table-scroll">
       <table class="audit-ledger">
         <thead>
           <tr>
@@ -794,6 +827,7 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
     </section>
     {% endif %}
 
@@ -804,6 +838,10 @@
         <h2>Merchant <em>· profile</em></h2>
         <span class="footnote">all fields · <a href="/ui/merchants/{{ merchant.id }}/edit" style="border-bottom:0">edit ↗</a></span>
       </header>
+      {# R4.8 (2026-06-09): table-scroll wrapper for the merchant-profile
+         key/value ledger. Two columns fit on most phones but the 200px
+         label column can force overflow on narrow widths. #}
+      <div class="table-scroll">
       <table class="audit-ledger">
         <tbody>
           <tr><td class="when" style="width:200px">Business name</td><td class="details" style="font-family:var(--serif);font-size:15px;font-weight:500">{{ merchant.business_name }}{% if merchant.dba %} <em style="color:var(--ink-3)">· DBA {{ merchant.dba }}</em>{% endif %}</td></tr>
@@ -827,6 +865,7 @@
           <tr><td class="when">Merchant ID</td><td class="details"><span class="mono" style="font-size:10.5px">{{ merchant.id }}</span></td></tr>
         </tbody>
       </table>
+      </div>
     </section>
 
     {# ============== § 5 DISPOSITION ============== #}
@@ -867,6 +906,9 @@
           <h2>Audit <em>log</em></h2>
           <span class="footnote">last {{ history|length }} event{{ '' if history|length == 1 else 's' }} · newest first</span>
         </header>
+        {# R4.8 (2026-06-09): table-scroll wrapper — audit log has 4
+           columns of which Actor/Details may carry long strings. #}
+        <div class="table-scroll">
         <table class="audit-ledger">
           <thead>
             <tr><th style="width:170px">When</th><th style="width:120px">Actor</th><th style="width:220px">Action</th><th>Details</th></tr>
@@ -888,6 +930,7 @@
             {% endfor %}
           </tbody>
         </table>
+        </div>
       </section>
     {% endif %}
 

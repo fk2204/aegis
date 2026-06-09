@@ -1,0 +1,144 @@
+{% extends "base.html.j2" %}
+{% set active = 'DisclosureEvents' %}
+{% block title %}Disclosure render events — AEGIS{% endblock %}
+
+{# Disclosure render-event triage page (U21).
+
+   List view over ``disclosure_render_events`` (migration 042 / U16).
+   Read-only — render events are diagnostic only, with no "resolve and
+   move on" state machine (the next clean APR converge produces a new
+   ``ok`` row rather than mutating the failing one).
+
+   The detail subroute (/ui/disclosure-events/{id}) lives in a separate
+   template (``disclosure_event_detail.html.j2``).
+
+   Surface contract: the route populates ``rows`` (list of
+   DisclosureRenderEventRecord), ``status`` (active filter), ``from_date``,
+   ``to_date``, ``status_options`` (rendered as a select).
+#}
+
+{% block deck %}
+{% set title = "Disclosure render events" %}
+{% set subtitle = "· internal pre-flight triage" %}
+{% set meta %}
+  From {{ from_date.isoformat() }} to {{ to_date.isoformat() }}
+  &nbsp;·&nbsp;
+  {{ rows|length }} event{{ '' if rows|length == 1 else 's' }}
+  {% if status %}· status = <code>{{ status }}</code>{% endif %}
+{% endset %}
+{% set actions = [
+    {"label": "Portfolio", "href": "/ui/portfolio"},
+    {"label": "Today", "href": "/ui/"},
+] %}
+{% include "_page_header.html.j2" %}
+
+{# Filter form — GET so the URL stays bookmarkable. ``from``/``to``
+   share the portfolio convention; ``status`` defaults to needs_review
+   on first load. Empty string in the dropdown = all statuses. #}
+<form method="get" action="/ui/disclosure-events" class="inline-form" style="margin: 0.5rem 0 1rem;">
+  <label class="sub" for="events_status">Status</label>
+  <select id="events_status" name="status">
+    {% for opt in status_options %}
+      <option value="{{ opt.value }}" {% if opt.value == status %}selected{% endif %}>{{ opt.label }}</option>
+    {% endfor %}
+  </select>
+  <label class="sub" for="events_from">From</label>
+  <input type="date" id="events_from" name="from" value="{{ from_date.isoformat() }}">
+  <label class="sub" for="events_to">To</label>
+  <input type="date" id="events_to" name="to" value="{{ to_date.isoformat() }}">
+  <button type="submit">Apply</button>
+</form>
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+
+  {# Operator-context banner. Per .claude/rules/compliance.md SCOPE
+     NOTE: AEGIS render events are internal pre-flight, not regulator-
+     facing. The banner makes the scope explicit so the operator does
+     not mis-read an ``apr_compute_failed`` row as a regulator-side
+     incident. #}
+  <div>
+    <div class="empty" role="note" style="margin-bottom:1rem">
+      <strong>Internal pre-flight log.</strong>
+      <span class="copy">
+        Render-event records are AEGIS internal pre-flight. Funder
+        partner owns regulator-facing issuance. Resolve
+        <code>apr_compute_failed</code> events by reviewing the deal's
+        recommended terms; <code>needs_review</code> otherwise typically
+        resolves once the deal's APR calculator can converge. There is
+        no "mark resolved" action here — once the deal renders cleanly
+        next time, a new <code>ok</code> event is recorded.
+      </span>
+    </div>
+
+    <header class="sect-head">
+      <h2>Events</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ rows|length }} render event{{ '' if rows|length == 1 else 's' }}</div>
+    </header>
+
+    {% if not rows %}
+      <div class="empty">
+        No render events matching the current filter
+        <span class="copy">
+          Widen the window or switch the status dropdown to
+          <code>all</code> to see every recent event.
+        </span>
+      </div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Rendered at</th>
+            <th>State</th>
+            <th>Template</th>
+            <th>Status</th>
+            <th>Reason</th>
+            <th>Deal</th>
+            <th>Merchant</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr>
+              <td class="mono-cell">{{ r.rendered_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
+              <td class="mono-cell">{{ r.state or '—' }}</td>
+              <td class="sub">{{ r.template_path or '—' }}</td>
+              <td>
+                {% if r.status == 'ok' %}
+                  <span class="chip pos">OK</span>
+                {% elif r.status == 'needs_review' %}
+                  <span class="chip warn">NEEDS REVIEW</span>
+                {% elif r.status == 'apr_compute_failed' %}
+                  <span class="chip neg">APR FAILED</span>
+                {% elif r.status == 'template_render_failed' %}
+                  <span class="chip neg">TEMPLATE FAILED</span>
+                {% else %}
+                  <span class="chip info">{{ r.status|upper }}</span>
+                {% endif %}
+              </td>
+              <td class="sub">{{ r.status_reason or '—' }}</td>
+              <td class="mono-cell">
+                {% if r.deal_id %}{{ r.deal_id|string|truncate(8, True, '') }}{% else %}—{% endif %}
+              </td>
+              <td class="mono-cell">
+                {% if r.merchant_id %}
+                  <a href="/ui/merchants/{{ r.merchant_id }}">{{ r.merchant_id|string|truncate(8, True, '') }}</a>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>
+                <a href="/ui/disclosure-events/{{ r.id }}">View details →</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+</section>
+{% endblock %}

@@ -30,12 +30,20 @@ from aegis.api.app import create_app
 from aegis.api.deps import (
     get_audit,
     get_decision_snapshot,
+    get_disclosure_render_event_repository,
     get_funder_repository,
     get_merchant_repository,
     get_repository,
+    get_submission_repository,
     reset_dependency_caches,
 )
 from aegis.audit import InMemoryAuditLog
+from aegis.compliance.render_events import (
+    RENDER_EVENT_STATUS_APR_FAILED,
+    RENDER_EVENT_STATUS_NEEDS_REVIEW,
+    RENDER_EVENT_STATUS_OK,
+    InMemoryDisclosureRenderEventRepository,
+)
 from aegis.compliance.snapshot import InMemoryDecisionSnapshot
 from aegis.deals.portfolio_analytics import (
     DEFAULT_WINDOW_DAYS,
@@ -49,6 +57,8 @@ from aegis.funders.repository import InMemoryFunderRepository
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import InMemoryMerchantRepository
 from aegis.storage import InMemoryDocumentRepository
+from aegis.submissions import InMemorySubmissionRepository
+from aegis.submissions.models import SubmissionRow
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -89,18 +99,47 @@ def _funder(name: str) -> FunderRow:
     return FunderRow(id=uuid4(), name=name)
 
 
+def _submission(
+    funder_id: object,
+    *,
+    submitted_at: datetime | None = None,
+) -> SubmissionRow:
+    """Minimum-viable SubmissionRow for portfolio-table tests.
+
+    The portfolio funder-table aggregator only reads ``funder_id`` and
+    ``submitted_at``; the other columns get plausible defaults so the
+    Pydantic-strict model validates without leaking test concerns into
+    the production code path.
+    """
+    from decimal import Decimal
+
+    return SubmissionRow(
+        merchant_id=uuid4(),
+        document_id=uuid4(),
+        funder_id=funder_id,
+        submitted_at=submitted_at or datetime(2026, 5, 15, tzinfo=UTC),
+        submitted_by="test@commerafunding.com",
+        csv_doc_hash="a" * 64,
+        csv_filename="m__f.csv",
+        proposed_amount=Decimal("50000.00"),
+        proposed_factor=Decimal("1.3000"),
+        proposed_holdback=Decimal("0.1200"),
+    )
+
+
 def _populated_app() -> tuple[
     TestClient,
     InMemoryMerchantRepository,
     InMemoryFunderRepository,
     InMemoryAuditLog,
     InMemoryDecisionSnapshot,
+    InMemorySubmissionRepository,
     list[FunderRow],
     list[MerchantRow],
 ]:
     """Build an app whose merchant + funder repos are pre-seeded with
-    a known mix of merchants, funders, audit rows, reply rows, and an
-    in-memory decision snapshot.
+    a known mix of merchants, funders, audit rows, reply rows, decision
+    snapshots, and a submissions repository.
 
     Returns the client + the live repos + the seeded entities so each
     test can introspect / assert against the same objects.
@@ -111,6 +150,7 @@ def _populated_app() -> tuple[
     docs_repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
     snapshot = InMemoryDecisionSnapshot()
+    submissions = InMemorySubmissionRepository()
 
     # Three merchants in three pipeline states.
     m1 = _merchant(business_name="Acme Diner", state="NY")
@@ -131,6 +171,7 @@ def _populated_app() -> tuple[
     app.dependency_overrides[get_repository] = lambda: docs_repo
     app.dependency_overrides[get_audit] = lambda: audit
     app.dependency_overrides[get_decision_snapshot] = lambda: snapshot
+    app.dependency_overrides[get_submission_repository] = lambda: submissions
     client = TestClient(app)
     return (
         client,
@@ -138,6 +179,7 @@ def _populated_app() -> tuple[
         funders_repo,
         audit,
         snapshot,
+        submissions,
         [f1, f2],
         [m1, m2, m3],
     )
@@ -242,34 +284,20 @@ def test_funder_approval_rate_math_is_exact() -> None:
         1 no-response → approval rate 3/5 = 60%.
       * Funder F2: 4 submissions, 1 approved, 1 declined, 1 countered,
         1 no-response → approval rate 1/3 = 33%.
+
+    Post-U20: submissions come from the durable submissions table, not
+    audit_log JSON. The replies side stays on funder_replies.
     """
     f1 = _funder("F1 Funder")
     f2 = _funder("F2 Funder")
     merchants: list[MerchantRow] = []
 
-    # Six submissions to F1 + four to F2 — each is one
-    # ``deal.submit_to_funders`` audit row carrying a funder_ids list.
-    audit_rows: list[dict[str, object]] = []
+    # Six submissions to F1 + four to F2 — each is one SubmissionRow.
+    submissions: list[SubmissionRow] = []
     for _ in range(6):
-        audit_rows.append(
-            {
-                "actor": "test",
-                "action": "deal.submit_to_funders",
-                "subject_id": str(uuid4()),
-                "details": {"funder_ids": [str(f1.id)]},
-                "created_at": None,
-            }
-        )
+        submissions.append(_submission(f1.id))
     for _ in range(4):
-        audit_rows.append(
-            {
-                "actor": "test",
-                "action": "deal.submit_to_funders",
-                "subject_id": str(uuid4()),
-                "details": {"funder_ids": [str(f2.id)]},
-                "created_at": None,
-            }
-        )
+        submissions.append(_submission(f2.id))
 
     # Replies: F1 3 approved + 2 declined; F2 1 approved + 1 declined +
     # 1 countered. Each reply is a funder_replies row dict.
@@ -288,8 +316,9 @@ def test_funder_approval_rate_math_is_exact() -> None:
         funders=[f1, f2],
         documents=[],
         funder_reply_rows=reply_rows,
-        audit_rows=audit_rows,
+        audit_rows=[],
         decision_rows=[],
+        submissions=submissions,
         date_range=DateRange(
             from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
         ),
@@ -462,13 +491,20 @@ def test_pipeline_state_counts_submitted_and_funded_via_audit() -> None:
 
 
 def test_portfolio_route_renders_populated_funder_table() -> None:
-    """With audit + decision rows seeded into the in-memory stores, the
-    route renders the funder names + the tier panel populated from the
-    decisions table."""
-    client, _, _, audit, snapshot, funders, merchants = _populated_app()
+    """With submissions + decision rows seeded into the in-memory stores,
+    the route renders the funder names + the tier panel populated from
+    the decisions table.
+
+    Post-U20: the funder approval panel reads from the submissions repo,
+    not audit_log. The audit-log signal still drives the pipeline
+    "approved" bucket because that's a per-merchant boolean (any
+    submission row exists).
+    """
+    client, _, _, audit, snapshot, submissions, funders, merchants = _populated_app()
     f1, _f2 = funders
     submitted_m = merchants[0]
 
+    # Pipeline "approved" bucket still reads audit (it's per-merchant).
     audit.entries.append(
         {
             "actor": "test",
@@ -478,6 +514,10 @@ def test_portfolio_route_renders_populated_funder_table() -> None:
             "details": {"funder_ids": [str(f1.id)]},
             "created_at": None,
         }
+    )
+    # Funder-table submission count reads the submissions repo (U20).
+    submissions.create(
+        _submission(f1.id, submitted_at=datetime(2026, 6, 1, tzinfo=UTC))
     )
     # Post-U17 the score signal must come from the decisions table —
     # the audit-log fallback is gone. Drop a row in the snapshot store
@@ -773,3 +813,85 @@ def test_empty_decisions_yields_empty_tier_and_state_panels() -> None:
     assert metrics.state_counts == []
     assert metrics.recent_activity == []
     assert metrics.avg_tier is None
+
+
+# ---------------------------------------------------------------------------
+# U21 — disclosure_render_queue tile (Part 1 plumb-through)
+#
+# Two tests assert the tile fields populate from the render-event repo:
+#   * Zero counts when the repo is empty.
+#   * Populated counts when seeded with one row per actionable status.
+# Mirrors the existing "fraud catch rate" tile-style coverage so the
+# regression-protection bar matches the rest of the panels.
+# ---------------------------------------------------------------------------
+
+
+def test_disclosure_render_queue_tile_zero_counts_when_repo_empty() -> None:
+    """An empty render-events repo → all four counters are zero, and
+    ``actionable_count`` (the chip value) is 0. The tile renders the
+    calm state rather than a warn chip."""
+    reset_dependency_caches()
+    render_repo = InMemoryDisclosureRenderEventRepository()
+    app = create_app()
+    app.dependency_overrides[get_disclosure_render_event_repository] = (
+        lambda: render_repo
+    )
+    client = TestClient(app)
+    try:
+        resp = client.get("/ui/portfolio")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert "Disclosure render queue" in body
+        # Both buckets zero → tile reads "0 / 0" with zero-count copy.
+        assert "needs_review 0" in body
+        assert "apr_failed 0" in body
+    finally:
+        reset_dependency_caches()
+
+
+def test_disclosure_render_queue_tile_populated_from_repo() -> None:
+    """One ``needs_review`` + two ``apr_compute_failed`` + one ``ok``
+    row in the repo → tile reads needs_review=1, apr_failed=2,
+    actionable_count=3, total=4. The "Triage →" link is in the body."""
+    reset_dependency_caches()
+    render_repo = InMemoryDisclosureRenderEventRepository()
+
+    def _seed(status: str) -> None:
+        render_repo.record(
+            deal_id=uuid4(),
+            merchant_id=uuid4(),
+            state="CA",
+            template_path="compliance/templates/ca_sb1235.html.j2",
+            status=status,
+            status_reason="brentq failed to converge"
+            if status == RENDER_EVENT_STATUS_APR_FAILED
+            else None,
+            details={"term_days": 180, "factor": "1.35"},
+            recipient_email=None,
+            rendered_by="api",
+            rendered_at=datetime.now(UTC),
+            metadata=None,
+        )
+
+    _seed(RENDER_EVENT_STATUS_NEEDS_REVIEW)
+    _seed(RENDER_EVENT_STATUS_APR_FAILED)
+    _seed(RENDER_EVENT_STATUS_APR_FAILED)
+    _seed(RENDER_EVENT_STATUS_OK)
+
+    app = create_app()
+    app.dependency_overrides[get_disclosure_render_event_repository] = (
+        lambda: render_repo
+    )
+    client = TestClient(app)
+    try:
+        resp = client.get("/ui/portfolio")
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert "Disclosure render queue" in body
+        assert "needs_review 1" in body
+        assert "apr_failed 2" in body
+        # Triage link to the new page is rendered with text "Triage →".
+        assert "/ui/disclosure-events" in body
+        assert "Triage" in body
+    finally:
+        reset_dependency_caches()
