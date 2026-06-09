@@ -106,6 +106,17 @@ _AUTO_DECLINE_ABSOLUTE_TRIGGERS: Final[tuple[str, ...]] = (
     "absolute",
 )
 
+# R3.4 — states whose broker statutes prohibit advance-fee solicitation.
+# Mirrors ``broker_advance_fees_prohibited=True`` in
+# ``aegis.compliance.states`` (FL § 559.952, GA § 7-7-3). Per CLAUDE.md
+# "Decision-boundary changes — shadow-first" this is annotation only —
+# the per-funder soft_concern fires when a funder's
+# ``charges_merchant_advance_fees=True`` is paired with a merchant in
+# one of these states. No hard fail, no tier change. Deal-level
+# ``ScoreInput.advance_fees_charged`` remains the explicit-override
+# path through ``_state_disclosure_flag`` in score.py.
+_ADVANCE_FEE_PROHIBITED_STATES: Final[frozenset[str]] = frozenset({"FL", "GA"})
+
 
 def compute_estimated_terms(
     funder: FunderRow,
@@ -351,6 +362,24 @@ def match_funder(
     if funder.conditional_requirements:
         criteria_count += 1
     soft.extend(conditional_soft)
+
+    # R3.4 — per-funder advance-fee enforcement signal. Pairs a funder
+    # that admits to charging merchant-side advance fees with a merchant
+    # in a state whose broker statute prohibits the practice (FL / GA).
+    # Shadow-mode soft_concern only; no hard fail (the operator decides
+    # whether to submit). The deal-level explicit-override path stays in
+    # ``score._state_disclosure_flag``; this branch is the live wiring
+    # that fires per FunderMatch because ``build_score_input`` cannot
+    # know which funder a deal will be submitted to.
+    if (
+        funder.charges_merchant_advance_fees
+        and deal.state.upper() in _ADVANCE_FEE_PROHIBITED_STATES
+    ):
+        criteria_count += 1
+        soft.append(
+            "state_enforcement_concern:"
+            "FL_GA_advance_fee_prohibition_for_this_funder"
+        )
 
     if criteria_count == 0:
         return None
