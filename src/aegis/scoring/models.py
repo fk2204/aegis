@@ -189,6 +189,28 @@ class ScoreResult(_StrictModel):
     for each grade (e.g. ``"tib_24mo+"``, ``"adb_lt_8pct"``). Empty when
     paper_grade was not computed (hard decline path)."""
 
+    shadow_flags: list[str] = Field(default_factory=list)
+    """Shadow-mode evidence annotations from R3 / R4 audit-driven changes.
+    Per CLAUDE.md "Decision-boundary changes — shadow-first": new
+    detectors / policy reconciliations log what they WOULD do here without
+    altering ``score``, ``tier``, ``recommendation``, or any existing
+    field. The operator validates against the corpus + live shadow rows
+    before flipping severity via config. Currently sourced from:
+
+    - R4.6 EOF policy mismatch (``eof_policy_mismatch:...``) — emitted
+      when the legacy scorer hard-declines at >1 EOF while pipeline
+      policy treats 2 EOFs as review (per ``docs/AUDIT_2026_05_10.md``
+      line 46).
+    - R4.4 industry-aware seasonality on the CV penalty path
+      (``seasonality_recategorized:...`` or
+      ``seasonality_observed_but_volatility_extreme:...``) — emitted on
+      a high CV when the merchant's NAICS prefix is in the known-seasonal
+      set. Existing ``-12 high_revenue_volatility`` penalty still fires.
+    - R3.4 state-by-state enforcement signals
+      (``state_enforcement_concern:TX_HB700_tx_merchant_review`` or
+      ``state_enforcement_concern:FL_GA_advance_fee_prohibition``) —
+      operator-side review hints; no tier / recommendation change."""
+
 
 class FunderMatch(_StrictModel):
     """A funder candidate ranked against this merchant's profile."""

@@ -28,6 +28,34 @@ from aegis.money import safe_divide
 from aegis.scoring.models import PaperGrade, ScoreInput, ScoreResult
 from aegis.scoring.ofac import OFACClient
 
+# R4.4 — Known-seasonal NAICS prefixes. Conservative, prefix-match. None
+# returns False. The list captures industries where multi-month deposit
+# CV > 0.50 is an expected business pattern (winter snow-removal, summer
+# landscaping, holiday retail, event catering, harvest-cycle agriculture)
+# rather than the revenue-volatility risk the existing penalty was built
+# to flag. Shadow-only: existing -12 ``high_revenue_volatility`` deduction
+# still fires; the shadow flag tells the operator "this would have been
+# recategorized as seasonal under a future config flip."
+_SEASONAL_NAICS_PREFIXES: Final[tuple[str, ...]] = (
+    "1113",   # Fruit and tree-nut farming (strongly seasonal harvest)
+    "1133",   # Logging (seasonal access / weather constraints)
+    "4413",   # Auto parts / tire dealers (tire + maintenance seasonality)
+    "451",    # Sporting goods / hobby / book / music stores (holiday seasonal)
+    "45112",  # Sporting goods stores (explicit overlap with 451)
+    "488210", # Support activities for rail transportation — snow removal often coded here
+    "56172",  # Janitorial — services to buildings (seasonal yard work overlap)
+    "56173",  # Landscaping services (canonical seasonal industry)
+    "7223",   # Special food services — event-seasonal catering
+    "7225",   # Restaurants and other eating places (seasonal patterns common)
+    "71390",  # Other amusement and recreation industries
+    "71391",  # Golf courses and country clubs
+)
+# R4.4 CV thresholds. ``> 0.50`` is the existing high-volatility floor;
+# ``> 1.0`` is "even for seasonal businesses, this is too extreme — keep
+# flagging it for review."
+_SEASONAL_CV_FLOOR: Final[Decimal] = Decimal("0.50")
+_SEASONAL_CV_CEILING: Final[Decimal] = Decimal("1.0")
+
 # DSCR thresholds. dscr = monthly_revenue / total_monthly_obligations,
 # where total_monthly_obligations includes proposed_daily_payment * 22.
 DSCR_HARD_DECLINE: Final[Decimal] = Decimal("1.00")
@@ -68,11 +96,13 @@ class _Builder:
     flags: list[str] = None  # type: ignore[assignment]
     breakdown: list[dict[str, object]] = None  # type: ignore[assignment]
     soft_concerns: list[str] = None  # type: ignore[assignment]
+    shadow_flags: list[str] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         self.flags = []
         self.breakdown = []
         self.soft_concerns = []
+        self.shadow_flags = []
 
     def add(self, delta: int, factor: str) -> None:
         self.score += delta
@@ -85,7 +115,17 @@ def score_deal(
     ofac: OFACClient | None = None,
 ) -> ScoreResult:
     """Score a deal. Hard declines first; soft scoring + tier/payback after."""
-    hard_declines, decline_details = _check_hard_declines(deal, ofac)
+    hard_declines, decline_details, shadow_flags = _check_hard_declines(deal, ofac)
+    # R3.4 — state-by-state enforcement signals. Shadow-only; fires on both
+    # the hard-decline path and the soft-score path so the operator sees
+    # the concern regardless of how the deal exits the scorer.
+    shadow_flags.extend(
+        _state_disclosure_flag(
+            merchant_state=deal.state,
+            deal_state=deal.state,
+            advance_fees_charged=None,
+        )
+    )
     if hard_declines:
         return ScoreResult(
             score=0,
@@ -101,9 +141,10 @@ def score_deal(
             decline_details=decline_details,
             paper_grade="D",
             paper_grade_reasons=["hard_decline"],
+            shadow_flags=shadow_flags,
         )
 
-    return _soft_score(deal)
+    return _soft_score(deal, initial_shadow_flags=shadow_flags)
 
 
 # -- hard declines -----------------------------------------------------------
@@ -112,8 +153,8 @@ def score_deal(
 def _check_hard_declines(
     deal: ScoreInput,
     ofac: OFACClient | None,
-) -> tuple[list[str], dict[str, list[dict[str, str]]]]:
-    """Return ``(reasons, details)``.
+) -> tuple[list[str], dict[str, list[dict[str, str]]], list[str]]:
+    """Return ``(reasons, details, shadow_flags)``.
 
     ``details`` carries structured payloads for reasons that need
     downstream audit / reporting — currently only ``ofac_matches`` (the
@@ -122,9 +163,14 @@ def _check_hard_declines(
     The endpoint forwards this into ``audit_log`` so the operator can
     disposition + file the 10-business-day Initial Report of Blocked
     Property without re-running the screen.
+
+    ``shadow_flags`` carries decision-boundary annotations that don't
+    change the existing decline behavior — see ``ScoreResult.shadow_flags``
+    docstring + CLAUDE.md "Decision-boundary changes — shadow-first".
     """
     reasons: list[str] = []
     details: dict[str, list[dict[str, str]]] = {}
+    shadow_flags: list[str] = []
 
     if ofac is not None:
         # OFAC screening — checked FIRST so a sanctioned merchant cannot
@@ -161,6 +207,14 @@ def _check_hard_declines(
 
     if deal.eof_markers > 1:
         reasons.append(f"incremental_pdf_saves: {deal.eof_markers} EOF markers")
+        # AUDIT R4.6: scorer hard-declines at >1 EOF; pipeline policy is 3+.
+        # Reconcile via shadow-mode policy flip after corpus validation.
+        # See ``docs/AUDIT_2026_05_10.md`` line 46 ("2 EOFs → review,
+        # 3+ → manual_review"). The shadow flag documents what the
+        # pipeline policy WOULD do without altering current behavior.
+        shadow_flags.append(
+            "eof_policy_mismatch:scorer_declines_at_2_pipeline_routes_review"
+        )
 
     if deal.monthly_revenue < MIN_MONTHLY_REVENUE:
         reasons.append(f"revenue_below_minimum: ${deal.monthly_revenue}")
@@ -198,14 +252,68 @@ def _check_hard_declines(
     if deal.tampering_confirmed:
         reasons.append("bank_statement_tampering_confirmed")
 
-    return reasons, details
+    return reasons, details, shadow_flags
+
+
+# -- shadow-mode helpers (R3.4, R4.4, R4.6) ---------------------------------
+
+
+def _is_seasonal_industry(naics: str | None) -> bool:
+    """R4.4 — True if ``naics`` prefix-matches a known-seasonal industry.
+
+    NAICS is matched by prefix so 6-digit codes like ``561730`` map to
+    ``56173`` (landscaping). ``None`` returns False — we never assume
+    seasonality without an explicit industry code. Conservative list per
+    audit R4.4 spec; expand only with operator + corpus validation.
+    """
+    if naics is None:
+        return False
+    return any(naics.startswith(prefix) for prefix in _SEASONAL_NAICS_PREFIXES)
+
+
+def _state_disclosure_flag(
+    merchant_state: str | None,
+    deal_state: str | None,
+    advance_fees_charged: bool | None,
+) -> list[str]:
+    """R3.4 — state-by-state enforcement signals (shadow only).
+
+    Returns the list of shadow flags to surface for the operator. Never
+    promotes to ``hard_decline_reasons`` or alters tier / recommendation.
+
+    - **TX HB 700** — Texas Finance Code Ch. 398 requires a first-priority
+      lien on the merchant's accounts for MCAs; standard ACH-debit
+      structures don't satisfy it. AEGIS keeps TX in ``state_not_served``
+      (see ``src/aegis/compliance/states.py`` docstring lines 44-49 +
+      line 989-991, and ``docs/counsel/phase-4-questions.md``), but a
+      TX merchant can still arrive at the scorer through edge paths
+      (renewals, override). Emit a review hint.
+    - **FL / GA advance-fee prohibition** — both states' broker statutes
+      prohibit charging the merchant a fee in advance of funding (per
+      ``compliance/states.py`` ``broker_advance_fees_prohibited=True``
+      at lines 724 / 816). When the deal flags advance fees, surface
+      the concern.
+    """
+    flags: list[str] = []
+    state = (merchant_state or "").upper()
+    if state == "TX":
+        flags.append("state_enforcement_concern:TX_HB700_tx_merchant_review")
+    if state in {"FL", "GA"} and advance_fees_charged is True:
+        flags.append("state_enforcement_concern:FL_GA_advance_fee_prohibition")
+    return flags
 
 
 # -- soft scoring ------------------------------------------------------------
 
 
-def _soft_score(deal: ScoreInput) -> ScoreResult:
+def _soft_score(
+    deal: ScoreInput,
+    *,
+    initial_shadow_flags: list[str] | None = None,
+) -> ScoreResult:
     b = _Builder()
+    if initial_shadow_flags:
+        b.shadow_flags.extend(initial_shadow_flags)
 
     _score_revenue(deal, b)
     _score_revenue_trend(deal, b)
@@ -258,6 +366,7 @@ def _soft_score(deal: ScoreInput) -> ScoreResult:
         estimated_payback_days=payback_days,
         paper_grade=paper_grade,
         paper_grade_reasons=paper_reasons,
+        shadow_flags=list(b.shadow_flags),
     )
 
 
@@ -488,7 +597,16 @@ def _score_revenue_trend(deal: ScoreInput, b: _Builder) -> None:
 
 
 def _score_revenue_volatility(deal: ScoreInput, b: _Builder) -> None:
-    """Coefficient of variation across 4+ months. > 0.50 high, > 0.35 moderate, ≤ 0.20 stable."""
+    """Coefficient of variation across 4+ months. > 0.50 high, > 0.35 moderate, ≤ 0.20 stable.
+
+    R4.4 — shadow-mode seasonality re-categorization. When the merchant's
+    NAICS prefix is in ``_SEASONAL_NAICS_PREFIXES`` and CV > 0.50, emit a
+    shadow flag that records what a future seasonality-aware policy would
+    have done. The existing ``-12 high_revenue_volatility`` deduction
+    STILL fires — this is annotation only, not a behavior change. CV
+    above 1.0 is too extreme even for seasonal businesses; emit a
+    different shadow flag noting the penalty still applies as intended.
+    """
     if len(deal.monthly_breakdown) < 4:
         return
     deposits = [float(m.deposits) for m in deal.monthly_breakdown]
@@ -499,6 +617,20 @@ def _score_revenue_volatility(deal: ScoreInput, b: _Builder) -> None:
     cv = (variance**0.5) / mean
     if cv > 0.50:
         b.add(-12, "high_revenue_volatility")
+        # R4.4 shadow annotation — does NOT alter the -12 penalty above.
+        if _is_seasonal_industry(deal.industry_naics):
+            cv_decimal = Decimal(str(cv)).quantize(Decimal("0.001"))
+            naics_label = deal.industry_naics or "unknown"
+            if Decimal(str(cv)) <= _SEASONAL_CV_CEILING:
+                b.shadow_flags.append(
+                    f"seasonality_recategorized:cv={cv_decimal}_naics={naics_label}"
+                    "_would_skip_volatility_penalty"
+                )
+            else:
+                b.shadow_flags.append(
+                    f"seasonality_observed_but_volatility_extreme:cv={cv_decimal}"
+                    f"_naics={naics_label}_penalty_still_applied"
+                )
     elif cv > 0.35:
         b.add(-6, "moderate_revenue_volatility")
     elif cv <= 0.20:
