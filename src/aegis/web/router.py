@@ -80,6 +80,11 @@ from aegis.compliance.overrides import (
 )
 from aegis.compliance.states import STATES, StateNotServed, validate_state_served
 from aegis.config import get_settings
+from aegis.deals.portfolio_analytics import (
+    DateRange,
+    compute_portfolio_metrics,
+    resolve_date_range,
+)
 from aegis.deals.repository import DealRepository
 from aegis.funders.extract import (
     FunderExtractionError,
@@ -4757,6 +4762,200 @@ async def renewal_attestation_submit(
     return RedirectResponse(
         url=f"/ui/renewals?flash={urllib.parse.quote(flash_msg)}",
         status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /portfolio — operator analytics over the deal pipeline (M11 / U11)
+#
+# Read-only aggregations across merchants, documents, audit_log, and
+# funder_replies. The math lives in
+# ``aegis.deals.portfolio_analytics.compute_portfolio_metrics``; this
+# handler is the I/O layer that pulls the rows in the requested date
+# window and hands them to the pure aggregator.
+#
+# Auth: same Cloudflare-Access posture as every other ``/ui/...`` route —
+# no bearer required; the SSO gate sits in front of the app in prod and
+# is bypassed on localhost dev.
+#
+# PII: business_name renders in the per-deal recent-activity table per
+# the existing dashboard pattern (merchants table shows business names
+# today). It is NEVER written to a query-string or audit row from this
+# route — the route reads only.
+# ---------------------------------------------------------------------------
+
+
+def _fetch_portfolio_data(
+    audit: AuditLog,
+    date_range: DateRange,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return ``(audit_rows, funder_reply_rows)`` filtered to the window.
+
+    Two paths:
+
+      * Supabase-backed audit log → issue a ranged ``audit_log`` query
+        and a ``funder_replies`` query, both bounded to the window.
+      * In-memory audit log (tests / dev) → read ``audit.entries``
+        directly; the in-memory FunderReplyRepository tracks rows on
+        the same object, so the caller passes them via dependency
+        override when the test needs replies. Fall back to ``[]``
+        when not available.
+
+    The split keeps the analytics layer pure (it takes rows, not repos)
+    and gives tests one focused point to inject fixture data.
+    """
+    audit_rows: list[dict[str, Any]] = []
+    reply_rows: list[dict[str, Any]] = []
+
+    if hasattr(audit, "entries"):
+        # In-memory branch — duck-typed at ``InMemoryAuditLog.entries``.
+        entries: list[dict[str, Any]] = getattr(audit, "entries", [])
+        # InMemoryAuditLog doesn't stamp created_at, so the window
+        # filter is a no-op there. Tests supplying explicit timestamps
+        # are honored via the filter below.
+        for r in entries:
+            ts = r.get("created_at")
+            if ts is None:
+                audit_rows.append(r)
+                continue
+            row_date = _coerce_audit_date(ts)
+            if row_date is None:
+                audit_rows.append(r)
+            elif date_range.from_date <= row_date <= date_range.to_date:
+                audit_rows.append(r)
+    else:
+        # Supabase branch — issue the ranged query directly. The route
+        # already imports get_supabase via aegis.audit; importing here
+        # would create a circular path. Use a late local import.
+        try:
+            from aegis.db import get_supabase
+
+            from_iso = date_range.from_date.isoformat()
+            to_iso = date_range.to_date.isoformat()
+            audit_result = (
+                get_supabase()
+                .table("audit_log")
+                .select("*")
+                .gte("created_at", from_iso)
+                .lte("created_at", to_iso + "T23:59:59Z")
+                .order("created_at", desc=True)
+                .limit(5000)
+                .execute()
+            )
+            audit_rows = cast(list[dict[str, Any]], audit_result.data or [])
+            reply_result = (
+                get_supabase()
+                .table("funder_replies")
+                .select("funder_id,deal_id,status,received_at")
+                .gte("received_at", from_iso)
+                .lte("received_at", to_iso + "T23:59:59Z")
+                .limit(5000)
+                .execute()
+            )
+            reply_rows = cast(list[dict[str, Any]], reply_result.data or [])
+        except Exception:
+            # Treat data fetch failure as an empty window rather than
+            # 500-ing the page. The operator sees the empty state and
+            # the structured log captures the failure for ops.
+            from aegis.logger import get_logger
+
+            get_logger(__name__).warning("portfolio.fetch_failed window=%s..%s",
+                date_range.from_date, date_range.to_date)
+            audit_rows = []
+            reply_rows = []
+
+    return audit_rows, reply_rows
+
+
+def _coerce_audit_date(value: object) -> date | None:
+    """Pull a ``date`` out of an audit row's ``created_at``."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+        except ValueError:
+            return None
+    return None
+
+
+@router.get("/portfolio", response_class=HTMLResponse)
+async def portfolio_view(
+    request: Request,
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    funders_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    docs_repo: Annotated[DocumentRepository, Depends(get_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    from_: Annotated[
+        str | None,
+        Query(
+            alias="from",
+            description=(
+                "Window start (YYYY-MM-DD). Defaults to today minus 30 days."
+            ),
+        ),
+    ] = None,
+    to: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Window end (YYYY-MM-DD). Defaults to today."
+            ),
+        ),
+    ] = None,
+) -> HTMLResponse:
+    """Portfolio analytics — pipeline funnel + funder approval rates +
+    decisions by tier / state + recent activity + fraud catch rate.
+
+    Date range:
+
+      * ``?from=YYYY-MM-DD&to=YYYY-MM-DD`` narrows the window.
+      * Default: last 30 days.
+      * Window > 365 days is silently clamped to 365 (the operator's
+        actual rendered window is shown in the page header so the cap
+        is visible, never silent).
+
+    Malformed dates → 400 with the parse error in the response body.
+    """
+    try:
+        date_range = resolve_date_range(from_, to)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid date range: {exc}",
+        ) from exc
+
+    merchants_list = merchants_repo.list_all()
+    funders_list = funders_repo.list_active()
+    # Use a generous document limit so a busy month doesn't truncate
+    # the fraud-catch denominator. The in-memory backend caps at the
+    # explicit limit; the supabase backend honors the same.
+    documents_list = docs_repo.list_documents(limit=5000)
+
+    audit_rows, reply_rows = _fetch_portfolio_data(audit, date_range)
+
+    metrics = compute_portfolio_metrics(
+        merchants=merchants_list,
+        funders=funders_list,
+        documents=documents_list,
+        funder_reply_rows=reply_rows,
+        audit_rows=audit_rows,
+        date_range=date_range,
+    )
+
+    return cast(
+        "HTMLResponse",
+        templates.TemplateResponse(
+            request,
+            "portfolio.html.j2",
+            {
+                "active": "Portfolio",
+                "metrics": metrics,
+                "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+            },
+        ),
     )
 
 

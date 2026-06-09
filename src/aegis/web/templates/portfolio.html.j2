@@ -1,0 +1,266 @@
+{% extends "base.html.j2" %}
+{% set active = 'Portfolio' %}
+{% block title %}Portfolio — AEGIS{% endblock %}
+
+{# Portfolio analytics view (M11 / U11).
+
+   Read-only aggregations over existing tables. Math lives in
+   ``aegis.deals.portfolio_analytics.compute_portfolio_metrics``; this
+   template only renders.
+
+   Surface contract: the route handler populates ``metrics``
+   (``PortfolioMetrics``) and ``now``. The model fields are documented
+   inline in portfolio_analytics.py — every percentage that may be
+   ``None`` renders as an em-dash so the operator never reads a
+   manufactured 0%.
+#}
+
+{% block deck %}
+{% set title = "Portfolio" %}
+{% set subtitle = "· outcomes" %}
+{% set meta %}
+  From {{ metrics.from_date.isoformat() }} to {{ metrics.to_date.isoformat() }}
+  &nbsp;·&nbsp;
+  {{ metrics.total_deals }} scored deal{{ '' if metrics.total_deals == 1 else 's' }}
+{% endset %}
+{% set actions = [
+  {"label": "Today", "href": "/ui/"},
+  {"label": "Deals", "href": "/ui/deals"},
+] %}
+{% include "_page_header.html.j2" %}
+
+{# Date-range form — GET so the URL stays bookmarkable + stays out of
+   POST audit lanes. PII never lands in the query string by construction:
+   the only params are ``from`` and ``to`` (date strings). #}
+<form method="get" action="/ui/portfolio" class="inline-form" style="margin: 0.5rem 0 1rem;">
+  <label class="sub" for="portfolio_from">From</label>
+  <input type="date" id="portfolio_from" name="from" value="{{ metrics.from_date.isoformat() }}">
+  <label class="sub" for="portfolio_to">To</label>
+  <input type="date" id="portfolio_to" name="to" value="{{ metrics.to_date.isoformat() }}">
+  <button type="submit">Apply</button>
+</form>
+
+<section class="strip">
+  <div class="cell">
+    <div class="k">Scored deals</div>
+    <div class="v">{{ metrics.total_deals }}</div>
+  </div>
+  <div class="cell">
+    <div class="k">Approval rate</div>
+    <div class="v {{ 'calm' if metrics.approval_rate_pct is not none and metrics.approval_rate_pct >= 50 else '' }}">
+      {% if metrics.approval_rate_pct is not none %}{{ metrics.approval_rate_pct }}%{% else %}—{% endif %}
+    </div>
+  </div>
+  <div class="cell">
+    <div class="k">Decline rate</div>
+    <div class="v {{ 'bad' if metrics.decline_rate_pct is not none and metrics.decline_rate_pct >= 50 else '' }}">
+      {% if metrics.decline_rate_pct is not none %}{{ metrics.decline_rate_pct }}%{% else %}—{% endif %}
+    </div>
+  </div>
+  <div class="cell">
+    <div class="k">Median tier</div>
+    <div class="v">{% if metrics.avg_tier %}{{ metrics.avg_tier }}{% else %}—{% endif %}</div>
+  </div>
+  <div class="cell">
+    <div class="k">Fraud catches</div>
+    <div class="v {{ 'warn' if metrics.fraud_catch_count > 0 else '' }}">
+      {{ metrics.fraud_catch_count }}<span class="sub"> / {{ metrics.fraud_total_scored }}</span>
+    </div>
+  </div>
+  <div class="cell">
+    <div class="k">Catch rate</div>
+    <div class="v">
+      {% if metrics.fraud_catch_rate_pct is not none %}{{ metrics.fraud_catch_rate_pct }}%{% else %}—{% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+
+  {# Pipeline state — derived bucket counts. The empty-pipeline branch
+     surfaces the honest message instead of zeros so the operator
+     doesn't read it as "we have data". #}
+  <div>
+    <header class="sect-head">
+      <h2>Pipeline state</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ metrics.pipeline.total }} merchant{{ '' if metrics.pipeline.total == 1 else 's' }}</div>
+    </header>
+    {% if metrics.pipeline.total == 0 %}
+      <div class="empty">No deals in this window<span class="copy">Adjust the date range above or <a href="/ui/intake">create a deal</a>.</span></div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>State</th>
+            <th class="num">Merchants</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><span class="chip info">NEW</span></td><td class="mono-cell" style="text-align:right">{{ metrics.pipeline.new }}</td><td class="sub">No statement uploaded yet or just-pending parse.</td></tr>
+          <tr><td><span class="chip info">IN REVIEW</span></td><td class="mono-cell" style="text-align:right">{{ metrics.pipeline.in_review }}</td><td class="sub">Parsed, awaiting submission.</td></tr>
+          <tr><td><span class="chip pos">APPROVED</span></td><td class="mono-cell" style="text-align:right">{{ metrics.pipeline.approved }}</td><td class="sub">Submitted to at least one funder.</td></tr>
+          <tr><td><span class="chip neg">DECLINED</span></td><td class="mono-cell" style="text-align:right">{{ metrics.pipeline.declined }}</td><td class="sub">Latest doc landed in manual_review / error.</td></tr>
+          <tr><td><span class="chip pos">FUNDED</span></td><td class="mono-cell" style="text-align:right">{{ metrics.pipeline.funded }}</td><td class="sub">Audit log shows a deal.funded event.</td></tr>
+          <tr><td><span class="chip warn">ABANDONED</span></td><td class="mono-cell" style="text-align:right">{{ metrics.pipeline.abandoned }}</td><td class="sub">Stale provisional / no follow-up for 30+ days.</td></tr>
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  {# Approval rate by funder — read straight from funder_replies +
+     deal.submit_to_funders audit rows. #}
+  <div>
+    <header class="sect-head">
+      <h2>Approval rate by funder</h2>
+      <div class="rule"></div>
+      <div class="meta">{{ metrics.funder_table|length }} funder{{ '' if metrics.funder_table|length == 1 else 's' }} with activity in window</div>
+    </header>
+    {% if not metrics.funder_table %}
+      <div class="empty">No submissions or replies in this window<span class="copy">Send a packet via the merchant dossier to populate this table.</span></div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Funder</th>
+            <th class="num">Submitted</th>
+            <th class="num">Approved</th>
+            <th class="num">Declined</th>
+            <th class="num">Countered</th>
+            <th class="num">No response</th>
+            <th class="num">Accept rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in metrics.funder_table %}
+            <tr>
+              <td class="merchant">
+                <a href="/ui/funders/{{ row.funder_id }}">{{ row.funder_name }}</a>
+              </td>
+              <td class="mono-cell" style="text-align:right">{{ row.submitted }}</td>
+              <td class="mono-cell" style="text-align:right">{{ row.approved }}</td>
+              <td class="mono-cell" style="text-align:right">{{ row.declined }}</td>
+              <td class="mono-cell" style="text-align:right">{{ row.countered }}</td>
+              <td class="mono-cell" style="text-align:right">{{ row.no_response }}</td>
+              <td class="mono-cell" style="text-align:right">
+                {% if row.approval_rate_pct is not none %}{{ row.approval_rate_pct }}%{% else %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  {# Decisions by tier — count of deal.score audit rows per tier
+     letter. The row reads "tier counts", not "tier rate" — operators
+     are after the raw distribution. #}
+  <div>
+    <header class="sect-head">
+      <h2>Decisions by tier</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ metrics.tier_counts.total }} scored deal{{ '' if metrics.tier_counts.total == 1 else 's' }}</div>
+    </header>
+    {% if metrics.tier_counts.total == 0 %}
+      <div class="empty">No deals scored in this window<span class="copy">Score a deal from the merchant dossier to populate this panel.</span></div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr><th>Tier</th><th class="num">Count</th><th>Share</th></tr>
+        </thead>
+        <tbody>
+          {% for tier, count in metrics.tier_counts.as_ordered() %}
+            <tr>
+              <td><span class="chip {{ 'pos' if tier in ['A', 'B'] else ('warn' if tier == 'C' else 'neg') }}">{{ tier }}</span></td>
+              <td class="mono-cell" style="text-align:right">{{ count }}</td>
+              <td class="sub">
+                {% if metrics.tier_counts.total > 0 %}
+                  {{ ((count / metrics.tier_counts.total) * 100) | round | int }}%
+                {% else %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  {# Decisions by state — top 10 states by deal count. #}
+  <div>
+    <header class="sect-head">
+      <h2>Decisions by state</h2>
+      <div class="rule"></div>
+      <div class="meta">top {{ metrics.state_counts|length }} state{{ '' if metrics.state_counts|length == 1 else 's' }}</div>
+    </header>
+    {% if not metrics.state_counts %}
+      <div class="empty">No scored deals to break down by state<span class="copy">Set the merchant state on the dossier so this table populates.</span></div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr><th>State</th><th class="num">Deals</th></tr>
+        </thead>
+        <tbody>
+          {% for row in metrics.state_counts %}
+            <tr>
+              <td class="mono-cell">{{ row.state }}</td>
+              <td class="mono-cell" style="text-align:right">{{ row.count }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  {# Recent activity — last 20 scored deals. PII (business_name)
+     surfaces here per the existing dashboard pattern. #}
+  <div>
+    <header class="sect-head">
+      <h2>Recent activity</h2>
+      <div class="rule"></div>
+      <div class="meta">last {{ metrics.recent_activity|length }} scoring event{{ '' if metrics.recent_activity|length == 1 else 's' }}</div>
+    </header>
+    {% if not metrics.recent_activity %}
+      <div class="empty">No scoring events in this window<span class="copy">Score a deal to populate this table.</span></div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th>Tier</th>
+            <th>Recommendation</th>
+            <th>Scored at</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in metrics.recent_activity %}
+            <tr>
+              <td class="merchant">
+                {% if row.merchant_id %}
+                  <a href="/ui/merchants/{{ row.merchant_id }}">{{ row.business_name }}</a>
+                {% else %}
+                  {{ row.business_name }}
+                {% endif %}
+              </td>
+              <td>
+                {% if row.tier %}
+                  <span class="chip {{ 'pos' if row.tier in ['A', 'B'] else ('warn' if row.tier == 'C' else 'neg') }}">{{ row.tier }}</span>
+                {% else %}
+                  <span class="mono-cell">—</span>
+                {% endif %}
+              </td>
+              <td class="sub">{{ row.recommendation or '—' }}</td>
+              <td class="mono-cell">
+                {% if row.scored_at %}{{ row.scored_at.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+</section>
+{% endblock %}
