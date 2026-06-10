@@ -373,6 +373,13 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 WHERE NOT EXISTS "
         "(SELECT 1 FROM funders WHERE notes_residual LIKE 'Seed row%%')"
     ),
+    "046_seed_funders_from_manual.sql": (
+        # 046 inserts 6 direct funders (Logic Advance, VCG, SwiftSource,
+        # Shor, UCS, Highland Hill) parsed from the operator-curated
+        # MCA Funder Manual. 'Logic Advance' is the §2 anchor row — its
+        # presence implies the migration's INSERT block executed.
+        "SELECT 1 FROM funders WHERE name='Logic Advance'"
+    ),
 }
 
 
