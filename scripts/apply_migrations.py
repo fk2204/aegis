@@ -398,6 +398,15 @@ MIGRATION_PROBES: dict[str, str] = {
         # artifact to probe.)
         "SELECT 1"
     ),
+    "049_logic_ucs_tiers.sql": (
+        # 049 writes the tiers JSONB on Logic Advance (4 tiers: Elite/
+        # Premium/Standard/High-Risk) and United Capital Source (7
+        # products: MCA / Term / LOC / Equipment / Factoring / SBA /
+        # Home Equity LOC). Probe is the presence of at least one tier
+        # on Logic Advance's tiers JSONB.
+        "SELECT 1 FROM funders WHERE name='Logic Advance' "
+        "AND jsonb_array_length(tiers) > 0"
+    ),
 }
 
 
