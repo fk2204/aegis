@@ -30,6 +30,8 @@ from aegis.config import get_settings
 from aegis.money import safe_divide
 from aegis.scoring.models import PaperGrade, ScoreInput, ScoreResult
 from aegis.scoring.ofac import OFACClient
+from aegis.scoring_v2.track_a import IntegrityVerdict
+from aegis.scoring_v2.track_b import BusinessRiskBand
 
 # R4.4 — Known-seasonal NAICS prefixes. Conservative, prefix-match. None
 # returns False. The list captures industries where multi-month deposit
@@ -159,9 +161,28 @@ def score_deal(
     deal: ScoreInput,
     *,
     ofac: OFACClient | None = None,
+    track_a_verdict: IntegrityVerdict | None = None,
+    track_b_band: BusinessRiskBand | None = None,
 ) -> ScoreResult:
-    """Score a deal. Hard declines first; soft scoring + tier/payback after."""
-    hard_declines, decline_details, shadow_flags = _check_hard_declines(deal, ofac)
+    """Score a deal. Hard declines first; soft scoring + tier/payback after.
+
+    ``track_a_verdict`` and ``track_b_band`` are the scoring_v2 outputs
+    (computed by the caller — typically the dossier panel). They are
+    consumed only when ``settings.aegis_scoring_engine == "track_abc"``
+    (Step 2 cutover, audit finding B2). Under the default ``"legacy"``
+    engine they are ignored and emit a single shadow flag noting which
+    engine is active. Per CLAUDE.md "Decision-boundary changes —
+    shadow-first": the flip is a config / env var change, not a code
+    deploy.
+    """
+    engine = get_settings().aegis_scoring_engine
+    hard_declines, decline_details, shadow_flags = _check_hard_declines(
+        deal,
+        ofac,
+        engine=engine,
+        track_a_verdict=track_a_verdict,
+        track_b_band=track_b_band,
+    )
     # R3.4 — state-by-state enforcement signals. Shadow-only; fires on both
     # the hard-decline path and the soft-score path so the operator sees
     # the concern regardless of how the deal exits the scorer.
@@ -199,6 +220,10 @@ def score_deal(
 def _check_hard_declines(
     deal: ScoreInput,
     ofac: OFACClient | None,
+    *,
+    engine: str = "legacy",
+    track_a_verdict: IntegrityVerdict | None = None,
+    track_b_band: BusinessRiskBand | None = None,
 ) -> tuple[list[str], dict[str, list[dict[str, str]]], list[str]]:
     """Return ``(reasons, details, shadow_flags)``.
 
@@ -213,10 +238,19 @@ def _check_hard_declines(
     ``shadow_flags`` carries decision-boundary annotations that don't
     change the existing decline behavior — see ``ScoreResult.shadow_flags``
     docstring + CLAUDE.md "Decision-boundary changes — shadow-first".
+
+    ``engine`` selects the active scoring engine per audit finding B2
+    Step 2 cutover. ``"legacy"`` runs the existing fraud_score >= 70
+    rule; ``"track_abc"`` consumes ``track_a_verdict`` + ``track_b_band``
+    instead and makes fraud_score informational.
     """
     reasons: list[str] = []
     details: dict[str, list[dict[str, str]]] = {}
     shadow_flags: list[str] = []
+
+    # Audit B2 Step 2 — record which engine fired this scoring pass on
+    # every result. Operator audits posture without grepping config.
+    shadow_flags.append(f"scoring_engine_active:{engine}")
 
     if ofac is not None:
         # OFAC screening — checked FIRST so a sanctioned merchant cannot
@@ -248,8 +282,38 @@ def _check_hard_declines(
             f"debt_to_revenue_exceeds_40pct: {(deal.debt_to_revenue * 100):.0f}%"
         )
 
-    if deal.fraud_score >= FRAUD_SCORE_HARD_DECLINE:
+    # Audit B2 Step 2 — under ``track_abc`` the live decline path moves
+    # from fraud_score to Track A + Track B. The legacy threshold rule is
+    # SKIPPED entirely so a high fraud_score on the legacy blended axis
+    # cannot decline a deal whose Track A is clean and Track B is below
+    # ``high``. Track A/B fires below.
+    if engine == "legacy" and deal.fraud_score >= FRAUD_SCORE_HARD_DECLINE:
         reasons.append(f"fraud_score_critical: {deal.fraud_score}")
+
+    if engine == "track_abc":
+        # Track A: integrity verdict drives auto-decline. ``fail`` is the
+        # near-binary integrity gate per scoring_v2/track_a/__init__.py
+        # (auto-decline-eligible in Step 2). ``review`` is informational
+        # here — the parse pipeline routes ``review`` to manual_review
+        # elsewhere; the scorer just annotates so the dossier shows it.
+        if track_a_verdict is not None:
+            if track_a_verdict.verdict == "fail":
+                reasons.append(
+                    f"track_a_integrity_fail:branch={track_a_verdict.branch}"
+                )
+            elif track_a_verdict.verdict == "review":
+                shadow_flags.append(
+                    f"track_a_integrity_review:branch={track_a_verdict.branch}"
+                )
+        # Track B: business-risk band drives the secondary decline. Only
+        # ``high`` is auto-decline (matches BAND_TO_ACTION's
+        # ``review_decline_default``); ``elevated`` annotates so the
+        # underwriter sees the concern without auto-blocking.
+        if track_b_band is not None:
+            if track_b_band.band == "high":
+                reasons.append("track_b_high_risk")
+            elif track_b_band.band == "elevated":
+                shadow_flags.append("track_b_elevated_risk")
 
     eof_threshold = get_settings().aegis_eof_threshold
     if deal.eof_markers > eof_threshold:

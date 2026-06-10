@@ -170,6 +170,37 @@ class Settings(BaseSettings):
     # operator's risk-policy decision (2026-06-04).
     aegis_tampering_decline_mode: Literal["shadow", "live"] = "shadow"
 
+    # Step 2 scoring-engine cutover (audit finding B2). Switches the live
+    # decline path between the legacy ``fraud_score >= 70`` rule and the
+    # A/B/C tracks (``scoring_v2``) without a code deploy. Per CLAUDE.md
+    # "Decision-boundary changes — shadow-first": the flip itself is a
+    # config / env var change, not a code deploy. Gated on (a) corpus
+    # growth, (b) Track A historical lookback, (c) regression review of
+    # every ``old-caught-something-new-misses`` row (see
+    # ``scripts/triage_disagreement.py`` + ``docs/REMAINING_WORK.md``).
+    #
+    # ``"legacy"`` (default) — existing behavior. Track A/B/C run shadow
+    # only via the dossier panel; ``fraud_score`` drives the live decline.
+    #
+    # ``"track_abc"`` — Step 2 cutover. ``score_deal`` consumes the Track A
+    # integrity verdict and Track B band (passed in by the caller that
+    # already computes them for the dossier) and uses them to drive the
+    # live decline path. Track A ``fail`` and Track B ``high`` are
+    # promoted to hard-decline reasons; Track A ``review`` and Track B
+    # ``elevated`` annotate as soft concerns. Legacy ``fraud_score``
+    # becomes informational (no longer fires the threshold rule).
+    aegis_scoring_engine: Literal["legacy", "track_abc"] = Field(
+        default="legacy",
+        description=(
+            "Active scoring engine. 'legacy' (default) keeps the existing "
+            "fraud_score >= 70 hard-decline path. 'track_abc' flips Step 2 "
+            "cutover — Track A integrity verdict + Track B band drive the "
+            "live decline path; legacy fraud_score becomes informational. "
+            "Set in /etc/aegis/aegis.env after corpus triage clears all "
+            "regression-sentinel rows (per scripts/triage_disagreement.py)."
+        ),
+    )
+
     # EOF-marker hard-decline threshold (R4.6 reconciliation).
     #
     # The scorer hard-declines when ``deal.eof_markers > aegis_eof_threshold``.
