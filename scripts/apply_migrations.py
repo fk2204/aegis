@@ -388,6 +388,16 @@ MIGRATION_PROBES: dict[str, str] = {
         # 'Splash Advance' is the §8 anchor row.
         "SELECT 1 FROM funders WHERE name='Splash Advance'"
     ),
+    "048_funders_dedupe_defensive.sql": (
+        # 048 is a defensive dedupe — the UNIQUE constraint on
+        # funders.name prevents duplicates at the DB layer, so this
+        # migration's DELETE is a no-op on a clean table. Probe is
+        # trivially-true: the migration body itself never adds or
+        # changes schema; once recorded in schema_migrations it's
+        # known-applied. (DELETE migrations have no canonical schema
+        # artifact to probe.)
+        "SELECT 1"
+    ),
 }
 
 
