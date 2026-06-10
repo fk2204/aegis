@@ -153,6 +153,23 @@ RULES:
 10. `overall_confidence` reflects whether the document is recognizably a \
     funder underwriting sheet (high) versus a marketing brochure or \
     contract excerpt (low).
+11. AGENT-DUTY SYNTACTIC TEST (third tightening). Before placing any \
+    clause in `conditional_requirements` or `auto_decline_conditions`, \
+    inspect its grammatical SUBJECT. If the subject is "the agent", \
+    "the ISO", "the broker", "the referring party", "the sub-ISO", \
+    "the originator", or any equivalent (including "we" when the funder \
+    document addresses the agent in second person — "you must…"), the \
+    clause binds the agent NOT the merchant — route to `notes_residual`. \
+    This catches clauses Rule 9 misses when the topic looks merchant-\
+    related but the obligation actually falls on the agent: clawback \
+    windows tied to merchant default, DFPI / state-broker licensing \
+    requirements, referral terms, no-cross-submission obligations, \
+    "the agent must complete KYC on the merchant", "the ISO shall …", \
+    "you may not …". Merchant gating is ONLY what binds the merchant \
+    directly (FICO floor, time-in-business, monthly revenue, excluded \
+    industry, etc.). When uncertain whose obligation it is, default to \
+    `notes_residual` — false-positives in merchant-gating buckets cause \
+    legitimate merchants to be auto-declined.
 
 TIER EXTRACTION:
 Many funders publish multiple underwriting tiers (Elite/A/B/C, or Tier \
