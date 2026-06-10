@@ -148,9 +148,10 @@ class CloseAttachment(BaseModel):
     Email attachment is ``{content_id, content_type, filename,
     inline_only, size, url}``. **Neither carries an ``id`` field.** An
     earlier rewrite assumed ``id`` was present and crashed the worker
-    with a Pydantic ValidationError on every real lead. Verified via
-    ``scripts/manual_close_pull_note_files.py`` which only reads
-    ``filename`` and ``url`` from attachments.
+    with a Pydantic ValidationError on every real lead. The captured
+    real-payload fixture is ``tests/close/fixtures/acti_note_with_pdf.json``;
+    the structural-coverage tests in ``tests/close/test_client_attachments.py``
+    pin the field set.
 
     Since the orchestrator's call signature uses ``att.id`` as the
     cache key into the URL cache, we synthesize a stable id from the

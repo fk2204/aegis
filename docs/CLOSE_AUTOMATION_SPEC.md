@@ -73,8 +73,11 @@ unblocks the normal path.
 
 Patch `CloseClient.list_lead_attachments` (`src/aegis/close/client.py:330-380`)
 to enumerate `note` and `email` activities for the lead and walk each
-activity's `attachments[]`, filtering PDFs. Pattern proven in
-`scripts/manual_close_pull_note_files.py` — mirror exactly.
+activity's `attachments[]`, filtering PDFs. (Pattern originally proven
+in a manual back-fill script, removed 2026-06-10 once acceptance #4
+landed; structural shape is now locked by
+`tests/close/fixtures/acti_note_with_pdf.json` + tests in
+`tests/close/test_client_attachments.py`.)
 
 Patch `CloseClient.download_attachment` to:
 - rewrite `app.close.com` → `api.close.com` on the attachment URL,
@@ -154,12 +157,11 @@ fall through the cracks even when no `*.failed` audit fires.
 
 - Track 2 investigation report: in-conversation, 2026-06-05.
 - Webhook trace: in-conversation, 2026-06-05.
-- Manual back-fill scripts (to be removed after acceptance #4):
-  `scripts/manual_close_pull.py`, `scripts/manual_close_pull_note_files.py`,
-  `scripts/manual_persist_local_pdfs.py`.
-- Pattern source for Step 1: `scripts/manual_close_pull_note_files.py`
-  (lines 39-42: URL rewrite; lines 62-77: activity → attachments;
-  lines 99-114: api host + follow_redirects + PDF magic-bytes check).
+- Manual back-fill scripts (`scripts/manual_close_pull.py`,
+  `scripts/manual_close_pull_note_files.py`,
+  `scripts/manual_persist_local_pdfs.py`): removed 2026-06-10 after
+  acceptance #4 landed via A&R KM. Recoverable from git history if
+  ever needed.
 
 ---
 

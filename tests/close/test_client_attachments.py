@@ -14,7 +14,7 @@ module covers the fixed activity-based shape end to end:
   signed URL, and validates the PDF magic prefix.
 
 Fixture ``fixtures/acti_note_with_pdf.json`` mirrors the real Close
-payload shape proven by ``scripts/manual_close_pull_note_files.py``.
+payload shape captured from a live A&R KM LLC pull on 2026-06-05.
 """
 
 from __future__ import annotations
