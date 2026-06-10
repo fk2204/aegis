@@ -270,6 +270,62 @@ class EstimatedTerms(_StrictModel):
     the dossier so the operator can sanity-check the quote."""
 
 
+class TierMatch(_StrictModel):
+    """Per-tier qualification evidence for a funder with structured tiers (U28).
+
+    Funders with `tiers` JSONB populated (operator-curated underwriting
+    matrices — e.g. Logic Advance's Elite/Premium/Standard/High-Risk or
+    UCS's seven product lines) get one ``TierMatch`` per tier on the
+    parent ``FunderMatch``. The matcher evaluates each tier's published
+    criteria against the merchant; ``qualifies`` is ``True`` only when
+    every constraint the tier specifies is satisfied.
+
+    SHADOW MODE — per CLAUDE.md "Decision-boundary changes — shadow-first":
+    this signal is annotation-only. It does NOT change
+    ``FunderMatch.match_score``, ``soft_concerns``, ``reasons``, or the
+    parent ``FunderRow``-level qualification result. The operator
+    validates per-tier results against the corpus, then a future code
+    change promotes tier-aware matching to drive the live decision.
+
+    Per-tier economics (``estimated_factor_*``, ``estimated_holdback``,
+    ``estimated_advance``) are sourced from the tier's own
+    ``buy_rate_low/high``, ``max_holdback`` and ``max_advance`` fields
+    rather than the funder's top-level ``typical_*`` envelope; they are
+    ``None`` when the tier did not publish that axis.
+    """
+
+    tier_name: str = Field(min_length=1)
+    """Verbatim tier label from ``FunderTier.name`` (e.g. ``"Elite"``,
+    ``"Standard"``, ``"MCA"``)."""
+
+    qualifies: bool
+    """True when the merchant satisfies every constraint this tier
+    specifies. A tier with no constraints (all-None thresholds) is
+    treated as qualifying — absence of a policy is not failure."""
+
+    disqualifying_reasons: list[str] = Field(default_factory=list)
+    """Per-axis failure codes (e.g. ``"credit 620 < min 700"``,
+    ``"tib 8mo < min 12mo"``). Empty when ``qualifies`` is True.
+    Mirrors the shape of ``FunderMatch.soft_concerns`` strings so the UI
+    can render them with the same component."""
+
+    estimated_factor_low: Decimal | None = None
+    """Lower bound of the tier's buy-rate range (``FunderTier.buy_rate_low``)."""
+
+    estimated_factor_high: Decimal | None = None
+    """Upper bound of the tier's buy-rate range (``FunderTier.buy_rate_high``)."""
+
+    estimated_holdback: Decimal | None = None
+    """Tier's ``max_holdback`` as a fraction (0.15 for 15%). The tier
+    publishes a ceiling, not a range, so a single value rather than
+    low/high."""
+
+    estimated_advance: Money | None = None
+    """``ScoreResult.suggested_max_advance`` clamped down to
+    ``FunderTier.max_advance`` (the tier's ceiling). ``None`` when the
+    tier did not publish a max_advance."""
+
+
 class FunderMatch(_StrictModel):
     """A funder candidate ranked against this merchant's profile."""
 
@@ -283,6 +339,13 @@ class FunderMatch(_StrictModel):
     ``typical_factor_*`` / ``typical_holdback_*`` envelope, or when
     ``estimated_payback_days`` is missing from the score result, or when
     the score tier falls outside the interpolation table."""
+
+    tier_matches: list[TierMatch] = Field(default_factory=list)
+    """U28 — per-tier qualification evidence for funders with structured
+    ``tiers`` JSONB. Empty for funders whose ``tiers`` tuple is empty
+    (legacy / pre-extraction funders). SHADOW MODE: present for
+    operator review; does not influence ``match_score``,
+    ``soft_concerns``, or ``reasons``. See ``TierMatch`` docstring."""
 
 
 class SubmissionPackage(_StrictModel):
@@ -317,4 +380,5 @@ __all__ = [
     "ScoreInput",
     "ScoreResult",
     "SubmissionPackage",
+    "TierMatch",
 ]

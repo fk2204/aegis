@@ -62,12 +62,13 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Final
 
 from aegis.compliance.apr import APRCalculationError, calculate_apr
-from aegis.funders.models import FunderRow
+from aegis.funders.models import FunderRow, FunderTier
 from aegis.scoring.models import (
     EstimatedTerms,
     FunderMatch,
     ScoreInput,
     ScoreResult,
+    TierMatch,
 )
 
 # Tier → position along the funder's pricing range, 0.0 = best end (low
@@ -387,6 +388,11 @@ def match_funder(
     qualifies = len(hard) == 0
     likelihood = _likelihood(qualifies, soft, score.tier)
     estimated_terms = compute_estimated_terms(funder, score, deal)
+    # U28 — SHADOW MODE per-tier evaluation. Does NOT influence
+    # match_score, soft_concerns, reasons, or any field downstream code
+    # reads for decline routing. See `evaluate_tier_matches` and the
+    # `TierMatch` docstring for the contract.
+    tier_matches = evaluate_tier_matches(funder, score, deal)
     return FunderMatch(
         funder_id=funder.id,
         funder_name=funder.name,
@@ -394,7 +400,124 @@ def match_funder(
         reasons=[f"tier_{score.tier}"] if qualifies else [],
         soft_concerns=hard + soft,  # union — caller wants the full picture
         estimated_terms=estimated_terms,
+        tier_matches=tier_matches,
     )
+
+
+def evaluate_tier_matches(
+    funder: FunderRow,
+    score: ScoreResult,
+    deal: ScoreInput,
+) -> list[TierMatch]:
+    """U28 — evaluate the merchant against each of a funder's tiers.
+
+    SHADOW MODE. Per CLAUDE.md "Decision-boundary changes — shadow-first",
+    this helper is annotation-only — callers MUST NOT use the result to
+    alter ``FunderMatch.match_score``, ``soft_concerns``, ``reasons``,
+    ``hard_decline_reasons``, or any field that downstream code reads
+    for decline routing. The operator validates against the corpus +
+    live shadow rows; a later code change flips tier-aware matching to
+    live.
+
+    The check set mirrors the funder-level matcher's hard gates that
+    map cleanly to per-tier policy:
+
+      * ``min_credit_score`` ≤ ``deal.credit_score`` (missing credit
+        score → ``credit_score_unknown`` reason; conservatively fails
+        the tier so an explicit FICO requirement isn't bypassed by
+        absence of data).
+      * ``min_months_in_business`` ≤ ``deal.time_in_business_months``
+        (same missing-data treatment).
+      * ``min_monthly_revenue`` ≤ ``deal.monthly_revenue``.
+      * ``max_positions`` ≥ ``deal.mca_positions``.
+
+    Per-tier economics are sourced from the tier's own fields, NOT the
+    funder-level ``typical_*`` envelope: ``buy_rate_low/high``,
+    ``max_holdback``, and ``max_advance`` (the latter clamped against
+    ``score.suggested_max_advance``).
+    """
+    if not funder.tiers:
+        return []
+
+    out: list[TierMatch] = []
+    for tier in funder.tiers:
+        reasons = _evaluate_tier_criteria(tier, deal)
+        out.append(
+            TierMatch(
+                tier_name=tier.name,
+                qualifies=len(reasons) == 0,
+                disqualifying_reasons=reasons,
+                estimated_factor_low=tier.buy_rate_low,
+                estimated_factor_high=tier.buy_rate_high,
+                estimated_holdback=tier.max_holdback,
+                estimated_advance=_clamp_advance_to_tier(
+                    score.suggested_max_advance, tier.max_advance
+                ),
+            )
+        )
+    return out
+
+
+def _evaluate_tier_criteria(tier: FunderTier, deal: ScoreInput) -> list[str]:
+    """Collect per-axis failure reasons for a single tier.
+
+    Missing merchant data on an axis the tier constrains is conservative-
+    fail with an explicit ``*_unknown`` reason. Rationale: a tier that
+    says "min 700 FICO" is a published policy; reporting "qualifies=True"
+    just because credit_score is None hides the very gap the operator
+    wants the matrix to surface.
+    """
+    reasons: list[str] = []
+
+    if tier.min_credit_score is not None:
+        if deal.credit_score is None:
+            reasons.append("credit_score_unknown")
+        elif deal.credit_score < tier.min_credit_score:
+            reasons.append(
+                f"credit {deal.credit_score} < min {tier.min_credit_score}"
+            )
+
+    if tier.min_months_in_business is not None:
+        if deal.time_in_business_months is None:
+            reasons.append("time_in_business_unknown")
+        elif deal.time_in_business_months < tier.min_months_in_business:
+            reasons.append(
+                f"tib {deal.time_in_business_months}mo < "
+                f"min {tier.min_months_in_business}mo"
+            )
+
+    if (
+        tier.min_monthly_revenue is not None
+        and deal.monthly_revenue < tier.min_monthly_revenue
+    ):
+        reasons.append(
+            f"revenue ${deal.monthly_revenue} < min ${tier.min_monthly_revenue}"
+        )
+
+    if (
+        tier.max_positions is not None
+        and deal.mca_positions > tier.max_positions
+    ):
+        reasons.append(
+            f"positions {deal.mca_positions} > max {tier.max_positions}"
+        )
+
+    return reasons
+
+
+def _clamp_advance_to_tier(
+    suggested: Decimal, tier_max: Decimal | None
+) -> Decimal | None:
+    """Clamp the score's suggested advance down to the tier's ceiling.
+
+    Returns ``None`` when the tier did not publish a ``max_advance`` —
+    no ceiling means "this tier isn't the ceiling-publisher", and
+    fabricating one would be a tier-aware false precision.
+    """
+    if tier_max is None:
+        return None
+    clamped = suggested if suggested <= tier_max else tier_max
+    return clamped.quantize(_MONEY_QUANT, rounding=ROUND_HALF_UP)
 
 
 def _evaluate_auto_decline(
@@ -440,5 +563,10 @@ def _likelihood(qualifies: bool, soft: list[str], tier: str) -> int:
     return max(0, base - 10 * len(soft))
 
 
-__all__ = ["FunderRow", "compute_estimated_terms", "match_funder"]
+__all__ = [
+    "FunderRow",
+    "compute_estimated_terms",
+    "evaluate_tier_matches",
+    "match_funder",
+]
 # FunderRow is re-exported from aegis.funders.models — see module docstring.
