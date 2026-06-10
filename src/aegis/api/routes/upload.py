@@ -345,7 +345,14 @@ async def upload_from_close(
             ),
         )
 
+    # Prime the URL cache via list_lead_attachments before downloading.
+    # Close's API does NOT expose /api/v1/files/{id}/download/ — attachments
+    # live on note + email activities. download_attachment relies on the
+    # cache populated by the list call. Without this prime, the route
+    # always raised CloseError("cache miss"). See audit ref:
+    # docs/REMAINING_WORK.md plan 1.6.
     try:
+        close_client.list_lead_attachments(body.close_lead_id)
         file_bytes, filename = close_client.download_attachment(body.attachment_id)
     except CloseAuthError as exc:
         raise HTTPException(
@@ -353,7 +360,10 @@ async def upload_from_close(
             detail=f"close_auth_unavailable: {exc}",
         ) from exc
     except CloseError as exc:
-        if exc.status_code == 404:
+        # Cache-miss after a successful list call means the attachment
+        # isn't in this lead's notes / emails. Treat as 404 (caller asked
+        # for an attachment that doesn't belong to this lead).
+        if exc.status_code == 404 or "cache miss" in str(exc):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=(

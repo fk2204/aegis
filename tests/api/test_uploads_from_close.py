@@ -6,6 +6,7 @@ Two endpoints land in step 7:
     now with optional Close-Lead association.
   * ``POST /uploads/from-close`` — caller (n8n or operator UI) hands
     AEGIS a Close attachment reference; AEGIS pulls the file via
+    ``CloseClient.list_lead_attachments`` (URL cache prime) +
     ``CloseClient.download_attachment``.
 
 Both converge on the same SHA256-keyed ``documents`` row, ensuring
@@ -13,16 +14,10 @@ guarantee #3 from the design doc: an attachment delivered twice (once
 via webhook + operator click, once via the dashboard) never produces
 duplicate parses.
 
-NOTE — ``/uploads/from-close`` is broken in production until a
-separate change updates the route. ``CloseClient.download_attachment``
-now requires the URL cache to be primed by ``list_lead_attachments``
-(Close's API does NOT expose ``/api/v1/files/{id}/download/`` — that
-hit 404 on every prod merchant). The route currently calls
-``download_attachment(attachment_id)`` standalone, with no preceding
-``list_lead_attachments`` call, so it raises ``CloseError("cache miss")``.
-The tests that exercise that path are ``xfail``-marked below with the
-same reason. The fix lives in ``src/aegis/api/routes/upload.py``
-(outside this commit's file lock) and will land in a follow-up.
+The mock transport below serves the activity/note + activity/email
+endpoints with a canned page that exposes ``att_xyz`` as a PDF
+attachment, then serves PDF bytes (or the configured error code) for
+any other request — the download URL after the host rewrite.
 """
 
 from __future__ import annotations
@@ -125,6 +120,40 @@ def close_client(
 
     def transport(request: httpx.Request) -> httpx.Response:
         close_transport_requests.append(request)
+        path = request.url.path
+
+        # Activity-list endpoints — always 200 with a canned page that
+        # exposes ``att_xyz`` as the lead's only PDF. This primes the
+        # URL cache the route now requires before downloading.
+        if path == "/api/v1/activity/note/":
+            return httpx.Response(
+                200,
+                json={
+                    "has_more": False,
+                    "data": [
+                        {
+                            "id": "acti_note_seed",
+                            "attachments": [
+                                {
+                                    "id": "att_xyz",
+                                    "url": (
+                                        "https://app.close.com/test/"
+                                        "att_xyz.pdf"
+                                    ),
+                                    "filename": close_content["filename"],
+                                    "content_type": "application/pdf",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+        if path == "/api/v1/activity/email/":
+            return httpx.Response(200, json={"has_more": False, "data": []})
+
+        # Anything else is the download URL (after the
+        # app.close.com → api.close.com host rewrite). Return the canned
+        # bytes or the configured error code.
         code = close_get_status["code"]
         if code == 200:
             return httpx.Response(
@@ -264,20 +293,6 @@ def test_upload_with_close_lead_id_404_when_merchant_missing(
 # ----------------------------------------------------------------------
 
 
-# XFAIL — see module docstring. The route at src/aegis/api/routes/upload.py
-# (off-lock for this change) calls download_attachment(attachment_id)
-# without first populating the URL cache via list_lead_attachments. After
-# the activity-API rewrite, download_attachment raises CloseError("cache
-# miss") on standalone calls. Re-enable when the route is updated to do
-# a list-then-download round-trip (or pass the lead_id through).
-@pytest.mark.xfail(
-    reason=(
-        "download_attachment now requires the URL cache primed by "
-        "list_lead_attachments; /uploads/from-close route is broken "
-        "until a follow-up edit teaches it the new contract"
-    ),
-    strict=False,
-)
 def test_from_close_happy_path_persists_and_enqueues(
     client: TestClient,
     merchants: InMemoryMerchantRepository,
@@ -296,11 +311,18 @@ def test_from_close_happy_path_persists_and_enqueues(
     row = docs.get_document(document_id)
     assert row.merchant_id == merchant.id
 
-    # Close was called once.
-    assert len(close_transport_requests) == 1
-    req = close_transport_requests[0]
-    assert req.method == "GET"
-    assert req.url.path.endswith("/api/v1/files/att_xyz/download/")
+    # Close was called: 1+ note-list page, 1+ email-list page, 1 download.
+    # Exact count varies with the activity pager; the contract is "we
+    # primed via activity endpoints before the download", which we assert
+    # by paths.
+    paths = [r.url.path for r in close_transport_requests]
+    assert "/api/v1/activity/note/" in paths
+    assert "/api/v1/activity/email/" in paths
+    # Plus a download call against the rewritten host.
+    assert any(
+        r.url.host == "api.close.com" and "att_xyz" in str(r.url)
+        for r in close_transport_requests
+    )
 
     # Audit row.
     fetched = [e for e in audit.entries if e["action"] == "close.upload.fetched"]
@@ -315,14 +337,6 @@ def test_from_close_happy_path_persists_and_enqueues(
     assert details["byte_size"] == len(_PDF)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "download_attachment now requires the URL cache primed by "
-        "list_lead_attachments; /uploads/from-close route is broken "
-        "until a follow-up edit teaches it the new contract"
-    ),
-    strict=False,
-)
 def test_from_close_sha256_dedup_returns_existing_no_reparse(
     client: TestClient,
     merchants: InMemoryMerchantRepository,
@@ -344,8 +358,14 @@ def test_from_close_sha256_dedup_returns_existing_no_reparse(
     assert second.json()["duplicate"] is True
     assert second.json()["parse_enqueued"] is False
 
-    # Two Close fetches, one document.
-    assert len(close_transport_requests) == 2
+    # Two from-close calls, one document. Each call primes via the
+    # activity endpoints + downloads once, so the transport sees the
+    # full sequence twice.
+    download_calls = [
+        r for r in close_transport_requests
+        if r.url.host == "api.close.com" and "att_xyz" in str(r.url)
+    ]
+    assert len(download_calls) == 2
     assert len(docs._docs) == 1
 
     # Two close.upload.fetched audit rows; only the first carries
@@ -356,14 +376,6 @@ def test_from_close_sha256_dedup_returns_existing_no_reparse(
     assert fetched[1]["details"]["duplicate"] is True
 
 
-@pytest.mark.xfail(
-    reason=(
-        "download_attachment now requires the URL cache primed by "
-        "list_lead_attachments; /uploads/from-close route is broken "
-        "until a follow-up edit teaches it the new contract"
-    ),
-    strict=False,
-)
 def test_dashboard_upload_then_from_close_dedupe_to_same_doc(
     client: TestClient,
     merchants: InMemoryMerchantRepository,
@@ -399,14 +411,6 @@ def test_from_close_404_when_no_merchant_for_lead(client: TestClient) -> None:
     assert "lead_unknown" in resp.json()["detail"]
 
 
-@pytest.mark.xfail(
-    reason=(
-        "download_attachment now requires the URL cache primed by "
-        "list_lead_attachments; /uploads/from-close route is broken "
-        "until a follow-up edit teaches it the new contract"
-    ),
-    strict=False,
-)
 def test_from_close_404_when_close_returns_404(
     client: TestClient,
     merchants: InMemoryMerchantRepository,
@@ -432,14 +436,6 @@ def test_from_close_502_on_close_5xx(
     assert "close_upstream_error" in resp.json()["detail"]
 
 
-@pytest.mark.xfail(
-    reason=(
-        "download_attachment now requires the URL cache primed by "
-        "list_lead_attachments; /uploads/from-close route is broken "
-        "until a follow-up edit teaches it the new contract"
-    ),
-    strict=False,
-)
 def test_from_close_413_when_attachment_too_large(
     client: TestClient,
     merchants: InMemoryMerchantRepository,
