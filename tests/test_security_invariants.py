@@ -68,6 +68,7 @@ _ALLOWED_OUTBOUND_HOSTS: dict[str, str] = {
     "developer.close.com":           "docref — Close auth docs cited in close/client.py",
     "developers.cloudflare.com":     "docref — Cloudflare Access docs cited in ops/operators.py",
     "consumerfinance.gov":           "docref — CFPB Regulation Z citation in compliance/apr.py",
+    "github.com":                    "docref — AEGIS repo URL on /ui/admin/health service_info.repo_url",
     # --- state regulation citations (data, not callers) ---------------------
     "leginfo.legislature.ca.gov":    "citation — CA statute reference (compliance/states.py)",
     "law.cornell.edu":               "citation — Cornell LII statute references",
