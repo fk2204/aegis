@@ -160,6 +160,79 @@
                    APR rendering: ``None`` → "unavailable" (NOT 0.00%) —
                    R0.4 regulator-grade-lie discipline. A 0% APR next to
                    a 1.30x factor is the lie we refuse to render. #}
+                {# === Tier qualification matrix (U28) ===
+                   Per-tier qualify / disqualify breakdown for funders with
+                   a published ``tiers`` JSONB (Logic Advance Elite/Premium/
+                   Standard/High-Risk, UCS's 7 product lines, Highland Hill's
+                   5-rate ladder). Empty for legacy / broker-only funders —
+                   in which case the whole block is suppressed (no empty
+                   "Tiers:" heading).
+
+                   Sort: most-permissive (lowest ``estimated_factor_low``)
+                   first. ``None`` factor ranges sort last so unpriced tiers
+                   never preempt a quoted Elite row. The first qualifying
+                   tier picks up a ``★ best`` badge — the operator's
+                   one-glance answer to "which Logic Advance tier do I land
+                   on if I submit this deal?"
+
+                   SHADOW MODE: ``tier_matches`` does not influence
+                   ``match_score`` or the green/yellow/red color rail (see
+                   ``TierMatch`` docstring) — this block is annotation only. #}
+                {% if c.tier_matches %}
+                  {# Sort most-permissive (lowest buy_rate) first; tiers
+                     without a published buy_rate (``estimated_factor_low is
+                     None``) sink to the bottom so unpriced rows never
+                     preempt a quoted Elite. Two-bucket split avoids
+                     Python's ``None < Decimal`` TypeError that bites a
+                     naive ``sort(attribute=...)`` with mixed None / value. #}
+                  {% set _priced = c.tier_matches | rejectattr('estimated_factor_low', 'none') | list | sort(attribute='estimated_factor_low') %}
+                  {% set _unpriced = c.tier_matches | selectattr('estimated_factor_low', 'none') | list %}
+                  {% set _tier_sorted = _priced + _unpriced %}
+                  {% set _qualifying_tiers = _tier_sorted | selectattr('qualifies') | list %}
+                  {% set _qualifying_count = _qualifying_tiers | length %}
+                  {% set _best_tier_name = _qualifying_tiers[0].tier_name if _qualifying_count else None %}
+                  <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--rule)">
+                    <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px">Tier qualification · {{ _qualifying_count }} of {{ c.tier_matches|length }} qualify</div>
+                    <div style="display:flex;flex-direction:column;gap:6px">
+                      {% for t in _tier_sorted %}
+                        {% set _is_best = (t.qualifies and t.tier_name == _best_tier_name) %}
+                        {% if t.qualifies %}
+                          <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;padding:6px 8px;background:{% if _is_best %}color-mix(in oklch, var(--approve) 8%, transparent){% else %}transparent{% endif %};border:1px solid {% if _is_best %}color-mix(in oklch, var(--approve) 35%, var(--rule)){% else %}var(--rule){% endif %}">
+                            <span class="chip pos" style="font-size:9.5px">{{ t.tier_name }}</span>
+                            {% if _is_best %}<span style="font-family:var(--mono);font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--approve);font-weight:600">★ best</span>{% endif %}
+                            {% if t.estimated_factor_low is not none and t.estimated_factor_high is not none %}
+                              <span class="mono-cell" style="font-size:11.5px;color:var(--ink-2)">{{ t.estimated_factor_low }}x–{{ t.estimated_factor_high }}x</span>
+                            {% elif t.estimated_factor_low is not none %}
+                              <span class="mono-cell" style="font-size:11.5px;color:var(--ink-2)">{{ t.estimated_factor_low }}x</span>
+                            {% endif %}
+                            {% if t.estimated_advance is not none %}
+                              <span class="mono-cell" style="font-size:11.5px;color:var(--ink);font-weight:500">{{ t.estimated_advance | whole_money }}</span>
+                            {% endif %}
+                            {% if t.estimated_holdback is not none %}
+                              <span class="mono-cell" style="font-size:11.5px;color:var(--ink-2)">{{ t.estimated_holdback | format_pct }} holdback</span>
+                            {% endif %}
+                          </div>
+                        {% else %}
+                          <details style="padding:6px 8px;border:1px solid var(--rule);background:transparent">
+                            <summary style="cursor:pointer;display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;list-style:none">
+                              <span style="font-family:var(--mono);font-size:9.5px;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);text-decoration:line-through">{{ t.tier_name }}</span>
+                              <span style="font-family:var(--mono);font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3)">does not qualify · {{ t.disqualifying_reasons|length }}</span>
+                              {% if t.estimated_factor_low is not none and t.estimated_factor_high is not none %}
+                                <span class="mono-cell" style="font-size:11px;color:var(--ink-3)">{{ t.estimated_factor_low }}x–{{ t.estimated_factor_high }}x</span>
+                              {% endif %}
+                            </summary>
+                            {% if t.disqualifying_reasons %}
+                              <ul style="margin:6px 0 0;padding-left:18px;font-family:var(--serif);font-size:11.5px;color:var(--ink-3);line-height:1.45">
+                                {% for r in t.disqualifying_reasons %}<li>{{ r }}</li>{% endfor %}
+                              </ul>
+                            {% endif %}
+                          </details>
+                        {% endif %}
+                      {% endfor %}
+                    </div>
+                  </div>
+                {% endif %}
+
                 {% if c.estimated_terms is not none %}
                   {% set et = c.estimated_terms %}
                   <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--rule)">
