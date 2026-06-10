@@ -12,6 +12,7 @@ The defaults read settings: when ``aegis_storage_backend == "memory"``
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from aegis.audit import AuditLog, InMemoryAuditLog, SupabaseAuditLog
 from aegis.close.client import CloseClient
@@ -78,6 +79,13 @@ from aegis.submissions import (
     SubmissionRepository,
     SupabaseSubmissionRepository,
 )
+
+# ``SchemaMigrationsReader`` (U32) lives in ``aegis.web.routers.admin``
+# alongside its sole consumer route. The factory below imports it
+# lazily to avoid the circular dependency that a top-level import would
+# create (admin router imports from this deps module).
+if TYPE_CHECKING:
+    from aegis.web.routers.admin import SchemaMigrationsReader
 
 
 @lru_cache(maxsize=1)
@@ -253,6 +261,29 @@ def get_close_client() -> CloseClient:
     return CloseClient(audit=get_audit())
 
 
+@lru_cache(maxsize=1)
+def get_schema_migrations_reader() -> SchemaMigrationsReader:
+    """Process-wide SchemaMigrationsReader (U32 — operator visibility).
+
+    Powers the ``/ui/admin/applied-migrations`` page. Memory backend →
+    empty in-memory reader (tests pin a deterministic row list via
+    ``app.dependency_overrides``); supabase → service-role-keyed reader
+    that bypasses the RLS migration 030 turned on for the table.
+
+    Imported lazily so the top-level import chain stays
+    ``deps -> admin router`` (admin router imports from deps, so the
+    reverse cannot live at module scope).
+    """
+    from aegis.web.routers.admin import (
+        InMemorySchemaMigrationsReader,
+        SupabaseSchemaMigrationsReader,
+    )
+
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemorySchemaMigrationsReader()
+    return SupabaseSchemaMigrationsReader()
+
+
 def reset_dependency_caches() -> None:
     """Drop the lru_cache singletons. For tests that swap settings."""
     get_repository.cache_clear()
@@ -268,6 +299,7 @@ def reset_dependency_caches() -> None:
     get_disclosure_render_event_repository.cache_clear()
     get_scoring_disagreement_repository.cache_clear()
     get_submission_repository.cache_clear()
+    get_schema_migrations_reader.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
     get_close_client.cache_clear()
@@ -288,6 +320,7 @@ __all__ = [
     "get_override_repository",
     "get_renewal_attestation_repository",
     "get_repository",
+    "get_schema_migrations_reader",
     "get_scoring_disagreement_repository",
     "get_submission_repository",
     "reset_dependency_caches",

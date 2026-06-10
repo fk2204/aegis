@@ -68,6 +68,7 @@ from aegis.web._templates import templates
 # R4.1 — domain sub-routers. Each module declares its own ``router =
 # APIRouter()`` (no prefix; the aggregator below carries ``/ui``) and is
 # wired in via ``include_router`` below.
+from aegis.web.routers import admin as _admin_routes
 from aegis.web.routers import close_queue as _close_queue_routes
 from aegis.web.routers import compliance as _compliance_routes
 from aegis.web.routers import dashboard as _dashboard_routes
@@ -110,6 +111,7 @@ from aegis.web.routers.merchants import (
 
 router = APIRouter(prefix="/ui", tags=["dashboard"])
 
+router.include_router(_admin_routes.router)
 router.include_router(_close_queue_routes.router)
 router.include_router(_compliance_routes.router)
 router.include_router(_dashboard_routes.router)

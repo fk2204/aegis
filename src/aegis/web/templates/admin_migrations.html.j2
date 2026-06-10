@@ -1,0 +1,98 @@
+{% extends "base.html.j2" %}
+{% set active = 'Admin' %}
+{% block title %}Applied migrations — AEGIS{% endblock %}
+
+{# Operator visibility — schema_migrations contents (U32).
+
+   Read-only listing of every row ``scripts/apply_migrations.py`` has
+   written. No PII by construction (filename + sha256 + applied_at +
+   applied_by only). Operator-only surface — safe to share with
+   non-AEGIS Commera staff if asked.
+
+   Surface contract: the route populates ``rows`` (list of
+   ``SchemaMigrationRow``) ordered newest-first. Empty list renders the
+   "no migrations recorded" empty state (the bootstrap path on a fresh
+   DB).
+#}
+
+{% block deck %}
+{% set title = "Applied migrations" %}
+{% set subtitle = "· schema_migrations" %}
+{% set meta %}
+  {{ rows|length }} migration{{ '' if rows|length == 1 else 's' }} recorded
+{% endset %}
+{% set actions = [
+    {"label": "Audit log", "href": "/ui/admin/audit-log"},
+    {"label": "Today", "href": "/ui/"},
+] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+
+  {# Operator-context banner. Explicit about scope so a non-AEGIS
+     Commera staff member reading this page knows what they are looking
+     at + what the re-apply path is. #}
+  <div>
+    <div class="empty" role="note" style="margin-bottom:1rem">
+      <strong>Operator visibility — schema migrations applied to prod.</strong>
+      <span class="copy">
+        One row per migration file the runner has applied (the
+        canonical source of truth for "what schema is live"). No PII;
+        safe to share. Re-run from the workstation via
+        <code>make migrate TARGET=prod</code>; full procedure in
+        <code>deploy/RUNBOOK.md</code> under "Database migrations".
+      </span>
+    </div>
+
+    <header class="sect-head">
+      <h2>schema_migrations</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ rows|length }} row{{ '' if rows|length == 1 else 's' }}</div>
+    </header>
+
+    {% if not rows %}
+      <div class="empty">
+        No migrations recorded
+        <span class="copy">
+          Either the table is empty (fresh database — the runner has
+          never recorded an apply) or the read failed silently and was
+          treated as empty rather than 500-ing the page. Check the app
+          log for <code>admin.schema_migrations.fetch_failed</code>.
+        </span>
+      </div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Filename</th>
+            <th>Applied at</th>
+            <th>Applied by</th>
+            <th>sha256</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr>
+              <td class="mono-cell">{{ r.filename }}</td>
+              <td class="mono-cell">
+                {% if r.applied_at %}
+                  {{ r.applied_at.strftime('%Y-%m-%d %H:%M UTC') }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td class="sub">{{ r.applied_by }}</td>
+              <td class="mono-cell" title="{{ r.sha256 }}">
+                {{ r.sha256[:12] }}…
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+</section>
+{% endblock %}

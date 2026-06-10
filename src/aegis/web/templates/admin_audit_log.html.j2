@@ -1,0 +1,140 @@
+{% extends "base.html.j2" %}
+{% set active = 'Admin' %}
+{% block title %}Audit log — AEGIS{% endblock %}
+
+{# Operator visibility — recent audit_log rows (U32).
+
+   Read-only listing of recent rows from the durable audit_log table.
+   Filter by action prefix + day window + row limit; defaults to last
+   30 days, 100 rows, no action filter.
+
+   PII posture
+   -----------
+   audit_log rows are written by ``record()`` which masks the
+   ``details`` JSONB through ``logger._mask_value`` before insert. The
+   template renders only the structural columns (actor, action,
+   subject_type, subject_id suffix, created_at) plus the *list of keys*
+   in the details JSONB — never the values — so even if a masker leak
+   ever happens, no transaction description / owner name / phone /
+   email reaches the operator UI.
+
+   Surface contract: the route populates ``rows`` (list of pre-flattened
+   dicts: ``actor``, ``action``, ``subject_type``, ``subject_id_suffix``,
+   ``subject_id_full``, ``created_at``, ``details_keys``),
+   ``filter_action``, ``filter_days``, ``filter_limit``,
+   ``fetch_ceiling``.
+#}
+
+{% block deck %}
+{% set title = "Audit log" %}
+{% set subtitle = "· operator visibility" %}
+{% set meta %}
+  {{ rows|length }} row{{ '' if rows|length == 1 else 's' }}
+  · last {{ filter_days }} day{{ '' if filter_days == 1 else 's' }}
+  · limit {{ filter_limit }}
+  {% if filter_action %}· action prefix = <code>{{ filter_action }}</code>{% endif %}
+{% endset %}
+{% set actions = [
+    {"label": "Migrations", "href": "/ui/admin/applied-migrations"},
+    {"label": "Today", "href": "/ui/"},
+] %}
+{% include "_page_header.html.j2" %}
+
+{# Filter form — GET so the URL stays bookmarkable. Action is a literal
+   prefix (case-sensitive — the underlying column is case-sensitive).
+   Days bounded 1..365 by the route validator; limit bounded 1..500. #}
+<form method="get" action="/ui/admin/audit-log" class="inline-form" style="margin: 0.5rem 0 1rem;">
+  <label class="sub" for="audit_action">Action prefix</label>
+  <input type="text" id="audit_action" name="action" value="{{ filter_action }}" placeholder="e.g. close. or deal.">
+  <label class="sub" for="audit_days">Window (days)</label>
+  <input type="number" id="audit_days" name="days" min="1" max="365" value="{{ filter_days }}">
+  <label class="sub" for="audit_limit">Limit</label>
+  <input type="number" id="audit_limit" name="limit" min="1" max="500" value="{{ filter_limit }}">
+  <button type="submit">Apply</button>
+</form>
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+
+  {# Operator-context banner. Spells out the PII posture so a non-AEGIS
+     Commera staff member reading this page understands why values are
+     hidden behind the key list. #}
+  <div>
+    <div class="empty" role="note" style="margin-bottom:1rem">
+      <strong>Operator visibility — recent audit_log rows.</strong>
+      <span class="copy">
+        Append-only state-change log. The page surfaces structural
+        columns + the JSONB key list per row; the actual
+        <code>details</code> values stay in the database (the masker
+        cannot guarantee every future caller's payload is PII-free, so
+        the UI shows only what is safe). Fetch ceiling for this view:
+        {{ fetch_ceiling }} rows pre-filter; widen the window or narrow
+        the action prefix if the bottom of the list looks truncated.
+      </span>
+    </div>
+
+    <header class="sect-head">
+      <h2>audit_log</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ rows|length }} row{{ '' if rows|length == 1 else 's' }}</div>
+    </header>
+
+    {% if not rows %}
+      <div class="empty">
+        No audit rows matching the current filter
+        <span class="copy">
+          Widen the window with <code>?days=N</code>, clear the action
+          prefix, or raise the limit. A truly empty table is unusual
+          on a live box — check the app log for
+          <code>audit.list_recent_failed</code> if you expect rows.
+        </span>
+      </div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Created at</th>
+            <th>Actor</th>
+            <th>Action</th>
+            <th>Subject type</th>
+            <th>Subject id</th>
+            <th>Details keys</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr>
+              <td class="mono-cell">
+                {% if r.created_at %}
+                  {{ r.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td class="sub">{{ r.actor }}</td>
+              <td class="mono-cell">{{ r.action }}</td>
+              <td class="sub">{{ r.subject_type or '—' }}</td>
+              <td class="mono-cell" title="{{ r.subject_id_full }}">
+                {% if r.subject_id_full %}
+                  …{{ r.subject_id_suffix }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td class="sub">
+                {% if r.details_keys %}
+                  {% for k in r.details_keys %}<code>{{ k }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+</section>
+{% endblock %}

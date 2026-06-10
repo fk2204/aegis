@@ -14,11 +14,14 @@
   Inputs (all optional):
     active — one of "Today" | "Deals" | "Merchants" | "Funders"
              | "Upload" | "Intake" | "Review" | "CloseQueue"
-             | "Portfolio" | "DisclosureEvents" | "Triage"; the matching
-             link gets `class="is-active"`. Pages that do not highlight
-             any nav (e.g. the dossier) simply omit `active`. ``Triage``
-             covers both /ui/triage and /ui/shadow-signals (the shadow
-             signals page is reached via the Triage tile's drill-down).
+             | "Portfolio" | "DisclosureEvents" | "Triage" | "Admin";
+             the matching link gets `class="is-active"`. Pages that do
+             not highlight any nav (e.g. the dossier) simply omit
+             `active`. ``Triage`` covers both /ui/triage and
+             /ui/shadow-signals (the shadow signals page is reached via
+             the Triage tile's drill-down). ``Admin`` covers both
+             /ui/admin/applied-migrations and /ui/admin/audit-log (the
+             audit-log page is reached from the migrations page header).
     now    — display string for the right-hand view-toggle span. Same
              default convention as base.html.j2 (falls back to '').
 #}
@@ -36,6 +39,7 @@
     <a href="/ui/portfolio" {% if _active == 'Portfolio' %}class="is-active"{% endif %}>Portfolio</a>
     <a href="/ui/disclosure-events" {% if _active == 'DisclosureEvents' %}class="is-active"{% endif %}>Disclosure events</a>
     <a href="/ui/triage" {% if _active == 'Triage' %}class="is-active"{% endif %}>Triage</a>
+    <a href="/ui/admin/applied-migrations" {% if _active == 'Admin' %}class="is-active"{% endif %}>Admin</a>
   </div>
   <div class="view-toggle">
     <span style="color:var(--sage)">aegis · {{ now|default('') }}</span>
