@@ -1,0 +1,73 @@
+# AEGIS pre-commit configuration — local guardrail for ruff + mypy.
+#
+# Goal: stop style-only / typecheck-only CI failures by running the same
+# checks locally before the commit lands. Hooks here mirror the lint +
+# typecheck steps in .github/workflows/test.yml. Tests are NOT included —
+# the suite takes 2-3 minutes (corpus PDFs, etc.) and belongs in CI.
+#
+# Setup (one-time, see README "Developer setup"):
+#     uv tool install pre-commit
+#     pre-commit install
+#     pre-commit run --all-files
+#
+# Coexistence with .githooks/pre-commit (the compliance-review hook
+# installed by `make install-hooks`): see README "Developer setup" for
+# the recommended chain. Both gates must be reachable from a single
+# pre-commit entry point because git only runs one.
+
+# Run on each commit by default; everything below uses the staged-file
+# set unless `pass_filenames: false` is set on the hook.
+default_install_hook_types: [pre-commit]
+default_stages: [pre-commit]
+
+# Bail on the first failure — keeps the feedback loop tight.
+fail_fast: false
+
+repos:
+  # Ruff — lint + format. Pinned to the same version locked in uv.lock
+  # (see `name = "ruff"` / `version = "0.15.12"`), so the local hook
+  # behaves identically to `make lint` and to the CI lint step.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      # Lint with autofix. Only checks staged files; ~50-150 ms on a
+      # typical commit. Mirrors `uv run ruff check src tests scripts`
+      # but scoped to whatever's staged.
+      - id: ruff
+        args: [--fix]
+      # Formatter. Pyproject doesn't declare a separate [tool.ruff.format]
+      # block, so this runs with ruff-format defaults — same as
+      # `make format`. Keeps commits format-clean without a separate
+      # blocker.
+      - id: ruff-format
+
+  # mypy — strict, scoped to src/aegis/ only.
+  #
+  # Two design choices worth flagging:
+  #
+  # 1. `language: system` + `uv run mypy ...` instead of the upstream
+  #    pre-commit-mirrors/mypy. The mirror builds its own isolated
+  #    env and can drift from the version pinned in pyproject.toml's
+  #    `dev` group. Running through uv guarantees the same mypy (and
+  #    the same Pydantic plugin) that CI and `make typecheck` use.
+  #
+  # 2. `pass_filenames: false` + `files: ^src/aegis/`. mypy needs the
+  #    full module graph for cross-file inference; passing only the
+  #    staged files breaks strict mode. The `files:` filter still
+  #    causes the hook to be SKIPPED entirely when no staged file is
+  #    under src/aegis/ — so a docs-only or tests-only commit pays
+  #    zero cost.
+  #
+  # Tests are intentionally NOT typechecked here even though
+  # `make typecheck` covers them. mypy on tests adds 3-4 s with the
+  # snapshot/hypothesis machinery loaded; CI catches it. Keep the
+  # local hook under the 5 s budget.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy --strict (src/aegis)
+        entry: uv run mypy src/aegis
+        language: system
+        types: [python]
+        pass_filenames: false
+        files: ^src/aegis/

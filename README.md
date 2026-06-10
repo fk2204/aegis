@@ -40,6 +40,15 @@ make install-hooks # one-time: enable the compliance-review pre-commit hook
 `make check` is the only gate for the bulk of the codebase. There is no CI
 by design — manual ssh + git is appropriate for a solo operator.
 
+### Developer setup (optional pre-commit hooks)
+
+`.pre-commit-config.yaml` runs ruff + mypy on every commit (no tests; <5 s).
+Opt in once per clone: `uv tool install pre-commit && pre-commit install &&
+pre-commit run --all-files`. Conflict to know about: `make install-hooks`
+sets `core.hooksPath=.githooks` for the compliance gate, which bypasses
+`.git/hooks/pre-commit`. To keep both, `git config --unset core.hooksPath`
+after `pre-commit install`, then chain `.githooks/pre-commit` from inside it.
+
 **Narrow no-CI exception:** commits that stage any file under
 `docs/compliance/states/**` must include a `compliance-review:` annotation
 (`approved by <name>`, `pending`, or `not-applicable`) in the commit
