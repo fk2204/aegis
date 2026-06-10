@@ -9,6 +9,7 @@ that lives here is consumed by routes in MULTIPLE domain sub-routers
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, cast
 from uuid import UUID
 
@@ -195,14 +196,57 @@ def _form_dict_from_locals(locs: dict[str, Any]) -> dict[str, str]:
     return {k: str(locs.get(k, "")) for k in _FORM_FIELDS}
 
 
+def _decimal_or_none(value: str) -> Decimal | None:
+    """Parse a form-string to Decimal; return None for empty/whitespace.
+
+    Lifted to ``_router_helpers`` during R4.1 funders extraction — used by
+    both the funders sub-router (criteria amounts) and the still-resident
+    merchants routes (funder-response offered amount / factor).
+    """
+    s = value.strip()
+    if not s:
+        return None
+    try:
+        return Decimal(s)
+    except Exception as exc:
+        raise ValueError(f"invalid decimal: {value!r}") from exc
+
+
+def _int_or_none(value: str) -> int | None:
+    """Parse a form-string to int; return None for empty/whitespace.
+
+    Lifted to ``_router_helpers`` alongside ``_decimal_or_none`` — same
+    cross-sub-router consumer set.
+    """
+    s = value.strip()
+    if not s:
+        return None
+    return int(s)
+
+
+def _sha256_hex(payload: bytes) -> str:
+    """Cheap content-addressable handle for an audit-log attachment row.
+
+    Lifted to ``_router_helpers`` during R4.1 funders extraction — the
+    funders re-extract route and the merchants submit-to-funders route
+    both stamp SHA-256 hashes into audit details.
+    """
+    import hashlib
+
+    return hashlib.sha256(payload).hexdigest()
+
+
 __all__ = [
     "_AGGREGATE_LABELS",
     "_AGGREGATE_SOURCE_FIELDS",
     "_AGGREGATE_UNIT_KIND",
     "_FORM_FIELDS",
     "_UploadResult",
+    "_decimal_or_none",
     "_entity_type_or_none",
     "_form_dict_from_locals",
+    "_int_or_none",
     "_persist_uploads",
+    "_sha256_hex",
     "_validate_merchant_state",
 ]
