@@ -407,6 +407,17 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM funders WHERE name='Logic Advance' "
         "AND jsonb_array_length(tiers) > 0"
     ),
+    "050_merge_funder_duplicates.sql": (
+        # 050 deletes 'Logic Advance Group' and 'Swiftsource Funding'
+        # (near-duplicates of canonical 'Logic Advance' and
+        # 'SwiftSource Funding'). Probe is the ABSENCE of either
+        # variant. Bootstrap on a fresh box trivially passes (variants
+        # never existed there); on an existing box the migration's
+        # schema_migrations row is the authoritative signal.
+        "SELECT 1 WHERE NOT EXISTS "
+        "(SELECT 1 FROM funders WHERE name IN "
+        "('Logic Advance Group', 'Swiftsource Funding'))"
+    ),
 }
 
 
