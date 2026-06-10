@@ -104,3 +104,76 @@ def test_excluded_state_hard_fails() -> None:
     assert match is not None
     assert match.match_score == 0
     assert any("state_excluded" in c for c in match.soft_concerns)
+
+
+def test_ny_merchant_funder_missing_compensation_text_hard_fails() -> None:
+    """NY § 600.21(f) guard fires when funder lacks compensation text.
+
+    Plan 2.2 wire-in: NY merchant + funder.aegis_compensation_disclosure_text=""
+    surfaces as a hard-fail so the operator updates the funder row via
+    /ui/funders before the § 600.21(f) letter pipeline runs.
+    """
+    funder = FunderRow(
+        id=uuid4(),
+        name="Empty-Disclosure Fund",
+        min_monthly_revenue=Decimal("25000.00"),
+        # aegis_compensation_disclosure_text defaults to ""
+    )
+    deal = _baseline_score_input().model_copy(update={"state": "NY"})
+    score = _baseline_score_result()
+    match = match_funder(funder, deal, score)
+    assert match is not None
+    assert match.match_score == 0, (
+        f"NY merchant must hard-fail when funder has no comp text; "
+        f"got soft_concerns={match.soft_concerns!r}"
+    )
+    assert any(
+        "broker_compensation_text_missing" in c for c in match.soft_concerns
+    )
+
+
+def test_ny_merchant_funder_with_compensation_text_passes() -> None:
+    """NY § 600.21(f) guard passes silently when funder has text on file."""
+    funder = FunderRow(
+        id=uuid4(),
+        name="Disclosed Fund",
+        min_monthly_revenue=Decimal("25000.00"),
+        aegis_compensation_disclosure_text=(
+            "Commera Capital receives a 5% commission paid by the funder "
+            "at funding. No fees are charged to the recipient."
+        ),
+    )
+    deal = _baseline_score_input().model_copy(update={"state": "NY"})
+    score = _baseline_score_result()
+    match = match_funder(funder, deal, score)
+    assert match is not None
+    assert match.match_score > 0, (
+        f"NY merchant with disclosed funder must qualify; "
+        f"got soft_concerns={match.soft_concerns!r}"
+    )
+    assert not any(
+        "broker_compensation" in c for c in match.soft_concerns
+    )
+
+
+def test_non_ny_merchant_skips_broker_compensation_guard() -> None:
+    """Non-NY merchant pairs with empty-disclosure funder without firing.
+
+    The guard is currently NY-only per
+    aegis.compliance.broker_compensation._STATE_RULES. CA / TX / FL
+    merchants must pass through silently regardless of disclosure text.
+    """
+    funder = FunderRow(
+        id=uuid4(),
+        name="Empty-Disclosure Fund",
+        min_monthly_revenue=Decimal("25000.00"),
+        # aegis_compensation_disclosure_text defaults to ""
+    )
+    # _baseline_score_input is CA — non-NY.
+    deal = _baseline_score_input()
+    score = _baseline_score_result()
+    match = match_funder(funder, deal, score)
+    assert match is not None
+    assert not any(
+        "broker_compensation" in c for c in match.soft_concerns
+    )

@@ -62,6 +62,10 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Final
 
 from aegis.compliance.apr import APRCalculationError, calculate_apr
+from aegis.compliance.broker_compensation import (
+    BrokerCompensationDisclosureMissing,
+    validate_broker_compensation_disclosure,
+)
 from aegis.funders.models import FunderRow, FunderTier
 from aegis.scoring.models import (
     EstimatedTerms,
@@ -343,6 +347,24 @@ def match_funder(
         criteria_count += 1
         if deal.state.upper() in {s.upper() for s in funder.excluded_states}:
             hard.append(f"state_excluded: {deal.state}")
+
+    # NY § 600.21(f) broker-compensation guard.
+    # For NY merchants, the chosen funder must carry
+    # ``aegis_compensation_disclosure_text`` so the funder's
+    # § 600.21(f) letter pipeline can render and the AEGIS-side audit
+    # row (``NY_BROKER_COMP_v1``) can be written. Missing text →
+    # hard-fail BEFORE submission so the operator updates the funder
+    # row via ``/ui/funders/{id}``. Currently NY-only; the guard
+    # function in ``aegis.compliance.broker_compensation`` is the
+    # single source of truth for which states are covered (other
+    # states pass through silently).
+    try:
+        validate_broker_compensation_disclosure(
+            merchant_state=deal.state, funder=funder
+        )
+    except BrokerCompensationDisclosureMissing as exc:
+        criteria_count += 1
+        hard.append(f"broker_compensation_text_missing: {exc}")
 
     # R4.3: auto_decline_conditions + conditional_requirements
     # ---------------------------------------------------------
