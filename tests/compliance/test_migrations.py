@@ -190,11 +190,17 @@ def test_036_has_required_columns_for_ca_ny_audit_trail() -> None:
 
 
 def test_036_retention_until_is_4y_plus_30d_buffer() -> None:
-    """4-year CA § 952 + NY § 600 floor + 30-day buffer (matches migration 004)."""
+    """4-year CA § 952 + NY § 600 floor + 30-day buffer.
+
+    Days-only interval (1490 days = 4*365 + 30) so the expression is
+    IMMUTABLE under current Postgres (>= 14). Migration 004 used the
+    natural 'INTERVAL 4 years 30 days' but newer Postgres rejects that
+    in STORED generated columns — see migration header for details.
+    """
     sql = _read("036_disclosure_transmissions.sql")
     pattern = (
         r"GENERATED ALWAYS AS\s*\(\s*sent_at\s*\+\s*"
-        r"INTERVAL\s*'4 years 30 days'\s*\)\s*STORED"
+        r"INTERVAL\s*'1490 days'\s*\)\s*STORED"
     )
     assert re.search(pattern, sql, re.IGNORECASE)
 

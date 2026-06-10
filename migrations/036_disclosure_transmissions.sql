@@ -107,9 +107,16 @@ CREATE TABLE IF NOT EXISTS disclosure_transmissions (
   -- 4-year retention floor (CA 10 CCR § 952 + NY 23 NYCRR § 600). 30-day
   -- buffer absorbs clock skew + statute-of-limitations edge cases. STORED
   -- generated column locks the value at insert so clock changes cannot
-  -- retroactively shorten the window. Mirrors migration 004's pattern.
+  -- retroactively shorten the window.
+  -- Days-only interval: current Postgres (>= 14) marks year/month intervals
+  -- on TIMESTAMPTZ as STABLE not IMMUTABLE (calendar arithmetic depends on
+  -- daylight-saving + leap-year rules), which fails the STORED generated-
+  -- column immutability check. 1490 days = 4 * 365 + 30, ≈ 4y + 30d (≥ the
+  -- statutory floor; +1.25d drift over 4y is acceptable for a retention
+  -- buffer). Migration 004 used 'INTERVAL 4 years 30 days' but was applied
+  -- on an older Postgres release that allowed the non-immutable expression.
   retention_until TIMESTAMPTZ
-    GENERATED ALWAYS AS (sent_at + INTERVAL '4 years 30 days') STORED,
+    GENERATED ALWAYS AS (sent_at + INTERVAL '1490 days') STORED,
 
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
