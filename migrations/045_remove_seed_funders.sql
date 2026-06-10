@@ -1,0 +1,23 @@
+-- Remove the 8 placeholder funders seeded in migration 035.
+--
+-- Migration 035 inserted OnDeck / Rapid Finance / Forward Financing /
+-- Credibly / Kapitus / Mulligan Funding / CFG Merchant Solutions /
+-- Pearl Capital with industry-typical PLACEHOLDER criteria — values
+-- chosen as defensible-looking guesses rather than each funder's actual
+-- published criteria.
+--
+-- That seeding violated .claude/rules/operating-principles.md #4:
+--   "Production database state must be operator-real, not seeded.
+--    Do not create test merchants, test funders, or test documents
+--    in production Supabase."
+--
+-- Acknowledged 2026-06-10 by operator. The funders catalog will be
+-- populated going forward via `/ui/funders/import` (Bedrock-driven
+-- extraction from each funder's actual criteria sheet, operator-
+-- confirmed per row).
+--
+-- Idempotent: the WHERE filter targets the seed marker on
+-- `notes_residual` — manually-edited or import-flow funders never
+-- carry that marker, so this migration is safe to re-run.
+
+DELETE FROM funders WHERE notes_residual LIKE 'Seed row%';

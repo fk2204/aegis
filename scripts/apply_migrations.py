@@ -361,6 +361,18 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' "
         "AND table_name='merchants_shadow_signals'"
     ),
+    "045_remove_seed_funders.sql": (
+        # 045 is a DELETE-only cleanup of the 035 placeholder rows. The
+        # canonical "already applied" signal is the ABSENCE of any
+        # 'Seed row%' funder. Bootstrap will only probe if
+        # schema_migrations is empty; in that case a fresh box also has
+        # no 035 rows, so the probe trivially passes. On an existing box
+        # the runner reads schema_migrations directly and never consults
+        # the probe — this entry exists for probe-coverage discipline
+        # (test_migration_probes_cover_every_real_migration).
+        "SELECT 1 WHERE NOT EXISTS "
+        "(SELECT 1 FROM funders WHERE notes_residual LIKE 'Seed row%%')"
+    ),
 }
 
 
