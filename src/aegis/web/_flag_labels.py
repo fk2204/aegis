@@ -734,6 +734,56 @@ def _fmt_related_account_suspected(raw: str) -> str:
     return raw
 
 
+# --- U30 scoring-engine cutover (score.py + scoring_v2) --------------
+#
+# Detail-string formats are emitted by ``_check_hard_declines`` in
+# scoring/score.py:
+#   scoring_engine_active:legacy
+#   scoring_engine_active:track_abc
+#   track_a_integrity_review:branch={branch}
+#   track_a_integrity_fail:branch={branch}
+#   track_b_elevated_risk        (no detail body)
+#   track_b_high_risk            (no detail body)
+#
+# Track A ``branch`` values come from scoring_v2/track_a/compute.py:
+# ``strong_metadata``, ``drift_plus_editor``, ``medium_corroborated``,
+# ``drift_alone``, ``clean``. Humanize them at the display layer rather
+# than re-encoding the list at emission so the scorer stays oblivious to
+# UI copy.
+
+
+_TRACK_A_BRANCH_LABELS: Final[dict[str, str]] = {
+    "strong_metadata": "strong metadata signal",
+    "drift_plus_editor": "reconciliation drift + editor",
+    "medium_corroborated": "medium signal corroborated",
+    "drift_alone": "reconciliation drift alone",
+    "clean": "clean",
+}
+
+
+def _fmt_scoring_engine_active(raw: str) -> str:
+    # "legacy" / "track_abc" — the active scoring engine. Render the
+    # engine name verbatim; the description carries the operator
+    # context (which fields drive declines under that engine).
+    engine = raw.strip()
+    if engine == "legacy":
+        return "legacy (fraud_score)"
+    if engine == "track_abc":
+        return "track_abc (Track A + Track B)"
+    return raw
+
+
+def _fmt_track_a_branch(raw: str) -> str:
+    # "branch={branch}" — extract the branch name and humanize via the
+    # known-branch map. Unknown branches degrade to the raw token so a
+    # future scoring_v2 change still renders something readable.
+    m = re.match(r"branch=(?P<branch>.+)$", raw)
+    if not m:
+        return raw
+    branch = m.group("branch").strip()
+    return _TRACK_A_BRANCH_LABELS.get(branch, branch)
+
+
 # --- helpers ---------------------------------------------------------------
 
 
@@ -1191,6 +1241,82 @@ _FLAG_REGISTRY: Final[dict[str, _FlagSpec]] = {
             "either an undisclosed sibling account ('revenue hide') or "
             "an MCA-debit hideout ('solvency hide'). Request all bank "
             "account statements before submitting."
+        ),
+    ),
+
+    # === U30 scoring-engine cutover (score.py) =========================
+    # CLAUDE.md scoring-discipline: document integrity (Track A) and
+    # business risk (Track B) stay separate forever; the engine cutover
+    # is the operator-validated flip from the legacy blended fraud_score
+    # to the three-track design. Each scoring pass emits which engine
+    # fired so the dossier shows the active posture.
+
+    # -- engine annotation (always emitted) ------------------------------
+    "scoring_engine_active": _spec(
+        "Scoring engine", "shadow", "context", _fmt_scoring_engine_active,
+        description=(
+            "Records which scoring engine produced this result. "
+            "'legacy' uses the blended fraud_score >= 70 hard-decline "
+            "rule; 'track_abc' makes fraud_score informational and "
+            "moves the decline path to Track A (document integrity) + "
+            "Track B (business risk). Flip via AEGIS_SCORING_ENGINE in "
+            "/etc/aegis/aegis.env — no code deploy."
+        ),
+    ),
+
+    # -- Track A review verdict (soft annotation) ------------------------
+    "track_a_integrity_review": _spec(
+        "Document integrity — review", "shadow", "context",
+        _fmt_track_a_branch,
+        description=(
+            "Track A flagged the document for review but not auto-"
+            "decline. The parse pipeline routes review verdicts to "
+            "manual_review elsewhere; the scorer annotates the branch "
+            "that fired (e.g. reconciliation drift alone, medium "
+            "metadata signal corroborated) so the operator can see the "
+            "specific integrity concern without re-opening the model."
+        ),
+    ),
+
+    # -- Track B elevated band (soft annotation) -------------------------
+    "track_b_elevated_risk": _spec(
+        "Business risk — elevated band", "shadow", "context", None,
+        description=(
+            "Track B placed the deal in the 'elevated' business-risk "
+            "band — measurably weaker than the 'standard' baseline but "
+            "below the auto-decline 'high' band. Underwriter call: "
+            "consider tighter pricing or stricter stipulations before "
+            "submission rather than treating it as a clean deal."
+        ),
+    ),
+
+    # -- Track A fail verdict (hard decline under track_abc) -------------
+    # Decline severity — but stays in the shadow chip pool until
+    # AEGIS_SCORING_ENGINE flips to track_abc, at which point the same
+    # code appears in ScoreResult.hard_decline_reasons. Render at the
+    # decline severity band so the chip is unambiguously bad when the
+    # operator sees it on a track_abc deal.
+    "track_a_integrity_fail": _spec(
+        "Document integrity — fail (decline)", "shadow", "decline",
+        _fmt_track_a_branch,
+        description=(
+            "Track A's near-binary integrity gate failed. Under the "
+            "track_abc engine this is a hard decline reason; the "
+            "branch identifies which integrity signal triggered "
+            "(strong metadata, drift + editor, drift alone, etc.). "
+            "Statement should not be submitted to funders."
+        ),
+    ),
+
+    # -- Track B high band (hard decline under track_abc) ----------------
+    "track_b_high_risk": _spec(
+        "Business risk — high (decline)", "shadow", "decline", None,
+        description=(
+            "Track B placed the deal in the 'high' business-risk band. "
+            "Under the track_abc engine this is a hard decline reason "
+            "(matches BAND_TO_ACTION's review_decline_default). The "
+            "business cannot reasonably support repayment given the "
+            "merged cashflow + concentration + history signals."
         ),
     ),
 }

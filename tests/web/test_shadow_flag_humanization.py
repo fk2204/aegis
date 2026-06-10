@@ -113,6 +113,36 @@ _SHADOW_SAMPLES: list[tuple[str, str]] = [
         "related_account_suspected",
         "holder=ACME LLC:existing_last4=4521:new_last4=8832",
     ),
+    # U30 scoring-engine cutover (score.py + scoring_v2)
+    ("scoring_engine_active", "legacy"),
+    ("scoring_engine_active", "track_abc"),
+    ("track_a_integrity_review", "branch=drift_alone"),
+]
+
+
+# U30 — bare-code shadow entries (no detail payload). The emission site
+# in scoring/score.py appends "track_b_elevated_risk" with no colon, so
+# raw_detail is empty by design. The smoke contract still applies for
+# title + description + category, but ``detail`` is legitimately empty.
+_SHADOW_BARE_CODE_SAMPLES: list[str] = [
+    "track_b_elevated_risk",
+]
+
+
+# U30 — decline-class shadow flags. Same registry shape (category =
+# 'shadow', non-empty description), but they render at
+# severity_band='decline' because under the track_abc engine the same
+# code surfaces in score_result.hard_decline_reasons — the chip color
+# must match the decline reality the operator sees on a real submission.
+# Split out from the main parametrization so the band assertion stays
+# tight for the soft signals while these still get smoke-tested.
+_SHADOW_DECLINE_SAMPLES: list[tuple[str, str]] = [
+    ("track_a_integrity_fail", "branch=strong_metadata"),
+]
+
+
+_SHADOW_DECLINE_BARE_CODE_SAMPLES: list[str] = [
+    "track_b_high_risk",
 ]
 
 
@@ -333,6 +363,104 @@ def test_lender_proceeds_excluded_renders_count_total_names() -> None:
     assert "2" in hf.detail
     assert "ONDECK" in hf.detail
     assert "KAPITUS" in hf.detail
+
+
+@pytest.mark.parametrize("code", _SHADOW_BARE_CODE_SAMPLES)
+def test_shadow_bare_code_flag_registered(code: str) -> None:
+    """Bare-code shadow flags carry no detail payload but must still be
+    registered (title + description + 'shadow' category + 'context'
+    band). Emission site appends the code alone without a trailing
+    colon; ``raw_detail`` is legitimately empty.
+    """
+    hf = humanize_flag(code)
+    assert hf.title, f"{code} returned empty title"
+    assert hf.description, (
+        f"{code} returned empty description — fell through to the "
+        f"unknown-code fallback path. Add a registry entry."
+    )
+    assert hf.category == "shadow"
+    assert hf.severity_band == "context"
+
+
+@pytest.mark.parametrize("code,detail", _SHADOW_DECLINE_SAMPLES)
+def test_shadow_decline_flag_registered(code: str, detail: str) -> None:
+    """Decline-class shadow flags (Track A fail, Track B high) — same
+    registration contract as the soft samples but rendered at
+    severity_band='decline' so the chip color matches the reality of
+    score_result.hard_decline_reasons under the track_abc engine.
+    """
+    hf = humanize_flag(f"{code}:{detail}")
+    assert hf.title, f"{code} returned empty title"
+    assert hf.description, (
+        f"{code} returned empty description — fell through to the "
+        f"unknown-code fallback path. Add a registry entry."
+    )
+    assert hf.category == "shadow"
+    assert hf.severity_band == "decline", (
+        f"{code} severity_band should be 'decline' (got "
+        f"{hf.severity_band!r}). Track A fail / Track B high are hard-"
+        f"decline reasons under the track_abc engine."
+    )
+    assert hf.detail, (
+        f"{code} formatter returned empty detail for sample {detail!r}"
+    )
+
+
+@pytest.mark.parametrize("code", _SHADOW_DECLINE_BARE_CODE_SAMPLES)
+def test_shadow_decline_bare_code_flag_registered(code: str) -> None:
+    """Bare-code decline-class shadow flag (Track B high) — same
+    contract as the detailed decline samples, but no payload."""
+    hf = humanize_flag(code)
+    assert hf.title, f"{code} returned empty title"
+    assert hf.description, f"{code} returned empty description"
+    assert hf.category == "shadow"
+    assert hf.severity_band == "decline"
+
+
+def test_scoring_engine_active_legacy_renders_engine_name() -> None:
+    hf = humanize_flag("scoring_engine_active:legacy")
+    # The engine name must be visible; the description carries the
+    # operator-context rationale.
+    assert "legacy" in hf.detail
+    # Detail should not just echo the raw token — it should add the
+    # short context ("fraud_score") so the operator doesn't need to
+    # cross-reference docs.
+    assert "fraud_score" in hf.detail
+
+
+def test_scoring_engine_active_track_abc_renders_engine_name() -> None:
+    hf = humanize_flag("scoring_engine_active:track_abc")
+    assert "track_abc" in hf.detail
+    assert "Track A" in hf.detail or "Track B" in hf.detail
+
+
+def test_track_a_integrity_review_renders_humanized_branch() -> None:
+    hf = humanize_flag(
+        "track_a_integrity_review:branch=drift_alone"
+    )
+    # The branch identifier must NOT leak verbatim with the snake_case
+    # tokens — the registry humanizes via _TRACK_A_BRANCH_LABELS.
+    assert "drift_alone" not in hf.detail
+    assert "drift" in hf.detail.lower()
+
+
+def test_track_a_integrity_review_unknown_branch_falls_back_to_raw() -> None:
+    """Unknown Track A branches degrade to the raw branch token so a
+    future scoring_v2 addition still renders something readable."""
+    hf = humanize_flag(
+        "track_a_integrity_review:branch=brand_new_branch_v2"
+    )
+    # Unknown branch token passes through verbatim — same fallback
+    # contract as every other formatter in the file.
+    assert hf.detail == "brand_new_branch_v2"
+
+
+def test_track_a_integrity_fail_renders_humanized_branch() -> None:
+    hf = humanize_flag(
+        "track_a_integrity_fail:branch=strong_metadata"
+    )
+    assert "strong_metadata" not in hf.detail
+    assert "strong" in hf.detail.lower() or "metadata" in hf.detail.lower()
 
 
 def test_lender_proceeds_excluded_row_strips_uuid() -> None:

@@ -406,6 +406,71 @@ These detectors emit `Pattern(severity=0)` into `PatternAnalysis.shadow_patterns
 
 ---
 
+## 11. Scoring-engine cutover (U30)
+
+These flags land on `ScoreResult.shadow_flags` from `src/aegis/scoring/score.py:_check_hard_declines`. They document which scoring engine produced the result and surface the Track A / Track B verdicts from `scoring_v2` regardless of whether the active engine consumed them. Per CLAUDE.md scoring discipline: document integrity (Track A) and business risk (Track B) stay separate forever — the engine flip is the operator-validated path from the legacy blended `fraud_score` to the three-track design.
+
+The active engine is read from `settings.aegis_scoring_engine` (env var `AEGIS_SCORING_ENGINE`); the operator flips it via `/etc/aegis/aegis.env` without a code deploy.
+
+### `scoring_engine_active:legacy` / `scoring_engine_active:track_abc` — shadow (always emitted)
+
+- **Records which scoring engine fired.** Every scoring pass appends this flag. `legacy` uses the existing `fraud_score >= 70` hard-decline rule; `track_abc` makes `fraud_score` informational and moves the decline path to Track A (integrity verdict) + Track B (business-risk band).
+- **Operator action:** Read for context — answers "is this deal being judged by the old or new engine?" without grepping config. No action required when it matches the operator's expected posture; investigate if it doesn't (someone flipped the env var on the box).
+- **Source:** `src/aegis/scoring/score.py:_check_hard_declines` (U30, audit B2 Step 2 cutover).
+
+### `track_a_integrity_review:branch={branch}` — shadow
+
+- **Track A — document integrity flagged for review.** Track A is a near-binary integrity gate; `review` is the soft middle verdict that doesn't auto-decline but does route the parse to manual review elsewhere in the pipeline. The branch identifies which integrity signal triggered.
+- **Known branch values** (from `src/aegis/scoring_v2/track_a/compute.py`):
+  - `strong_metadata` — high-confidence metadata signal (multi-EOF on unsigned, page-size inconsistency, etc.)
+  - `drift_plus_editor` — reconciliation drift combined with a known PDF editor in the metadata
+  - `medium_corroborated` — medium-strength signal corroborated by a second independent indicator
+  - `drift_alone` — reconciliation drift without a corroborating signal
+  - `clean` — emitted as the soft verdict when nothing fired (informational baseline)
+- **Operator action:** Read the branch label — it tells you which Track A pathway fired. Reconciliation drift alone is softer than strong_metadata. Apply the existing tampering-flag review discipline (request the original from the bank portal, etc.).
+- **Source:** `src/aegis/scoring/score.py:_check_hard_declines` (U30); branch labels from `src/aegis/scoring_v2/track_a/compute.py`.
+
+### `track_b_elevated_risk` — shadow (no detail body)
+
+- **Track B placed the deal in the 'elevated' business-risk band.** Measurably weaker than the 'standard' baseline but below the auto-decline 'high' band.
+- **Operator action:** Underwriter call — consider tighter pricing or stricter stipulations before submission rather than treating it as a clean deal. Not a decline reason; not a kill.
+- **Source:** `src/aegis/scoring/score.py:_check_hard_declines` (U30); band values from `src/aegis/scoring_v2/track_b`.
+
+### `track_a_integrity_fail:branch={branch}` — shadow chip, **decline** severity
+
+- **Track A's near-binary integrity gate failed.** Under the `track_abc` engine this is a hard-decline reason and the same code appears in `ScoreResult.hard_decline_reasons`. Under the `legacy` engine it appears in `shadow_flags` only — informational until the cutover flip.
+- **Operator action:** Statement should not be submitted to funders. Branch label tells you which integrity pathway tripped (see the `track_a_integrity_review` branch list above).
+- **Source:** `src/aegis/scoring/score.py:_check_hard_declines` (U30).
+
+### `track_b_high_risk` — shadow chip, **decline** severity (no detail body)
+
+- **Track B placed the deal in the 'high' business-risk band.** Under the `track_abc` engine this is a hard-decline reason (matches `BAND_TO_ACTION`'s `review_decline_default`). Under the `legacy` engine it is informational until cutover.
+- **Operator action:** Business cannot reasonably support repayment given the merged cashflow + concentration + history signals. Decline path; do not submit.
+- **Source:** `src/aegis/scoring/score.py:_check_hard_declines` (U30).
+
+---
+
+## 12. Tier-aware funder matching (U28)
+
+`tier_matches` is **structured data, not a flag.** It lives on `FunderMatch.tier_matches: list[TierMatch]` (see `src/aegis/scoring/models.py`), populated by `scoring/match_funders.py:evaluate_tier_matches` for funders whose `funders.tiers` JSONB is populated (operator-curated underwriting matrices like Logic Advance's Elite/Premium/Standard/High-Risk or UCS's seven product lines).
+
+Per CLAUDE.md "Decision-boundary changes — shadow-first": tier-match results are annotation-only — they do NOT change `FunderMatch.match_score`, `soft_concerns`, or `reasons`. The operator validates per-tier results against the corpus, then a future code change promotes tier-aware matching to drive live decisions.
+
+**Rendering lives in the template, not the flag humanizer.** Per-tier data (qualifies / disqualifying_reasons / per-tier factor range / holdback / advance) is structured enough that a one-line summary in `_flag_labels.py` would discard the economics that are the point of U28. The match panel's existing component patterns (per-row chip, criteria table, estimated-terms grid) are the right surface — tier matches naturally fit as a nested expandable list under each funder card in `src/aegis/web/templates/merchant_match.html.j2`.
+
+Fields on each `TierMatch`:
+
+- `tier_name` — verbatim from `FunderTier.name` (e.g. `"Elite"`, `"MCA"`)
+- `qualifies` — True when the merchant satisfies every constraint this tier publishes
+- `disqualifying_reasons` — per-axis failure codes (e.g. `"credit 620 < min 700"`, `"tib 8mo < min 12mo"`). Same shape as `FunderMatch.soft_concerns` so the UI can reuse the same component.
+- `estimated_factor_low` / `estimated_factor_high` — tier's `buy_rate_low`/`buy_rate_high`
+- `estimated_holdback` — tier's `max_holdback` as a fraction
+- `estimated_advance` — `ScoreResult.suggested_max_advance` clamped to the tier's `max_advance`
+
+Missing merchant data on a tier-constrained axis surfaces as an explicit `*_unknown` disqualifying reason and conservatively fails the tier.
+
+---
+
 ## Action ladder [PENDING REVIEW]
 
 This is the suggested order for reviewing a deal. *Order is operator synthesis* — needs pressure-testing against the operator's real workflow before treated as authoritative.
