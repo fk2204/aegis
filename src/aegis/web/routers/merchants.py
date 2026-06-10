@@ -91,6 +91,7 @@ from aegis.scoring.multi_month import (
 from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
 from aegis.scoring.submission_package import build_submission_files
+from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
 from aegis.storage import (
     AnalysisRow,
     DocumentRepository,
@@ -365,8 +366,25 @@ async def merchant_match(
         )
 
     score_input = _score_input_multi_month(merchant, items)
+    # U33 — Track A/B feed for the matched-funders panel. ``items`` is the
+    # bundle-filtered (doc, analysis) tuple list — same shape the score
+    # input was built from. Reusing it keeps the Track A/B inputs aligned
+    # with the score window the operator sees.
+    _match_documents = [d for d, _ in items]
+    _match_analyses_by_doc = {d.id: a for d, a in items}
+    track_a_verdict, track_b_band = compute_score_deal_track_inputs(
+        documents=_match_documents,
+        list_transactions=docs.list_transactions,
+        analyses_by_doc=_match_analyses_by_doc,
+        merchant_id=merchant_id,
+    )
     try:
-        score_result = score_deal(score_input, ofac=ofac)
+        score_result = score_deal(
+            score_input,
+            ofac=ofac,
+            track_a_verdict=track_a_verdict,
+            track_b_band=track_b_band,
+        )
     except OFACStaleError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -505,8 +523,22 @@ async def merchant_submit_to_funders(
         )
 
     score_input = _score_input_multi_month(merchant, items)
+    # U33 — Track A/B feed; same shape as the matched-funders panel.
+    _submit_documents = [d for d, _ in items]
+    _submit_analyses_by_doc = {d.id: a for d, a in items}
+    track_a_verdict, track_b_band = compute_score_deal_track_inputs(
+        documents=_submit_documents,
+        list_transactions=docs.list_transactions,
+        analyses_by_doc=_submit_analyses_by_doc,
+        merchant_id=merchant_id,
+    )
     try:
-        score_result = score_deal(score_input, ofac=ofac)
+        score_result = score_deal(
+            score_input,
+            ofac=ofac,
+            track_a_verdict=track_a_verdict,
+            track_b_band=track_b_band,
+        )
     except OFACStaleError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1217,8 +1249,23 @@ async def merchant_detail(
             score_input = _score_input_multi_month(
                 merchant, items, pattern_analysis=pattern_analysis
             )
+            # U33 — feed Track A integrity verdict + Track B band into the
+            # scorer so ``AEGIS_SCORING_ENGINE=track_abc`` has live inputs.
+            # Under the default ``legacy`` engine these are ignored and
+            # the scorer is byte-identical to pre-U30.
+            track_a_verdict, track_b_band = compute_score_deal_track_inputs(
+                documents=all_docs,
+                list_transactions=docs.list_transactions,
+                analyses_by_doc=analyses_by_doc,
+                merchant_id=merchant_id,
+            )
             try:
-                score_result = score_deal(score_input, ofac=ofac)
+                score_result = score_deal(
+                    score_input,
+                    ofac=ofac,
+                    track_a_verdict=track_a_verdict,
+                    track_b_band=track_b_band,
+                )
             except OFACStaleError:
                 score_result = None
             score_window = {
@@ -1499,8 +1546,20 @@ def _build_pdf_dossier_context(
             score_input = _score_input_multi_month(
                 merchant, items, pattern_analysis=pattern_analysis
             )
+            # U33 — same Track A/B feed as the HTML dossier branch above.
+            track_a_verdict, track_b_band = compute_score_deal_track_inputs(
+                documents=all_docs,
+                list_transactions=docs.list_transactions,
+                analyses_by_doc=analyses_by_doc,
+                merchant_id=merchant.id,
+            )
             try:
-                score_result = score_deal(score_input, ofac=ofac)
+                score_result = score_deal(
+                    score_input,
+                    ofac=ofac,
+                    track_a_verdict=track_a_verdict,
+                    track_b_band=track_b_band,
+                )
             except OFACStaleError:
                 score_result = None
             score_window = {

@@ -223,6 +223,9 @@ def build_merchant_findings(
     from aegis.compliance.states import STATES
     from aegis.scoring.ofac import OFACStaleError
     from aegis.scoring.score import score_deal
+    from aegis.scoring_v2.score_deal_inputs import (
+        compute_score_deal_track_inputs,
+    )
 
     all_docs = docs.list_documents(merchant_id=merchant.id, limit=50)
     doc_findings = [
@@ -247,10 +250,26 @@ def build_merchant_findings(
         # is imported by aegis.api.routes.__init__ before the web layer.
         from aegis.web._router_helpers import _score_input_from_dashboard
 
+        # U33 — feed Track A/B verdicts so the CSV / JSON findings reflect
+        # the active scoring engine's decline path when track_abc is on.
+        # ``analyses_by_doc`` is rebuilt cheaply from the existing
+        # per-doc analysis lookup so the verdict computation has the
+        # same data the dossier panel uses.
+        _findings_analyses_by_doc = {
+            d.id: docs.get_analysis(d.id) for d in all_docs
+        }
+        track_a_verdict, track_b_band = compute_score_deal_track_inputs(
+            documents=all_docs,
+            list_transactions=docs.list_transactions,
+            analyses_by_doc=_findings_analyses_by_doc,
+            merchant_id=merchant.id,
+        )
         try:
             score_result = score_deal(
                 _score_input_from_dashboard(merchant, latest_doc, latest_analysis),
                 ofac=ofac,
+                track_a_verdict=track_a_verdict,
+                track_b_band=track_b_band,
             )
         except OFACStaleError:
             score_result = None

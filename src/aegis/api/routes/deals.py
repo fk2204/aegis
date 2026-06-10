@@ -71,6 +71,9 @@ from aegis.scoring.match_funders import match_funder
 from aegis.scoring.models import DealMatchResult, ScoreInput, ScoreResult
 from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
+from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
+from aegis.scoring_v2.track_a import IntegrityVerdict
+from aegis.scoring_v2.track_b import BusinessRiskBand
 from aegis.storage import DocumentRepository
 
 _log = get_logger(__name__)
@@ -99,6 +102,41 @@ class CloseSyncResponse(BaseModel):
     patched: bool
     fields_diffed: list[str]
     reason: Literal["patched", "no_diff", "lead_not_found"]
+
+
+def _track_inputs_for_deal(
+    docs: DocumentRepository,
+    merchant_id: UUID,
+) -> tuple[IntegrityVerdict | None, BusinessRiskBand | None]:
+    """Look up the merchant's documents + analyses and compute the
+    Track A integrity verdict + Track B risk band that ``score_deal``
+    consumes when ``AEGIS_SCORING_ENGINE=track_abc``.
+
+    Returns ``(None, None)`` on any failure (missing merchant, no docs,
+    parse error) so the legacy engine remains the safe fallback —
+    matches the discipline in
+    ``aegis.scoring_v2.score_deal_inputs.compute_score_deal_track_inputs``.
+    """
+    try:
+        all_docs = docs.list_documents(merchant_id=merchant_id, limit=50)
+        if not all_docs:
+            return None, None
+        analyses_by_doc = docs.get_analyses_by_document_ids(
+            [d.id for d in all_docs]
+        )
+    except Exception as exc:
+        _log.warning(
+            "deals.track_inputs_lookup_failed merchant_id=%s err=%s",
+            merchant_id,
+            exc.__class__.__name__,
+        )
+        return None, None
+    return compute_score_deal_track_inputs(
+        documents=all_docs,
+        list_transactions=docs.list_transactions,
+        analyses_by_doc=analyses_by_doc,
+        merchant_id=merchant_id,
+    )
 
 
 def _state_matrix(request: Request) -> StateMatrix:
@@ -215,6 +253,7 @@ def score(
     audit: Annotated[AuditLog, Depends(get_audit)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
     document_id: Annotated[
         UUID,
         Query(
@@ -235,8 +274,17 @@ def score(
     received a score with no snapshot; the call now 422s instead. Every
     production caller (dashboard, Close sync) already supplies it.
     """
+    # U33 — feed Track A/B verdicts. The route operates on an operator-
+    # provided ScoreInput payload but the merchant's docs are available
+    # via ``deal.merchant_id`` so the active-engine flip has live inputs.
+    track_a_verdict, track_b_band = _track_inputs_for_deal(docs, deal.merchant_id)
     try:
-        result = score_deal(deal, ofac=ofac)
+        result = score_deal(
+            deal,
+            ofac=ofac,
+            track_a_verdict=track_a_verdict,
+            track_b_band=track_b_band,
+        )
     except OFACStaleError as exc:
         # OFAC list could not refresh and the cache is too old — fail
         # closed so a sanctioned name cannot slip through.
@@ -287,6 +335,7 @@ def score_with_matches(
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
     document_id: Annotated[
         UUID,
         Query(
@@ -312,8 +361,15 @@ def score_with_matches(
     (U17): pre-U17 callers that omitted ``document_id`` received a score
     with no snapshot; the call now 422s instead.
     """
+    # U33 — feed Track A/B verdicts; same pattern as ``/score``.
+    track_a_verdict, track_b_band = _track_inputs_for_deal(docs, deal.merchant_id)
     try:
-        score_result = score_deal(deal, ofac=ofac)
+        score_result = score_deal(
+            deal,
+            ofac=ofac,
+            track_a_verdict=track_a_verdict,
+            track_b_band=track_b_band,
+        )
     except OFACStaleError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

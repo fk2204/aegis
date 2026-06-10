@@ -392,7 +392,27 @@ def _compute_merchant_tier(
         if not items:
             return None
         score_input = _score_input_multi_month(merchant, items)
-        score_result = score_deal(score_input, ofac=ofac)
+        # U33 — feed Track A/B verdicts so the tier letter reflects the
+        # ``AEGIS_SCORING_ENGINE=track_abc`` decline path when active.
+        # Failure to compute verdicts falls back to None (legacy engine).
+        from aegis.scoring_v2.score_deal_inputs import (
+            compute_score_deal_track_inputs,
+        )
+
+        _tier_documents = [d for d, _ in items]
+        _tier_analyses_by_doc = {d.id: a for d, a in items}
+        track_a_verdict, track_b_band = compute_score_deal_track_inputs(
+            documents=_tier_documents,
+            list_transactions=docs.list_transactions,
+            analyses_by_doc=_tier_analyses_by_doc,
+            merchant_id=merchant.id,
+        )
+        score_result = score_deal(
+            score_input,
+            ofac=ofac,
+            track_a_verdict=track_a_verdict,
+            track_b_band=track_b_band,
+        )
     except (MerchantNotFoundError, OFACStaleError, ValueError):
         return None
     except Exception as exc:
