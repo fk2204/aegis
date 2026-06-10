@@ -1,0 +1,68 @@
+{
+  "_comment": "Synthetic POD-calibration cohort. NO PII per CLAUDE.md — only UUIDs + tier + outcome. Used by tests/scripts/test_cohort_backtest.py. Mirrors the shape ``run()`` consumes after Close resolution; we skip the live Close round-trip in tests by injecting a fake CloseLeadFetcher.",
+  "rows": [
+    {
+      "merchant_id": "11111111-1111-1111-1111-111111111111",
+      "tier": "A",
+      "outcome": "funded_paid_off",
+      "score": 88,
+      "intake_date": "2025-10-01"
+    },
+    {
+      "merchant_id": "11111111-1111-1111-1111-111111111112",
+      "tier": "A",
+      "outcome": "funded_current",
+      "score": 85,
+      "intake_date": "2025-10-05"
+    },
+    {
+      "merchant_id": "11111111-1111-1111-1111-111111111113",
+      "tier": "A",
+      "outcome": "funded_defaulted",
+      "score": 82,
+      "intake_date": "2025-10-10"
+    },
+    {
+      "merchant_id": "22222222-2222-2222-2222-222222222221",
+      "tier": "B",
+      "outcome": "funded_defaulted",
+      "score": 74,
+      "intake_date": "2025-11-01"
+    },
+    {
+      "merchant_id": "22222222-2222-2222-2222-222222222222",
+      "tier": "B",
+      "outcome": "funded_paid_off",
+      "score": 72,
+      "intake_date": "2025-11-05"
+    },
+    {
+      "merchant_id": "33333333-3333-3333-3333-333333333331",
+      "tier": "C",
+      "outcome": "funded_renewed",
+      "score": 62,
+      "intake_date": "2025-09-01"
+    },
+    {
+      "merchant_id": "33333333-3333-3333-3333-333333333332",
+      "tier": "C",
+      "outcome": "unknown",
+      "score": 60,
+      "intake_date": "2025-09-10"
+    },
+    {
+      "merchant_id": "44444444-4444-4444-4444-444444444441",
+      "tier": "D",
+      "outcome": "not_funded",
+      "score": 48,
+      "intake_date": "2025-08-15"
+    },
+    {
+      "merchant_id": "55555555-5555-5555-5555-555555555551",
+      "tier": "F",
+      "outcome": "funded_defaulted",
+      "score": 30,
+      "intake_date": "2025-08-20"
+    }
+  ]
+}
