@@ -1,14 +1,40 @@
-"""Operator dashboard routes.
+"""Operator dashboard routes — aggregator + still-resident domains.
 
-Five pages + one HTMX partial:
+R4.1 status (in-progress)
+-------------------------
+Domains MIGRATED to ``aegis.web.routers.*`` (sub-routers wired below):
 
-  * ``GET /ui/``                              — index with summary tiles
-  * ``GET /ui/upload``                        — upload form (POSTs to /upload)
-  * ``GET /ui/merchants``                     — table of all merchants
-  * ``GET /ui/merchants/{id}``                — merchant detail with aggregates
-  * ``GET /ui/documents/{id}/aggregate/{name}``  — HTMX partial: drill-down
-    transactions for one aggregate. Returned as HTML fragment so HTMX
-    can swap into the detail page.
+  * ``close_queue.py``        — ``GET /ui/close-queue``
+  * ``compliance.py``         — ``POST /ui/decisions/{id}/override``,
+                                ``GET  /ui/compliance/obligations``
+  * ``disclosure_events.py``  — ``GET /ui/disclosure-events`` (+ detail)
+  * ``documents.py``          — ``GET /ui/documents/{id}`` (+ aggregate partial)
+  * ``portfolio.py``          — ``GET /ui/portfolio``
+  * ``renewals.py``           — ``GET /ui/renewals``, ``POST /ui/renewals/{id}/attest``
+  * ``triage.py``             — ``GET /ui/triage``, ``GET /ui/shadow-signals``
+
+Domains STILL HERE (pending future migration — operator-instructed
+conservative split given Phase 7 prod stability requirements):
+
+  * dashboard tiles    — ``GET /ui/``, ``GET /ui/review``, ``GET /ui/deals``
+  * upload             — ``GET /ui/upload``, ``POST /ui/upload``
+  * intake             — ``GET /ui/intake``, ``POST /ui/intake``
+  * merchants          — ``GET /ui/merchants``, ``/ui/merchants/new``,
+                         ``/ui/merchants/{id}`` (detail / edit / dossier / match /
+                         submit / funder-response / close-rescan / findings.csv)
+  * funders            — ``/ui/funders`` (list / new / import / detail / submit-modal /
+                         reextract / operator-notes)
+
+Templates singleton lives in ``aegis.web._templates``. Shared module-level
+constants/helpers live in ``aegis.web._router_helpers``. Tests + other
+code import private helpers (``_classify_close_pipeline_state``,
+``templates``, ``_state_tier``, ``_compute_merchant_tier``,
+``_ofac_ribbon_status``, ``_match_card``, ``_build_attention_groups``,
+``_build_review_queue_cards``, ``_dossier_pattern_analysis``,
+``_collect_analyzed_for_merchant``, ``_bundle_keys_for_merchant``,
+``_select_default_bundle``, ``_score_input_from_dashboard``) from
+``aegis.web.router`` — those re-exports MUST stay (see ``__all__``
+at end of file + the migration map above).
 
 Auth note
 ---------
@@ -28,7 +54,6 @@ import zipfile
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from pathlib import Path
 from typing import Annotated, Any, Final, cast
 from uuid import UUID
 
@@ -43,25 +68,18 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
 from aegis.api.deps import (
     get_audit,
     get_deal_repository,
-    get_decision_snapshot,
-    get_disclosure_render_event_repository,
-    get_funder_reply_repository,
     get_funder_repository,
     get_llm,
     get_merchant_repository,
     get_merchant_shadow_signal_repository,
     get_ofac_client,
-    get_override_repository,
-    get_renewal_attestation_repository,
     get_repository,
-    get_scoring_disagreement_repository,
     get_submission_repository,
 )
 
@@ -78,35 +96,9 @@ from aegis.api.deps import (
 # Lazy import + sys.modules caching → zero per-call overhead.
 from aegis.audit import AuditLog
 from aegis.close.orchestration import enqueue_close_orchestration
-from aegis.compliance.overrides import (
-    OverrideError,
-    OverridePayload,
-    OverrideRepository,
-    record_override,
-)
-from aegis.compliance.render_events import (
-    RENDER_EVENT_STATUS_APR_FAILED,
-    RENDER_EVENT_STATUS_NEEDS_REVIEW,
-    RENDER_EVENT_STATUS_OK,
-    DisclosureRenderEventRepository,
-)
-from aegis.compliance.snapshot import (
-    DecisionSnapshot,
-    InMemoryDecisionSnapshot,
-)
 from aegis.compliance.states import STATES, StateNotServed, validate_state_served
 from aegis.config import get_settings
-from aegis.deals.portfolio_analytics import (
-    DateRange,
-    compute_portfolio_metrics,
-    resolve_date_range,
-)
 from aegis.deals.repository import DealRepository
-from aegis.deals.triage_analytics import (
-    MAX_TRIAGE_WINDOW_DAYS,
-    compute_triage_backlog,
-    resolve_triage_window,
-)
 from aegis.funders.extract import (
     FunderExtractionError,
     extract_funder_guidelines,
@@ -114,24 +106,16 @@ from aegis.funders.extract import (
     merge_extractions,
 )
 from aegis.funders.models import FunderRow, FunderTier
-from aegis.funders.replies import FunderReplyRepository
 from aegis.funders.repository import (
     FunderNotFoundError,
     FunderRepository,
 )
 from aegis.llm import LLMClient
 from aegis.merchants.models import EntityType, MerchantRow
-from aegis.merchants.renewal_attestations import (
-    RenewalAttestationConflictError,
-    RenewalAttestationRepository,
-    RenewalAttestationWriteError,
-    record_renewal_attestation,
-)
 from aegis.merchants.repository import (
     MerchantConflictError,
     MerchantNotFoundError,
     MerchantRepository,
-    list_upcoming_renewals,
 )
 from aegis.merchants.shadow_signals import (
     MerchantShadowSignalRecord,
@@ -155,12 +139,8 @@ from aegis.scoring.multi_month import (
 from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
 from aegis.scoring.submission_package import build_submission_files
-from aegis.scoring_v2.shadow_disagreements import (
-    ScoringDisagreementRepository,
-)
 from aegis.storage import (
     AnalysisRow,
-    DocumentNotFoundError,
     DocumentRepository,
     DocumentRow,
 )
@@ -182,144 +162,53 @@ from aegis.web._attention_card import (
 from aegis.web._flag_labels import HumanFlag, humanize_audit_action, humanize_flag
 from aegis.web._pattern_cards import (
     build_pattern_cards,
-    humanize_hard_decline,
-    humanize_soft_concern,
     pattern_has_customer_concentration,
 )
 from aegis.web._slug import slugify
 from aegis.web._soft_signals import parse_soft_signal_flags
 from aegis.web._stacking_card import build_stacking_card
 
-_TEMPLATES_DIR = Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+# Templates singleton + Jinja filter registrations moved to
+# ``aegis.web._templates`` during R4.1 so sub-routers can share without
+# importing this 5k-line module. ``templates`` is re-exported below so
+# existing imports (``from aegis.web.router import templates``) still work.
+from aegis.web._templates import templates
 
+# R4.1 — domain sub-routers. Each module declares its own ``router =
+# APIRouter()`` (no prefix; the aggregator below carries ``/ui``) and is
+# wired in via ``include_router`` below. Routes still in this file are
+# pending future migration; see the audit plan for the full split.
+from aegis.web.routers import close_queue as _close_queue_routes
+from aegis.web.routers import compliance as _compliance_routes
+from aegis.web.routers import disclosure_events as _disclosure_events_routes
+from aegis.web.routers import documents as _documents_routes
+from aegis.web.routers import portfolio as _portfolio_routes
+from aegis.web.routers import renewals as _renewals_routes
+from aegis.web.routers import triage as _triage_routes
 
-# Jinja filters accept arbitrary template-side values (None, Decimal, int,
-# str). The unions below cover what AEGIS actually sends through — typing
-# more narrowly would force callers to pre-coerce, defeating the filter's
-# purpose. Justifies the broad input types per CLAUDE.md "Any" rule.
-_MoneyLike = Decimal | int | float | str | None
-_NumericLike = int | str | None
-
-
-def _money_filter(value: _MoneyLike, *, whole: bool = False) -> str:
-    """Format a Decimal/int/float as $X,XXX[.XX]. None → em-dash."""
-    if value is None or value == "":
-        return "—"
-    try:
-        d = Decimal(str(value))
-    except (ArithmeticError, ValueError):
-        return str(value)
-    sign = "-" if d < 0 else ""
-    d = abs(d)
-    if whole or d == d.to_integral_value():
-        whole_part = int(d)
-        return f"{sign}${whole_part:,}"
-    cents = d.quantize(Decimal("0.01"))
-    int_part, _, frac = str(cents).partition(".")
-    return f"{sign}${int(int_part):,}.{frac}"
-
-
-def _whole_money_filter(value: _MoneyLike) -> str:
-    return _money_filter(value, whole=True)
-
-
-def _format_pct_filter(value: _MoneyLike) -> str:
-    """Render a Decimal fraction (0.365) as a percent (``36.5%``).
-
-    Returns ``"unavailable"`` for ``None`` rather than ``0.00%`` — per
-    the R0.4 regulator-grade-lie discipline: a 0% APR rendered next to
-    a 1.30x factor is the lie we explicitly refuse to render.
-    Estimated-terms APR may be ``None`` when the IRR optimizer cannot
-    bracket a root; surfacing that as 0% would manufacture false
-    precision the operator could then quote to a funder rep.
-    """
-    if value is None:
-        return "unavailable"
-    try:
-        d = Decimal(str(value))
-    except (ArithmeticError, ValueError):
-        return str(value)
-    pct = (d * Decimal("100")).quantize(Decimal("0.01"))
-    int_part, _, frac = str(pct).partition(".")
-    if not frac:
-        return f"{int_part}%"
-    return f"{int_part}.{frac}%"
-
-
-def _days_label_filter(value: _NumericLike) -> str:
-    if value is None or value == "":
-        return "—"
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return str(value)
-    return f"{n} day" if n == 1 else f"{n} days"
-
-
-def _fraud_band(score: _NumericLike) -> str:
-    """Map fraud_score 0-100 to a risk band keyed off pipeline.py thresholds.
-
-    Bands mirror parser.pipeline constants exactly: REVIEW_THRESHOLD=35,
-    HARD_DECLINE_THRESHOLD=65. Keeps UI legend in sync with parse_status gate.
-    """
-    if score is None:
-        return "unknown"
-    try:
-        n = int(score)
-    except (TypeError, ValueError):
-        return "unknown"
-    if n < 35:
-        return "clear"
-    if n < 65:
-        return "review"
-    return "decline"
-
-
-templates.env.filters["money"] = _money_filter
-templates.env.filters["whole_money"] = _whole_money_filter
-templates.env.filters["format_pct"] = _format_pct_filter
-templates.env.filters["days_label"] = _days_label_filter
-templates.env.filters["fraud_band"] = _fraud_band
-templates.env.filters["humanize_flag"] = humanize_flag
-# Verdict-section humanizers — added in the dossier signal-legibility
-# consolidation (v2 catalog Bucket B; ``_pattern_cards.py``). Used by
-# merchant_detail_dossier.html.j2 to render the hard-decline and
-# soft-concern lists as worker-language sentences instead of raw
-# identifier strings. Pattern cards already render through their own
-# PATTERN_COPY map; these two close the gap for the verdict section.
-templates.env.filters["humanize_hard_decline"] = humanize_hard_decline
-templates.env.filters["humanize_soft_concern"] = humanize_soft_concern
+# Re-export so tests/test_close_queue.py keeps its
+# ``from aegis.web.router import _classify_close_pipeline_state`` import path.
+from aegis.web.routers.close_queue import _classify_close_pipeline_state
 
 router = APIRouter(prefix="/ui", tags=["dashboard"])
 
+router.include_router(_close_queue_routes.router)
+router.include_router(_compliance_routes.router)
+router.include_router(_documents_routes.router)
+router.include_router(_renewals_routes.router)
+router.include_router(_portfolio_routes.router)
+router.include_router(_disclosure_events_routes.router)
+router.include_router(_triage_routes.router)
 
-_AGGREGATE_LABELS: dict[str, str] = {
-    "true_revenue": "True Revenue",
-    "avg_daily_balance": "Average Daily Balance",
-    "num_nsf": "NSF Count",
-    "days_negative": "Days Negative",
-    "mca_daily_total": "MCA Daily Total",
-}
 
-# Per-aggregate unit hint shown under the KPI value (e.g. "$" amount,
-# "days", "count"). Kept aligned with _AGGREGATE_LABELS — every key
-# present in labels must have an entry here so the KPI tile can format.
-_AGGREGATE_UNIT_KIND: dict[str, str] = {
-    "true_revenue": "money",
-    "avg_daily_balance": "money",
-    "num_nsf": "count",
-    "days_negative": "days",
-    "mca_daily_total": "money",
-}
-
-_AGGREGATE_SOURCE_FIELDS: dict[str, str] = {
-    "true_revenue": "true_revenue_source_ids",
-    "avg_daily_balance": "avg_daily_balance_source_ids",
-    "num_nsf": "num_nsf_source_ids",
-    "days_negative": "days_negative_source_ids",
-    "mca_daily_total": "mca_daily_total_source_ids",
-}
+# Aggregate metadata constants moved to ``aegis.web._router_helpers``
+# during R4.1 so the documents sub-router can share them. Re-imported
+# below so existing references in this file (merchant_detail) keep
+# working unchanged.
+from aegis.web._router_helpers import (  # noqa: E402  - intentional bottom-of-imports placement
+    _AGGREGATE_LABELS,
+    _AGGREGATE_UNIT_KIND,
+)
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -1176,336 +1065,9 @@ async def list_deals(
     return templates.TemplateResponse(request, "deals.html.j2", {"rows": rows})
 
 
-# Close-queue thresholds. A pull enqueued but not completed within this
-# many hours is suspect — the worker either crashed silently or the lead
-# has a payload Close hasn't published yet; either way it surfaces as
-# STUCK so the operator can retry. Parsing-pending threshold is much
-# tighter because a Bedrock parse should not take more than a few
-# minutes per document.
-_CLOSE_QUEUE_STALE_PULL_HOURS: Final[float] = 6.0
-_CLOSE_QUEUE_STALE_PARSE_HOURS: Final[float] = 1.0
-
-
-# Flag-category → human label for the GATED detail line. The classifier
-# peeks at all_flags on each manual_review doc and surfaces the unique
-# categories so the operator sees WHY at a glance — "editor metadata +
-# reconciliation drift" reads as a tampering signal, "OFAC match" as a
-# sanctions hit, "OCR concerns" as a missing-data review. Distinct
-# semantics demand distinct response — re-pulling won't change
-# tampering flags but it might clear an OCR concern.
-_CLOSE_QUEUE_FLAG_CATEGORY_LABELS: Final[dict[str, str]] = {
-    "META":    "editor metadata",
-    "MATH":    "reconciliation drift",
-    "PATTERN": "pattern signal",
-    "STRUCT":  "PDF structure",
-    "OFAC":    "OFAC match",
-    "LLM":     "LLM concerns",
-    "OCR":     "OCR concerns",
-}
-_CLOSE_QUEUE_FLAG_CATEGORY_ORDER: Final[tuple[str, ...]] = (
-    "OFAC", "META", "MATH", "PATTERN", "STRUCT", "OCR", "LLM",
-)
-
-
-def _gating_reason_labels(docs: list[DocumentRow]) -> list[str]:
-    """Extract unique [CATEGORY] flag prefixes across docs, map to
-    human labels in stable order. Empty list if no docs carry tagged
-    flags — fall back to a generic phrase in the classifier."""
-    found: set[str] = set()
-    for d in docs:
-        for f in (d.all_flags or []):
-            if isinstance(f, str) and f.startswith("[") and "]" in f:
-                cat = f[1:f.find("]")]
-                if cat in _CLOSE_QUEUE_FLAG_CATEGORY_LABELS:
-                    found.add(cat)
-    return [
-        _CLOSE_QUEUE_FLAG_CATEGORY_LABELS[c]
-        for c in _CLOSE_QUEUE_FLAG_CATEGORY_ORDER
-        if c in found
-    ]
-
-
-def _parse_audit_ts(value: object) -> datetime | None:
-    if value is None or value == "":
-        return None
-    if isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-
-
-def _hours_since(ts: datetime | None, now: datetime) -> float | None:
-    if ts is None:
-        return None
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=UTC)
-    return max(0.0, (now - ts).total_seconds() / 3600.0)
-
-
-def _classify_close_pipeline_state(
-    *,
-    docs: list[DocumentRow],
-    audit_rows: list[dict[str, Any]],
-    now: datetime,
-) -> dict[str, Any]:
-    """Derive the Close-queue state for one merchant.
-
-    Returns a dict with ``state`` (machine token), ``label`` (chip
-    text), ``severity`` (chip color: good/warn/bad/info), ``action``
-    (``retry`` / ``review`` / ``None``), and ``detail`` (one-line
-    human reason).
-
-    States distinguish three operator-relevant categories:
-
-    * **Needs a retry** — ``failed_pull``, ``failed_parse``, ``stuck``.
-      The rescan button is the right action.
-    * **Needs an underwriter** — ``gated``. The parser ran and flagged
-      integrity / reconciliation concerns; the right action is to
-      open the dossier, not to retry.
-    * **Informational** — ``awaiting_pull``, ``parsing``, ``scored``.
-      No action needed.
-
-    At 30 deals/day the distinction matters: "Score unavailable" on
-    the dossier is ambiguous (broken pipeline vs. flagged for human
-    review vs. still working). The queue makes the reason readable
-    at a glance.
-    """
-    # Defensive: sort by created_at descending so we look at the LATEST
-    # orchestration outcome regardless of how the caller ordered the
-    # rows. The audit-log API returns newest-first today, but a future
-    # bulk-load path could pass them oldest-first and silently invert
-    # the verdict (e.g. "enqueued" stays current after "list_failed").
-    close_orch_rows = sorted(
-        (
-            r
-            for r in audit_rows
-            if str(r.get("action", "")).startswith("close.orchestration.")
-        ),
-        key=lambda r: _parse_audit_ts(r.get("created_at")) or datetime.min.replace(tzinfo=UTC),
-        reverse=True,
-    )
-    last_orch = close_orch_rows[0] if close_orch_rows else None
-    last_action = (last_orch or {}).get("action")
-    last_ts = _parse_audit_ts((last_orch or {}).get("created_at"))
-
-    if not docs:
-        if last_action == "close.orchestration.list_failed":
-            details = (last_orch or {}).get("details") or {}
-            err_msg = ""
-            if isinstance(details, dict):
-                err_msg = str(details.get("message") or details.get("error") or "")
-            return {
-                "state": "failed_pull",
-                "label": "Failed to pull",
-                "severity": "bad",
-                "action": "retry",
-                "detail": (
-                    f"Close listing failed: {err_msg[:80]}"
-                    if err_msg
-                    else "Close listing failed"
-                ),
-            }
-        if last_action in (
-            "close.orchestration.enqueued",
-            "close.orchestration.manual_rescan",
-        ):
-            elapsed_h = _hours_since(last_ts, now)
-            if elapsed_h is not None and elapsed_h > _CLOSE_QUEUE_STALE_PULL_HOURS:
-                return {
-                    "state": "stuck",
-                    "label": f"Stuck (no pull, {elapsed_h:.0f}h)",
-                    "severity": "warn",
-                    "action": "retry",
-                    "detail": (
-                        f"Pull enqueued {elapsed_h:.0f}h ago with no completion"
-                    ),
-                }
-            return {
-                "state": "awaiting_pull",
-                "label": "Pulling",
-                "severity": "info",
-                "action": None,
-                "detail": "Close attachment pull in flight",
-            }
-        return {
-            "state": "stuck",
-            "label": "Stuck (no audit)",
-            "severity": "warn",
-            "action": "retry",
-            "detail": "No Close orchestration audit on file",
-        }
-
-    pending = [d for d in docs if d.parse_status == "pending"]
-    error = [d for d in docs if d.parse_status == "error"]
-    manual_review = [d for d in docs if d.parse_status == "manual_review"]
-    clean = [d for d in docs if d.parse_status in ("proceed", "review")]
-
-    if pending:
-        oldest_ts = min(
-            (d.uploaded_at for d in pending if d.uploaded_at is not None),
-            default=None,
-        )
-        elapsed_h = _hours_since(oldest_ts, now)
-        if elapsed_h is not None and elapsed_h > _CLOSE_QUEUE_STALE_PARSE_HOURS:
-            return {
-                "state": "stuck",
-                "label": f"Stuck (parse {elapsed_h:.0f}h)",
-                "severity": "warn",
-                "action": "retry",
-                "detail": (
-                    f"{len(pending)} document(s) pending parse for "
-                    f"{elapsed_h:.0f}h"
-                ),
-            }
-        return {
-            "state": "parsing",
-            "label": f"Parsing {len(docs) - len(pending)}/{len(docs)}",
-            "severity": "info",
-            "action": None,
-            "detail": f"{len(pending)} document(s) still parsing",
-        }
-
-    if manual_review:
-        extras = []
-        if error:
-            extras.append(f"{len(error)} errored")
-        if clean:
-            extras.append(f"{len(clean)} clean")
-        suffix = (" · " + ", ".join(extras)) if extras else ""
-        # Surface the gating reasons (flag categories) so the operator
-        # can distinguish tampering (editor metadata + reconciliation
-        # drift) from OFAC, from OCR concerns, from PDF structure issues
-        # — each implies a different next move.
-        reason_labels = _gating_reason_labels(manual_review)
-        reason_phrase = (
-            " + ".join(reason_labels)
-            if reason_labels
-            else "integrity / reconciliation concerns"
-        )
-        return {
-            "state": "gated",
-            "label": "Needs underwriter",
-            "severity": "warn",
-            "action": "review",
-            "detail": (
-                f"{len(manual_review)} statement(s) flagged · "
-                f"{reason_phrase}{suffix}"
-            ),
-        }
-    if error and not clean:
-        return {
-            "state": "failed_parse",
-            "label": "Failed to parse",
-            "severity": "bad",
-            "action": "retry",
-            "detail": f"All {len(error)} document(s) errored during parse",
-        }
-    if clean:
-        suffix = f" · {len(error)} errored" if error else ""
-        return {
-            "state": "scored",
-            "label": "Scored",
-            "severity": "good",
-            "action": None,
-            "detail": f"{len(clean)} clean statement(s){suffix}",
-        }
-    return {
-        "state": "stuck",
-        "label": "Stuck",
-        "severity": "warn",
-        "action": "retry",
-        "detail": "Unknown document state",
-    }
-
-
-# Sort order: failures first (most urgent), then stuck, then gated
-# (operator action needed), then in-flight, then scored. Within a state
-# tier, sort alphabetically by business name for predictable scanning.
-_CLOSE_QUEUE_STATE_ORDER: Final[dict[str, int]] = {
-    "failed_pull":   0,
-    "failed_parse":  1,
-    "stuck":         2,
-    "gated":         3,
-    "parsing":       4,
-    "awaiting_pull": 5,
-    "scored":        6,
-}
-
-
-@router.get("/close-queue", response_class=HTMLResponse)
-async def close_queue(
-    request: Request,
-    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-    docs: Annotated[DocumentRepository, Depends(get_repository)],
-    audit: Annotated[AuditLog, Depends(get_audit)],
-) -> HTMLResponse:
-    """Pipeline state for every Close-sourced merchant.
-
-    Aggregates merchants where ``close_lead_id IS NOT NULL`` into one
-    row each, classified by audit + document state. FAILED rows expose
-    the rescan retry button. GATED rows link to the dossier for
-    operator review. The point at 30 deals/day is that a silently-stuck
-    merchant cannot fall through the cracks — every Close-sourced
-    deal surfaces here in a single sortable view with the reason it
-    needs (or does not need) attention.
-    """
-    now = datetime.now(UTC)
-    rows: list[dict[str, Any]] = []
-    for m in merchants.list_all():
-        if not m.close_lead_id:
-            continue
-        merchant_docs = docs.list_documents(merchant_id=m.id, limit=50)
-        merchant_audit = audit.list_for_subject(
-            subject_type="merchant", subject_id=m.id, limit=50
-        )
-        state = _classify_close_pipeline_state(
-            docs=merchant_docs, audit_rows=merchant_audit, now=now
-        )
-        last_orch = next(
-            (
-                r
-                for r in merchant_audit
-                if str(r.get("action", "")).startswith("close.orchestration.")
-            ),
-            None,
-        )
-        rows.append(
-            {
-                "merchant_id": str(m.id),
-                "business_name": m.business_name,
-                "close_lead_id": m.close_lead_id,
-                "state": state,
-                "doc_count": len(merchant_docs),
-                "last_audit_action": (last_orch or {}).get("action") or "—",
-                "last_audit_at": _parse_audit_ts(
-                    (last_orch or {}).get("created_at")
-                ),
-            }
-        )
-    rows.sort(
-        key=lambda r: (
-            _CLOSE_QUEUE_STATE_ORDER.get(r["state"]["state"], 99),
-            r["business_name"].lower(),
-        )
-    )
-    # State counts for the deck header — "3 failed, 2 needs review, …"
-    state_counts: dict[str, int] = {}
-    for r in rows:
-        state_counts[r["state"]["state"]] = (
-            state_counts.get(r["state"]["state"], 0) + 1
-        )
-    return templates.TemplateResponse(
-        request,
-        "close_queue.html.j2",
-        {
-            "rows": rows,
-            "state_counts": state_counts,
-            "stale_pull_hours": _CLOSE_QUEUE_STALE_PULL_HOURS,
-            "stale_parse_hours": _CLOSE_QUEUE_STALE_PARSE_HOURS,
-        },
-    )
+# /close-queue moved to aegis.web.routers.close_queue during R4.1.
+# _classify_close_pipeline_state is re-exported at the top of the
+# file so tests at tests/test_close_queue.py keep their import path.
 
 
 @router.get("/merchants/new", response_class=HTMLResponse)
@@ -3692,100 +3254,8 @@ async def merchant_findings_csv(
     )
 
 
-@router.get(
-    "/documents/{document_id}",
-    response_class=HTMLResponse,
-    summary="Statement detail — metadata + aggregates + every classified transaction.",
-)
-async def document_detail(
-    request: Request,
-    document_id: UUID,
-    docs: Annotated[DocumentRepository, Depends(get_repository)],
-    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-) -> HTMLResponse:
-    try:
-        document = docs.get_document(document_id)
-    except DocumentNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-
-    analysis = docs.get_analysis(document_id)
-    transactions = docs.list_transactions(document_id)
-
-    merchant: MerchantRow | None = None
-    if document.merchant_id is not None:
-        try:
-            merchant = merchants_repo.get(document.merchant_id)
-        except MerchantNotFoundError:
-            merchant = None
-
-    # Category histogram for the in-page filter strip.
-    category_counts: dict[str, int] = {}
-    for t in transactions:
-        category_counts[t.category] = category_counts.get(t.category, 0) + 1
-
-    # Build a {tx_id -> set of aggregates that source-id back to it} map
-    # so each row can show which aggregates it contributed to.
-    contributes: dict[UUID, list[str]] = {}
-    if analysis is not None:
-        for agg, field in _AGGREGATE_SOURCE_FIELDS.items():
-            for src_id in getattr(analysis, field, []):
-                contributes.setdefault(src_id, []).append(_AGGREGATE_LABELS[agg])
-
-    return templates.TemplateResponse(
-        request,
-        "document_detail.html.j2",
-        {
-            "document": document,
-            "analysis": analysis,
-            "transactions": transactions,
-            "merchant": merchant,
-            "category_counts": category_counts,
-            "contributes": contributes,
-            "aggregate_labels": _AGGREGATE_LABELS,
-        },
-    )
-
-
-@router.get(
-    "/documents/{document_id}/aggregate/{aggregate}",
-    response_class=HTMLResponse,
-    summary="HTMX partial — transactions that contributed to an aggregate.",
-)
-async def aggregate_drilldown(
-    request: Request,
-    document_id: UUID,
-    aggregate: str,
-    docs: Annotated[DocumentRepository, Depends(get_repository)],
-) -> HTMLResponse:
-    if aggregate not in _AGGREGATE_SOURCE_FIELDS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"unknown aggregate: {aggregate!r}",
-        )
-
-    try:
-        docs.get_document(document_id)
-    except DocumentNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-
-    analysis = docs.get_analysis(document_id)
-    if analysis is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="no analysis for document"
-        )
-
-    source_ids: list[UUID] = list(getattr(analysis, _AGGREGATE_SOURCE_FIELDS[aggregate]))
-    all_txs = docs.list_transactions(document_id)
-    contributing = [t for t in all_txs if t.id in set(source_ids)]
-
-    return templates.TemplateResponse(
-        request,
-        "_transactions_partial.html.j2",
-        {
-            "transactions": contributing,
-            "aggregate_label": _AGGREGATE_LABELS[aggregate],
-        },
-    )
+# /documents/{id} + /documents/{id}/aggregate/{aggregate} moved to
+# aegis.web.routers.documents during R4.1.
 
 
 # Helpers --------------------------------------------------------------------
@@ -4680,1042 +4150,22 @@ def _txs_to_rows(txs: list[ClassifiedTransaction]) -> list[dict[str, Any]]:
 # require_bearer), matching the rest of this router.
 
 
-@router.post(
-    "/decisions/{decision_id}/override",
-    response_model=None,
-    include_in_schema=False,
-)
-async def decision_override(
-    decision_id: UUID,
-    audit: Annotated[AuditLog, Depends(get_audit)],
-    override_repo: Annotated[OverrideRepository, Depends(get_override_repository)],
-    reply_repo: Annotated[FunderReplyRepository, Depends(get_funder_reply_repository)],
-    deal_id: Annotated[UUID, Form()],
-    original_recommendation: Annotated[str, Form()],
-    operator_decision: Annotated[str, Form()],
-    reason_code: Annotated[str, Form()],
-    reason_detail: Annotated[str, Form()] = "",
-    pattern_false_positive: Annotated[str, Form()] = "",
-) -> JSONResponse:
-    """Persist one operator override + back-stamp from pending replies.
-
-    ``pattern_false_positive`` is a comma-separated list of detector
-    codes (the modal renders the active detectors as checkboxes and
-    serializes the selection into one form field). Empty entries are
-    dropped so a blank submit doesn't write ``[""]`` to the array
-    column.
-    """
-    patterns = [p.strip() for p in pattern_false_positive.split(",") if p.strip()]
-    try:
-        payload = OverridePayload(
-            deal_id=deal_id,
-            decision_id=decision_id,
-            original_recommendation=original_recommendation,
-            operator_decision=operator_decision,
-            reason_code=reason_code,
-            reason_detail=reason_detail.strip() or None,
-            pattern_false_positive=patterns,
-            operator_id="dashboard",
-        )
-    except ValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"invalid override payload: {exc}",
-        ) from exc
-
-    try:
-        result = record_override(
-            payload,
-            repo=override_repo,
-            reply_repo=reply_repo,
-            audit=audit,
-        )
-    except OverrideError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"override_persist_unavailable: {exc}",
-        ) from exc
-
-    return JSONResponse(
-        status_code=status.HTTP_201_CREATED,
-        content={
-            "override_id": str(result.override_id),
-            "back_stamped_outcome": result.back_stamped_outcome,
-        },
-    )
-
-
-# ---------------------------------------------------------------------------
-# /compliance/obligations — registration deadlines dashboard (mp Phase 7).
-# ---------------------------------------------------------------------------
-
-
-@router.get("/compliance/obligations", response_class=HTMLResponse)
-async def compliance_obligations(request: Request) -> HTMLResponse:
-    """Operator view of state registration / annual-report obligations.
-
-    Reads from `compliance_obligations` (migration 018). Rows are annotated
-    in-Python with a `derived_state` (overdue / due_soon / on_track) so
-    the template stays date-math-free.
-    """
-    from aegis.compliance.obligations import (
-        get_obligations_repository,
-        summarize,
-    )
-
-    repo = get_obligations_repository()
-    rows = repo.list_obligations()
-    summary = summarize(rows)
-
-    return cast(
-        "HTMLResponse",
-        templates.TemplateResponse(
-            request,
-            "compliance_obligations.html.j2",
-            {
-                "active": "Compliance",
-                "obligations": rows,
-                "summary": summary,
-            },
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# /renewals — upcoming-maturity calendar (R3.2, operator-visibility only).
-#
-# Per ``.claude/rules/compliance.md`` SCOPE NOTE: AEGIS does not own
-# regulator-facing renewal disclosure issuance — funder partners do
-# (CA SB 362 § 22806 — 60 days pre-maturity; NY 23 NYCRR § 600.17 —
-# 30 days pre-maturity). This route is an operator-visibility surface
-# so the operator can verify the funder has transmitted the required
-# pre-maturity notice. The list is NOT used to drive any broker-side
-# enforcement gate.
-# ---------------------------------------------------------------------------
-
-
-_RENEWAL_WINDOW_DEFAULT_DAYS: Final[int] = 90
-_RENEWAL_WINDOW_MAX_DAYS: Final[int] = 365
-
-
-@router.get("/renewals", response_class=HTMLResponse)
-async def upcoming_renewals(
-    request: Request,
-    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-    attestations_repo: Annotated[
-        RenewalAttestationRepository,
-        Depends(get_renewal_attestation_repository),
-    ],
-    window_days: Annotated[
-        int,
-        Query(
-            ge=1,
-            le=_RENEWAL_WINDOW_MAX_DAYS,
-            description="Lookahead window in days; default 90.",
-        ),
-    ] = _RENEWAL_WINDOW_DEFAULT_DAYS,
-    flash: Annotated[
-        str | None,
-        Query(
-            description=(
-                "Optional flash message rendered above the table after a "
-                "successful POST /ui/renewals/{merchant_id}/attest redirect."
-            ),
-        ),
-    ] = None,
-) -> HTMLResponse:
-    """Operator-visibility calendar of merchants approaching maturity.
-
-    Rows derive from ``MerchantRepository.list_all()`` filtered to
-    ``is_renewal=True`` whose ``maturity_date`` falls within
-    ``window_days``. Sorted by ``days_until_maturity`` ascending (most
-    urgent first). When the ``maturity_date`` column is absent from the
-    schema (current state — see ``list_upcoming_renewals`` docstring),
-    the accessor returns an empty list and the template renders an
-    explicit "schema augmentation pending" empty state instead of a
-    misleading "no rows" message.
-
-    The ``attestations_repo`` consumes ``funder_renewal_attestations``
-    (migration 040 / U6) to flip per-row ``renewal_status`` off the
-    default ``not_required_funder_owns`` when the operator has captured
-    an attestation that the funder transmitted the required notice.
-    """
-    rows = list_upcoming_renewals(
-        merchants_repo, window_days=window_days, attestations=attestations_repo
-    )
-    # Detect the schema-augmentation gap so the template can render a
-    # different empty state than the legitimate "no merchants in window"
-    # case. Mirrors the accessor's own gap-detection: if any merchant in
-    # the repo carries a real ``maturity_date`` attribute, the schema is
-    # present and the empty result truly means "nobody's maturing soon."
-    schema_missing = not any(
-        isinstance(getattr(m, "maturity_date", None), date)
-        and not isinstance(getattr(m, "maturity_date", None), datetime)
-        for m in merchants_repo.list_all()
-    )
-    return cast(
-        "HTMLResponse",
-        templates.TemplateResponse(
-            request,
-            "renewals.html.j2",
-            {
-                "active": "Renewals",
-                "rows": rows,
-                "window_days": window_days,
-                "schema_missing": schema_missing,
-                "flash": flash,
-            },
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# /renewals/{merchant_id}/attest — operator captures a funder attestation
-# that the required pre-maturity disclosure was transmitted (U6).
-#
-# Per CLAUDE.md SCOPE NOTE + ``.claude/rules/compliance.md`` SCOPE NOTE:
-# AEGIS does NOT own the regulator-facing disclosure obligation. The row
-# this route writes records an OPERATOR CLAIM about the funder's
-# behavior; it is not itself a regulator-facing audit artifact. The
-# funder's own audit trail remains the regulator-facing record.
-#
-# Idempotency policy: duplicate (merchant_id, maturity_date, funder_name)
-# attestations return 409 rather than silently coalescing. Rationale
-# documented on RenewalAttestationConflictError.
-# ---------------------------------------------------------------------------
-
-
-_RENEWAL_ATTESTATION_NOTES_MAX_LEN: Final[int] = 2000
-
-
-@router.post("/renewals/{merchant_id}/attest", response_model=None)
-async def renewal_attestation_submit(
-    merchant_id: UUID,
-    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-    attestations: Annotated[
-        RenewalAttestationRepository,
-        Depends(get_renewal_attestation_repository),
-    ],
-    audit: Annotated[AuditLog, Depends(get_audit)],
-    funder_name: Annotated[str, Form()],
-    disclosure_sent_at: Annotated[str, Form()],
-    maturity_date_form: Annotated[str, Form(alias="maturity_date")],
-    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
-    notes: Annotated[str, Form()] = "",
-) -> Response:
-    """Record one operator attestation that the funder sent the renewal notice.
-
-    The merchant must exist + be a finalized renewal row with the same
-    ``maturity_date`` as the one the operator is attesting against. The
-    state and statute are derived from the merchant + the lookup table
-    in ``aegis.merchants.renewal_attestations`` — the operator does NOT
-    enter them so the row is consistent with what the calendar surfaced.
-
-    Returns a 303 redirect back to ``/ui/renewals`` with a flash message
-    on success, a 400 on bad input, a 404 on unknown merchant, and a
-    409 when an attestation for the same (merchant, maturity, funder)
-    already exists (see ``RenewalAttestationConflictError`` rationale).
-    """
-    try:
-        merchant = merchants.get(merchant_id)
-    except MerchantNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
-
-    if not merchant.is_renewal:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="merchant is not flagged as a renewal",
-        )
-    if merchant.maturity_date is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="merchant has no maturity_date — set it before attesting",
-        )
-    if merchant.state is None or len(merchant.state) != 2:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="merchant has no state — set it before attesting",
-        )
-
-    # Parse + validate the date inputs. The form supplies maturity_date
-    # back so the route can verify the operator is attesting against the
-    # maturity they saw on the calendar (defensive against a stale form
-    # render after the operator edited the merchant in another tab).
-    try:
-        parsed_maturity = date.fromisoformat(maturity_date_form.strip())
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"invalid maturity_date: {maturity_date_form!r}",
-        ) from exc
-    if parsed_maturity != merchant.maturity_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "submitted maturity_date does not match merchant maturity_date "
-                "— reload the renewal calendar and retry"
-            ),
-        )
-
-    try:
-        parsed_sent_at = date.fromisoformat(disclosure_sent_at.strip())
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"invalid disclosure_sent_at: {disclosure_sent_at!r}",
-        ) from exc
-
-    cleaned_funder = funder_name.strip()
-    if not cleaned_funder:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="funder_name must not be empty",
-        )
-    if len(cleaned_funder) > 255:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="funder_name exceeds 255 characters",
-        )
-
-    cleaned_notes = notes.strip()
-    if len(cleaned_notes) > _RENEWAL_ATTESTATION_NOTES_MAX_LEN:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"notes exceeds {_RENEWAL_ATTESTATION_NOTES_MAX_LEN} characters"
-            ),
-        )
-
-    try:
-        record_renewal_attestation(
-            attestations,
-            audit,
-            merchant_id=merchant.id,
-            funder_name=cleaned_funder,
-            maturity_date=merchant.maturity_date,
-            disclosure_sent_at=parsed_sent_at,
-            attested_by=actor_email or "dashboard",
-            state=merchant.state,
-            actor_email=actor_email,
-            notes=cleaned_notes or None,
-        )
-    except RenewalAttestationConflictError as exc:
-        # 409: duplicate attestation. The operator sees the conflict
-        # message in the rendered HTTPException response; the row is
-        # NOT written and no audit entry is recorded.
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
-    except RenewalAttestationWriteError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-
-    flash_msg = (
-        f"Recorded {cleaned_funder} attestation for {parsed_sent_at.isoformat()}."
-    )
-    return RedirectResponse(
-        url=f"/ui/renewals?flash={urllib.parse.quote(flash_msg)}",
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
-
-
-# ---------------------------------------------------------------------------
-# /portfolio — operator analytics over the deal pipeline (M11 / U11)
-#
-# Read-only aggregations across merchants, documents, audit_log, and
-# funder_replies. The math lives in
-# ``aegis.deals.portfolio_analytics.compute_portfolio_metrics``; this
-# handler is the I/O layer that pulls the rows in the requested date
-# window and hands them to the pure aggregator.
-#
-# Auth: same Cloudflare-Access posture as every other ``/ui/...`` route —
-# no bearer required; the SSO gate sits in front of the app in prod and
-# is bypassed on localhost dev.
-#
-# PII: business_name renders in the per-deal recent-activity table per
-# the existing dashboard pattern (merchants table shows business names
-# today). It is NEVER written to a query-string or audit row from this
-# route — the route reads only.
-# ---------------------------------------------------------------------------
-
-
-def _fetch_portfolio_data(
-    audit: AuditLog,
-    snapshot: DecisionSnapshot,
-    date_range: DateRange,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return ``(audit_rows, funder_reply_rows, decision_rows)`` for the window.
-
-    Two paths:
-
-      * Supabase-backed audit log → issue a ranged ``audit_log`` query,
-        a ``funder_replies`` query, and a ``decisions`` query, all
-        bounded to the window.
-      * In-memory audit log (tests / dev) → read ``audit.entries``
-        directly and ``InMemoryDecisionSnapshot.rows()`` for the
-        snapshot. The in-memory FunderReplyRepository tracks rows on
-        the same object, so the caller passes them via dependency
-        override when the test needs replies. Fall back to ``[]``
-        when not available.
-
-    The split keeps the analytics layer pure (it takes rows, not repos)
-    and gives tests one focused point to inject fixture data.
-    """
-    audit_rows: list[dict[str, Any]] = []
-    reply_rows: list[dict[str, Any]] = []
-    decision_rows: list[dict[str, Any]] = []
-
-    if hasattr(audit, "entries"):
-        # In-memory branch — duck-typed at ``InMemoryAuditLog.entries``.
-        entries: list[dict[str, Any]] = getattr(audit, "entries", [])
-        # InMemoryAuditLog doesn't stamp created_at, so the window
-        # filter is a no-op there. Tests supplying explicit timestamps
-        # are honored via the filter below.
-        for r in entries:
-            ts = r.get("created_at")
-            if ts is None:
-                audit_rows.append(r)
-                continue
-            row_date = _coerce_audit_date(ts)
-            if row_date is None:
-                audit_rows.append(r)
-            elif date_range.from_date <= row_date <= date_range.to_date:
-                audit_rows.append(r)
-        if isinstance(snapshot, InMemoryDecisionSnapshot):
-            for r in snapshot.rows():
-                ts = r.get("decided_at")
-                if ts is None:
-                    decision_rows.append(r)
-                    continue
-                row_date = _coerce_audit_date(ts)
-                if row_date is None:
-                    decision_rows.append(r)
-                elif date_range.from_date <= row_date <= date_range.to_date:
-                    decision_rows.append(r)
-    else:
-        # Supabase branch — issue the ranged query directly. The route
-        # already imports get_supabase via aegis.audit; importing here
-        # would create a circular path. Use a late local import.
-        try:
-            from aegis.db import get_supabase
-
-            from_iso = date_range.from_date.isoformat()
-            to_iso = date_range.to_date.isoformat()
-            audit_result = (
-                get_supabase()
-                .table("audit_log")
-                .select("*")
-                .gte("created_at", from_iso)
-                .lte("created_at", to_iso + "T23:59:59Z")
-                .order("created_at", desc=True)
-                .limit(5000)
-                .execute()
-            )
-            audit_rows = cast(list[dict[str, Any]], audit_result.data or [])
-            reply_result = (
-                get_supabase()
-                .table("funder_replies")
-                .select("funder_id,deal_id,status,received_at")
-                .gte("received_at", from_iso)
-                .lte("received_at", to_iso + "T23:59:59Z")
-                .limit(5000)
-                .execute()
-            )
-            reply_rows = cast(list[dict[str, Any]], reply_result.data or [])
-            decisions_result = (
-                get_supabase()
-                .table("decisions")
-                .select(
-                    "id,deal_id,decided_at,decision,state_code,"
-                    "score,score_factors"
-                )
-                .gte("decided_at", from_iso)
-                .lte("decided_at", to_iso + "T23:59:59Z")
-                .order("decided_at", desc=True)
-                .limit(5000)
-                .execute()
-            )
-            decision_rows = cast(list[dict[str, Any]], decisions_result.data or [])
-        except Exception:
-            # Treat data fetch failure as an empty window rather than
-            # 500-ing the page. The operator sees the empty state and
-            # the structured log captures the failure for ops.
-            from aegis.logger import get_logger
-
-            get_logger(__name__).warning("portfolio.fetch_failed window=%s..%s",
-                date_range.from_date, date_range.to_date)
-            audit_rows = []
-            reply_rows = []
-            decision_rows = []
-
-    return audit_rows, reply_rows, decision_rows
-
-
-def _coerce_audit_date(value: object) -> date | None:
-    """Pull a ``date`` out of an audit row's ``created_at``."""
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
-        except ValueError:
-            return None
-    return None
-
-
-@router.get("/portfolio", response_class=HTMLResponse)
-async def portfolio_view(
-    request: Request,
-    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-    funders_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
-    docs_repo: Annotated[DocumentRepository, Depends(get_repository)],
-    audit: Annotated[AuditLog, Depends(get_audit)],
-    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
-    render_events_repo: Annotated[
-        DisclosureRenderEventRepository,
-        Depends(get_disclosure_render_event_repository),
-    ],
-    submissions_repo: Annotated[
-        SubmissionRepository, Depends(get_submission_repository)
-    ],
-    from_: Annotated[
-        str | None,
-        Query(
-            alias="from",
-            description=(
-                "Window start (YYYY-MM-DD). Defaults to today minus 30 days."
-            ),
-        ),
-    ] = None,
-    to: Annotated[
-        str | None,
-        Query(
-            description=(
-                "Window end (YYYY-MM-DD). Defaults to today."
-            ),
-        ),
-    ] = None,
-) -> HTMLResponse:
-    """Portfolio analytics — pipeline funnel + funder approval rates +
-    decisions by tier / state + recent activity + fraud catch rate.
-
-    Date range:
-
-      * ``?from=YYYY-MM-DD&to=YYYY-MM-DD`` narrows the window.
-      * Default: last 30 days.
-      * Window > 365 days is silently clamped to 365 (the operator's
-        actual rendered window is shown in the page header so the cap
-        is visible, never silent).
-
-    Malformed dates → 400 with the parse error in the response body.
-    """
-    try:
-        date_range = resolve_date_range(from_, to)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"invalid date range: {exc}",
-        ) from exc
-
-    merchants_list = merchants_repo.list_all()
-    funders_list = funders_repo.list_active()
-    # Use a generous document limit so a busy month doesn't truncate
-    # the fraud-catch denominator. The in-memory backend caps at the
-    # explicit limit; the supabase backend honors the same.
-    documents_list = docs_repo.list_documents(limit=5000)
-
-    audit_rows, reply_rows, decision_rows = _fetch_portfolio_data(
-        audit, snapshot, date_range
-    )
-
-    # Render-event records for the disclosure_render_queue tile (U21).
-    # Defensive try/except — a repo whose backend is unreachable should
-    # render the tile as a zero state rather than 500 the whole page.
-    try:
-        render_event_records = render_events_repo.list_in_window(
-            from_date=date_range.from_date,
-            to_date=date_range.to_date,
-        )
-    except Exception:
-        from aegis.logger import get_logger
-
-        get_logger(__name__).warning(
-            "portfolio.render_events_fetch_failed window=%s..%s",
-            date_range.from_date,
-            date_range.to_date,
-        )
-        render_event_records = []
-
-    # U20: durable submissions table replaces the audit_log fallback for
-    # per-funder submission counts. Same defensive try/except — table
-    # outage should render the funder approval panel empty rather than
-    # 500 the whole page.
-    try:
-        submissions_records = submissions_repo.list_in_window(
-            from_date=date_range.from_date,
-            to_date=date_range.to_date,
-        )
-    except Exception:
-        from aegis.logger import get_logger
-
-        get_logger(__name__).warning(
-            "portfolio.submissions_fetch_failed window=%s..%s",
-            date_range.from_date,
-            date_range.to_date,
-        )
-        submissions_records = []
-
-    metrics = compute_portfolio_metrics(
-        merchants=merchants_list,
-        funders=funders_list,
-        documents=documents_list,
-        funder_reply_rows=reply_rows,
-        audit_rows=audit_rows,
-        date_range=date_range,
-        decision_rows=decision_rows,
-        submissions=submissions_records,
-        render_events=render_event_records,
-    )
-
-    return cast(
-        "HTMLResponse",
-        templates.TemplateResponse(
-            request,
-            "portfolio.html.j2",
-            {
-                "active": "Portfolio",
-                "metrics": metrics,
-                "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
-            },
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# /disclosure-events — operator triage page for disclosure_render_events
-# (U21, persistence in migration 042 / U16).
-#
-# Read-only — render events are diagnostic only. The operator cannot
-# "resolve" a row in place; once the deal renders cleanly next time, a
-# new ``ok`` event is recorded alongside the failing one. This page is
-# the surface that operationalizes the persistence shipped in U16.
-#
-# Per .claude/rules/compliance.md SCOPE NOTE: these are AEGIS internal
-# pre-flight records. The funder owns regulator-facing disclosure
-# issuance — the page banner makes that explicit so the operator does
-# not mis-read an ``apr_compute_failed`` as a regulator-side incident.
-# ---------------------------------------------------------------------------
-
-
-_DISCLOSURE_EVENTS_DEFAULT_WINDOW_DAYS: Final[int] = 14
-_DISCLOSURE_EVENTS_MAX_WINDOW_DAYS: Final[int] = 365
-_DISCLOSURE_EVENTS_LIMIT: Final[int] = 500
-
-# Status filter values surfaced in the dropdown. The empty string
-# represents "all statuses" (a route-level convention — the repo's
-# list_in_window accepts ``status=None``).
-_DISCLOSURE_EVENTS_STATUS_OPTIONS: Final[tuple[tuple[str, str], ...]] = (
-    (RENDER_EVENT_STATUS_NEEDS_REVIEW, "needs_review"),
-    (RENDER_EVENT_STATUS_APR_FAILED, "apr_compute_failed"),
-    (RENDER_EVENT_STATUS_OK, "ok"),
-    ("", "all"),
-)
-
-
-def _resolve_disclosure_events_window(
-    from_str: str | None,
-    to_str: str | None,
-) -> tuple[date, date]:
-    """Parse ``?from=&to=``. Defaults to last 14 days. Clamps to 365.
-
-    Raises ``ValueError`` on malformed input — the route turns the
-    failure into a 400 with the parser message.
-    """
-    from datetime import timedelta as _timedelta
-
-    today = datetime.now(UTC).date()
-    parsed_to = (
-        datetime.fromisoformat(to_str.strip()).date() if to_str else today
-    )
-    parsed_from = (
-        datetime.fromisoformat(from_str.strip()).date()
-        if from_str
-        else parsed_to
-        - _timedelta(days=_DISCLOSURE_EVENTS_DEFAULT_WINDOW_DAYS)
-    )
-    if parsed_to < parsed_from:
-        raise ValueError(
-            f"to_date {parsed_to.isoformat()} is earlier than from_date "
-            f"{parsed_from.isoformat()}"
-        )
-    span = (parsed_to - parsed_from).days
-    if span > _DISCLOSURE_EVENTS_MAX_WINDOW_DAYS:
-        parsed_from = parsed_to - _timedelta(
-            days=_DISCLOSURE_EVENTS_MAX_WINDOW_DAYS
-        )
-    return parsed_from, parsed_to
-
-
-@router.get("/disclosure-events", response_class=HTMLResponse)
-async def disclosure_events_view(
-    request: Request,
-    render_events_repo: Annotated[
-        DisclosureRenderEventRepository,
-        Depends(get_disclosure_render_event_repository),
-    ],
-    status_param: Annotated[
-        str,
-        Query(
-            alias="status",
-            description=(
-                "Filter by render-event status. One of ``needs_review`` / "
-                "``apr_compute_failed`` / ``ok`` / ``all`` (empty string). "
-                "Default: ``needs_review`` so the triage queue is the "
-                "first thing the operator sees."
-            ),
-        ),
-    ] = RENDER_EVENT_STATUS_NEEDS_REVIEW,
-    from_: Annotated[
-        str | None,
-        Query(
-            alias="from",
-            description=(
-                "Window start (YYYY-MM-DD). Defaults to today minus 14 days."
-            ),
-        ),
-    ] = None,
-    to: Annotated[
-        str | None,
-        Query(
-            description=("Window end (YYYY-MM-DD). Defaults to today."),
-        ),
-    ] = None,
-) -> HTMLResponse:
-    """Render-event triage page.
-
-    Default view: ``status=needs_review`` over the last 14 days. The
-    table mirrors the renewals.html.j2 idiom — one row per event with
-    a "View details →" link to the per-event subroute.
-    """
-    try:
-        from_date, to_date = _resolve_disclosure_events_window(from_, to)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"invalid date range: {exc}",
-        ) from exc
-
-    # Empty string → "all" filter; validate any non-empty value lands in
-    # the known set so a bad query param surfaces as 400 rather than a
-    # silent empty page.
-    allowed = {opt[0] for opt in _DISCLOSURE_EVENTS_STATUS_OPTIONS}
-    if status_param not in allowed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"invalid status {status_param!r}; expected one of "
-                f"{sorted(allowed)!r}"
-            ),
-        )
-    effective_status: str | None = status_param if status_param else None
-
-    try:
-        rows = render_events_repo.list_in_window(
-            from_date=from_date,
-            to_date=to_date,
-            status=effective_status,
-            limit=_DISCLOSURE_EVENTS_LIMIT,
-        )
-    except Exception:
-        from aegis.logger import get_logger
-
-        get_logger(__name__).warning(
-            "disclosure_events.fetch_failed window=%s..%s status=%s",
-            from_date,
-            to_date,
-            status_param,
-        )
-        rows = []
-
-    status_options = [
-        {"value": value, "label": label}
-        for value, label in _DISCLOSURE_EVENTS_STATUS_OPTIONS
-    ]
-
-    return cast(
-        "HTMLResponse",
-        templates.TemplateResponse(
-            request,
-            "disclosure_events.html.j2",
-            {
-                "active": "DisclosureEvents",
-                "rows": rows,
-                "status": status_param,
-                "from_date": from_date,
-                "to_date": to_date,
-                "status_options": status_options,
-                "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
-            },
-        ),
-    )
-
-
-@router.get("/disclosure-events/{event_id}", response_class=HTMLResponse)
-async def disclosure_event_detail(
-    request: Request,
-    event_id: UUID,
-    render_events_repo: Annotated[
-        DisclosureRenderEventRepository,
-        Depends(get_disclosure_render_event_repository),
-    ],
-) -> HTMLResponse:
-    """Detail subroute — every column on one render event.
-
-    Read-only. Render events have no triage state machine (the next
-    clean APR converge produces a new ``ok`` row rather than mutating
-    the failing one), so this page does not surface any forms.
-    """
-    import json as _json
-
-    record = render_events_repo.get(event_id)
-    if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"no render event with id={event_id}",
-        )
-
-    details_json = (
-        _json.dumps(record.details, indent=2, default=str)
-        if record.details is not None
-        else "(none)"
-    )
-    metadata_json = (
-        _json.dumps(record.metadata, indent=2, default=str)
-        if record.metadata is not None
-        else "(none)"
-    )
-
-    return cast(
-        "HTMLResponse",
-        templates.TemplateResponse(
-            request,
-            "disclosure_event_detail.html.j2",
-            {
-                "active": "DisclosureEvents",
-                "record": record,
-                "details_json": details_json,
-                "metadata_json": metadata_json,
-                "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
-            },
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# /triage — aggregate operator triage backlog (U24).
-#
-# Three KPI tiles surfacing the open queues the operator used to navigate
-# to individually:
-#
-#   * Scoring disagreements (U4) — links to scripts/triage_disagreement.py
-#     instructions (no /ui/scoring-disagreements page exists yet).
-#   * Disclosure render events (U21) — links to /ui/disclosure-events.
-#   * Shadow signals (U22) — links to /ui/shadow-signals (this same change).
-#
-# Read-only — the page never writes. Operator triage actions happen on
-# the linked-out queues, not here.
-# ---------------------------------------------------------------------------
-
-
-@router.get("/triage", response_class=HTMLResponse)
-async def triage_view(
-    request: Request,
-    disagreements_repo: Annotated[
-        ScoringDisagreementRepository,
-        Depends(get_scoring_disagreement_repository),
-    ],
-    render_events_repo: Annotated[
-        DisclosureRenderEventRepository,
-        Depends(get_disclosure_render_event_repository),
-    ],
-    shadow_signals_repo: Annotated[
-        MerchantShadowSignalRepository,
-        Depends(get_merchant_shadow_signal_repository),
-    ],
-    days: Annotated[
-        int | None,
-        Query(
-            description=(
-                "Window length in days for render-events + shadow-signals "
-                "tallies. Default 30, max 365. Scoring disagreements are "
-                "filtered by ``triaged_at IS NULL`` only — they do not "
-                "honor this window because the corpus run cadence is "
-                "independent of the calendar window."
-            ),
-            ge=1,
-            le=MAX_TRIAGE_WINDOW_DAYS,
-        ),
-    ] = None,
-) -> HTMLResponse:
-    """Operator triage backlog — three KPI tiles + deep-links.
-
-    Each tile shows the queue count + a breakdown + a "Triage →" link
-    to the surface where the operator resolves the rows. Empty backlog
-    renders a single "no triage pending" banner.
-    """
-    window = resolve_triage_window(days)
-    backlog = compute_triage_backlog(
-        disagreements_repo=disagreements_repo,
-        render_events_repo=render_events_repo,
-        shadow_signals_repo=shadow_signals_repo,
-        window=window,
-    )
-    return cast(
-        "HTMLResponse",
-        templates.TemplateResponse(
-            request,
-            "triage.html.j2",
-            {
-                "active": "Triage",
-                "backlog": backlog,
-                "window_days": window.days,
-                "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
-            },
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# /shadow-signals — cross-merchant global shadow-signal view (U24).
-#
-# Drives the operator's "what fired last week across all merchants?"
-# question. Filter form supports code / merchant / days narrowing; the
-# per-merchant dossier remains the place to see one merchant's full
-# signal history.
-# ---------------------------------------------------------------------------
-
-
-_SHADOW_SIGNALS_DEFAULT_WINDOW_DAYS: Final[int] = 30
-_SHADOW_SIGNALS_LIMIT: Final[int] = 500
-
-
-@router.get("/shadow-signals", response_class=HTMLResponse)
-async def shadow_signals_view(
-    request: Request,
-    shadow_signals_repo: Annotated[
-        MerchantShadowSignalRepository,
-        Depends(get_merchant_shadow_signal_repository),
-    ],
-    code: Annotated[
-        str | None,
-        Query(
-            description=(
-                "Optional ``signal_code`` filter. Matches literal-equal. "
-                "Empty / None → all codes."
-            ),
-        ),
-    ] = None,
-    merchant: Annotated[
-        str | None,
-        Query(
-            description=(
-                "Optional ``merchant_id`` (UUID) filter. Empty / None → "
-                "all merchants. Malformed UUID surfaces as 400."
-            ),
-        ),
-    ] = None,
-    days: Annotated[
-        int | None,
-        Query(
-            description=(
-                "Window length in days. Default 30, max 365."
-            ),
-            ge=1,
-            le=MAX_TRIAGE_WINDOW_DAYS,
-        ),
-    ] = None,
-) -> HTMLResponse:
-    """Cross-merchant shadow-signal view.
-
-    Default window: last 30 days, no filters → every signal across
-    every merchant. Filters apply server-side on the Supabase backend
-    via ``list_in_window``.
-    """
-    effective_days = days if days is not None else _SHADOW_SIGNALS_DEFAULT_WINDOW_DAYS
-    window = resolve_triage_window(effective_days)
-
-    # Trim whitespace + treat empty strings as "no filter".
-    cleaned_code: str | None = code.strip() if code else None
-    if cleaned_code == "":
-        cleaned_code = None
-
-    cleaned_merchant_raw = merchant.strip() if merchant else None
-    if cleaned_merchant_raw == "":
-        cleaned_merchant_raw = None
-    merchant_uuid: UUID | None = None
-    if cleaned_merchant_raw is not None:
-        try:
-            merchant_uuid = UUID(cleaned_merchant_raw)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"invalid merchant_id {cleaned_merchant_raw!r}: {exc}",
-            ) from exc
-
-    try:
-        rows = shadow_signals_repo.list_in_window(
-            from_date=window.from_date,
-            to_date=window.to_date,
-            signal_code=cleaned_code,
-            merchant_id=merchant_uuid,
-            limit=_SHADOW_SIGNALS_LIMIT,
-        )
-    except Exception:
-        from aegis.logger import get_logger
-
-        get_logger(__name__).warning(
-            "shadow_signals.fetch_failed window=%s..%s code=%s merchant=%s",
-            window.from_date,
-            window.to_date,
-            cleaned_code,
-            merchant_uuid,
-        )
-        rows = []
-
-    # Build a (record, humanized) pairing so the template can render the
-    # U18 title without coupling the template to the humanizer import.
-    humanized_rows = [
-        {
-            "record": r,
-            "humanized": humanize_flag(
-                f"{r.signal_code}:{r.detail}" if r.detail else r.signal_code
-            ),
-        }
-        for r in rows
-    ]
-
-    return cast(
-        "HTMLResponse",
-        templates.TemplateResponse(
-            request,
-            "shadow_signals.html.j2",
-            {
-                "active": "Triage",
-                "rows": humanized_rows,
-                "from_date": window.from_date,
-                "to_date": window.to_date,
-                "window_days": window.days,
-                "filter_code": cleaned_code or "",
-                "filter_merchant": cleaned_merchant_raw or "",
-                "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
-            },
-        ),
-    )
-
-
-__all__ = ["router"]
+# /decisions/{decision_id}/override + /compliance/obligations moved to
+# aegis.web.routers.compliance during R4.1. Aggregator include_router
+# wires both back into this router at the top of the file.
+
+
+# /renewals, /portfolio, /disclosure-events, /triage, /shadow-signals
+# moved to aegis.web.routers.{renewals,portfolio,disclosure_events,triage}
+# during R4.1. Aggregator include_router wires them in at the top of the file.
+
+
+# R4.1 — re-exports required for `from aegis.web.router import X` callers
+# in tests + other modules. Keep aligned with the imports at the top of
+# the file (templates from _templates; _classify_close_pipeline_state
+# from routers.close_queue).
+__all__ = [
+    "_classify_close_pipeline_state",
+    "router",
+    "templates",
+]
