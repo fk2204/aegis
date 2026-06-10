@@ -418,6 +418,20 @@ MIGRATION_PROBES: dict[str, str] = {
         "(SELECT 1 FROM funders WHERE name IN "
         "('Logic Advance Group', 'Swiftsource Funding'))"
     ),
+    "051_highland_hill_tiers.sql": (
+        # 051 writes the 5-rate ladder onto Highland Hill Capital's
+        # tiers JSONB (manual §7). Probe is the presence of at least one
+        # tier; mirrors the 049 probe pattern.
+        "SELECT 1 FROM funders WHERE name='Highland Hill Capital' "
+        "AND jsonb_array_length(tiers) > 0"
+    ),
+    "052_shor_notes_enrichment.sql": (
+        # 052 enriches Shor Capital's notes_residual with operator-
+        # curated §5 context. Probe is any non-empty notes_residual on
+        # the row — migration 046 left this field as ''.
+        "SELECT 1 FROM funders WHERE name='Shor Capital' "
+        "AND length(notes_residual) > 0"
+    ),
 }
 
 
