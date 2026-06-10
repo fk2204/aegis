@@ -1,5 +1,7 @@
 # AEGIS
 
+[![test](https://github.com/fk2204/aegis/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/fk2204/aegis/actions/workflows/test.yml)
+
 MCA underwriting brain for Commera Capital. Parses bank statements,
 scores deals, generates state-compliant disclosures, syncs with Close.
 
