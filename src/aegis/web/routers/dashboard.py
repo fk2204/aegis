@@ -13,12 +13,9 @@ _build_attention_groups`` / ``_build_review_queue_cards`` /
 
 The tier-lookup chain (``_compute_merchant_tier`` → multi-month scoring
 → ``_collect_analyzed_for_merchant``) lives here too. The collect
-helper itself still lives in ``router.py`` because ~9 still-resident
-routes (merchants/{id}, submit, funder-response, dossier.pdf) reference
-it and pulling it out would also require pulling the bundling helpers
-(``_select_default_bundle`` / ``_filter_to_bundle`` / ``BundleKey``).
-``_compute_merchant_tier`` lazy-imports it to avoid the obvious cycle
-(``router.py`` imports this module at the top).
+helper + bundling helpers moved to ``aegis.web._router_helpers`` during
+R4.1 finish-part-4 (the merchants split), so the lazy back-import the
+cycle previously required is no longer needed.
 """
 
 from __future__ import annotations
@@ -385,11 +382,10 @@ def _compute_merchant_tier(
     # "not enough data yet" in the existing renderers.
     if not merchant.is_finalized:
         return None
-    # Lazy import — _collect_analyzed_for_merchant lives in
-    # aegis.web.router (still used by ~9 routes there + by the bundling
-    # helpers). router.py imports this module at the top, so an eager
-    # import the other direction is a cycle.
-    from aegis.web.router import _collect_analyzed_for_merchant
+    # Direct import — _collect_analyzed_for_merchant lifted to
+    # _router_helpers during R4.1 finish-part-4 (the merchants split).
+    # No cycle: _router_helpers does not import any sub-router.
+    from aegis.web._router_helpers import _collect_analyzed_for_merchant
 
     try:
         items = _collect_analyzed_for_merchant(docs, merchant.id, bundle=None)

@@ -242,7 +242,10 @@ def build_merchant_findings(
         and latest_analysis is not None
         and merchant.is_finalized
     ):
-        from aegis.web.router import _score_input_from_dashboard
+        # Lifted to _router_helpers during R4.1 finish-part-4 (merchants
+        # split). Local import keeps the import graph thin — findings.py
+        # is imported by aegis.api.routes.__init__ before the web layer.
+        from aegis.web._router_helpers import _score_input_from_dashboard
 
         try:
             score_result = score_deal(
