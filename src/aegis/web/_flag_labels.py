@@ -1256,7 +1256,7 @@ _FLAG_REGISTRY: Final[dict[str, _FlagSpec]] = {
         "Scoring engine", "shadow", "context", _fmt_scoring_engine_active,
         description=(
             "Records which scoring engine produced this result. "
-            "'legacy' uses the blended fraud_score >= 70 hard-decline "
+            "'legacy' uses the blended fraud_score >= 65 hard-decline "
             "rule; 'track_abc' makes fraud_score informational and "
             "moves the decline path to Track A (document integrity) + "
             "Track B (business risk). Flip via AEGIS_SCORING_ENGINE in "

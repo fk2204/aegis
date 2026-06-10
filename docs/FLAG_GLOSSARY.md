@@ -414,7 +414,7 @@ The active engine is read from `settings.aegis_scoring_engine` (env var `AEGIS_S
 
 ### `scoring_engine_active:legacy` / `scoring_engine_active:track_abc` — shadow (always emitted)
 
-- **Records which scoring engine fired.** Every scoring pass appends this flag. `legacy` uses the existing `fraud_score >= 70` hard-decline rule; `track_abc` makes `fraud_score` informational and moves the decline path to Track A (integrity verdict) + Track B (business-risk band).
+- **Records which scoring engine fired.** Every scoring pass appends this flag. `legacy` uses the existing `fraud_score >= 65` hard-decline rule (audit §A.2 fix — aligned with parser `HARD_DECLINE_THRESHOLD`); `track_abc` makes `fraud_score` informational and moves the decline path to Track A (integrity verdict) + Track B (business-risk band).
 - **Operator action:** Read for context — answers "is this deal being judged by the old or new engine?" without grepping config. No action required when it matches the operator's expected posture; investigate if it doesn't (someone flipped the env var on the box).
 - **Source:** `src/aegis/scoring/score.py:_check_hard_declines` (U30, audit B2 Step 2 cutover).
 

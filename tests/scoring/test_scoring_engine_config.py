@@ -1,8 +1,9 @@
 """AEGIS_SCORING_ENGINE env var — Step 2 cutover kill-switch (audit B2).
 
 Audit finding B2: two scoring engines live in production. Legacy
-``fraud_score >= 70`` owns the hard-decline path in
-``aegis.scoring.score`` (see ``FRAUD_SCORE_HARD_DECLINE``). Track A/B/C
+``fraud_score >= 65`` owns the hard-decline path in
+``aegis.scoring.score`` (see ``FRAUD_SCORE_HARD_DECLINE`` — aliased to
+the parser's ``HARD_DECLINE_THRESHOLD`` per audit §A.2 fix). Track A/B/C
 (``aegis.scoring_v2``) run in shadow only — their verdicts surface on
 the dossier panel but no live decision reads them.
 

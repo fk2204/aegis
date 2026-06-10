@@ -243,8 +243,9 @@ def _check_hard_declines(
     docstring + CLAUDE.md "Decision-boundary changes — shadow-first".
 
     ``engine`` selects the active scoring engine per audit finding B2
-    Step 2 cutover. ``"legacy"`` runs the existing fraud_score >= 70
-    rule; ``"track_abc"`` consumes ``track_a_verdict`` + ``track_b_band``
+    Step 2 cutover. ``"legacy"`` runs the existing fraud_score >= 65
+    rule (audit §A.2 fix — aligned with parser ``HARD_DECLINE_THRESHOLD``);
+    ``"track_abc"`` consumes ``track_a_verdict`` + ``track_b_band``
     instead and makes fraud_score informational.
     """
     reasons: list[str] = []

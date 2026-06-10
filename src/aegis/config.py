@@ -171,7 +171,8 @@ class Settings(BaseSettings):
     aegis_tampering_decline_mode: Literal["shadow", "live"] = "shadow"
 
     # Step 2 scoring-engine cutover (audit finding B2). Switches the live
-    # decline path between the legacy ``fraud_score >= 70`` rule and the
+    # decline path between the legacy ``fraud_score >= 65`` rule (audit
+    # §A.2 fix — aligned with parser ``HARD_DECLINE_THRESHOLD``) and the
     # A/B/C tracks (``scoring_v2``) without a code deploy. Per CLAUDE.md
     # "Decision-boundary changes — shadow-first": the flip itself is a
     # config / env var change, not a code deploy. Gated on (a) corpus
@@ -193,7 +194,7 @@ class Settings(BaseSettings):
         default="legacy",
         description=(
             "Active scoring engine. 'legacy' (default) keeps the existing "
-            "fraud_score >= 70 hard-decline path. 'track_abc' flips Step 2 "
+            "fraud_score >= 65 hard-decline path. 'track_abc' flips Step 2 "
             "cutover — Track A integrity verdict + Track B band drive the "
             "live decline path; legacy fraud_score becomes informational. "
             "Set in /etc/aegis/aegis.env after corpus triage clears all "
