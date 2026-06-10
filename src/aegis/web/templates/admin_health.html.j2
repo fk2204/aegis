@@ -1,0 +1,261 @@
+{% extends "base.html.j2" %}
+{% set active = 'Admin' %}
+{% block title %}System health — AEGIS{% endblock %}
+
+{# Operator visibility — system health (U35).
+
+   Read-only "is everything OK?" landing page. Four sections:
+
+     A. Service info       — version, git short sha, python, hostname
+     B. Config flag state  — operator-tunable Settings whitelist; secret
+                             values NEVER render here (the route filters
+                             via _safe_config_name + the PII canary test
+                             enforces no token/secret value reaches HTML)
+     C. Repository counts  — count + last activity per major table
+     D. Recent errors      — last 24h ``*_failed`` / ``error_*`` audit
+                             rows grouped by action
+
+   PII posture
+   -----------
+   Section B renders Settings field NAMES + their non-secret VALUES.
+   The route's _HEALTH_SAFE_CONFIG_FIELDS whitelist + the substring
+   filter at _HEALTH_SECRET_NAME_PATTERNS guarantee no SecretStr field
+   reaches this template. Section D renders only the ``action`` token +
+   count + latest timestamp — never the ``details`` JSONB.
+
+   Surface contract: the route populates ``service_info`` (dict),
+   ``config_flags`` (list of _HealthConfigFlag), ``repo_counts`` (list
+   of _HealthCountRow), ``error_groups`` (list of _HealthErrorGroup),
+   ``error_window_hours`` (int).
+#}
+
+{% block deck %}
+{% set title = "System health" %}
+{% set subtitle = "· operator visibility" %}
+{% set meta %}
+  {{ service_info.aegis_version }} · git {{ service_info.git_short_sha }}
+  · py {{ service_info.python_version }}
+  · {{ service_info.hostname }}
+{% endset %}
+{% set actions = [
+    {"label": "Migrations", "href": "/ui/admin/applied-migrations"},
+    {"label": "Audit log", "href": "/ui/admin/audit-log"},
+    {"label": "Today", "href": "/ui/"},
+] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+
+  {# Operator-context banner. Spells out that this surface is read-only
+     and lists the four sections so a non-AEGIS Commera staff member
+     reading the page understands its scope. #}
+  <div>
+    <div class="empty" role="note" style="margin-bottom:1rem">
+      <strong>Operator visibility — system health.</strong>
+      <span class="copy">
+        Read-only "is everything running?" landing page. Four sections:
+        <code>service info</code>, <code>config flags</code>,
+        <code>repository row counts</code>, and the last
+        {{ error_window_hours }}h of <code>*_failed</code> /
+        <code>error_*</code> audit rows. Secret-bearing config fields
+        (anything matching <code>*_key</code> / <code>*_token</code> /
+        <code>*_secret</code> / <code>*_password</code>) are filtered out
+        of the renderer — they never appear here. Underlying
+        <code>audit_log</code> details JSONB is also never surfaced; only
+        action token + per-action count.
+      </span>
+    </div>
+
+    {# === Section A — service info ====================================== #}
+    <header class="sect-head">
+      <h2>Service info</h2>
+      <div class="rule"></div>
+      <div class="meta">aegis · {{ service_info.aegis_version }}</div>
+    </header>
+    <table class="queue">
+      <thead>
+        <tr><th>Field</th><th>Value</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="sub">AEGIS version</td>
+          <td class="mono-cell">{{ service_info.aegis_version }}</td>
+        </tr>
+        <tr>
+          <td class="sub">Git short sha</td>
+          <td class="mono-cell">{{ service_info.git_short_sha }}</td>
+        </tr>
+        <tr>
+          <td class="sub">Python version</td>
+          <td class="mono-cell">{{ service_info.python_version }}</td>
+        </tr>
+        <tr>
+          <td class="sub">Hostname</td>
+          <td class="mono-cell">{{ service_info.hostname }}</td>
+        </tr>
+        <tr>
+          <td class="sub">Repo URL</td>
+          <td class="mono-cell">{{ service_info.repo_url }}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    {# === Section B — config flag state ================================ #}
+    <header class="sect-head" style="margin-top:1.25rem">
+      <h2>Config flag state</h2>
+      <div class="rule"></div>
+      <div class="meta">
+        {{ config_flags|length }} flag{{ '' if config_flags|length == 1 else 's' }}
+      </div>
+    </header>
+
+    {% if not config_flags %}
+      <div class="empty">
+        No config flags surfaced
+        <span class="copy">
+          The renderer's safe-config whitelist resolved to zero rows. This
+          is unusual on a healthy box — at minimum
+          <code>aegis_data_residency_confirmed</code> should always
+          render. Check the app log for a Settings-import failure.
+        </span>
+      </div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Setting</th>
+            <th>Value</th>
+            <th>Status</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in config_flags %}
+            <tr>
+              <td class="mono-cell">{{ f.name }}</td>
+              <td class="mono-cell">{{ f.value }}</td>
+              <td>
+                {% if f.ok is true %}
+                  <span class="chip pos">OK</span>
+                {% elif f.ok is false %}
+                  <span class="chip bad">PROBLEM</span>
+                {% else %}
+                  <span class="chip info">INFO</span>
+                {% endif %}
+              </td>
+              <td class="sub">{{ f.note or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    {# === Section C — repository row counts ============================ #}
+    <header class="sect-head" style="margin-top:1.25rem">
+      <h2>Repository row counts</h2>
+      <div class="rule"></div>
+      <div class="meta">
+        {{ repo_counts|length }} table{{ '' if repo_counts|length == 1 else 's' }}
+      </div>
+    </header>
+
+    {% if not repo_counts %}
+      <div class="empty">
+        No repository sections rendered
+        <span class="copy">
+          The counts builder produced zero rows — this only happens if
+          the dependency-injected repositories all failed to import.
+          Check the app log for an import-time exception.
+        </span>
+      </div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Table</th>
+            <th>Count</th>
+            <th>Last activity</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in repo_counts %}
+            <tr>
+              <td class="mono-cell">{{ r.label }}</td>
+              <td class="mono-cell">
+                {% if r.count is none %}
+                  —
+                {% else %}
+                  {{ r.count }}
+                {% endif %}
+              </td>
+              <td class="mono-cell">
+                {% if r.last_activity_at %}
+                  {{ r.last_activity_at.strftime('%Y-%m-%d %H:%M UTC') }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td class="sub">{{ r.note or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    {# === Section D — recent errors ==================================== #}
+    <header class="sect-head" style="margin-top:1.25rem">
+      <h2>Recent errors</h2>
+      <div class="rule"></div>
+      <div class="meta">
+        last {{ error_window_hours }}h ·
+        {{ error_groups|length }} action{{ '' if error_groups|length == 1 else 's' }}
+      </div>
+    </header>
+
+    {% if not error_groups %}
+      <div class="empty">
+        No <code>*_failed</code> / <code>error_*</code> audit rows in the
+        last {{ error_window_hours }}h
+        <span class="copy">
+          The audit_log has nothing matching the operator's
+          "something-went-wrong" pattern (action ends in
+          <code>_failed</code> OR starts with <code>error_</code> OR
+          contains <code>.fail</code>) in the current window. This is the
+          healthy state. Drill into all audit rows via
+          <a href="/ui/admin/audit-log">/ui/admin/audit-log</a>.
+        </span>
+      </div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Action</th>
+            <th>Count</th>
+            <th>Latest</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for g in error_groups %}
+            <tr>
+              <td class="mono-cell">{{ g.action }}</td>
+              <td class="mono-cell">{{ g.count }}</td>
+              <td class="mono-cell">
+                {% if g.latest_at %}
+                  {{ g.latest_at.strftime('%Y-%m-%d %H:%M UTC') }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+  </div>
+
+</section>
+{% endblock %}

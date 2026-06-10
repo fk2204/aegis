@@ -22,6 +22,10 @@
              the Triage tile's drill-down). ``Admin`` covers both
              /ui/admin/applied-migrations and /ui/admin/audit-log (the
              audit-log page is reached from the migrations page header).
+             U35 (2026-06-10): the Admin link now lands on
+             /ui/admin/health (the "is everything OK?" status page);
+             migrations + audit-log are reachable via the health page's
+             header actions row.
     now    — display string for the right-hand view-toggle span. Same
              default convention as base.html.j2 (falls back to '').
 #}
@@ -39,7 +43,7 @@
     <a href="/ui/portfolio" {% if _active == 'Portfolio' %}class="is-active"{% endif %}>Portfolio</a>
     <a href="/ui/disclosure-events" {% if _active == 'DisclosureEvents' %}class="is-active"{% endif %}>Disclosure events</a>
     <a href="/ui/triage" {% if _active == 'Triage' %}class="is-active"{% endif %}>Triage</a>
-    <a href="/ui/admin/applied-migrations" {% if _active == 'Admin' %}class="is-active"{% endif %}>Admin</a>
+    <a href="/ui/admin/health" {% if _active == 'Admin' %}class="is-active"{% endif %}>Admin</a>
   </div>
   <div class="view-toggle">
     <span style="color:var(--sage)">aegis · {{ now|default('') }}</span>
