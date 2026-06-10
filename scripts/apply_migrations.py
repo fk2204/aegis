@@ -380,6 +380,14 @@ MIGRATION_PROBES: dict[str, str] = {
         # presence implies the migration's INSERT block executed.
         "SELECT 1 FROM funders WHERE name='Logic Advance'"
     ),
+    "047_seed_brokers_from_manual.sql": (
+        # 047 inserts the 3 broker/affiliate/marketplace funders (§8
+        # Splash Advance, §9 Big Think Capital, §10 Bizi Connect). The
+        # SQL contains all 9 funders for idempotency, but ON CONFLICT
+        # makes the 6 direct rows no-op when 046 has already landed.
+        # 'Splash Advance' is the §8 anchor row.
+        "SELECT 1 FROM funders WHERE name='Splash Advance'"
+    ),
 }
 
 

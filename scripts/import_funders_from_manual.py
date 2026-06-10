@@ -354,10 +354,27 @@ _FOLDER_NAMES: dict[int, str] = {
     5: "Shor capital",
     6: "UCS",
     7: "Highland capital",
+    8: "Splash advance",
+    9: "Big think capital",
+    10: "Bizi connect",
 }
 
-# Direct funders (skip §8/§9/§10 — brokers/affiliates/marketplace)
+# Direct funders publish underwriting boxes (Quick Reference rows have
+# real criteria). Brokers/affiliates/marketplace funders (§8/§9/§10) do
+# NOT — their rows show "Per funder", "Not published", "N/A". We still
+# track them in the funders table for operator visibility + commission
+# tracking, with criteria fields left NULL and notes_residual capturing
+# their model (broker / affiliate / marketplace).
 _DIRECT_FUNDER_SECTIONS = {2, 3, 4, 5, 6, 7}
+_BROKER_FUNDER_SECTIONS = {8, 9, 10}
+_ALL_FUNDER_SECTIONS = _DIRECT_FUNDER_SECTIONS | _BROKER_FUNDER_SECTIONS
+
+# Per-section model classification (lands in notes_residual prefix).
+_FUNDER_MODEL: dict[int, str] = {
+    8: "BROKER / AGGREGATOR",
+    9: "AFFILIATE PARTNER",
+    10: "LOAN MARKETPLACE",
+}
 
 # Canonical funder name per section (the manual sometimes uses
 # abbreviations vs full names; we standardize on the full form).
@@ -368,6 +385,9 @@ _CANONICAL_NAME: dict[int, str] = {
     5: "Shor Capital",
     6: "United Capital Source",
     7: "Highland Hill Capital",
+    8: "Splash Advance",
+    9: "Big Think Capital",
+    10: "Bizi Connect",
 }
 
 
@@ -380,12 +400,77 @@ def _extract_phone(text: str) -> str | None:
     return m.group(0).strip() if m else None
 
 
+def _build_broker_preview(
+    section_num: int,
+    section_lines: list[str],
+) -> FunderPreview:
+    """Brokers / affiliates / marketplaces (§8/§9/§10) don't publish an
+    underwriting box. Capture model + entity + contact + commission/
+    clawback summary in notes_residual; leave criteria fields NULL so
+    the matcher won't false-positive route deals to them. Operator
+    flips active=false in /ui/funders/{id} if they should be excluded
+    from match results entirely."""
+    name = _CANONICAL_NAME[section_num]
+    model = _FUNDER_MODEL[section_num]
+    p = FunderPreview(name=name, section_number=section_num)
+
+    section_text = "\n".join(section_lines)
+    emails = _extract_emails(section_text)
+    phone = _extract_phone(section_text)
+
+    # Submission email — first email near a "Submissions" / "Contact" line
+    for line in section_lines[:8]:
+        ll = line.lower()
+        found = _extract_emails(line)
+        if found and ("submission" in ll or "contact" in ll):
+            if "submission" in ll:
+                p.submission_email = found[0]
+            elif "contact" in ll:
+                p.contact_email = found[0]
+    if not p.submission_email and not p.contact_email and emails:
+        p.contact_email = emails[0]
+    if phone:
+        p.contact_phone = phone
+
+    # Contact name: the manual uses "Contact: Name, Title — email" or
+    # "Entity: ... — Name, Title" patterns. Capture first plausible name.
+    for line in section_lines[:6]:
+        m = re.search(r"(?:Contact:|Entity:.*—|Co-Founder)\s+([A-Z][a-z]+\s+[A-Z][a-z]+)", line)
+        if m:
+            p.contact_name = m.group(1)
+            break
+
+    # notes_residual: model prefix + the first "How to Treat" line +
+    # commission + clawback summary if present in the section.
+    summary_bits = [f"{model} — not a direct-underwriting funder."]
+    for line in section_lines:
+        ll = line.lower()
+        if ll.startswith("commission:"):
+            summary_bits.append(line[:200].rstrip("."))
+        elif ll.startswith("clawback:"):
+            summary_bits.append(line[:200].rstrip("."))
+        elif "no published box" in ll or "loan marketplace" in ll:
+            summary_bits.append(line[:200].rstrip("."))
+    p.notes_residual = " | ".join(summary_bits)
+
+    # Criteria fields stay NULL — operator review surfaces this:
+    p.needs_operator_review = [
+        f"{model.lower()} — no published underwriting box; "
+        "decide active flag + populate criteria via /ui/funders/{id} if you "
+        "want match-list inclusion.",
+    ]
+    return p
+
+
 def _build_preview(
     section_num: int,
     section_lines: list[str],
     qref: dict[str, str],
 ) -> FunderPreview:
     """Combine Quick Reference fields with section-detail enrichment."""
+    if section_num in _BROKER_FUNDER_SECTIONS:
+        return _build_broker_preview(section_num, section_lines)
+
     name = _CANONICAL_NAME[section_num]
     p = FunderPreview(name=name, section_number=section_num)
 
@@ -583,7 +668,7 @@ def parse_manual(docx_path: Path) -> list[FunderPreview]:
     qref = _parse_quick_reference(lines)
     previews: list[FunderPreview] = []
     for i, (start_idx, sect_num, _title) in enumerate(sections):
-        if sect_num not in _DIRECT_FUNDER_SECTIONS:
+        if sect_num not in _ALL_FUNDER_SECTIONS:
             continue
         end_idx = sections[i + 1][0] if i + 1 < len(sections) else len(lines)
         section_lines = lines[start_idx:end_idx]
@@ -632,14 +717,24 @@ _MIGRATION_HEADER = """-- Seed funders from Filip's internal MCA Funder Manual.
 -- supersedes migration 035's placeholder seed which was deleted by
 -- migration 045).
 --
--- §8 Splash Advance (broker/aggregator), §9 Big Think Capital (35%
--- affiliate split), §10 Bizi Connect (loan marketplace) are excluded —
--- per the manual itself, those three "do not publish underwriting
--- boxes" and are not direct funders.
+-- Contains all 9 funders from the manual:
+--   §2-§7 Direct funders with published underwriting boxes — full
+--          criteria (TIB / monthly revenue / FICO / max advance /
+--          positions / factor range) populated.
+--   §8-§10 Brokers / affiliates / marketplace — no published box;
+--          criteria fields NULL, notes_residual prefixed with the
+--          model (BROKER / AFFILIATE PARTNER / LOAN MARKETPLACE) +
+--          commission + contact. Operator decides via /ui/funders/{id}
+--          whether to flip active=false (exclude from match-list) or
+--          populate criteria for manual routing.
 --
 -- Idempotent via ON CONFLICT (name) DO NOTHING — operator-edited rows
--- are never overwritten. To replace with fresh extraction, manually
--- DELETE the row first, then re-apply.
+-- are never overwritten. If migration 046 already landed the 6 direct
+-- funders, only the 3 broker rows insert; the 6 direct rows are
+-- effectively a no-op on re-run.
+--
+-- To replace a single row with fresh extraction: manually DELETE the
+-- row first via /ui/funders/{id} or SQL, then re-apply.
 
 """
 
@@ -766,14 +861,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"      ⚠ review: {', '.join(p.needs_operator_review)}")
 
     print(f"\nWrote {len(previews)} previews to {args.out}")
-    print("Skipped §8 Splash Advance, §9 Big Think Capital, §10 Bizi Connect (brokers).")
+    direct = [p for p in previews if p.section_number in _DIRECT_FUNDER_SECTIONS]
+    brokers = [p for p in previews if p.section_number in _BROKER_FUNDER_SECTIONS]
+    print(f"  Direct funders: {len(direct)}; Brokers/affiliates/marketplace: {len(brokers)}")
 
     if args.emit_sql:
         sql = emit_migration_sql(previews)
         args.emit_sql.write_text(sql, encoding="utf-8")
         print(f"\nWrote SQL migration → {args.emit_sql}")
     else:
-        print("Operator confirms previews, then migration 046 inserts confirmed rows.")
+        print("Operator confirms previews, then migration inserts confirmed rows.")
     return 0
 
 
