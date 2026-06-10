@@ -97,9 +97,10 @@ After Step 1 deploys:
    - `parse_status` reaches a terminal value (`proceed` / `review` / `manual_review`).
    - Score appears on dossier (no more "Score unavailable").
 3. **If statements pull but DON'T parse, STOP and report — that's a second break.**
-4. Only after A&R KM works end-to-end, POST
-   `/ui/merchants/b6d37e19…/close-rescan` (Top Tier Authentics). This
-   backfills the second stuck merchant AND proves the auto-chain holds.
+
+(The previously-listed second backfill — Top Tier Authentics
+``b6d37e19…`` — is removed from the acceptance set on operator
+direction 2026-06-10. A&R KM is the proof case.)
 
 ### Step 3 — `/ui/close-queue` (the load-bearing piece for 30/day scale)
 
@@ -143,8 +144,9 @@ fall through the cracks even when no `*.failed` audit fires.
 3. Simulated failure (corrupted PDF): row appears on `/ui/close-queue`
    with `FAILED:parse_failed` and a working retry button. Operator
    click re-runs.
-4. A&R KM LLC and Top Tier Authentics come back into the queue and
-   reach `scored` without the operator running any script.
+4. A&R KM LLC comes back into the queue and reaches `scored` without
+   the operator running any script. (Top Tier Authentics was removed
+   from the backfill set 2026-06-10 by operator direction.)
 
 ---
 
