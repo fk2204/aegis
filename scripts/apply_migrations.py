@@ -432,6 +432,18 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM funders WHERE name='Shor Capital' "
         "AND length(notes_residual) > 0"
     ),
+    "053_funder_notes_enrichment.sql": (
+        # 053 enriches notes_residual for §3 Velocity Capital Group,
+        # §9 Big Think Capital, §10 Bizi Connect with operator-curated
+        # manual content. Probe is VCG's note exceeding 100 chars —
+        # migration 046 left VCG's notes_residual as '' (length 0), so
+        # any value >100 chars is the canonical signal that 053's UPDATE
+        # block executed. Big Think + Bizi Connect aren't probed
+        # separately: all three UPDATEs share the same migration body /
+        # transaction, so one applied row implies all three applied.
+        "SELECT 1 FROM funders WHERE name='Velocity Capital Group' "
+        "AND length(notes_residual) > 100"
+    ),
 }
 
 
