@@ -7,18 +7,19 @@ Domains MIGRATED to ``aegis.web.routers.*`` (sub-routers wired below):
   * ``close_queue.py``        — ``GET /ui/close-queue``
   * ``compliance.py``         — ``POST /ui/decisions/{id}/override``,
                                 ``GET  /ui/compliance/obligations``
+  * ``dashboard.py``          — ``GET /ui/``, ``GET /ui/review``,
+                                ``GET /ui/deals``
   * ``disclosure_events.py``  — ``GET /ui/disclosure-events`` (+ detail)
   * ``documents.py``          — ``GET /ui/documents/{id}`` (+ aggregate partial)
+  * ``intake.py``             — ``GET /ui/intake``, ``POST /ui/intake``
   * ``portfolio.py``          — ``GET /ui/portfolio``
   * ``renewals.py``           — ``GET /ui/renewals``, ``POST /ui/renewals/{id}/attest``
   * ``triage.py``             — ``GET /ui/triage``, ``GET /ui/shadow-signals``
+  * ``upload.py``             — ``GET /ui/upload``, ``POST /ui/upload``
 
 Domains STILL HERE (pending future migration — operator-instructed
 conservative split given Phase 7 prod stability requirements):
 
-  * dashboard tiles    — ``GET /ui/``, ``GET /ui/review``, ``GET /ui/deals``
-  * upload             — ``GET /ui/upload``, ``POST /ui/upload``
-  * intake             — ``GET /ui/intake``, ``POST /ui/intake``
   * merchants          — ``GET /ui/merchants``, ``/ui/merchants/new``,
                          ``/ui/merchants/{id}`` (detail / edit / dossier / match /
                          submit / funder-response / close-rescan / findings.csv)
@@ -51,7 +52,7 @@ import io
 import re
 import urllib.parse
 import zipfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Final, cast
@@ -96,8 +97,7 @@ from aegis.api.deps import (
 # Lazy import + sys.modules caching → zero per-call overhead.
 from aegis.audit import AuditLog
 from aegis.close.orchestration import enqueue_close_orchestration
-from aegis.compliance.states import STATES, StateNotServed, validate_state_served
-from aegis.config import get_settings
+from aegis.compliance.states import STATES
 from aegis.deals.repository import DealRepository
 from aegis.funders.extract import (
     FunderExtractionError,
@@ -111,7 +111,7 @@ from aegis.funders.repository import (
     FunderRepository,
 )
 from aegis.llm import LLMClient
-from aegis.merchants.models import EntityType, MerchantRow
+from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import (
     MerchantConflictError,
     MerchantNotFoundError,
@@ -150,16 +150,7 @@ from aegis.submissions import (
     SubmissionWriteError,
     record_submission,
 )
-from aegis.web._attention_card import (
-    CATEGORY_LABELS,
-    AttentionCard,
-    DocumentPatternContext,
-    PatternIndex,
-    ReviewQueueCard,
-    categorize_flags,
-    derive_fraud_band,
-)
-from aegis.web._flag_labels import HumanFlag, humanize_audit_action, humanize_flag
+from aegis.web._flag_labels import HumanFlag, humanize_flag
 from aegis.web._pattern_cards import (
     build_pattern_cards,
     pattern_has_customer_concentration,
@@ -180,25 +171,42 @@ from aegis.web._templates import templates
 # pending future migration; see the audit plan for the full split.
 from aegis.web.routers import close_queue as _close_queue_routes
 from aegis.web.routers import compliance as _compliance_routes
+from aegis.web.routers import dashboard as _dashboard_routes
 from aegis.web.routers import disclosure_events as _disclosure_events_routes
 from aegis.web.routers import documents as _documents_routes
+from aegis.web.routers import intake as _intake_routes
 from aegis.web.routers import portfolio as _portfolio_routes
 from aegis.web.routers import renewals as _renewals_routes
 from aegis.web.routers import triage as _triage_routes
+from aegis.web.routers import upload as _upload_routes
 
 # Re-export so tests/test_close_queue.py keeps its
 # ``from aegis.web.router import _classify_close_pipeline_state`` import path.
 from aegis.web.routers.close_queue import _classify_close_pipeline_state
 
+# Re-export so tests still pulling these from ``aegis.web.router`` keep
+# their import paths working after the R4.1 dashboard split:
+#   * tests/web/test_attention_groups.py
+#   * tests/web/test_review_queue_cards.py
+#   * tests/test_merchant_status_guards.py
+from aegis.web.routers.dashboard import (
+    _build_attention_groups,
+    _build_review_queue_cards,
+    _compute_merchant_tier,
+)
+
 router = APIRouter(prefix="/ui", tags=["dashboard"])
 
 router.include_router(_close_queue_routes.router)
 router.include_router(_compliance_routes.router)
+router.include_router(_dashboard_routes.router)
 router.include_router(_documents_routes.router)
+router.include_router(_intake_routes.router)
 router.include_router(_renewals_routes.router)
 router.include_router(_portfolio_routes.router)
 router.include_router(_disclosure_events_routes.router)
 router.include_router(_triage_routes.router)
+router.include_router(_upload_routes.router)
 
 
 # Aggregate metadata constants moved to ``aegis.web._router_helpers``
@@ -208,750 +216,25 @@ router.include_router(_triage_routes.router)
 from aegis.web._router_helpers import (  # noqa: E402  - intentional bottom-of-imports placement
     _AGGREGATE_LABELS,
     _AGGREGATE_UNIT_KIND,
+    _entity_type_or_none,
+    _form_dict_from_locals,
+    _validate_merchant_state,
 )
 
-
-@router.get("/", response_class=HTMLResponse)
-async def index(
-    request: Request,
-    docs: Annotated[DocumentRepository, Depends(get_repository)],
-    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-    audit: Annotated[AuditLog, Depends(get_audit)],
-    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
-) -> HTMLResponse:
-    """Today dashboard — live KPIs sourced from Supabase / in-memory repos.
-
-    Funnel: parse-status histogram with proportional bar widths so the
-    operator sees how many docs are at each stage. "Sent to funders"
-    and "Funded" are sourced from the audit_log action histogram (no
-    table for these yet — Phase 7C work).
-
-    Attention queue: most-recent ``manual_review`` documents joined to
-    their merchant for context.
-
-    Recent activity: last 10 ``audit_log`` rows. The audit table is
-    masked at write time so PII never lands here either.
-    """
-    parse_counts = docs.count_by_parse_status()
-    merchant_total = merchants_repo.count_total()
-
-    proceed = parse_counts.get("proceed", 0)
-    review = parse_counts.get("review", 0)
-    manual_review = parse_counts.get("manual_review", 0)
-    pending = parse_counts.get("pending", 0)
-    error = parse_counts.get("error", 0)
-    parsed_total = proceed + review + manual_review + error
-    in_pipeline = parsed_total + pending
-
-    recent_activity_rows = audit.list_recent(limit=10)
-    recent_activity = [
-        {
-            "actor": r.get("actor") or "—",
-            "action": humanize_audit_action(
-                r.get("action") or "—",
-                r.get("details") if isinstance(r.get("details"), dict) else None,
-            ),
-            "subject_type": r.get("subject_type") or "",
-            "subject_id": r.get("subject_id") or "",
-            "time_short": _format_activity_time(r.get("created_at")),
-        }
-        for r in recent_activity_rows
-    ]
-
-    attention_docs = docs.list_documents(parse_status="manual_review", limit=40)
-    attention = _build_attention_groups(
-        attention_docs, merchants_repo, docs, max_groups=8
-    )
-    # Decorate each card with its deal tier — runs score_deal per
-    # merchant. Capped at 8 cards so the cost stays bounded; failures
-    # leave tier=None so the queue still renders.
-    attention = [
-        _enrich_attention_card_with_tier(card, merchants_repo, docs, ofac)
-        for card in attention
-    ]
-
-    submitted_count = sum(
-        1 for r in recent_activity_rows if r.get("action") == "deal.submit_to_funders"
-    )
-    funded_count = sum(
-        1 for r in recent_activity_rows if r.get("action") == "deal.funded"
-    )
-
-    funnel_rows = _build_funnel_rows(
-        intake_count=merchant_total,
-        docs_uploaded=in_pipeline,
-        parsed=parsed_total,
-        underwritten=proceed + review,
-        submitted=submitted_count,
-        funded=funded_count,
-        declined=manual_review + error,
-    )
-
-    return templates.TemplateResponse(
-        request,
-        "index.html.j2",
-        {
-            "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
-            "merchant_total": merchant_total,
-            "in_pipeline": in_pipeline,
-            "manual_review_count": manual_review,
-            "proceed_count": proceed,
-            "review_count": review,
-            "pending_count": pending,
-            "error_count": error,
-            "funnel_rows": funnel_rows,
-            "attention": attention,
-            "category_labels": CATEGORY_LABELS,
-            "recent_activity": recent_activity,
-        },
-    )
-
-
-def _build_funnel_rows(
-    *,
-    intake_count: int,
-    docs_uploaded: int,
-    parsed: int,
-    underwritten: int,
-    submitted: int,
-    funded: int,
-    declined: int,
-) -> list[dict[str, Any]]:
-    """Compute proportional bar widths for the pipeline funnel.
-
-    Width is relative to ``intake_count`` (the widest bar). All other
-    stages are smaller-or-equal. Empty pipeline collapses to zero-width
-    bars rather than rendering garbage.
-    """
-    base = max(intake_count, 1)
-
-    def _w(n: int) -> int:
-        return min(100, int((n / base) * 100)) if base > 0 else 0
-
-    return [
-        {"label": "Intake", "count": intake_count, "width": _w(intake_count), "cls": ""},
-        {"label": "Docs uploaded", "count": docs_uploaded, "width": _w(docs_uploaded), "cls": ""},
-        {"label": "Parsed", "count": parsed, "width": _w(parsed), "cls": "accent"},
-        {"label": "Underwritten", "count": underwritten, "width": _w(underwritten), "cls": ""},
-        {"label": "Sent to funders", "count": submitted, "width": _w(submitted), "cls": "pos"},
-        {"label": "Funded", "count": funded, "width": _w(funded), "cls": "pos"},
-        {"label": "Declined", "count": declined, "width": _w(declined), "cls": "neg"},
-    ]
-
-
-def _build_attention_groups(
-    documents: list[DocumentRow],
-    merchants_repo: MerchantRepository,
-    docs: DocumentRepository,
-    *,
-    max_groups: int = 8,
-) -> list[AttentionCard]:
-    """Group manual_review documents by merchant for the Today attention queue.
-
-    Input is assumed most-recent-first (the list_documents contract).
-    Output preserves that ordering — the first card is the one whose
-    most recent document was uploaded most recently.
-
-    Each ``AttentionCard`` surfaces:
-      * merchant_id / merchant_label
-      * merchant_state / merchant_naics / requested_amount (chunk A new fields)
-      * worst_fraud_score — max across the merchant's docs in the queue
-      * fraud_band — clear/review/decline/unknown derived from worst score
-      * tier — reserved for chunks B/C (None in chunk A)
-      * doc_count
-      * unique_flags — flat deduplicated list of raw flag strings
-        (legacy field; the chunk-A index.html.j2 template still
-        consumes this. Chunk B replaces the chip loop with category-
-        grouped rendering off ``flags`` and drops this field.)
-      * flags — ``CategorizedFlags`` with decline_class lifted to the
-        top and the rest grouped by glossary category in display order
-      * documents — per-doc dicts (document_id, fraud_score,
-        uploaded_at, flags), most-recent first within the group
-
-    Documents with merchant_id=None bucket under a single "—" card so
-    they stay visible rather than being scattered as multiple unlabeled
-    rows.
-
-    Chunk 3: builds a per-merchant ``PatternIndex`` from the contributing
-    docs' ``AnalysisRow.pattern_analysis`` caches (migration 032), with
-    cross-doc filename tagging on each source row. The index decorates
-    every ``HumanFlag`` whose code matches an emitted Pattern so the
-    chip template renders an inline ``<details>`` drill-down. Docs whose
-    cache is None (legacy pre-chunk-2 rows) contribute no entries and
-    their flags degrade to plain spans — graceful by construction.
-    """
-    # Pre-fetch all docs' analyses in one batched query. Transactions
-    # are fetched lazily below, only for docs whose pattern_analysis is
-    # populated, so legacy rows skip the per-doc transactions round-trip.
-    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in documents])
-    transactions_by_doc: dict[UUID, list[ClassifiedTransaction]] = {}
-
-    groups: dict[UUID | None, dict[str, Any]] = {}
-    group_docs: dict[UUID | None, list[DocumentRow]] = {}
-
-    for d in documents:
-        key = d.merchant_id
-        if key not in groups:
-            if len(groups) >= max_groups:
-                continue
-            label = "—"
-            merchant: MerchantRow | None = None
-            if key is not None:
-                try:
-                    merchant = merchants_repo.get(key)
-                    label = merchant.business_name
-                except MerchantNotFoundError:
-                    label = f"merchant {str(key)[:8]}"
-            groups[key] = {
-                "merchant_id": str(key) if key is not None else None,
-                "merchant_label": label,
-                "merchant_state": merchant.state if merchant else None,
-                "merchant_naics": merchant.industry_naics if merchant else None,
-                "requested_amount": merchant.requested_amount if merchant else None,
-                # Migration 034 status — None for the unlinked "—"
-                # bucket and for missing-merchant cards (deleted), so
-                # the template can guard with a simple truthiness test.
-                "merchant_status": merchant.status if merchant else None,
-                "documents": [],
-                "_seen_flags": [],
-            }
-            group_docs[key] = []
-
-        group_docs[key].append(d)
-        flags = list(d.all_flags) if d.all_flags else []
-        groups[key]["documents"].append(
-            {
-                "document_id": str(d.id),
-                "fraud_score": d.fraud_score,
-                "uploaded_at": d.uploaded_at.strftime("%Y-%m-%d %H:%M"),
-                "flags": flags,
-            }
-        )
-        seen: list[str] = groups[key]["_seen_flags"]
-        for f in flags:
-            if f not in seen:
-                seen.append(f)
-
-    out: list[AttentionCard] = []
-    for key, g in groups.items():
-        scores = [
-            doc["fraud_score"]
-            for doc in g["documents"]
-            if doc["fraud_score"] is not None
-        ]
-        worst = max(scores) if scores else None
-        pattern_index = _build_merchant_pattern_index(
-            group_docs[key], analyses_by_doc, transactions_by_doc, docs
-        )
-        out.append(
-            AttentionCard(
-                merchant_id=g["merchant_id"],
-                merchant_label=g["merchant_label"],
-                merchant_state=g["merchant_state"],
-                merchant_naics=g["merchant_naics"],
-                requested_amount=g["requested_amount"],
-                worst_fraud_score=worst,
-                fraud_band=derive_fraud_band(worst),
-                tier=None,
-                doc_count=len(g["documents"]),
-                documents=g["documents"],
-                flags=categorize_flags(
-                    g["_seen_flags"], pattern_index=pattern_index
-                ),
-                merchant_status=g["merchant_status"],
-            )
-        )
-    return out
-
-
-def _build_merchant_pattern_index(
-    docs_in_group: list[DocumentRow],
-    analyses_by_doc: dict[UUID, AnalysisRow],
-    transactions_cache: dict[UUID, list[ClassifiedTransaction]],
-    docs: DocumentRepository,
-) -> PatternIndex:
-    """Build a per-merchant PatternIndex across the group's docs.
-
-    ``transactions_cache`` is shared across groups so a doc that
-    appeared in an earlier group (shouldn't happen in practice since
-    documents partition by merchant_id, but the cache is cheap) won't
-    re-query. Transactions are only fetched for docs whose analysis
-    cache is populated — legacy rows skip the round-trip.
-    """
-    contexts: list[DocumentPatternContext] = []
-    for d in docs_in_group:
-        analysis = analyses_by_doc.get(d.id)
-        if analysis is None or analysis.pattern_analysis is None:
-            contexts.append(
-                DocumentPatternContext(
-                    document_id=d.id,
-                    filename=d.original_filename,
-                    analysis=None,
-                    transactions=[],
-                )
-            )
-            continue
-        if d.id not in transactions_cache:
-            transactions_cache[d.id] = docs.list_transactions(d.id)
-        contexts.append(
-            DocumentPatternContext(
-                document_id=d.id,
-                filename=d.original_filename,
-                analysis=analysis,
-                transactions=transactions_cache[d.id],
-            )
-        )
-    return PatternIndex.build_for_merchant(contexts)
-
-
-def _compute_merchant_tier(
-    merchant: MerchantRow,
-    docs: DocumentRepository,
-    ofac: OFACClient | None,
-) -> str | None:
-    """Run ``score_deal`` on a merchant and return the deal tier letter.
-
-    Shared by ``_enrich_attention_card_with_tier`` (Today, one call per
-    merchant card) and ``_build_review_queue_cards`` (Review Queue, one
-    call per merchant cached across the merchant's docs in the queue).
-
-    Falls back to ``None`` on any failure — orphaned merchant, no
-    analyzed docs yet, OFAC stale, score_deal raising on partial data,
-    or any other exception. Tier is decorative on both card surfaces; a
-    missing letter must never block the queue render. Unforeseen
-    failures log a structured WARN so the silence isn't total.
-    """
-    # Migration 034 guard: non-finalized merchants (provisional /
-    # needs_manual_naming) carry a placeholder business_name. Running
-    # score_deal would invoke OFAC against the placeholder and write a
-    # spurious compliance record. Skip — tier=None reads the same as
-    # "not enough data yet" in the existing renderers.
-    if not merchant.is_finalized:
-        return None
-    try:
-        items = _collect_analyzed_for_merchant(docs, merchant.id, bundle=None)
-        if not items:
-            return None
-        score_input = _score_input_multi_month(merchant, items)
-        score_result = score_deal(score_input, ofac=ofac)
-    except (MerchantNotFoundError, OFACStaleError, ValueError):
-        return None
-    except Exception as exc:
-        from aegis.logger import get_logger
-
-        get_logger(__name__).warning(
-            "card.tier_lookup_failed merchant_id=%s err=%s",
-            merchant.id,
-            exc.__class__.__name__,
-        )
-        return None
-    return score_result.tier
-
-
-def _enrich_attention_card_with_tier(
-    card: AttentionCard,
-    merchants_repo: MerchantRepository,
-    docs: DocumentRepository,
-    ofac: OFACClient | None,
-) -> AttentionCard:
-    """Decorate a Today attention card with its merchant's deal tier.
-
-    Returns a new card via ``dataclasses.replace`` — ``AttentionCard``
-    is frozen. Falls back to leaving ``tier=None`` on any failure (see
-    ``_compute_merchant_tier``).
-    """
-    if card.merchant_id is None:
-        return card
-    try:
-        merchant_uuid = UUID(card.merchant_id)
-        merchant = merchants_repo.get(merchant_uuid)
-    except (MerchantNotFoundError, ValueError):
-        return card
-    tier = _compute_merchant_tier(merchant, docs, ofac)
-    if tier is None:
-        return card
-    return replace(card, tier=tier)
-
-
-def _build_review_queue_cards(
-    documents: list[DocumentRow],
-    merchants_repo: MerchantRepository,
-    docs: DocumentRepository,
-    ofac: OFACClient | None,
-) -> list[ReviewQueueCard]:
-    """Build one ``ReviewQueueCard`` per document in the manual_review queue.
-
-    Tier is the deal-level score from running ``score_deal`` against
-    the merchant's full analyzed-document set — it's identical across
-    every card from a single merchant. The cache keyed off
-    ``merchant_id`` here ensures a queue with 10 docs from one merchant
-    runs score_deal exactly once for that merchant.
-
-    Chunk 3: builds a per-document ``PatternIndex`` from the doc's
-    ``AnalysisRow.pattern_analysis`` cache (migration 032) so the chip
-    template renders inline ``<details>`` drill-downs of contributing
-    source transactions. Docs whose cache is None (legacy pre-chunk-2
-    rows) produce an empty index and their chips degrade to plain
-    spans — graceful by construction.
-    """
-    # Pre-fetch analyses in one batched query; transactions are
-    # fetched per-doc lazily (only for docs with a populated cache).
-    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in documents])
-    tier_cache: dict[UUID, str | None] = {}
-    cards: list[ReviewQueueCard] = []
-
-    for d in documents:
-        merchant: MerchantRow | None = None
-        merchant_id_str: str | None = None
-        merchant_label = "—"
-        tier: str | None = None
-        if d.merchant_id is not None:
-            merchant_id_str = str(d.merchant_id)
-            try:
-                merchant = merchants_repo.get(d.merchant_id)
-                merchant_label = merchant.business_name
-            except MerchantNotFoundError:
-                merchant_label = f"merchant {str(d.merchant_id)[:8]} (deleted)"
-            if merchant is not None:
-                if d.merchant_id not in tier_cache:
-                    tier_cache[d.merchant_id] = _compute_merchant_tier(
-                        merchant, docs, ofac
-                    )
-                tier = tier_cache[d.merchant_id]
-
-        analysis = analyses_by_doc.get(d.id)
-        if analysis is not None and analysis.pattern_analysis is not None:
-            transactions = docs.list_transactions(d.id)
-        else:
-            transactions = []
-        pattern_index = PatternIndex.build_for_document(
-            analysis=analysis,
-            transactions=transactions,
-            document_id=d.id,
-            filename=d.original_filename,
-        )
-
-        raw_flags = list(d.all_flags) if d.all_flags else []
-        cards.append(
-            ReviewQueueCard(
-                document_id=str(d.id),
-                filename=d.original_filename,
-                uploaded_at=d.uploaded_at.strftime("%Y-%m-%d %H:%M"),
-                fraud_score=d.fraud_score,
-                fraud_band=derive_fraud_band(d.fraud_score),
-                merchant_id=merchant_id_str,
-                merchant_label=merchant_label,
-                merchant_state=merchant.state if merchant else None,
-                merchant_naics=merchant.industry_naics if merchant else None,
-                requested_amount=merchant.requested_amount if merchant else None,
-                tier=tier,
-                flags=categorize_flags(raw_flags, pattern_index=pattern_index),
-                # Migration 034 — surface lifecycle status for the
-                # status chip. ``None`` for orphan-merchant docs so
-                # the template's truthy guard short-circuits cleanly.
-                merchant_status=merchant.status if merchant else None,
-            )
-        )
-    return cards
-
-
-def _format_activity_time(value: object) -> str:
-    """Render an audit_log ``created_at`` value for the dashboard timeline."""
-    if value is None or value == "":
-        return "—"
-    if isinstance(value, datetime):
-        return value.strftime("%H:%M")
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%H:%M")
-        except ValueError:
-            return value[:16]
-    return "—"
-
-
-# Audit action humanization moved to ``aegis.web._flag_labels``. The
-# Proposal 1 inline helper handled the bare submit action; Proposal 2's
-# ``humanize_audit_action`` extends it with funder names pulled from the
-# audit row's ``details`` field, so the feed reads "recorded submission
-# to OnDeck, Credibly" instead of "recorded submission to funders".
-
-
-@router.get("/upload", response_class=HTMLResponse)
-async def upload_form(
-    request: Request,
-    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-) -> HTMLResponse:
-    return templates.TemplateResponse(
-        request,
-        "upload.html.j2",
-        {
-            "merchants": merchants_repo.list_all(),
-            "results": None,
-            "error": None,
-            "merchant_just_uploaded": None,
-        },
-    )
-
-
-@router.post("/upload", response_class=HTMLResponse, response_model=None)
-async def upload_submit(
-    request: Request,
-    repository: Annotated[DocumentRepository, Depends(get_repository)],
-    audit: Annotated[AuditLog, Depends(get_audit)],
-    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
-    files: Annotated[list[UploadFile] | None, File()] = None,
-    merchant_id: Annotated[str, Form()] = "",
-) -> HTMLResponse:
-    """Browser-friendly multi-file upload — no bearer (Cloudflare Access in prod).
-
-    Streams up to N PDFs in one multipart request, hashes/dedups each via
-    the shared ``persist_pdf_upload`` helper, and renders an inline
-    summary with each file's status. ``merchant_id`` is optional from
-    this route — operators uploading ad-hoc may not have the merchant
-    record yet (see ``/ui/intake`` for the combined create + upload flow).
-
-    ``files`` is typed as ``| None`` so a browser submit with no file
-    selected falls into the friendly HTML error branch below instead of
-    bouncing off FastAPI's 422 validation gate as opaque JSON.
-    """
-    if not files or all(not f.filename for f in files):
-        return templates.TemplateResponse(
-            request,
-            "upload.html.j2",
-            {
-                "merchants": merchants_repo.list_all(),
-                "results": None,
-                "error": "No files provided.",
-                "merchant_just_uploaded": None,
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    parsed_merchant_id: UUID | None = None
-    if merchant_id.strip():
-        try:
-            parsed_merchant_id = UUID(merchant_id.strip())
-            merchants_repo.get(parsed_merchant_id)
-        except (ValueError, MerchantNotFoundError):
-            return templates.TemplateResponse(
-                request,
-                "upload.html.j2",
-                {
-                    "merchants": merchants_repo.list_all(),
-                    "results": None,
-                    "error": f"Unknown merchant_id {merchant_id!r}.",
-                    "merchant_just_uploaded": None,
-                },
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
-    else:
-        # Migration 034 — auto-create branch (chunk B).
-        #
-        # The operator dropped files without picking a merchant. Create
-        # ONE provisional merchant for the batch, attach every file to
-        # it. Worker finalize at parse-completion fills the name from
-        # ``statement.account_holder``; the failure paths flag the
-        # merchant for manual naming so nothing zombies in
-        # ``provisional`` forever.
-        #
-        # Scope (locked): this branch lives ONLY on the dashboard
-        # ``/ui/upload``. The bearer ``/upload``, the Close-attachment
-        # ``/uploads/from-close``, and the operator-curated
-        # ``/ui/intake`` all keep their existing behavior (orphan,
-        # Close-lead-resolved, and manual-create respectively).
-        valid_files = [f for f in files if f.filename]
-        if valid_files:
-            provisional = merchants_repo.create_provisional()
-            parsed_merchant_id = provisional.id
-            audit.record(
-                actor="dashboard",
-                actor_email=actor_email,
-                action="merchant.provisional_created",
-                subject_type="merchant",
-                subject_id=provisional.id,
-                details={
-                    "batch_size": len(valid_files),
-                    "file_names": [f.filename for f in valid_files],
-                    "uploaded_by": actor_email or "dashboard",
-                },
-            )
-
-    settings = get_settings()
-    results, total_error = await _persist_uploads(
-        request=request,
-        files=files,
-        repository=repository,
-        audit=audit,
-        actor="dashboard",
-        actor_email=actor_email,
-        merchant_id=parsed_merchant_id,
-        per_file_cap=settings.aegis_max_upload_bytes,
-        total_cap=settings.aegis_max_intake_total_bytes,
-    )
-
-    # When at least one file landed on a specific merchant, surface that
-    # merchant on the completion card so the broker can jump straight to
-    # detail / match-funders without re-typing.
-    merchant_just_uploaded: MerchantRow | None = None
-    if parsed_merchant_id is not None and any(
-        r.status in {"ok", "duplicate"} for r in results
-    ):
-        try:
-            merchant_just_uploaded = merchants_repo.get(parsed_merchant_id)
-        except MerchantNotFoundError:
-            merchant_just_uploaded = None
-
-    return templates.TemplateResponse(
-        request,
-        "upload.html.j2",
-        {
-            "merchants": merchants_repo.list_all(),
-            "results": results,
-            "error": total_error,
-            "merchant_just_uploaded": merchant_just_uploaded,
-        },
-        status_code=(
-            status.HTTP_200_OK if not total_error else status.HTTP_400_BAD_REQUEST
-        ),
-    )
-
-
-@router.get("/intake", response_class=HTMLResponse)
-async def intake_form(request: Request) -> HTMLResponse:
-    """Combined intake: create merchant + upload N statements in one POST."""
-    return templates.TemplateResponse(
-        request, "intake.html.j2", {"error": None, "form": {}}
-    )
-
-
-@router.post("/intake", response_class=HTMLResponse, response_model=None)
-async def intake_submit(
-    request: Request,
-    repository: Annotated[DocumentRepository, Depends(get_repository)],
-    audit: Annotated[AuditLog, Depends(get_audit)],
-    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-    business_name: Annotated[str, Form()],
-    owner_name: Annotated[str, Form()],
-    state: Annotated[str, Form()],
-    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
-    files: Annotated[list[UploadFile] | None, File()] = None,
-    dba: Annotated[str, Form()] = "",
-    industry_naics: Annotated[str, Form()] = "",
-    credit_score: Annotated[str, Form()] = "",
-    time_in_business_months: Annotated[str, Form()] = "",
-    email: Annotated[str, Form()] = "",
-    phone: Annotated[str, Form()] = "",
-    entity_type: Annotated[str, Form()] = "",
-    ein: Annotated[str, Form()] = "",
-    requested_amount: Annotated[str, Form()] = "",
-    requested_factor: Annotated[str, Form()] = "",
-    requested_term_days: Annotated[str, Form()] = "",
-    broker_source: Annotated[str, Form()] = "",
-    intake_date: Annotated[str, Form()] = "",
-    is_renewal: Annotated[str, Form()] = "false",
-) -> HTMLResponse | RedirectResponse:
-    """Create merchant + upload N statements atomically.
-
-    On any validation error the merchant is NOT created and the form
-    re-renders with the entered values preserved. On success the
-    operator lands on the merchant findings page with all uploaded
-    documents already persisted.
-    """
-    form_payload: dict[str, Any] = {
-        "business_name": business_name,
-        "owner_name": owner_name,
-        "state": state,
-        "dba": dba,
-        "industry_naics": industry_naics,
-        "credit_score": credit_score,
-        "time_in_business_months": time_in_business_months,
-        "email": email,
-        "phone": phone,
-        "entity_type": entity_type,
-        "ein": ein,
-        "requested_amount": requested_amount,
-        "requested_factor": requested_factor,
-        "requested_term_days": requested_term_days,
-        "broker_source": broker_source,
-        "intake_date": intake_date,
-        "is_renewal": is_renewal,
-    }
-
-    state_err = _validate_merchant_state(state)
-    if state_err is not None:
-        return _intake_form_error(request, state_err, form_payload)
-
-    try:
-        merchant = MerchantRow(
-            business_name=business_name,
-            owner_name=owner_name,
-            state=state.upper(),
-            dba=dba or None,
-            industry_naics=industry_naics or None,
-            credit_score=int(credit_score) if credit_score else None,
-            time_in_business_months=int(time_in_business_months)
-            if time_in_business_months
-            else None,
-            email=email or None,
-            phone=phone or None,
-            entity_type=_entity_type_or_none(entity_type),
-            ein=ein or None,
-            requested_amount=Decimal(requested_amount) if requested_amount else None,
-            requested_factor=Decimal(requested_factor) if requested_factor else None,
-            requested_term_days=int(requested_term_days) if requested_term_days else None,
-            broker_source=broker_source or None,
-            intake_date=date.fromisoformat(intake_date) if intake_date else None,
-            is_renewal=is_renewal.lower() in {"true", "on", "yes", "1"},
-        )
-    except (ValueError, TypeError) as exc:
-        return _intake_form_error(request, str(exc), form_payload)
-    try:
-        merchant = merchants_repo.upsert(merchant)
-    except MerchantConflictError as exc:
-        return _intake_form_error(request, str(exc), form_payload)
-
-    # Files are optional at intake — operator can create merchant first
-    # and upload later.
-    docs_uploaded = 0
-    docs_failed = 0
-    valid_files = [f for f in (files or []) if f.filename]
-    if valid_files:
-        settings = get_settings()
-        results, total_error = await _persist_uploads(
-            request=request,
-            files=valid_files,
-            repository=repository,
-            audit=audit,
-            actor="dashboard",
-            actor_email=actor_email,
-            merchant_id=merchant.id,
-            per_file_cap=settings.aegis_max_upload_bytes,
-            total_cap=settings.aegis_max_intake_total_bytes,
-        )
-        docs_uploaded = sum(1 for r in results if r.status in {"ok", "duplicate"})
-        docs_failed = sum(1 for r in results if r.status == "error")
-        if total_error:
-            # Merchant created but uploads failed; surface the error and
-            # redirect to merchant detail so operator can retry uploads
-            # individually from /ui/upload.
-            audit.record(
-                actor="dashboard",
-                actor_email=actor_email,
-                action="intake.partial_failure",
-                subject_type="merchant",
-                subject_id=merchant.id,
-                details={"error": total_error, "results_count": len(results)},
-            )
-
-    # Carry a "just created" flash to the merchant detail page so it can
-    # render a confirmation banner with upload count + next-step CTAs.
-    target = (
-        f"/ui/merchants/{merchant.id}"
-        f"?from_intake=1&docs={docs_uploaded}"
-        f"{'&failed=' + str(docs_failed) if docs_failed else ''}"
-    )
-    return RedirectResponse(target, status_code=status.HTTP_303_SEE_OTHER)
+# /, /review, /deals + their tier-lookup / attention-card / funnel
+# helpers moved to ``aegis.web.routers.dashboard`` during R4.1.
+# Aggregator ``include_router`` wires the sub-router in at the top of
+# this file. ``_build_attention_groups`` / ``_build_review_queue_cards``
+# / ``_compute_merchant_tier`` are re-exported from there for tests.
+
+
+# /upload + /intake moved to aegis.web.routers.{upload,intake} during
+# R4.1. The shared ``_persist_uploads`` helper + the form-validation
+# helpers (``_validate_merchant_state`` / ``_entity_type_or_none``)
+# live in ``aegis.web._router_helpers`` so both sub-routers + the
+# still-resident merchants routes consume the same code path.
+# Aggregator include_router wires the two sub-routers in at the top
+# of this file.
 
 
 @router.get("/merchants", response_class=HTMLResponse)
@@ -964,107 +247,10 @@ async def list_merchants(
     )
 
 
-_REVIEW_QUEUE_DISPLAY_CAP: Final[int] = 200
-
-
-@router.get("/review", response_class=HTMLResponse)
-async def review_queue(
-    request: Request,
-    docs: Annotated[DocumentRepository, Depends(get_repository)],
-    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
-) -> HTMLResponse:
-    """Manual-review queue — one card per document with parse_status=manual_review.
-
-    Per-document cards share the Today card vocabulary
-    (``_humanized_chip.html.j2`` + categorized flags + merchant header)
-    so the two surfaces read the same way. The queue is hard-capped at
-    ``_REVIEW_QUEUE_DISPLAY_CAP`` documents in the response; if the cap
-    is hit the template surfaces a banner so the operator knows the
-    queue is deeper than what they see — no silent truncation.
-    """
-    review_docs = docs.list_documents(
-        parse_status="manual_review", limit=_REVIEW_QUEUE_DISPLAY_CAP
-    )
-    cards = _build_review_queue_cards(review_docs, merchants, docs, ofac)
-    return templates.TemplateResponse(
-        request,
-        "review.html.j2",
-        {
-            "cards": cards,
-            "category_labels": CATEGORY_LABELS,
-            "queue_capacity": _REVIEW_QUEUE_DISPLAY_CAP,
-        },
-    )
-
-
-@router.get("/deals", response_class=HTMLResponse)
-async def list_deals(
-    request: Request,
-    docs: Annotated[DocumentRepository, Depends(get_repository)],
-    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
-) -> HTMLResponse:
-    """Deal lifecycle table.
-
-    A "deal" is the derived join (merchant, latest document, latest analysis)
-    per the Phase 7 audit decision. There is no ``deals`` table; this view
-    enumerates merchants and shows their most recent document's parse status
-    and analysis tier proxy. Merchants without any document show as
-    ``Awaiting upload``.
-    """
-    merchants = list(merchants_repo.list_all())
-
-    # Batch fetch the latest document per merchant. Repository returns
-    # documents most-recent-first; deduping by merchant_id and keeping
-    # the first occurrence yields each merchant's latest. Then one
-    # batch analyses fetch covers all of those documents. Total: 2
-    # queries regardless of merchant count (was 2N).
-    all_docs = docs.list_documents(limit=500)
-    latest_by_merchant: dict[UUID, DocumentRow] = {}
-    for d in all_docs:
-        if d.merchant_id is None or d.merchant_id in latest_by_merchant:
-            continue
-        latest_by_merchant[d.merchant_id] = d
-
-    analyses_by_doc = docs.get_analyses_by_document_ids(
-        [d.id for d in latest_by_merchant.values()]
-    )
-
-    rows: list[dict[str, Any]] = []
-    for m in merchants:
-        latest_doc = latest_by_merchant.get(m.id)
-        latest_analysis = (
-            analyses_by_doc.get(latest_doc.id) if latest_doc is not None else None
-        )
-        rows.append(
-            {
-                "merchant_id": str(m.id),
-                "business_name": m.business_name,
-                "state": m.state,
-                # Migration 034 — merchant lifecycle status. Surfaced
-                # in the Deals table row so the template can render a
-                # "provisional" / "needs naming" status chip next to
-                # placeholder business_names. Stays a plain string so
-                # the existing parse_status chip macro can consume it
-                # without any model-class round-trip.
-                "status": m.status,
-                "uploaded_at": (
-                    latest_doc.uploaded_at.strftime("%Y-%m-%d") if latest_doc else "—"
-                ),
-                "parse_status": latest_doc.parse_status if latest_doc else "no_upload",
-                "fraud_score": (
-                    latest_doc.fraud_score
-                    if latest_doc and latest_doc.fraud_score is not None
-                    else "—"
-                ),
-                "tier_proxy": _tier_proxy(latest_analysis),
-                "document_id": str(latest_doc.id) if latest_doc else None,
-            }
-        )
-    rows.sort(key=lambda r: r["uploaded_at"], reverse=True)
-    return templates.TemplateResponse(request, "deals.html.j2", {"rows": rows})
-
-
+# /review, /deals moved to aegis.web.routers.dashboard during R4.1
+# (alongside /). Aggregator include_router wires them in at the top
+# of this file.
+#
 # /close-queue moved to aegis.web.routers.close_queue during R4.1.
 # _classify_close_pipeline_state is re-exported at the top of the
 # file so tests at tests/test_close_queue.py keep their import path.
@@ -3884,146 +3070,18 @@ def _match_card(
     }
 
 
-@dataclass
-class _UploadResult:
-    """Per-file outcome surfaced to the operator on the upload form."""
-
-    filename: str
-    status: str  # "ok" | "duplicate" | "error"
-    document_id: str | None
-    detail: str  # human-readable summary or error message
-
-
-async def _persist_uploads(
-    *,
-    request: Request,
-    files: list[UploadFile],
-    repository: DocumentRepository,
-    audit: AuditLog,
-    actor: str,
-    actor_email: str | None = None,
-    merchant_id: UUID | None,
-    per_file_cap: int,
-    total_cap: int,
-) -> tuple[list[_UploadResult], str | None]:
-    """Read N files, persist each via ``persist_pdf_upload``, return per-file
-    outcomes plus an optional batch-level error.
-
-    Per-file failures (oversize, non-PDF, dedup-race) become an entry in
-    the result list with ``status="error"``; the batch keeps going so a
-    bad file doesn't kill 3 good ones. A batch-level error (total cap
-    exceeded) short-circuits and returns no results.
-    """
-    # Lazy import — see module-top comment for the cycle this avoids.
-    from aegis.api.routes.upload import (
-        _make_request_enqueue,
-        persist_pdf_upload,
-    )
-
-    bodies: list[tuple[str, bytes]] = []
-    running_total = 0
-    for f in files:
-        body = await f.read(per_file_cap + 1)
-        if len(body) > per_file_cap:
-            return (
-                [],
-                f"{f.filename or 'unnamed'} exceeds the per-file cap of {per_file_cap} bytes",
-            )
-        running_total += len(body)
-        if running_total > total_cap:
-            return (
-                [],
-                f"total upload size exceeds the {total_cap}-byte batch cap",
-            )
-        bodies.append((f.filename or "unnamed.pdf", body))
-
-    results: list[_UploadResult] = []
-    for filename, body in bodies:
-        try:
-            resp = await persist_pdf_upload(
-                enqueue_parse=_make_request_enqueue(request),
-                body=body,
-                original_filename=filename,
-                repository=repository,
-                audit=audit,
-                actor=actor,
-                actor_email=actor_email,
-                merchant_id=merchant_id,
-            )
-        except HTTPException as exc:
-            results.append(
-                _UploadResult(
-                    filename=filename,
-                    status="error",
-                    document_id=None,
-                    detail=str(exc.detail),
-                )
-            )
-            continue
-        results.append(
-            _UploadResult(
-                filename=filename,
-                status="duplicate" if resp.duplicate_of_existing else "ok",
-                document_id=str(resp.document_id),
-                detail=(
-                    "deduped to existing document"
-                    if resp.duplicate_of_existing
-                    else f"queued (parse_status={resp.parse_status})"
-                ),
-            )
-        )
-    return results, None
-
-
-def _intake_form_error(
-    request: Request, error: str, form: dict[str, Any]
-) -> HTMLResponse:
-    return templates.TemplateResponse(
-        request,
-        "intake.html.j2",
-        {"error": error, "form": form},
-        status_code=status.HTTP_400_BAD_REQUEST,
-    )
-
-
-def _validate_merchant_state(state: str) -> str | None:
-    """Return an error string if the state isn't served, else None."""
-    try:
-        validate_state_served(state.upper())
-    except StateNotServed as exc:
-        return str(exc)
-    return None
-
-
-_FORM_FIELDS: tuple[str, ...] = (
-    "business_name",
-    "owner_name",
-    "state",
-    "dba",
-    "industry_naics",
-    "credit_score",
-    "time_in_business_months",
-    "email",
-    "phone",
-    "entity_type",
-    "ein",
-    "requested_amount",
-    "requested_factor",
-    "requested_term_days",
-    "broker_source",
-    "intake_date",
-    "is_renewal",
-)
-
-
-def _form_dict_from_locals(locs: dict[str, Any]) -> dict[str, str]:
-    """Lift the named form fields out of a route's local namespace.
-
-    Keeps the form re-render path strict: only the documented field names
-    pass through, never auxiliary locals (request, repo, etc.) that would
-    leak into the template context.
-    """
-    return {k: str(locs.get(k, "")) for k in _FORM_FIELDS}
+# Upload + intake helpers moved to ``aegis.web._router_helpers`` during
+# R4.1 so the upload + intake sub-routers consume them without
+# importing this aggregator. The still-resident merchants routes pull
+# them back via the import block at the top of this file.
+#
+# Definitions moved:
+#   * ``_UploadResult`` + ``_persist_uploads``  — upload pipeline
+#   * ``_validate_merchant_state`` + ``_entity_type_or_none`` — form validators
+#   * ``_FORM_FIELDS`` + ``_form_dict_from_locals`` — re-render scaffolding
+#
+# ``_intake_form_error`` is private to ``aegis.web.routers.intake`` and
+# was NOT lifted to ``_router_helpers`` — it has a single caller.
 
 
 def _merchant_form_error(
@@ -4039,20 +3097,6 @@ def _merchant_form_error(
         {"merchant": merchant, "error": error, "form": form},
         status_code=status.HTTP_400_BAD_REQUEST,
     )
-
-
-def _entity_type_or_none(value: str) -> EntityType | None:
-    """Coerce a form-string to ``EntityType`` or ``None``.
-
-    Strict-cast: anything outside the literal set returns ``None`` so a
-    mistyped entity_type doesn't crash the intake flow. Callers pass
-    user input directly from the form, where the ``<select>`` constrains
-    valid values, but defense-in-depth is cheap here.
-    """
-    v = value.strip().lower()
-    if v in {"llc", "corp", "sole_prop", "partnership", "other"}:
-        return cast(EntityType, v)
-    return None
 
 
 def _state_tier(state: str | None) -> int | str:
@@ -4099,25 +3143,8 @@ def _ofac_ribbon_status(
         return ("unavailable", None)
 
 
-def _tier_proxy(analysis: AnalysisRow | None) -> str:
-    """Cheap tier hint for ``/ui/deals`` derived view.
-
-    A real Tier comes from ``score_deal``; the lifecycle table doesn't run
-    the scorer for every row (cost + side effects via OFAC). We surface a
-    proxy from the parsed-analysis numbers — operators click into the deal
-    detail to get the authoritative tier from the scoring API.
-    """
-    if analysis is None:
-        return "—"
-    if analysis.num_nsf >= 10 or analysis.days_negative > 15:
-        return "F (proxy)"
-    if analysis.mca_positions >= 2:
-        return "F (proxy)"
-    if analysis.num_nsf >= 5 or analysis.days_negative > 5:
-        return "D/C (proxy)"
-    if analysis.num_nsf >= 2:
-        return "B (proxy)"
-    return "A/B (proxy)"
+# _tier_proxy moved to aegis.web.routers.dashboard during R4.1
+# (alongside list_deals, the only caller).
 
 
 def _txs_to_rows(txs: list[ClassifiedTransaction]) -> list[dict[str, Any]]:
@@ -4165,7 +3192,10 @@ def _txs_to_rows(txs: list[ClassifiedTransaction]) -> list[dict[str, Any]]:
 # the file (templates from _templates; _classify_close_pipeline_state
 # from routers.close_queue).
 __all__ = [
+    "_build_attention_groups",
+    "_build_review_queue_cards",
     "_classify_close_pipeline_state",
+    "_compute_merchant_tier",
     "router",
     "templates",
 ]
