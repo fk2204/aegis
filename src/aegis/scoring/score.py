@@ -28,6 +28,7 @@ from typing import Final
 from aegis.compliance.apr import APRCalculationError, calculate_apr
 from aegis.config import get_settings
 from aegis.money import safe_divide
+from aegis.parser.pipeline import HARD_DECLINE_THRESHOLD
 from aegis.scoring.models import PaperGrade, ScoreInput, ScoreResult
 from aegis.scoring.ofac import OFACClient
 from aegis.scoring_v2.track_a import IntegrityVerdict
@@ -82,11 +83,13 @@ MAX_DEBT_TO_REVENUE: Final[Decimal] = Decimal("0.40")
 # Min $10-15k major funders; $8k mid; $5k specialty." $10k is the major-
 # funder floor; below this no funder in the broker's network will accept.
 MIN_MONTHLY_REVENUE: Final[Decimal] = Decimal("10000.00")
-# cite: docs/AEGIS_MASTER_PLAN.md §7 "Composite fraud score (0-100, per
-# Ocrolus Detect): ≤30 highly suspicious — usually reject; 31-60 review
-# required; 61-100 low concern." AEGIS scores in the OPPOSITE direction
-# (higher = more fraud), so 70 = "highly suspicious" boundary inverted.
-FRAUD_SCORE_HARD_DECLINE: Final[int] = 70
+# Aligned with the parser pipeline's `HARD_DECLINE_THRESHOLD` (65) — the
+# pipeline's `_decide` is the gate that drives `parse_status`, so the
+# scorer must follow or 65-69 deals land in a split state (pipeline
+# routes to manual_review but the scorer still soft-scores them into
+# tier A/B/C). Audit ref: docs/audit-confirmed-bugs.md §A.2. Canonical
+# home is pipeline.py; aliased here so existing callers don't break.
+FRAUD_SCORE_HARD_DECLINE: Final[int] = HARD_DECLINE_THRESHOLD
 # cite: docs/AEGIS_MASTER_PLAN.md §5.2 — "Days negative 0-4: ok. 5-9:
 # yellow. ≥10: usually decline." 15 is the conservative hard-decline
 # threshold (beyond "usually decline") to leave headroom for soft-scoring

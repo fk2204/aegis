@@ -112,6 +112,35 @@ def test_fraud_score_critical_declines(
     assert any(r.startswith("fraud_score_critical") for r in result.hard_decline_reasons)
 
 
+def test_fraud_score_critical_aligned_with_pipeline_threshold() -> None:
+    """Regression: the scorer's hard-decline floor must match the pipeline's.
+
+    Pre-fix (audit doc §A.2) the scorer used 70 while the pipeline used 65.
+    A deal with fraud_score in [65, 69] then landed in a split state: pipeline
+    routed it to manual_review but the scorer ran soft scoring as if nothing
+    was wrong. Pin them aligned.
+    """
+    from aegis.parser.pipeline import HARD_DECLINE_THRESHOLD
+    from aegis.scoring.score import FRAUD_SCORE_HARD_DECLINE
+
+    assert FRAUD_SCORE_HARD_DECLINE == HARD_DECLINE_THRESHOLD
+
+
+def test_fraud_score_at_pipeline_threshold_declines(
+    clean_deal: ScoreInput, fresh_ofac: OFACClient
+) -> None:
+    """A deal at exactly `HARD_DECLINE_THRESHOLD` must hit `fraud_score_critical`.
+
+    Boundary check for the A.2 fix: pre-fix this deal went through soft
+    scoring; post-fix it hard-declines like the pipeline already does.
+    """
+    from aegis.parser.pipeline import HARD_DECLINE_THRESHOLD
+
+    deal = clean_deal.model_copy(update={"fraud_score": HARD_DECLINE_THRESHOLD})
+    result = score_deal(deal, ofac=fresh_ofac)
+    assert any(r.startswith("fraud_score_critical") for r in result.hard_decline_reasons)
+
+
 def test_eof_markers_declines(clean_deal: ScoreInput, fresh_ofac: OFACClient) -> None:
     deal = clean_deal.model_copy(update={"eof_markers": 3})
     result = score_deal(deal, ofac=fresh_ofac)
@@ -210,7 +239,7 @@ def test_f_tier_soft_decline_distinguishable_from_hard_decline(
             "days_negative": 7,  # chronic negative (-10) but ≤ 15
             "credit_score": 540,  # poor (-15)
             "time_in_business_months": 4,  # 6-12 mo (-8) but ≥ 3
-            "fraud_score": 35,  # low_fraud_signals (-8) but < 70
+            "fraud_score": 35,  # low_fraud_signals (-8) but < 65
             "industry_risk_tier": "high",  # -10
         }
     )
