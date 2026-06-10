@@ -15,7 +15,11 @@
 $ErrorActionPreference = 'Stop'
 
 $RemoteScript = @'
-set -euo pipefail
+# -e (exit on error) + pipefail; intentionally NO -u — /etc/aegis/aegis.env
+# contains $-bearing values (e.g. DB password) that bash would try to expand
+# as variable refs under nounset. The `set -a; source; set +a` block must
+# allow unset-variable references during source.
+set -eo pipefail
 cd /opt/aegis
 echo "==> git pull"
 git pull --ff-only
