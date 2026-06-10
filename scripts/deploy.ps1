@@ -28,18 +28,23 @@ echo "==> uv sync"
 uv sync
 echo
 echo "==> apply migrations"
-set -a; source /etc/aegis/aegis.env; set +a
-.venv/bin/python scripts/apply_migrations.py --target prod
+# Subshell isolates the sourced /etc/aegis/aegis.env so its DB-password +
+# token contents do not leak into the outer shell's env that sudo inherits.
+(set -a; source /etc/aegis/aegis.env; set +a; .venv/bin/python scripts/apply_migrations.py --target prod)
 echo
 echo "==> funders table audit"
-.venv/bin/python scripts/audit_funders_table.py
+(set -a; source /etc/aegis/aegis.env; set +a; .venv/bin/python scripts/audit_funders_table.py)
 echo
 echo "==> restart aegis-web + aegis-worker"
-sudo systemctl restart aegis-web aegis-worker
+# Absolute path + -n required: NOPASSWD rule in /etc/sudoers.d/aegis lists
+# /usr/bin/systemctl literally. Bare `sudo systemctl` falls back to password
+# prompt from non-interactive shells. ONLY `restart` is NOPASSWD-allowed;
+# `is-active` is a read-only query and doesn't need sudo at all.
+sudo -n /usr/bin/systemctl restart aegis-web aegis-worker
 sleep 2
 echo
 echo "==> service status"
-sudo systemctl is-active aegis-web aegis-worker
+systemctl is-active aegis-web aegis-worker
 echo
 echo "==> deploy ok"
 '@

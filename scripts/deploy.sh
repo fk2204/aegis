@@ -62,7 +62,7 @@ set -euo pipefail
 cd "$AEGIS_REMOTE_PATH"
 git pull --ff-only
 uv sync
-sudo systemctl restart aegis-web aegis-worker
+sudo -n /usr/bin/systemctl restart aegis-web aegis-worker
 EOF
 
 log "6/6  Smoke-checking /healthz"
