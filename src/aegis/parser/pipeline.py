@@ -336,6 +336,16 @@ def run_pipeline(
     )
     all_flags.extend(f"[SHADOW] {issue.flag_text}" for issue in nsf_issues)
 
+    # Plan 5.1 — Persist tampering evaluation on documents.all_flags.
+    # Pure visibility extension; not a decision-boundary change. See
+    # ``_tampering_persistence_flag`` docstring for the prefix-vs-mode
+    # rationale.
+    tampering_flag = _tampering_persistence_flag(
+        tampering_eval, settings.aegis_tampering_decline_mode
+    )
+    if tampering_flag is not None:
+        all_flags.append(tampering_flag)
+
     return PipelineResult(
         parse_status=parse_status,
         metadata=metadata,
@@ -535,6 +545,51 @@ def _adb_coverage_thin_flag(aggregate_flags: list[str]) -> str | None:
             f"threshold={threshold_pct}pct_would_route_review"
         )
     return None
+
+
+def _tampering_persistence_flag(
+    evaluation: TamperingEvaluation,
+    decline_mode: str,
+) -> str | None:
+    """Render the parse-time visibility flag for a tampering evaluation.
+
+    Plan 5.1 — closes the gap REMAINING_WORK.md called out: the
+    tampering composition was computed and audited at score-time,
+    but the flag itself only existed on ``PipelineResult.tampering_evaluation``
+    — not persisted on the document — so the close-queue gating-reason
+    labels and the dossier flag list couldn't see it.
+
+    Returns ``None`` when the evaluation didn't fire (no flag to
+    persist). Otherwise returns a single string of the form
+    ``"<prefix> bank_statement_tampering_confirmed:<branch>"`` that the
+    caller appends to ``all_flags``.
+
+    Prefix is mode-dependent. The flag fires either way; the prefix
+    controls whether it surfaces in the close-queue's gating-reason
+    label:
+
+    * ``"shadow"`` (default) → ``[SHADOW]`` prefix. The close-queue
+      ignores SHADOW prefixes when building gating-reason labels (see
+      ``aegis.web.routers.close_queue._gating_reason_labels``), so the
+      operator sees the flag on the dossier flag list but the queue
+      label is unchanged. Matches the shadow-mode contract: signal
+      visible for audit, decision unchanged.
+    * ``"live"`` → ``[META]`` prefix. Surfaces via the META category
+      as ``"editor metadata"`` on the close-queue. Aligns with the
+      live-mode contract: ``tampering_confirmed`` drives
+      ``bank_statement_tampering_confirmed`` as a hard decline at
+      score-time, and the operator-facing queue label reflects that
+      classification.
+
+    NOT a decision-boundary change. The score-time decline gate still
+    reads ``deal.tampering_confirmed`` (``score.py:380``), which is
+    only set in live mode via the multi-month re-evaluation path. This
+    helper is pure visibility — no new auto-decline path.
+    """
+    if not evaluation.fires:
+        return None
+    prefix = "[META]" if decline_mode == "live" else "[SHADOW]"
+    return f"{prefix} bank_statement_tampering_confirmed:{evaluation.branch}"
 
 
 def _collect_flags(
