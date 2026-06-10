@@ -105,18 +105,26 @@ CREATE TABLE IF NOT EXISTS disclosure_transmissions (
   metadata JSONB,
 
   -- 4-year retention floor (CA 10 CCR § 952 + NY 23 NYCRR § 600). 30-day
-  -- buffer absorbs clock skew + statute-of-limitations edge cases. STORED
-  -- generated column locks the value at insert so clock changes cannot
-  -- retroactively shorten the window.
-  -- Days-only interval: current Postgres (>= 14) marks year/month intervals
-  -- on TIMESTAMPTZ as STABLE not IMMUTABLE (calendar arithmetic depends on
-  -- daylight-saving + leap-year rules), which fails the STORED generated-
-  -- column immutability check. 1490 days = 4 * 365 + 30, ≈ 4y + 30d (≥ the
-  -- statutory floor; +1.25d drift over 4y is acceptable for a retention
-  -- buffer). Migration 004 used 'INTERVAL 4 years 30 days' but was applied
-  -- on an older Postgres release that allowed the non-immutable expression.
-  retention_until TIMESTAMPTZ
-    GENERATED ALWAYS AS (sent_at + INTERVAL '1490 days') STORED,
+  -- buffer absorbs clock skew + statute-of-limitations edge cases.
+  --
+  -- DEFAULT (not GENERATED STORED): current Postgres marks every
+  -- ``TIMESTAMPTZ + INTERVAL`` as STABLE — even day-only intervals depend
+  -- on session-timezone DST rules — so STORED generated columns reject
+  -- it ("generation expression is not immutable"). DEFAULT expressions
+  -- don't require immutability, so they can use NOW().
+  --
+  -- 1490 days = 4 * 365 + 30, ≈ 4y + 30d. The value is locked at insert
+  -- (default expressions evaluate once per row). Clock changes cannot
+  -- retroactively shorten the window. If a caller sets ``sent_at`` to a
+  -- backdated value, ``retention_until`` still binds to NOW()+1490d at
+  -- insert — i.e., the retention floor relative to the insert moment,
+  -- not the disclosure-sent moment. That overstates retention (rows
+  -- kept longer), which exceeds the statutory floor.
+  --
+  -- Migration 004 used a GENERATED STORED form with year/month intervals
+  -- but was applied on an older Postgres release that allowed the
+  -- non-immutable expression. New migrations cannot mirror that pattern.
+  retention_until TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '1490 days'),
 
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
