@@ -325,6 +325,20 @@ class TierMatch(_StrictModel):
     ``FunderTier.max_advance`` (the tier's ceiling). ``None`` when the
     tier did not publish a max_advance."""
 
+    estimated_payback_total: Money | None = None
+    """``advance * buy_rate_midpoint`` — the simple total the merchant
+    repays at this tier. ``None`` when ``estimated_advance`` is ``None``
+    or the tier omits ``buy_rate_low/high``. Computed by
+    ``scoring.pricing.estimate_tier_pricing`` (U37). Operator-facing
+    pricing hint only; NOT a Reg Z APR — see that module's docstring."""
+
+    estimated_daily_payment: Money | None = None
+    """``payback_total / 252`` (MCA business-day convention). ``None``
+    under the same conditions as ``estimated_payback_total``. Surfaced
+    next to the factor range in the matched-funders inline panel so the
+    operator can sanity-check "what does the daily debit look like at
+    this tier"."""
+
 
 class FunderMatch(_StrictModel):
     """A funder candidate ranked against this merchant's profile."""

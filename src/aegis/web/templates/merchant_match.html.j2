@@ -211,6 +211,18 @@
                             {% if t.estimated_holdback is not none %}
                               <span class="mono-cell" style="font-size:11.5px;color:var(--ink-2)">{{ t.estimated_holdback | format_pct }} holdback</span>
                             {% endif %}
+                            {# U37 — per-tier payback total + daily-payment hint.
+                               ``estimated_payback_total``/``estimated_daily_payment``
+                               are populated by ``estimate_tier_pricing`` only when
+                               the tier publishes ``buy_rate_*`` AND the score
+                               supplies a positive advance. ``None`` → omit the
+                               span (no fabricated placeholder). #}
+                            {% if t.estimated_payback_total is not none %}
+                              <span class="mono-cell" style="font-size:11.5px;color:var(--ink-2)">{{ t.estimated_payback_total | whole_money }} payback</span>
+                            {% endif %}
+                            {% if t.estimated_daily_payment is not none %}
+                              <span class="mono-cell" style="font-size:11.5px;color:var(--ink-2)">{{ t.estimated_daily_payment | whole_money }}/day</span>
+                            {% endif %}
                           </div>
                         {% else %}
                           <details style="padding:6px 8px;border:1px solid var(--rule);background:transparent">

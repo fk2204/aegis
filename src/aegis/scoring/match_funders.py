@@ -70,6 +70,7 @@ from aegis.scoring.models import (
     ScoreResult,
     TierMatch,
 )
+from aegis.scoring.pricing import estimate_tier_pricing
 
 # Tier → position along the funder's pricing range, 0.0 = best end (low
 # factor / low holdback, merchant-favorable), 1.0 = worst end (high
@@ -442,6 +443,20 @@ def evaluate_tier_matches(
     out: list[TierMatch] = []
     for tier in funder.tiers:
         reasons = _evaluate_tier_criteria(tier, deal)
+        clamped_advance = _clamp_advance_to_tier(
+            score.suggested_max_advance, tier.max_advance
+        )
+        # U37 — pricing guidance per tier. Computed against the clamped
+        # advance so payback_total reflects the ceiling the tier actually
+        # writes (Elite caps at $250k even when the score suggests more).
+        # Falls back to ``score.suggested_max_advance`` when the tier
+        # publishes no ``max_advance`` (clamp returns None in that case).
+        pricing_advance = clamped_advance if clamped_advance is not None else (
+            score.suggested_max_advance
+            if score.suggested_max_advance > 0
+            else None
+        )
+        pricing = estimate_tier_pricing(tier, pricing_advance)
         out.append(
             TierMatch(
                 tier_name=tier.name,
@@ -450,9 +465,9 @@ def evaluate_tier_matches(
                 estimated_factor_low=tier.buy_rate_low,
                 estimated_factor_high=tier.buy_rate_high,
                 estimated_holdback=tier.max_holdback,
-                estimated_advance=_clamp_advance_to_tier(
-                    score.suggested_max_advance, tier.max_advance
-                ),
+                estimated_advance=clamped_advance,
+                estimated_payback_total=pricing.payback_total,
+                estimated_daily_payment=pricing.daily_payment_estimate,
             )
         )
     return out
