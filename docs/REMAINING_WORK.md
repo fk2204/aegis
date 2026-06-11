@@ -1,6 +1,7 @@
 # AEGIS — Remaining work
 
-**Snapshot taken:** 2026-06-10 (post-session closure pass; six items
+**Snapshot taken:** 2026-06-11 (post-session closure pass: 2026-06-10
+session work + the "Add funder via Claude Code" wrapper. Seven items
 moved from open to ✅ CLOSED with resolving commits inline. See the
 "2026-06-10 closure log" at the head of each section for what shipped).
 **Purpose:** durable list of what's queued, parked, or systemic. So nothing's
@@ -18,14 +19,34 @@ Cross-references:
 
 Ready to scope or already specced.
 
-### "Add funder via Claude Code"
-Hand Claude Code the PDF/PNG, it runs the existing extraction engine,
-shows the fields in chat with low-confidence flagged, the operator
-confirms, and Claude Code calls the existing `/ui/funders/new`
-upsert path. **Thin wrapper, NOT autonomous** — confirmation
-required (per CLAUDE.md "extraction assists, never replaces
-judgment"). Reuses everything that already exists; no new write
-path, no new prompt. Status: scoped, ready to build.
+### "Add funder via Claude Code" ✅ CLOSED 2026-06-11
+Shipped as `scripts/add_funder.py`. Two subcommands:
+
+```
+python scripts/add_funder.py extract <file>... [--output PATH]
+python scripts/add_funder.py save --from PATH [--dry-run]
+```
+
+`extract` reads PDF/PNG bytes, routes through the existing
+`extract_funder_guidelines` / `extract_funder_guidelines_from_image` /
+`merge_extractions` engine, prints the merged `FunderGuidelineExtraction`
+as JSON to stdout (or `--output`) plus a human-readable summary with
+low-confidence fields (<60) to stderr. `save` re-reads the (possibly
+edited) preview and calls `FunderRepository.upsert`. Two-phase by
+design so Claude Code can show fields in chat between extract and
+save — CLAUDE.md "extraction assists, never replaces judgment" is
+enforced by the workflow, not the CLI. `--dry-run` validates round-trip
+without writing.
+
+Pure-function core + DI-injected IO (LLM client, repo, file readers)
+so the 26-test suite at `tests/scripts/test_add_funder.py` runs
+against `InMemoryFunderRepository` + a stub LLM. No new write path,
+no new prompt.
+
+Pre-existing gap noted: neither this wrapper NOR the
+`/ui/funders/import/save` route writes an audit row on funder upsert
+(repo.upsert is bare). If audit becomes required, the fix lands in
+the repository layer so both call sites cover.
 
 ### Funder-extraction prompt — third rule ✅ CLOSED 2026-06-10 (`b07bfe1`)
 Rule 11 added as syntactic subject-test on top of Rule 9's semantic
