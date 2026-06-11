@@ -1,7 +1,8 @@
 # AEGIS — Remaining work
 
-**Snapshot taken:** 2026-06-06 (Step 2a shadow-comparison run; see new
-"Step 2 of 3-track redesign" entry below).
+**Snapshot taken:** 2026-06-10 (post-session closure pass; six items
+moved from open to ✅ CLOSED with resolving commits inline. See the
+"2026-06-10 closure log" at the head of each section for what shipped).
 **Purpose:** durable list of what's queued, parked, or systemic. So nothing's
 lost between sessions.
 
@@ -26,28 +27,26 @@ required (per CLAUDE.md "extraction assists, never replaces
 judgment"). Reuses everything that already exists; no new write
 path, no new prompt. Status: scoped, ready to build.
 
-### Funder-extraction prompt — third rule
-Add an explicit rule to `FUNDER_GUIDELINE_EXTRACTION_PROMPT` banning
-AGENT-DUTY clauses (clawback windows, DFPI licensing requirements,
-referral terms, "the agent must…" obligations) from any
-merchant-gating bucket (`conditional_requirements`,
-`auto_decline_conditions`). Route them to `notes_residual` instead.
-Shor's ISO retest still leaked CA/VA agent-compliance clauses into
-`conditional_requirements` at confidence 72 after the first
-prompt-tighten. Non-blocking; iterate when convenient.
+### Funder-extraction prompt — third rule ✅ CLOSED 2026-06-10 (`b07bfe1`)
+Rule 11 added as syntactic subject-test on top of Rule 9's semantic
+enumeration: inspect the grammatical subject of each clause before
+deciding the bucket. If subject is the agent / ISO / broker /
+referring party / "you", the obligation is agent-side regardless of
+topic — routes to `notes_residual`. Reinforces default-to-residual
+posture. 95 existing funder tests still pass; prompt-only change.
 
-### `/uploads/from-close` route — xfail debt
-Route at `src/aegis/api/routes/upload.py` calls
-`CloseClient.download_attachment(attachment_id)` standalone without
-priming the URL cache via `list_lead_attachments`. Now raises
-`CloseError("cache miss")`. Was already broken in prod (same dead
-endpoint as the listing). 5 tests xfail-marked in
-`tests/api/test_uploads_from_close.py` with the pointer.
+Historical context preserved: Shor's ISO retest still leaked CA/VA
+agent-compliance clauses into `conditional_requirements` at confidence
+72 after the first prompt-tighten, motivating Rule 11.
 
-Fix: either prime the cache by calling `list_lead_attachments(close_lead_id)`
-first, or accept a URL in the POST body and add a sibling
-`download_attachment_by_url` method on the client. Low priority — no
-live caller hits this route.
+### `/uploads/from-close` route — xfail debt ✅ CLOSED 2026-06-10 (`201bb2d`)
+Route now calls `list_lead_attachments(body.close_lead_id)` before
+`download_attachment(body.attachment_id)` inside the existing try
+block. Cache-miss after a successful list call mapped to 404
+(semantically the attachment doesn't belong to this lead). All 5
+previously-xfailed tests in `tests/api/test_uploads_from_close.py`
+removed from xfail and passing. Mock transport refactored to
+dispatch by URL path.
 
 ---
 
@@ -104,11 +103,21 @@ Not ready to ship; need dedicated thinking, not opportunistic patching.
   `fraud_score` path still controls every production decision. Step 2
   retires `fraud_score` and flips A/B/C live. **NOT authorized** —
   gated on the conditions below.
-- **Diagnostic:** `scripts/shadow_comparison_a_b_c_vs_fraud_score.py`
-  (commit `973d7fd`). Read-only sweep — every merchant in the corpus,
-  LIVE decision vs new A/B/C, categorised per disagreement bucket.
-  Re-run periodically; treat exit code 3 (any
-  `old-caught-something-new-misses` row) as a STOP.
+- **Diagnostics in place:**
+  - `scripts/shadow_comparison_a_b_c_vs_fraud_score.py` (commit `973d7fd`).
+    Read-only sweep — every merchant in the corpus, LIVE decision vs
+    new A/B/C, categorised per disagreement bucket. Re-run periodically;
+    treat exit code 3 (any `old-caught-something-new-misses` row) as a STOP.
+  - `scripts/track_a_historical_lookback.py` (commit `618bdea`, Wave 4.1).
+    Walks every document whose `fraud_score >= HARD_DECLINE_THRESHOLD`
+    and runs `compute_integrity_verdict` on persisted Track A signals.
+    Exit code 3 = at least one miss row (REGRESSION — operator triage
+    required). Read-only; box-run, not laptop-run.
+  - `docs/STEP_2_CUTOVER_REVIEW.md` (commit `2fc11ff`, Wave 4.3). The
+    operator's triage workspace — three honest disagreement categories
+    (`genuine-regression`, `detector-gap`, `corpus-shape-artifact`),
+    row template, authorisation log. Gates the env-var flip on zero
+    un-reviewed open rows.
 - **Cutover gating conditions — ALL required, in order:**
   1. **Corpus growth.** The 2026-06-06 baseline is N=1 for Track B/C
      comparison (only VU had classified transactions; A&R KM had docs
@@ -116,12 +125,9 @@ Not ready to ship; need dedicated thinking, not opportunistic patching.
      decision on N=1 is not a population claim, it is a case
      observation. Need significantly more deals through both systems
      before "no regressions" means anything.
-  2. **Track A historical lookback.** Pull every historical
-     `fraud_score_critical` decline and verify Track A would have
-     caught it (FAIL verdict) — explicitly proves Track A isn't
-     missing the integrity signature `fraud_score` previously gated
-     on. Document as `scripts/track_a_historical_lookback.py` output;
-     corpus + box-run, not laptop-run.
+  2. **Track A historical lookback.** ✅ Script shipped 2026-06-10.
+     Awaits operator-run against prod corpus + miss-row triage via
+     `STEP_2_CUTOVER_REVIEW.md`.
   3. **Regression review.** Every
      `old-caught-something-new-misses` row across the accumulated
      re-runs gets per-merchant operator triage — categorise (genuine
@@ -141,31 +147,29 @@ Not ready to ship; need dedicated thinking, not opportunistic patching.
   baseline current; a clean exit 0 on a small corpus does not
   authorize cutover on its own.
 
-### A.1 + A.2 decline-boundary policy
-- **Spec shapes:** `docs/audit-confirmed-bugs.md`.
-- **A.2** — fraud_score 65/70 threshold (decline cutoff).
-- **A.1** — EOF gate (block parses that don't reach EOF).
-- Both are decline-boundary policy calls. Shadow-first per the
-  CLAUDE.md "decision-boundary changes" rule.
-- Likely folded into the scoring-redesign Track A/B decisions; not
-  shipped as standalone tweaks.
+### A.1 + A.2 decline-boundary policy ✅ CLOSED 2026-06-10
+- **A.2** — `4c1c743` aliased `FRAUD_SCORE_HARD_DECLINE` to
+  `HARD_DECLINE_THRESHOLD = 65`; regression test pins equality at the
+  boundary. `fcecdb2` refreshed 6 stale "≥ 70" references in
+  config / env-var docs / flag glossary / scorer docstring.
+- **A.1** — box-side env var `AEGIS_EOF_THRESHOLD=2` set in
+  `/etc/aegis/aegis.env` on 2026-06-10; aligns scorer with the
+  pipeline's R4.6 narrative (EOFs=2 is normal for legit online-banking
+  exports, not a hard decline).
+- Both items documented in `docs/audit-confirmed-bugs.md` header as
+  ✅ CLOSED with their resolving commits.
 
-### NY broker-compensation disclosure guard
-- **Spec / status:** the guard function `validate_broker_compensation_disclosure`
-  at `src/aegis/compliance/broker_compensation.py` raises
-  `NyBrokerCompensationDisclosureMissing` (cite: 23 NYCRR § 600.21(f))
-  when a NY merchant is paired with a funder whose
-  `aegis_compensation_disclosure_text` is empty.
-- **Not wired into any production runtime path** (verified
-  2026-06-05). A NY merchant can be matched to Shor (or any other
-  funder with empty disclosure) without warning.
-- **Decision needed:** wire as NY hard-fail in `match_funder`, OR
-  delete the dormant module. Product question — AEGIS is now an
-  internal pre-screening tool; funders own regulator-facing
-  disclosures (per `.claude/rules/compliance.md` SCOPE NOTE).
-- The new `/ui/funders/new` form already exposes
-  `aegis_compensation_disclosure_text` as an editable field, so
-  Shor's text can be pasted through the UI without any code change.
+### NY broker-compensation disclosure guard ✅ CLOSED 2026-06-10 (`6f595a4`)
+`match_funder` now calls `validate_broker_compensation_disclosure`
+next to the existing `excluded_states` check. NY merchant paired with
+a funder whose `aegis_compensation_disclosure_text` is empty surfaces
+as a hard-fail on the match grid with reason
+`broker_compensation_text_missing`. Catches the base
+`BrokerCompensationDisclosureMissing` so future states added to
+`_STATE_RULES` auto-apply without further edits. Three regression
+tests (NY-empty / NY-present / CA-empty pass-through) in
+`tests/funders/test_match_regression.py`. 456 funder + compliance
+tests still green.
 
 ### Tampering rule shadow → live flip
 - **Status:** shadow mode active. Audit-log action
@@ -174,9 +178,14 @@ Not ready to ship; need dedicated thinking, not opportunistic patching.
 - **Watch:** real fires in audit_log to see whether the rule's
   precision holds on live merchants (A&R KM and VU 7722 would have
   fired; review for false positives elsewhere).
-- **Close the gap first:** persist `tampering_fires` at parse time
-  (currently only fires through the score-time path; the persistence
-  is the exactness gap).
+- ✅ **Parse-time persistence gap CLOSED 2026-06-10 (`14c9671`):**
+  `documents.all_flags` now carries the tampering verdict from
+  parse time —
+  `[SHADOW] bank_statement_tampering_confirmed:<branch>` while in
+  shadow, `[META] bank_statement_tampering_confirmed:<branch>` after
+  the flip. Visible on the dossier; close-queue ignores SHADOW prefix
+  by design. Not a decision-boundary change — the score-time decline
+  gate still reads `deal.tampering_confirmed`.
 - **Flip mechanism:** env var change, no code deploy.
 - **Do NOT flip** until shadow audit rows reviewed against known
   good + known bad cases.
@@ -228,7 +237,41 @@ Things that gate future work or limit how parallel we can be safely.
 
 ---
 
-## Done + live tonight (for reference, not action)
+## 2026-06-10 closure log
+
+What shipped in this session (15 commits, all on origin/main through
+`20f60ec`). Closures referenced above; this is the consolidated index:
+
+- **A.2 + audit closure** — `4c1c743` aligned `FRAUD_SCORE_HARD_DECLINE`
+  → 65; `fcecdb2` refreshed 6 stale "≥ 70" references; `1633d4a`
+  marked A.1/A.2/A.3 ✅ CLOSED in `docs/audit-confirmed-bugs.md`.
+- **A.1** — box-side `AEGIS_EOF_THRESHOLD=2` set in `/etc/aegis/aegis.env`.
+- **Funder-extraction prompt Rule 11** — `b07bfe1` syntactic
+  agent-duty subject-test ON TOP of Rule 9's semantic enumeration.
+- **NY broker-comp guard wired** — `6f595a4` in `match_funder` (catches
+  the base class, future states auto-apply).
+- **`/uploads/from-close` URL-cache prime** — `201bb2d`; 5 xfails removed.
+- **Tampering parse-time persistence** — `14c9671`
+  `[SHADOW]/[META] bank_statement_tampering_confirmed:<branch>` on
+  `documents.all_flags`.
+- **Track A historical lookback script** — `618bdea` Wave 4.1, with
+  injected DI Protocol for test isolation, 14 tests green.
+- **Cutover-review workspace + industry normaliser** — `2fc11ff`
+  Wave 4.3 (`docs/STEP_2_CUTOVER_REVIEW.md`) + 1.4
+  (`scripts/normalise_funder_industries.py` in dry-run-default mode).
+- **Manual back-fill cleanup** — `6682c30` (3 scripts removed),
+  preceded by `60ce74d` operator-directed acceptance-set trim.
+- **Close-queue stale-row tests** — `5f937d9` pinned 6h-pull / 1h-parse
+  predicates (12 cases).
+- **Security allow-list** — `93c04c2` github.com added under
+  documentation-references (admin health page repo URL).
+- **CF_API_TOKEN convention** — `f5ff460` added, then `20f60ec` reverted
+  per operator direction (no CF-side automation planned; canonical
+  health monitoring is the push-based `aegis-heartbeat-*` timers).
+
+---
+
+## Done + live previously (for reference, not action)
 
 So the next session knows what's in.
 
