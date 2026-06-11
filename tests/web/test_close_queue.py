@@ -28,7 +28,7 @@ from aegis.web.routers.close_queue import (
 _NOW = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
 
 
-def _enqueued_row(hours_ago: float, *, action: str = "close.orchestration.enqueued") -> dict:
+def _enqueued_row(hours_ago: float, *, action: str = "close.orchestration.enqueued") -> dict[str, object]:
     """An audit-log row simulating a Close pull enqueued ``hours_ago`` hours back."""
     return {
         "action": action,
@@ -44,7 +44,7 @@ def _doc(parse_status: str, *, uploaded_hours_ago: float) -> DocumentRow:
         file_hash=f"sha256-{uuid4().hex}",
         byte_size=1024,
         original_filename="stmt.pdf",
-        parse_status=parse_status,  # type: ignore[arg-type]
+        parse_status=parse_status,
         uploaded_at=_NOW - timedelta(hours=uploaded_hours_ago),
     )
 
