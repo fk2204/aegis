@@ -1,11 +1,12 @@
 # Audit — Confirmed Bugs (read-only re-verification)
 
 **Main HEAD audited:** `875d08a fix(tampering): backfill replays the EXACT parse-time rule, not the score-only proxy`
-**A.1 status:** CONFIRMED-LIVE
-**A.2 status:** CONFIRMED-LIVE
-**A.3 status:** CONFIRMED-LIVE
-**Recommended fix order:** A.3 → A.2 → A.1
-**Rationale (one line):** A.3 blocks `tests/web/` collection (192 unrelated tests can't even import), so unblock the test suite first; A.2 is a single-constant edit with a clear policy answer (align pipeline → score, not the other way); A.1 needs a small reshape of the score-side gate and benefits from a working test suite while you touch it.
+**A.1 status:** ✅ CLOSED 2026-06-10 (box-side env var `AEGIS_EOF_THRESHOLD=2` set in `/etc/aegis/aegis.env`; aligns scorer with pipeline at 2 EOFs per the R4.6 refactor)
+**A.2 status:** ✅ CLOSED 2026-06-10 in commit `4c1c743` (`FRAUD_SCORE_HARD_DECLINE` aliased to `HARD_DECLINE_THRESHOLD = 65`; regression test pins equality)
+**A.3 status:** ✅ CLOSED earlier (pre-session) — `from aegis.web.router import router as web_router` is the current import at `src/aegis/api/routes/__init__.py:32`
+**Original fix order:** A.3 → A.2 → A.1 (executed in this order; A.3 unblocked the suite, A.2 was the constant edit, A.1 was the box-side env var)
+
+**Below text is preserved as historical record. The "Source paste (current)" / "Status: CONFIRMED-LIVE" annotations no longer reflect main; the resolution commits cited above are the authoritative current state.**
 
 ---
 
