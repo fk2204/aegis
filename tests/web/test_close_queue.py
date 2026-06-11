@@ -28,7 +28,9 @@ from aegis.web.routers.close_queue import (
 _NOW = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
 
 
-def _enqueued_row(hours_ago: float, *, action: str = "close.orchestration.enqueued") -> dict[str, object]:
+def _enqueued_row(
+    hours_ago: float, *, action: str = "close.orchestration.enqueued"
+) -> dict[str, object]:
     """An audit-log row simulating a Close pull enqueued ``hours_ago`` hours back."""
     return {
         "action": action,
