@@ -69,6 +69,44 @@ def test_strong_metadata_branch_fires_at_score_threshold() -> None:
     assert "metadata_flag" in signal_kinds
 
 
+def test_strong_metadata_with_drift_surfaces_both() -> None:
+    """strong_metadata fail with corroborating reconciliation drift —
+    BOTH the metadata score row AND each drift failure must appear as
+    evidence so the underwriter sees the full pattern and doesn't
+    soften the fail to "review" thinking it's metadata noise alone.
+
+    Regression guard for F2 (track_a_audit_2026-06-12): the original
+    branch-1 evidence build dropped ``drift_failures`` even though they
+    were already computed. The competent-fabrication case can satisfy
+    BOTH branch 1 (score >= 50) and branch 2 (editor + drift) — branch
+    1 wins on precedence, and its evidence must include the drift rows
+    that branch 2 would have surfaced.
+    """
+    signals = DocumentIntegritySignals(
+        document_id="doc_strong_with_drift",
+        metadata_score=72,
+        metadata_flags=(
+            "editor_detected: Foxit PhantomPDF 11.2",
+        ),
+        validation_failures=(
+            "reconciliation_failed_period: bal_2026-01: expected 1000 got 950",
+        ),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "fail"
+    assert v.branch == "strong_metadata"
+
+    # Evidence MUST include both the metadata_score row AND a row for
+    # the reconciliation drift (which branch 1 previously dropped).
+    signal_kinds = {e.signal for e in v.evidence}
+    assert "metadata_score" in signal_kinds
+    drift_rows = [
+        e for e in v.evidence if e.signal.startswith("reconciliation_failed_")
+    ]
+    assert len(drift_rows) == 1
+    assert drift_rows[0].signal == "reconciliation_failed_period"
+
+
 def test_drift_alone_branch_fires_review() -> None:
     """Reconciliation drift with no editor flag and low metadata
     → review (drift_alone). VU 7722 shape."""

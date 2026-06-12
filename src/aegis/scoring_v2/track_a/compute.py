@@ -90,6 +90,15 @@ def compute_integrity_verdict(
             )
         for f in other_meta:
             evidence.append(EvidenceItem(signal="metadata_flag", detail=f))
+        # Reconciliation drift, if present, IS corroborating evidence for
+        # a strong-metadata fail. Surface each failure as its own row so
+        # the underwriter sees the full pattern (mirrors branch 2 / 3 /
+        # 4 behavior) instead of mistaking a strong-metadata fail for
+        # "just metadata noise" and softening it to review.
+        for f in drift_failures:
+            evidence.append(
+                EvidenceItem(signal=_drift_signal_token(f), detail=f)
+            )
         return IntegrityVerdict(
             document_id=signals.document_id,
             verdict="fail",
