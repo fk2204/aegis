@@ -5,6 +5,16 @@
 `score_deal_inputs.py`, `track_a_historical_lookback.py`). Read-only
 walk; no code changes. Punch-list for operator triage.
 
+**Closure status (afternoon 2026-06-12 update):**
+- **F1a HARD ✅ CLOSED** in commit `67797aa` — short_editor truncated to 60 chars in `framing.py`.
+- **F1b HARD ✅ CLOSED** in commit `eb6bf7a` — ValidationError split from generic Exception in `compute_score_deal_track_inputs`, ValidationError logs CRITICAL with full repr.
+- **F2 HARD ✅ CLOSED** in commit `c3beb25` — strong-metadata branch 1 now appends per-`drift_failure` evidence rows (mirrors branch 2).
+- **F3-F11 still open** (6 WORTH + 3 INFO).
+
+The "What ISN'T a finding" section below remains current.
+
+**Body below is preserved as the original audit punch-list. Per-finding "Suggested fix" / "Test gap" annotations reflect the pre-fix state.**
+
 **Status legend:** hard fix needed = HARD / worth fixing = WORTH /
 informational = INFO.
 

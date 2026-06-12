@@ -1,11 +1,11 @@
 # AEGIS — Remaining work
 
-**Snapshot taken:** 2026-06-12 (carries forward 2026-06-11's nine
-closures + adds tampering shadow-review script + two read-only audit
-docs surfacing concrete bugs and hygiene findings for operator
-triage. New "2026-06-12 audit findings" section near the bottom is
-the operator's punch-list for the next decision-boundary-touching
-session).
+**Snapshot taken:** 2026-06-12 — afternoon update: F1 (a+b), F2, H1, H3
+all CLOSED earlier in the day (closures below); H2 still open pending
+operator decision; punch-list now reduced to F3-F11 (audit doc) and H4/
+H5/H7-H10 (hygiene doc). Morning update carried forward 2026-06-11's
+nine closures + the tampering shadow-review script + the two read-only
+audit docs.
 **Purpose:** durable list of what's queued, parked, or systemic. So nothing's
 lost between sessions.
 
@@ -291,51 +291,54 @@ next decision-boundary-touching session because they need operator
 judgment (severity calls, hook-config flips, scope decisions).
 
 ### `docs/track_a_audit_2026-06-12.md` — Track A integrity verdict
-- **F1 HARD** — `IntegrityVerdict.rationale max_length=320` can be
-  exceeded by long editor strings (e.g. verbose
-  `editor_detected: <vendor>`), raising a Pydantic ValidationError
-  that the catch-all `except Exception` in
-  `score_deal_inputs.py:118` silently swallows → verdict downgrades
-  to `None` → legacy `fraud_score` runs the deal. The "Track A is
-  the gate" guarantee leaks without an audit row. Fix is either
-  truncating `short_editor` to 60 chars in `framing.py` OR raising
-  `max_length` to ~480, plus a structured-log severity split on the
-  swallowing catch.
-- **F2 HARD** — Strong-metadata branch 1 (`compute.py:73-100`) emits
-  the metadata flags but drops the `drift_failures` list even when
-  drift IS present. Underwriter overriding a metadata-only fail
-  loses the corroborating math signal. Discipline-rule shape —
-  hiding evidence lets a human soften a fail. Fix: mirror branch 2's
-  evidence-build loop.
+- **F1a HARD ✅ CLOSED 2026-06-12 (`67797aa`)** — `short_editor`
+  truncated to 60 chars in `framing.py` (57 + `...` ellipsis) so the
+  drift_plus_editor rationale stays under the `max_length=320` Pydantic
+  cap with worst-case editor signatures. Preserves the leading vendor
+  name (the underwriting-actionable part). Test
+  `test_long_editor_string_truncates_to_keep_rationale_under_max_length`
+  in `tests/scoring_v2/track_a/test_integrity_verdict.py`.
+- **F1b HARD ✅ CLOSED 2026-06-12 (`eb6bf7a`)** — catch-all in
+  `compute_score_deal_track_inputs` split: `ValidationError` now logs
+  CRITICAL with full exc repr (code bug, page someone); generic
+  `Exception` still WARNING (data oddity). Log-prefix preserved so
+  existing structured-log monitors continue to match. Tests in
+  `tests/scoring_v2/test_score_deal_track_inputs.py`.
+- **F2 HARD ✅ CLOSED 2026-06-12 (`c3beb25`)** — strong-metadata branch
+  1 in `compute.py:93-101` now mirrors branch 2's evidence-build loop:
+  every `drift_failure` surfaces as its own `EvidenceItem` alongside
+  the metadata rows when drift IS present. Underwriter sees the full
+  corroboration on the dossier, not just the metadata score. Test
+  `test_strong_metadata_with_drift_surfaces_both` in
+  `tests/scoring_v2/track_a/test_integrity_verdict.py`.
 - **F3-F11** — 6 WORTH + 3 INFO findings: boundary-test gaps,
   drift-only mirror in `all_flags`, lookback-script flag-prefix
   coupling, schema decline-field guard for `UnifiedTracksView`,
-  others. See doc for full punch-list.
+  others. See doc for full punch-list. **Still open.**
 
 ### `docs/repo_hygiene_2026-06-12.md` — Repo / tooling hygiene
-- **H1 act-now** — Both pre-commit gates inert. `.githooks/pre-commit`
-  (compliance) and `.pre-commit-config.yaml` (ruff+mypy) are
-  mutually exclusive because `make install-hooks` sets
-  `core.hooksPath=.githooks` which bypasses where `pre-commit
-  install` writes. The 2026-06-10 regression-class bugs
-  (`224f413` E501, `3f215bd` mypy errors) are direct evidence the
-  chain is unsolved. Fix: drop `core.hooksPath` from
-  `make install-hooks`; add compliance check as a local hook in
-  `.pre-commit-config.yaml`. ~30 min, single test-commit gate.
+- **H1 act-now ✅ CLOSED 2026-06-12 (`bcf209a`)** — `make install-hooks`
+  no longer sets `core.hooksPath=.githooks`. The compliance-review
+  check now lives as a third local hook inside `.pre-commit-config.yaml`
+  (entry shells to `.githooks/pre-commit` so standalone diagnosis still
+  works) — single pre-commit framework wires ruff + ruff-format + mypy
+  + compliance-review under one entry point. Clones on the old path
+  are migrated automatically (unset on next `make install-hooks`).
+  Verified by direct hook test: reject without annotation, pass with
+  `not-applicable` / `approved by <name>`.
 - **H2 worth-fixing** — `design/` is untracked-and-not-gitignored
   (Schrödinger). Contains brand assets (low risk) AND
   `_audit_seed*.py` scripts that import `aegis.db` directly (high
-  risk per operating-principle #4). Needs operator decision: commit
-  brand assets under `docs/brand/`, move audit scripts to
-  `scripts/audit/` after a security review, OR `.gitignore` the
+  risk per operating-principle #4). **Still open** — needs operator
+  decision: commit brand assets under `docs/brand/`, move audit scripts
+  to `scripts/audit/` after a security review, OR `.gitignore` the
   whole directory with documented intent.
-- **H3 worth-fixing** — `CLAUDE.md` last updated 2026-06-05; 28
-  commits since, including four 2026-06-10 ops gotchas (sudo
-  NOPASSWD pattern, funder-seeding discipline, systemctl-status
-  token leak, "read AEGIS rules first" cost ~5 failed SSH attempts)
-  that live only in Filip-machine-local memory. Anyone cloning the
-  repo doesn't see them. Recommended: add a "Deploy & operations
-  gotchas" section to CLAUDE.md (or `.claude/rules/deploy.md`).
+- **H3 worth-fixing ✅ CLOSED 2026-06-12 (`dcc65c1`)** — Four 2026-06-10
+  ops gotchas (sudo NOPASSWD literal form, systemctl-status token leak,
+  install-script token grep, read-rules-first) landed as a new
+  "Box-side operations gotchas" section in `.claude/rules/deploy.md`,
+  plus the funder seeding sub-rule extension to operating-principles
+  Rule 4. CLAUDE.md footer refreshed.
 - **H6 ✅ ACTED ON 2026-06-12** — added `*.bak`, `*.swp`, `*~`,
   `.aider*` to `.gitignore`. The trivial one — other gitignore
   coverage is already strong on credentials/tokens.

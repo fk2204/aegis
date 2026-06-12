@@ -9,6 +9,17 @@ installed by default in this repo.
 
 **Method:** read-only scan; orchestrator decides what to act on.
 
+**Closure status (afternoon 2026-06-12 update):**
+- **H1 act-now ✅ CLOSED** in commit `bcf209a` — install-hooks unifies
+  ruff + mypy + compliance-review under pre-commit framework.
+- **H3 worth-fixing ✅ CLOSED** in commit `dcc65c1` — box-side ops
+  gotchas landed in `.claude/rules/deploy.md` + funder-seeding sub-rule
+  in operating-principles.md.
+- **H6 ✅ ACTED ON** prior to this update (gitignore additions for
+  editor/AI tooling backups).
+- **H2 / H4 / H5 / H7-H10 still open** (H2 needs operator decision; the
+  others are informational or operator-review-pass candidates).
+
 ## Summary
 
 10 findings. **2 act now**, **5 worth fixing**, **3 informational**.
