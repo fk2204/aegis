@@ -1,0 +1,98 @@
+
+
+
+
+<section class="body cols-1" style="margin-top:18px">
+  <div>
+    <header class="sect-head">
+      <h2>3-track view <span class="meta" style="font-weight:normal">· integrity → business risk → concentration · informational, does not affect decline</span></h2>
+      <div class="rule"></div>
+    </header>
+
+    
+
+    <div class="track-a" style="margin-top:14px;padding:14px;border:1px solid var(--rule);border-radius:6px">
+      <header class="sect-head" style="margin:0 0 6px 0">
+        <h3 style="margin:0;font-size:14px">A · Document integrity</h3>
+        
+          <span class="chip bad">FAIL</span>
+        
+        <span class="meta" style="margin-left:8px">1 fail</span>
+      </header>
+
+      
+        <table class="queue" style="margin-top:8px;font-size:12.5px">
+          <thead>
+            <tr>
+              <th style="width:90px">Verdict</th>
+              <th style="width:160px">Branch</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            
+              <tr class="no-click">
+                <td>
+                  
+                    <span class="chip bad">FAIL</span>
+                  
+                </td>
+                <td title="drift_plus_editor">Editor tampering + reconciliation drift</td>
+                <td>
+                  <div class="desc">FAIL (drift_plus_editor) — editor metadata (iText 2.1.7 by 1T3XT) + 2 reconciliation failure(s) corroborate. The competent-fabrication signature: drift alone could be OCR, editor alone could be Preview-export, but both together is the tampering pattern (metadata_score=38).</div>
+                  
+                    <ul style="margin:4px 0 0 0;padding-left:18px;font-size:11.5px;color:var(--ink-2)">
+                      
+                        <li><span title="editor_detected">Editor metadata fingerprint</span> · editor_detected: iText 2.1.7 by 1T3XT</li>
+                      
+                        <li><span title="reconciliation_failed_period">Reconciliation: period total mismatch</span> · reconciliation_failed_period: expected -263.89 got 236.11</li>
+                      
+                        <li><span title="reconciliation_failed_withdrawal_total">Reconciliation: withdrawal total mismatch</span> · reconciliation_failed_withdrawal_total: listed 31416.55 vs printed 30726.55</li>
+                      
+                    </ul>
+                  
+                </td>
+              </tr>
+            
+          </tbody>
+        </table>
+      
+    </div>
+
+    
+
+    <div class="track-b" style="margin-top:14px;padding:14px;border:1px solid var(--rule);border-radius:6px">
+      <header class="sect-head" style="margin:0 0 6px 0">
+        <h3 style="margin:0;font-size:14px">B · Business risk band</h3>
+        
+          <span class="chip">insufficient data</span>
+        
+      </header>
+
+      
+        <div class="marginalia">Documents present but no classified transactions are persisted (parser may have validated for integrity but not committed transaction rows). Track B / Track C cannot compute without classified transactions.</div>
+      
+    </div>
+
+    
+
+    <div class="track-c" style="margin-top:14px;padding:14px;border:1px solid var(--rule);border-radius:6px">
+      <header class="sect-head" style="margin:0 0 6px 0">
+        <h3 style="margin:0;font-size:14px">C · Concentration / context</h3>
+        
+          <span class="chip">insufficient data</span>
+        
+      </header>
+
+      
+        <div class="marginalia">Documents present but no classified transactions are persisted (parser may have validated for integrity but not committed transaction rows). Track B / Track C cannot compute without classified transactions.</div>
+      
+    </div>
+
+    <div class="marginalia" style="margin-top:10px;font-size:11px">
+      The 3-track view is informational. The existing score block above
+      continues to drive the production decision; Step 2 of the
+      scoring redesign retires fraud_score and flips A/B/C live.
+    </div>
+  </div>
+</section>
