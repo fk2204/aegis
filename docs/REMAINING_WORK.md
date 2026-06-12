@@ -1,9 +1,11 @@
 # AEGIS — Remaining work
 
 **Snapshot taken:** 2026-06-11 (post-session closure pass: 2026-06-10
-session work + the "Add funder via Claude Code" wrapper. Seven items
-moved from open to ✅ CLOSED with resolving commits inline. See the
-"2026-06-10 closure log" at the head of each section for what shipped).
+session work + the "Add funder via Claude Code" wrapper + funder
+upsert audit emit + worktree-isolation diagnostic + router.py-split
+already-done verification. Nine items moved from open to ✅ CLOSED
+with resolving commits inline. See the "2026-06-10 closure log" at
+the head of each section for what shipped).
 **Purpose:** durable list of what's queued, parked, or systemic. So nothing's
 lost between sessions.
 
@@ -43,10 +45,15 @@ so the 26-test suite at `tests/scripts/test_add_funder.py` runs
 against `InMemoryFunderRepository` + a stub LLM. No new write path,
 no new prompt.
 
-Pre-existing gap noted: neither this wrapper NOR the
-`/ui/funders/import/save` route writes an audit row on funder upsert
-(repo.upsert is bare). If audit becomes required, the fix lands in
-the repository layer so both call sites cover.
+Audit emit added in the follow-up commit (2026-06-11): the wrapper's
+`save` mode records a `funder.imported` row with `actor="claude_code"`
+after a successful upsert. Mirror change shipped to
+`/ui/funders/import/save` (`funder.imported`) and `/ui/funders/new`
+(`funder.created`) routes so all three call sites are now compliant
+with the CLAUDE.md "audit log written for every state change" rule.
+The audit lives at the CALL SITE, not in the repo (matches the
+established `funder.reextracted` / `funder.operator_notes_updated`
+pattern at `src/aegis/web/routers/funders.py`).
 
 ### Funder-extraction prompt — third rule ✅ CLOSED 2026-06-10 (`b07bfe1`)
 Rule 11 added as syntactic subject-test on top of Rule 9's semantic
@@ -217,32 +224,41 @@ tests still green.
 
 Things that gate future work or limit how parallel we can be safely.
 
-### Worktree isolation is broken
-- **Observed:** 2026-06-05 — agents fell back to operating on main
-  worktree repeatedly during the parallel build wave.
-- **Why parallel was safe tonight:** files were strictly disjoint at
-  the WRITE level (Track 1 wrote funder code + llm.py + funder
-  templates; Track 2 wrote close client + close tests). Disjoint
-  files were the actual protection, not the worktree.
-- **Implication:** any future parallel batch that edits the SAME
-  existing files (e.g. both touching `router.py` for unrelated UI
-  work) is unsafe until isolation is fixed.
-- **Fix:** investigate why worktree isolation fell back to main,
-  ship a reproducible isolation mode. Gates future parallel-write
-  work on shared files.
+### Worktree isolation is broken — documented + workaround in use
+- **Observed:** 2026-06-05 and 2026-06-10 — agents launched with
+  `isolation: "worktree"` modify the parent repo's working tree
+  instead of a side worktree on Windows.
+- **Diagnostic doc:** ✅ `docs/worktree_isolation_diagnostic.md`
+  (2026-06-11) — concise repro + workaround + signals to watch for
+  when the platform fix lands.
+- **Workaround in use:** trust file-disjointness, not the flag. The
+  orchestrator scopes each parallel agent to a strictly disjoint set
+  of paths at the WRITE level; shared-file edits (REMAINING_WORK.md,
+  CORPUS_FINDINGS.md, etc.) happen in the parent agent after sub-
+  agents return. Proven on 2026-06-11 by the audit-emit + worktree-
+  doc parallel fan-out.
+- **Status:** open as a Claude Code platform bug. AEGIS-side
+  mitigation in place; revisit when the platform docs/release notes
+  confirm the flag is honored on Windows.
 
-### `router.py` is monolithic
-- **Current state:** ~2,800 lines, all `/ui/*` routes plus several
-  `/api/*` ones, plus shared helpers.
-- **Cost tonight:** parallel UI work (funder add-form + merchant
-  add-form) was only file-disjoint because Agent B was reduced to
-  a template-only change. If both had needed router edits, the
-  parallel wave would have been a forced sequential.
-- **Fix:** split per-domain into `src/aegis/web/routers/funders.py`,
-  `merchants.py`, `close.py`, `dossier.py`, etc. Each importable as
-  a FastAPI sub-router.
-- **Status:** backlog; not blocking, but it would make parallel
-  UI work routinely safe.
+### `router.py` is monolithic ✅ CLOSED 2026-06-11 (verified post-split)
+Tracker entry was stale. `src/aegis/web/router.py` is now 131 lines —
+a composition layer over per-domain sub-routers under
+`src/aegis/web/routers/`:
+
+```
+admin.py             close_queue.py       compliance.py
+dashboard.py         disclosure_events.py documents.py
+funders.py           intake.py            merchants.py
+portfolio.py         renewals.py          triage.py
+upload.py
+```
+
+13 domains extracted. The big-monolith concern motivating this entry
+no longer applies — parallel UI work that touches disjoint domains is
+already routinely safe. If a NEW domain emerges that warrants its own
+file (e.g. a future `submissions.py` per Phase 7C plans), extract it
+at that point; nothing more to do as standing infra work.
 
 ### Mapper test coverage shipped tonight — applies to future mappers too
 - 117 structural-coverage tests landed for the
