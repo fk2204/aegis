@@ -39,6 +39,10 @@ Do not create test merchants, test funders, or test documents in production Supa
 
 Earlier work seeded placeholder merchants and docs into production without explicit authorization; staff reasonably concluded the parser was broken (the data was). Multi-barrier gating now protects against repeats — don't undermine it.
 
+**Funder seeding sub-rule (2026-06-10).** When an LLM extraction returns low-confidence or sparse fields on a funder import (sparse criteria PDF, ISO-only document, screenshot with partial fields), the temptation is to fill in industry-typical defaults — "this funder probably excludes cannabis + adult-entertainment", "typical min monthly revenue is $25k", etc. DO NOT. Ask the operator for the actual criteria sheet or accept the empty / NULL field. Industry-typical placeholders look right, match nothing, and surface as bogus match results to the underwriter, which is worse than an honest gap. Empty is better than wrong.
+
+(Cost: 4 wasted migrations during the 2026-06-10 funder seeding pass before the operator clarified the policy.)
+
 ---
 
 ## 5. The operator's stated state distribution matters

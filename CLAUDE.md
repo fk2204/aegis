@@ -165,4 +165,6 @@ At the end of any multi-step task, stop and summarize before moving to the next 
 
 ---
 
-**Last updated:** 2026-06-05 (Close-automation + extraction night — added external-integration test discipline, decision-boundary shadow-first, extraction-assists-not-replaces, reinforced scoring discipline with A&R KM + VU 7722 evidence)
+**Last updated:** 2026-06-12 (Track A correctness + worker-UX + test depth wave — added box-side operations gotchas to `.claude/rules/deploy.md` covering sudo NOPASSWD literal form, systemctl-status token leak, install-script token grep, and read-rules-first; extended operating-principles Rule 4 with the funder seeding sub-rule. 2026-06-05 entry below remains in effect.)
+
+**Previous:** 2026-06-05 (Close-automation + extraction night — added external-integration test discipline, decision-boundary shadow-first, extraction-assists-not-replaces, reinforced scoring discipline with A&R KM + VU 7722 evidence)
