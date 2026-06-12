@@ -20,6 +20,14 @@ def frame_drift_plus_editor(
     editor_flag: str, drift_count: int, metadata_score: int
 ) -> str:
     short_editor = editor_flag.replace("editor_detected: ", "")
+    # F1a guard: IntegrityVerdict.rationale is max_length=320 (models.py).
+    # Static skeleton here is ~247 chars; long vendor / version strings
+    # (anything beyond ~60 chars of short_editor) push the rationale past
+    # the Pydantic limit, which catches as a ValidationError and silently
+    # downgrades the Track A verdict to None. Truncate to keep the vendor
+    # name visible (the actionable bit) and drop the version/build suffix.
+    if len(short_editor) > 60:
+        short_editor = short_editor[:57] + "..."
     return (
         f"FAIL (drift_plus_editor) — editor metadata ({short_editor}) + "
         f"{drift_count} reconciliation failure(s) corroborate. The "

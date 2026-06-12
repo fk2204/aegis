@@ -218,6 +218,47 @@ def test_editor_metadata_alone_below_threshold_does_not_fire() -> None:
     assert v.branch == "clean"
 
 
+def test_long_editor_string_truncates_to_keep_rationale_under_max_length() -> None:
+    """F1a guard: a long editor signature (verbose vendor + version +
+    build) must not push the drift_plus_editor rationale past the
+    ``IntegrityVerdict.rationale`` ``max_length=320`` Pydantic limit.
+
+    Pre-fix, a Pydantic ValidationError would propagate from the
+    rationale builder, get swallowed by ``score_deal_inputs``' catch-
+    all, and silently downgrade Track A to ``None`` (legacy fraud_score
+    fallback). Post-fix the framer truncates ``short_editor`` to 60
+    chars + ellipsis, capping the rationale at ~315 chars.
+    """
+    long_editor = (
+        "editor_detected: Some Long Vendor Tool Name with "
+        "Version 11.2.3.42 (Build 8a7c) by Producer GmbH"
+    )
+    # The metadata_flags field strips the "editor_detected: " prefix
+    # at extraction time, so the post-strip length is the relevant one
+    # for the rationale-builder. Sanity-check the test fixture.
+    assert len(long_editor.replace("editor_detected: ", "")) > 60
+
+    signals = DocumentIntegritySignals(
+        document_id="doc_long_editor",
+        metadata_score=38,
+        metadata_flags=(long_editor,),
+        validation_failures=(
+            "reconciliation_failed_period: expected 1000 got 950",
+        ),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "fail"
+    assert v.branch == "drift_plus_editor"
+    # The Pydantic model enforces 320; this is the contract we're
+    # guarding. Re-assert it explicitly so a future relaxation of the
+    # field constraint doesn't silently weaken this test.
+    assert len(v.rationale) <= 320
+    # The truncation must preserve the leading vendor name (the
+    # actionable bit for the underwriter) and end with an ellipsis.
+    assert "Some Long Vendor" in v.rationale
+    assert "..." in v.rationale
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Structural guard — schema MUST NOT carry a decline field
 # ─────────────────────────────────────────────────────────────────────
