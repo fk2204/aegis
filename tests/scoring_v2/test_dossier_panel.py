@@ -455,3 +455,161 @@ def test_dossier_humanizes_strong_metadata_branch(
     # visible body text.
     assert 'title="strong_metadata"' in html
     assert ">Strong metadata anomaly<" in html
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Wave 3 §3.2 — end-to-end mutation-test guarantee for F2 (commit c3beb25)
+#
+# F2 added a ``for f in drift_failures:`` loop to branch 1 of
+# ``compute_integrity_verdict`` so that strong-metadata fails ALSO
+# surface corroborating reconciliation-drift rows as evidence. Without
+# F2, a merchant whose document trips strong_metadata AND has math
+# drift would render evidence that's metadata-only — and an
+# underwriter looking at a "metadata-only" fail might soften it to
+# review without ever seeing the math signal.
+#
+# Agent D's ``test_dossier_humanizes_strong_metadata_branch`` exercises
+# the humanizer on a strong_metadata doc with EMPTY ``all_flags`` —
+# its fixture has no drift to surface, so it cannot detect an F2
+# regression. The end-to-end test below ships a strong_metadata doc
+# WITH math drift and asserts the drift evidence is in the rendered
+# dossier body. If F2's drift-loop is ever reverted, this test fails.
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def repos_with_strong_metadata_plus_drift_merchant() -> tuple[
+    InMemoryMerchantRepository,
+    InMemoryDocumentRepository,
+    InMemoryAuditLog,
+    MerchantRow,
+    DocumentRow,
+]:
+    """Merchant whose single document trips BOTH branch 1
+    (strong_metadata, metadata_score >= 50) AND would have tripped
+    branch 2 (drift_plus_editor) had branch 1 not won precedence.
+
+    The competent-fabrication overlap case: editor flag + high
+    metadata_score + reconciliation drift all present. Branch 1 wins
+    by precedence (the loop F2 added is what makes its evidence list
+    include the drift rows that branch 2 would have surfaced)."""
+    merchants = InMemoryMerchantRepository()
+    docs = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    merchant = MerchantRow(
+        business_name="Strong Metadata + Drift Probe",
+        owner_name="Op",
+        state="CA",
+    )
+    saved = merchants.upsert(merchant)
+    doc_row = DocumentRow.model_validate(
+        {
+            "id": uuid4(),
+            "file_hash": "c" * 64,
+            "byte_size": 4096,
+            "original_filename": "stmt-strong-metadata-plus-drift.pdf",
+            "merchant_id": saved.id,
+            "parse_status": "manual_review",
+            # Editor flag — counts toward both strong_metadata
+            # (via score 72) and would corroborate drift_plus_editor.
+            "metadata_flags": ["editor_detected: iText 2.1.7 by 1T3XT"],
+            # Reconciliation drift — branch 1 must surface this as
+            # evidence (F2). Without F2 this row would be dropped.
+            "all_flags": [
+                "[MATH] reconciliation_failed_period: "
+                "expected 1000 got 950",
+            ],
+            "fraud_score_breakdown": {"metadata": 72},
+            "uploaded_at": datetime.now(UTC),
+        }
+    )
+    docs._docs[doc_row.id] = doc_row
+    return merchants, docs, audit, saved, doc_row
+
+
+@pytest.fixture
+def strong_metadata_plus_drift_client(
+    repos_with_strong_metadata_plus_drift_merchant: tuple[
+        InMemoryMerchantRepository,
+        InMemoryDocumentRepository,
+        InMemoryAuditLog,
+        MerchantRow,
+        DocumentRow,
+    ],
+    empty_funder_repo: InMemoryFunderRepository,
+) -> Iterator[TestClient]:
+    merchants, docs, audit, _, _ = (
+        repos_with_strong_metadata_plus_drift_merchant
+    )
+    reset_dependency_caches()
+    app = create_app()
+    app.dependency_overrides[get_merchant_repository] = lambda: merchants
+    app.dependency_overrides[get_repository] = lambda: docs
+    app.dependency_overrides[get_audit] = lambda: audit
+    app.dependency_overrides[get_funder_repository] = lambda: empty_funder_repo
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+    reset_dependency_caches()
+
+
+def test_strong_metadata_dossier_surfaces_drift_evidence_end_to_end(
+    strong_metadata_plus_drift_client: TestClient,
+    repos_with_strong_metadata_plus_drift_merchant: tuple[Any, ...],
+) -> None:
+    """End-to-end mutation-test guarantee for F2 (commit c3beb25).
+
+    A merchant whose single document trips branch 1 (strong_metadata,
+    metadata_score >= 50) AND carries reconciliation drift must render
+    the drift evidence in the operator-facing dossier HTML — not just
+    the metadata score / editor row.
+
+    Without F2's ``for f in drift_failures:`` loop in branch 1, the
+    rendered evidence list would include "Metadata anomaly score" and
+    "Editor metadata fingerprint" but NOT "Reconciliation: period total
+    mismatch". An underwriter reading the dossier could then mistake
+    the verdict for "just metadata noise" and soften the fail to review
+    — exactly the failure mode F2 prevents.
+
+    If F2's loop is ever reverted, the assertions in this test that
+    look for the drift signal in the body will fail.
+    """
+    _, _, _, merchant, _ = repos_with_strong_metadata_plus_drift_merchant
+    resp = strong_metadata_plus_drift_client.get(
+        f"/ui/merchants/{merchant.id}"
+    )
+    assert resp.status_code == 200
+    html = resp.text
+
+    # Branch chip — strong_metadata won precedence over drift_plus_editor.
+    assert "Strong metadata anomaly" in html
+    assert ">Strong metadata anomaly<" in html
+    assert 'title="strong_metadata"' in html
+
+    # Track A's evidence rows — the metadata-side signals must render.
+    assert "Metadata anomaly score" in html
+
+    # ── F2 guarantee ────────────────────────────────────────────────
+    # The drift evidence MUST surface in the rendered dossier. Without
+    # F2's drift-loop in branch 1 of ``compute_integrity_verdict``,
+    # ``reconciliation_failed_period`` would not appear in the evidence
+    # tuple — and the humanized "Reconciliation: period total mismatch"
+    # row would not exist in the rendered HTML.
+    assert "Reconciliation: period total mismatch" in html
+    # The verbatim failure detail string also renders so the underwriter
+    # sees the magnitudes (not just the category label).
+    assert "expected 1000 got 950" in html
+    # And the raw token is wired through the title= tooltip so the
+    # engineer-underwriter can hover for the code-level identifier.
+    assert 'title="reconciliation_failed_period"' in html
+
+    # Verdict chip — fail tone. Mirrors the assertion in
+    # ``test_dossier_renders_unified_panel_for_arkm_shaped_merchant``.
+    assert ">FAIL<" in html
+
+    # ── Defensive: branch precedence guard ──────────────────────────
+    # Because metadata_score >= 50, branch 1 (strong_metadata) wins
+    # over branch 2 (drift_plus_editor). The branch token rendered in
+    # visible body text must be strong_metadata's humanized label, not
+    # drift_plus_editor's. Asserts the branch precedence didn't flip.
+    assert ">Editor tampering + reconciliation drift<" not in html
