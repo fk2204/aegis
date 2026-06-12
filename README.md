@@ -34,27 +34,33 @@ make worker       # arq worker (separate terminal)
 ```bash
 make check         # mypy --strict + ruff + pytest with corpus
 make test-fast     # quick iteration without corpus
-make install-hooks # one-time: enable the compliance-review pre-commit hook
+make install-hooks # one-time: install pre-commit (ruff + mypy + compliance-review)
 ```
 
 `make check` is the only gate for the bulk of the codebase. There is no CI
 by design — manual ssh + git is appropriate for a solo operator.
 
-### Developer setup (optional pre-commit hooks)
+### Developer setup (pre-commit hooks)
 
-`.pre-commit-config.yaml` runs ruff + mypy on every commit (no tests; <5 s).
-Opt in once per clone: `uv tool install pre-commit && pre-commit install &&
-pre-commit run --all-files`. Conflict to know about: `make install-hooks`
-sets `core.hooksPath=.githooks` for the compliance gate, which bypasses
-`.git/hooks/pre-commit`. To keep both, `git config --unset core.hooksPath`
-after `pre-commit install`, then chain `.githooks/pre-commit` from inside it.
+Run `make install-hooks` once per clone. It installs the
+[pre-commit](https://pre-commit.com/) framework via `uv tool install`
+and wires three gates from `.pre-commit-config.yaml`:
+
+- **ruff** + **ruff-format** on staged Python files (~50–150 ms).
+- **mypy --strict** on `src/aegis/` (skipped when no `src/aegis/` file
+  is staged).
+- **compliance-review** annotation check on commits that touch
+  `docs/compliance/states/**` (see "Narrow no-CI exception" below).
+
+The compliance-review script lives at `.githooks/pre-commit` so it can
+be invoked standalone (`bash .githooks/pre-commit`) for diagnosis. The
+previous `core.hooksPath=.githooks` mechanism is gone; if you cloned
+before this change, `make install-hooks` migrates you by unsetting it.
 
 **Narrow no-CI exception:** commits that stage any file under
 `docs/compliance/states/**` must include a `compliance-review:` annotation
 (`approved by <name>`, `pending`, or `not-applicable`) in the commit
-body. Enforced by `.githooks/pre-commit`; installed via
-`make install-hooks`. Background and rationale in
-`docs/AEGIS_MASTER_PLAN.md` §13.
+body. Background and rationale in `docs/AEGIS_MASTER_PLAN.md` §13.
 
 ## Generate the synthetic corpus
 

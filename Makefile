@@ -3,13 +3,19 @@
 install:
 	uv sync
 
-# Install the pre-commit hook that enforces compliance-review annotations
-# on commits touching docs/compliance/states/**. The narrow no-CI
-# exception documented in README.md. Re-runnable; idempotent.
+# Install the pre-commit framework with all three hooks chained: ruff,
+# mypy --strict (src/aegis only), and the compliance-review annotation
+# check on docs/compliance/states/**. The narrow no-CI exception
+# documented in README.md. Re-runnable; idempotent.
+#
+# Migrates clones that ran the previous `core.hooksPath=.githooks` form
+# by unsetting it first; pre-commit then takes over .git/hooks/pre-commit.
 install-hooks:
-	git config core.hooksPath .githooks
-	chmod +x .githooks/pre-commit
-	@echo "[install-hooks] core.hooksPath -> .githooks; pre-commit executable."
+	@git config --unset-all core.hooksPath 2>/dev/null || true
+	@command -v pre-commit >/dev/null 2>&1 || uv tool install pre-commit
+	pre-commit install
+	@chmod +x .githooks/pre-commit
+	@echo "[install-hooks] pre-commit installed; ruff + mypy + compliance-review chained."
 
 dev:
 	uv run uvicorn aegis.api.app:app --reload --port 5555

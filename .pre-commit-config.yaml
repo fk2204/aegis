@@ -71,3 +71,15 @@ repos:
         types: [python]
         pass_filenames: false
         files: ^src/aegis/
+
+      # Compliance-review annotation gate. Script lives at .githooks/pre-commit
+      # so it can be invoked standalone (`bash .githooks/pre-commit`) for
+      # diagnosis. The `files:` filter scopes execution to commits that
+      # touch state-prescribed disclosure surfaces — docs-only / src-only
+      # commits skip this hook entirely.
+      - id: compliance-review
+        name: compliance-review annotation (docs/compliance/states/**)
+        entry: bash .githooks/pre-commit
+        language: system
+        files: ^docs/compliance/states/
+        pass_filenames: false
