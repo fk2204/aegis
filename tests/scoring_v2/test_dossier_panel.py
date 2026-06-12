@@ -319,3 +319,139 @@ def test_dossier_renders_unified_panel_for_arkm_shaped_merchant(
     # The existing score block is NOT removed (additive guarantee).
     # Either the score block or the "Score unavailable" copy appears.
     assert "Score unavailable" in html or "score_result" in html or "Tier" in html
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Wave 2 — Track A signal + branch humanization in the rendered dossier.
+#
+# ARKM-shaped doc is the drift_plus_editor fail case. Strong-metadata
+# fail requires a fresh merchant whose only doc carries a metadata_score
+# >= 50 — its own fixture below renders the strong_metadata branch.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_dossier_humanizes_drift_plus_editor_branch_and_signals(
+    client: TestClient,
+    repos_with_arkm_shaped_merchant: tuple[Any, ...],
+) -> None:
+    """Track A's branch + evidence tokens must render in plain English
+    in the dossier body. The raw engineer tokens (e.g.
+    ``drift_plus_editor``) belong in ``title=`` tooltips only — they
+    should not appear unwrapped in the visible body text."""
+    _, _, _, merchant, _ = repos_with_arkm_shaped_merchant
+    resp = client.get(f"/ui/merchants/{merchant.id}")
+    assert resp.status_code == 200
+    html = resp.text
+
+    # Humanized branch label is rendered.
+    assert "Editor tampering + reconciliation drift" in html
+    # Humanized signal labels are rendered for each EvidenceItem.signal.
+    assert "Editor metadata fingerprint" in html
+    assert "Reconciliation: period total mismatch" in html
+    assert "Reconciliation: withdrawal total mismatch" in html
+    assert "Reconciliation: intraday row mismatch" in html
+
+    # Raw branch/signal tokens stay accessible as ``title=`` tooltips so
+    # engineer-underwriters can hover for the code-level identifier.
+    # The branch token in particular has no other source — confirming it
+    # appears in a tooltip proves the template wires the tooltip up.
+    # (Signal tokens like ``editor_detected`` also legitimately appear
+    # inside the verbatim ``EvidenceItem.detail`` flag strings, e.g.
+    # ``editor_detected: iText 2.1.7 by 1T3XT`` — those are evidence
+    # detail, not a token leak, so we don't assert global absence.)
+    assert 'title="drift_plus_editor"' in html
+    assert 'title="editor_detected"' in html
+    assert 'title="reconciliation_failed_period"' in html
+
+    # And the branch column does NOT render the bare ``drift_plus_editor``
+    # token as its visible body text — the humanized label is what an
+    # underwriter reads. We bound this by asserting the humanized label
+    # appears before the closing </td> on the branch cell.
+    assert ">Editor tampering + reconciliation drift<" in html
+
+
+@pytest.fixture
+def repos_with_strong_metadata_merchant() -> tuple[
+    InMemoryMerchantRepository,
+    InMemoryDocumentRepository,
+    InMemoryAuditLog,
+    MerchantRow,
+    DocumentRow,
+]:
+    """Merchant whose single document trips the strong_metadata branch
+    (metadata_score >= 50). Used to verify the humanizer renders the
+    strong-metadata branch label, not just drift_plus_editor."""
+    merchants = InMemoryMerchantRepository()
+    docs = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    merchant = MerchantRow(
+        business_name="Strong Metadata Probe",
+        owner_name="Op",
+        state="CA",
+    )
+    saved = merchants.upsert(merchant)
+    doc_row = DocumentRow.model_validate(
+        {
+            "id": uuid4(),
+            "file_hash": "b" * 64,
+            "byte_size": 4096,
+            "original_filename": "stmt-strong-metadata.pdf",
+            "merchant_id": saved.id,
+            "parse_status": "manual_review",
+            # An editor flag plus a high metadata_score together drives
+            # branch 1 (strong_metadata) regardless of math drift.
+            "metadata_flags": ["editor_detected: Foxit PhantomPDF"],
+            "all_flags": [],
+            "fraud_score_breakdown": {"metadata": 72},
+            "uploaded_at": datetime.now(UTC),
+        }
+    )
+    docs._docs[doc_row.id] = doc_row
+    return merchants, docs, audit, saved, doc_row
+
+
+@pytest.fixture
+def strong_metadata_client(
+    repos_with_strong_metadata_merchant: tuple[
+        InMemoryMerchantRepository,
+        InMemoryDocumentRepository,
+        InMemoryAuditLog,
+        MerchantRow,
+        DocumentRow,
+    ],
+    empty_funder_repo: InMemoryFunderRepository,
+) -> Iterator[TestClient]:
+    merchants, docs, audit, _, _ = repos_with_strong_metadata_merchant
+    reset_dependency_caches()
+    app = create_app()
+    app.dependency_overrides[get_merchant_repository] = lambda: merchants
+    app.dependency_overrides[get_repository] = lambda: docs
+    app.dependency_overrides[get_audit] = lambda: audit
+    app.dependency_overrides[get_funder_repository] = lambda: empty_funder_repo
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+    reset_dependency_caches()
+
+
+def test_dossier_humanizes_strong_metadata_branch(
+    strong_metadata_client: TestClient,
+    repos_with_strong_metadata_merchant: tuple[Any, ...],
+) -> None:
+    """Strong-metadata branch renders ``"Strong metadata anomaly"`` in
+    the visible body and keeps the ``strong_metadata`` raw token in a
+    title= tooltip."""
+    _, _, _, merchant, _ = repos_with_strong_metadata_merchant
+    resp = strong_metadata_client.get(f"/ui/merchants/{merchant.id}")
+    assert resp.status_code == 200
+    html = resp.text
+
+    assert "Strong metadata anomaly" in html
+    # metadata_score is one of the EvidenceItem.signal tokens this branch
+    # emits — it should render as the humanized label, not the raw token.
+    assert "Metadata anomaly score" in html
+
+    # Branch tooltip is wired up + humanized label renders as the
+    # visible body text.
+    assert 'title="strong_metadata"' in html
+    assert ">Strong metadata anomaly<" in html

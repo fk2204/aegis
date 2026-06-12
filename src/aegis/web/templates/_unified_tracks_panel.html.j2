@@ -62,13 +62,13 @@
                     {% with tone="good", label="CLEAN" %}{% include "_status_chip.html.j2" %}{% endwith %}
                   {% endif %}
                 </td>
-                <td class="mono-cell">{{ v.branch }}</td>
+                <td title="{{ v.branch }}">{{ v.branch | humanize_track_a_branch }}</td>
                 <td>
                   <div class="desc">{{ v.rationale }}</div>
                   {% if v.evidence %}
                     <ul style="margin:4px 0 0 0;padding-left:18px;font-size:11.5px;color:var(--ink-2)">
                       {% for e in v.evidence %}
-                        <li><span class="mono-cell" style="color:var(--ink-3)">{{ e.signal }}</span> · {{ e.detail }}</li>
+                        <li><span title="{{ e.signal }}">{{ e.signal | humanize_track_a_signal }}</span> · {{ e.detail }}</li>
                       {% endfor %}
                     </ul>
                   {% endif %}

@@ -18,6 +18,10 @@ from aegis.web._pattern_cards import (
     humanize_hard_decline,
     humanize_soft_concern,
 )
+from aegis.web._track_a_labels import (
+    humanize_track_a_branch,
+    humanize_track_a_signal,
+)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
@@ -119,6 +123,15 @@ templates.env.filters["humanize_flag"] = humanize_flag
 # PATTERN_COPY map; these two close the gap for the verdict section.
 templates.env.filters["humanize_hard_decline"] = humanize_hard_decline
 templates.env.filters["humanize_soft_concern"] = humanize_soft_concern
+# Track A signal/branch humanizers — Wave 2 dossier-legibility pass.
+# ``_unified_tracks_panel.html.j2`` renders ``v.branch`` and
+# ``e.signal`` straight from the engineer-facing IntegrityVerdict /
+# EvidenceItem models; these filters project those tokens to the
+# plain-English form workers actually read, with the raw token
+# preserved as a ``title=`` tooltip for the underwriter who wants the
+# code-level label on hover.
+templates.env.filters["humanize_track_a_signal"] = humanize_track_a_signal
+templates.env.filters["humanize_track_a_branch"] = humanize_track_a_branch
 
 
 __all__ = ["templates"]
