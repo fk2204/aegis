@@ -243,3 +243,58 @@ def test_cap_override_button_hidden_after_uncapped_run(
     resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
     assert resp.status_code == 200
     assert "Rescan all (override cap)" not in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Close-lead cross-link (Wave 2 §2.1: kill the dead-button)
+# ---------------------------------------------------------------------------
+
+
+def test_close_lead_link_points_to_app_close_com_in_new_tab(
+    client: TestClient,
+    merchant_repo: InMemoryMerchantRepository,
+) -> None:
+    """The Close-lead cross-link must open the actual Close CRM lead in a
+    new tab. Operator hard constraint: no dead-end buttons."""
+    m = _seed_merchant(merchant_repo, close_lead_id="lead_abc")
+    resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
+    assert resp.status_code == 200
+    html = resp.text
+
+    # Full Close-app URL with trailing slash.
+    assert 'href="https://app.close.com/lead/lead_abc/"' in html
+    # Opens in a new tab.
+    assert 'target="_blank"' in html
+    # Security: noopener (+noreferrer) on the same anchor.
+    assert 'rel="noopener noreferrer"' in html
+    # Display text preserved.
+    assert "↗ Close lead lead_abc" in html
+
+
+def test_merchant_detail_has_no_placeholder_hrefs(
+    client: TestClient,
+    merchant_repo: InMemoryMerchantRepository,
+) -> None:
+    """Regression guard: no anchor on the merchant detail page may use the
+    placeholder href="#". If a future developer reintroduces a dead-end
+    button anywhere on the dossier, this test fails."""
+    m = _seed_merchant(merchant_repo, close_lead_id="lead_abc")
+    resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
+    assert resp.status_code == 200
+    assert 'href="#"' not in resp.text
+
+
+def test_close_lead_link_not_rendered_when_lead_id_missing(
+    client: TestClient,
+    merchant_repo: InMemoryMerchantRepository,
+) -> None:
+    """The {% if merchant.close_lead_id %} gate must suppress the link
+    entirely when there is no linked Close Lead — no empty href, no
+    bare arrow."""
+    m = _seed_merchant(merchant_repo, close_lead_id=None)
+    resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
+    assert resp.status_code == 200
+    html = resp.text
+
+    assert "app.close.com/lead/" not in html
+    assert "↗ Close lead" not in html

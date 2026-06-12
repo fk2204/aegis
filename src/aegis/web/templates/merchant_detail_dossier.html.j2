@@ -215,7 +215,7 @@
           <a href="/ui/merchants/{{ merchant.id }}/match">↗ Funder match panel</a>
         {% endif %}
         <a href="/ui/merchants/{{ merchant.id }}/edit">↗ Edit merchant</a>
-        {% if merchant.close_lead_id %}<a href="#">↗ Close lead {{ merchant.close_lead_id }}</a>{% endif %}
+        {% if merchant.close_lead_id %}<a href="https://app.close.com/lead/{{ merchant.close_lead_id }}/" target="_blank" rel="noopener noreferrer">↗ Close lead {{ merchant.close_lead_id }}</a>{% endif %}
       </div>
       {% if merchant.close_lead_id %}
       <div class="crosslink close-rescan">
