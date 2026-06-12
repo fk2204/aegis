@@ -1,11 +1,11 @@
 # AEGIS — Remaining work
 
-**Snapshot taken:** 2026-06-11 (post-session closure pass: 2026-06-10
-session work + the "Add funder via Claude Code" wrapper + funder
-upsert audit emit + worktree-isolation diagnostic + router.py-split
-already-done verification. Nine items moved from open to ✅ CLOSED
-with resolving commits inline. See the "2026-06-10 closure log" at
-the head of each section for what shipped).
+**Snapshot taken:** 2026-06-12 (carries forward 2026-06-11's nine
+closures + adds tampering shadow-review script + two read-only audit
+docs surfacing concrete bugs and hygiene findings for operator
+triage. New "2026-06-12 audit findings" section near the bottom is
+the operator's punch-list for the next decision-boundary-touching
+session).
 **Purpose:** durable list of what's queued, parked, or systemic. So nothing's
 lost between sessions.
 
@@ -203,6 +203,15 @@ tests still green.
 - **Status:** shadow mode active. Audit-log action
   `tampering_would_decline` fires when the rule would have declined,
   but no actual decline is emitted.
+- **Review script:** ✅ `scripts/tampering_shadow_review.py`
+  (2026-06-12). Read-only diagnostic: pulls every fire row from
+  `audit_log` (both shadow + live actions so it keeps working
+  post-flip), groups by branch / contributing-failure / mode, writes
+  CSV to stdout + summary to stderr. Exit 3 if any rows present
+  (operator review queue non-empty). Run on the box with
+  `/etc/aegis/aegis.env` sourced. 28 unit tests against a fake
+  Supabase client + defensive-parsing fixtures cover every shape the
+  prod write path emits.
 - **Watch:** real fires in audit_log to see whether the rule's
   precision holds on live merchants (A&R KM and VU 7722 would have
   fired; review for false positives elsewhere).
@@ -271,6 +280,71 @@ at that point; nothing more to do as standing infra work.
   function must ship structural-coverage tests with it. See
   CLAUDE.md "external-integration test discipline" — same rule, same
   reason, same failure mode.
+
+---
+
+## 2026-06-12 audit findings — operator triage queue
+
+Two read-only audits dispatched and landed alongside the tampering
+review script. Findings here are NOT acted on; they're queued for the
+next decision-boundary-touching session because they need operator
+judgment (severity calls, hook-config flips, scope decisions).
+
+### `docs/track_a_audit_2026-06-12.md` — Track A integrity verdict
+- **F1 HARD** — `IntegrityVerdict.rationale max_length=320` can be
+  exceeded by long editor strings (e.g. verbose
+  `editor_detected: <vendor>`), raising a Pydantic ValidationError
+  that the catch-all `except Exception` in
+  `score_deal_inputs.py:118` silently swallows → verdict downgrades
+  to `None` → legacy `fraud_score` runs the deal. The "Track A is
+  the gate" guarantee leaks without an audit row. Fix is either
+  truncating `short_editor` to 60 chars in `framing.py` OR raising
+  `max_length` to ~480, plus a structured-log severity split on the
+  swallowing catch.
+- **F2 HARD** — Strong-metadata branch 1 (`compute.py:73-100`) emits
+  the metadata flags but drops the `drift_failures` list even when
+  drift IS present. Underwriter overriding a metadata-only fail
+  loses the corroborating math signal. Discipline-rule shape —
+  hiding evidence lets a human soften a fail. Fix: mirror branch 2's
+  evidence-build loop.
+- **F3-F11** — 6 WORTH + 3 INFO findings: boundary-test gaps,
+  drift-only mirror in `all_flags`, lookback-script flag-prefix
+  coupling, schema decline-field guard for `UnifiedTracksView`,
+  others. See doc for full punch-list.
+
+### `docs/repo_hygiene_2026-06-12.md` — Repo / tooling hygiene
+- **H1 act-now** — Both pre-commit gates inert. `.githooks/pre-commit`
+  (compliance) and `.pre-commit-config.yaml` (ruff+mypy) are
+  mutually exclusive because `make install-hooks` sets
+  `core.hooksPath=.githooks` which bypasses where `pre-commit
+  install` writes. The 2026-06-10 regression-class bugs
+  (`224f413` E501, `3f215bd` mypy errors) are direct evidence the
+  chain is unsolved. Fix: drop `core.hooksPath` from
+  `make install-hooks`; add compliance check as a local hook in
+  `.pre-commit-config.yaml`. ~30 min, single test-commit gate.
+- **H2 worth-fixing** — `design/` is untracked-and-not-gitignored
+  (Schrödinger). Contains brand assets (low risk) AND
+  `_audit_seed*.py` scripts that import `aegis.db` directly (high
+  risk per operating-principle #4). Needs operator decision: commit
+  brand assets under `docs/brand/`, move audit scripts to
+  `scripts/audit/` after a security review, OR `.gitignore` the
+  whole directory with documented intent.
+- **H3 worth-fixing** — `CLAUDE.md` last updated 2026-06-05; 28
+  commits since, including four 2026-06-10 ops gotchas (sudo
+  NOPASSWD pattern, funder-seeding discipline, systemctl-status
+  token leak, "read AEGIS rules first" cost ~5 failed SSH attempts)
+  that live only in Filip-machine-local memory. Anyone cloning the
+  repo doesn't see them. Recommended: add a "Deploy & operations
+  gotchas" section to CLAUDE.md (or `.claude/rules/deploy.md`).
+- **H6 ✅ ACTED ON 2026-06-12** — added `*.bak`, `*.swp`, `*~`,
+  `.aider*` to `.gitignore`. The trivial one — other gitignore
+  coverage is already strong on credentials/tokens.
+- **H4 / H5 / H7-H10** — 4 informational + 1 docs-archival
+  candidate + 1 scripts/_*.py operator-review pass. See doc.
+
+### Tampering shadow review script ✅ SHIPPED 2026-06-12
+`scripts/tampering_shadow_review.py` — see the gating-conditions
+update under "Tampering rule shadow → live flip" above.
 
 ---
 
