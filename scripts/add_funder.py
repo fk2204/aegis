@@ -24,9 +24,10 @@ Claude Code edit it) before invoking ``save --from`` against it.
 
 Reuses everything that already exists; no new write path, no new prompt.
 The save call goes through the same ``FunderRepository.upsert`` the
-``/ui/funders/import/save`` route uses, so audit / persistence semantics
-are identical (no audit row from this code path — pre-existing gap
-across both call sites; tracked in ``docs/REMAINING_WORK.md``).
+``/ui/funders/import/save`` route uses, so persistence semantics are
+identical. An ``audit_log`` row (``funder.imported``,
+``actor="claude_code"``) is written after a successful upsert — audit
+failures fail the operation per CLAUDE.md.
 
 Exit codes:
   0 — success
@@ -45,6 +46,7 @@ from typing import Final, Protocol, TextIO
 
 from pydantic import ValidationError
 
+from aegis.audit import AuditLog
 from aegis.funders.extract import (
     FunderExtractionError,
     extract_funder_guidelines,
@@ -282,6 +284,13 @@ def _load_repository() -> _FunderUpserter:
     return SupabaseFunderRepository()
 
 
+def _load_audit() -> AuditLog:
+    """Lazy import so unit tests don't need Supabase creds present."""
+    from aegis.audit import SupabaseAuditLog
+
+    return SupabaseAuditLog()
+
+
 def _read_file_bytes(path: Path) -> tuple[bytes, str]:
     """Read ``path`` and return ``(bytes, kind)`` where kind is "pdf"/"image".
 
@@ -349,6 +358,7 @@ def run_save(
     args: argparse.Namespace,
     *,
     repo_factory: Callable[[], _FunderUpserter] = _load_repository,
+    audit_factory: Callable[[], AuditLog] = _load_audit,
     text_reader: Callable[[Path], str] = _default_text_reader,
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
@@ -390,6 +400,27 @@ def run_save(
         saved = save_extraction(extraction, repo)
     except (ValueError, RuntimeError) as exc:
         print(f"ERROR: upsert failed: {exc}", file=stderr)
+        return EXIT_RUNTIME_ERROR
+
+    try:
+        audit = audit_factory()
+        audit.record(
+            actor="claude_code",
+            action="funder.imported",
+            subject_type="funder",
+            subject_id=saved.id,
+            details={
+                "funder_name": saved.name,
+                "source": "scripts/add_funder.py",
+            },
+        )
+    except Exception as exc:
+        # Audit-write failure: per CLAUDE.md "Audit-write failures FAIL the
+        # operation, never silently log-and-continue."
+        print(
+            f"ERROR: upsert succeeded but audit emit failed: {exc}",
+            file=stderr,
+        )
         return EXIT_RUNTIME_ERROR
 
     print(

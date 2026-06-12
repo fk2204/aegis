@@ -89,10 +89,17 @@ def funder_repo() -> InMemoryFunderRepository:
 
 
 @pytest.fixture
+def audit_log() -> InMemoryAuditLog:
+    """Shared in-memory audit log so tests can introspect emitted rows."""
+    return InMemoryAuditLog()
+
+
+@pytest.fixture
 def client(
     merchant_repo: InMemoryMerchantRepository,
     doc_repo: InMemoryDocumentRepository,
     funder_repo: InMemoryFunderRepository,
+    audit_log: InMemoryAuditLog,
     request: pytest.FixtureRequest,
 ) -> Iterator[TestClient]:
     """Default client uses an empty funder repo. Tests requesting
@@ -106,7 +113,7 @@ def client(
     app.dependency_overrides[get_merchant_repository] = lambda: merchant_repo
     app.dependency_overrides[get_funder_repository] = lambda: funder_repo
     app.dependency_overrides[get_repository] = lambda: doc_repo
-    app.dependency_overrides[get_audit] = lambda: InMemoryAuditLog()
+    app.dependency_overrides[get_audit] = lambda: audit_log
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -715,6 +722,78 @@ def test_funder_import_save_rejects_invalid_decimal(client: TestClient) -> None:
     )
     assert resp.status_code == 400
     assert "validation" in resp.text.lower() or "invalid" in resp.text.lower()
+
+
+def test_funder_import_save_emits_audit_row(
+    client: TestClient,
+    funder_repo: InMemoryFunderRepository,
+    audit_log: InMemoryAuditLog,
+) -> None:
+    """CLAUDE.md: ``audit_log`` rows are written for every state change.
+    The PDF-import save path was a bare write before — verify it now
+    emits a ``funder.imported`` row at the route call site (the same
+    pattern ``funder.reextracted`` and ``funder.operator_notes_updated``
+    already follow).
+    """
+    resp = client.post(
+        "/ui/funders/import/save",
+        data={
+            "name": "Audit Trail Capital",
+            "accepts_stacking": "false",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    saved = next(
+        (f for f in funder_repo.list_active() if f.name == "Audit Trail Capital"),
+        None,
+    )
+    assert saved is not None
+
+    rows = [e for e in audit_log.entries if e["action"] == "funder.imported"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["subject_type"] == "funder"
+    assert row["subject_id"] == str(saved.id)
+    assert row["actor"] == "dashboard"
+    assert row["details"]["funder_name"] == "Audit Trail Capital"
+    assert row["details"]["tier_count"] == 0
+
+
+def test_funder_new_submit_creates_funder_and_emits_audit_row(
+    client: TestClient,
+    funder_repo: InMemoryFunderRepository,
+    audit_log: InMemoryAuditLog,
+) -> None:
+    """Manual-create path (POST /ui/funders/new): verify upsert lands
+    AND an audit row is recorded so the state change is traceable."""
+    resp = client.post(
+        "/ui/funders/new",
+        data={
+            "name": "Manual Create Capital",
+            "active": "true",
+            "min_monthly_revenue": "30000",
+            "accepts_stacking": "false",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303, resp.text
+    assert resp.headers["location"].startswith("/ui/funders/")
+
+    saved = next(
+        (f for f in funder_repo.list_active() if f.name == "Manual Create Capital"),
+        None,
+    )
+    assert saved is not None
+    assert saved.min_monthly_revenue == Decimal("30000")
+
+    rows = [e for e in audit_log.entries if e["action"] == "funder.created"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["subject_type"] == "funder"
+    assert row["subject_id"] == str(saved.id)
+    assert row["actor"] == "dashboard"
+    assert row["details"]["funder_name"] == "Manual Create Capital"
 
 
 # --- Wave 2 Track 1: multi-file + image import ----------------------------

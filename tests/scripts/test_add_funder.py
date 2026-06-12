@@ -24,6 +24,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from aegis.audit import InMemoryAuditLog  # noqa: E402
 from aegis.funders.models import FunderGuidelineExtraction  # noqa: E402
 from aegis.funders.repository import InMemoryFunderRepository  # noqa: E402
 from scripts import add_funder  # noqa: E402
@@ -364,11 +365,13 @@ def test_run_save_upserts_via_repo(
     preview_path.write_text(add_funder.preview_to_json(stub_extraction), encoding="utf-8")
     args = argparse.Namespace(command="save", from_path=preview_path, dry_run=False)
     repo = InMemoryFunderRepository()
+    audit = InMemoryAuditLog()
     out_buf, err_buf = io.StringIO(), io.StringIO()
 
     rc = add_funder.run_save(
         args,
         repo_factory=lambda: repo,
+        audit_factory=lambda: audit,
         stdout=out_buf,
         stderr=err_buf,
     )
@@ -463,6 +466,77 @@ def test_run_save_repo_upsert_failure_returns_error(
 
     assert rc == add_funder.EXIT_RUNTIME_ERROR
     assert "upsert failed" in err_buf.getvalue()
+
+
+def test_run_save_emits_audit_row(
+    stub_extraction: FunderGuidelineExtraction, tmp_path: Path
+) -> None:
+    """Happy path: after a successful upsert, ``run_save`` writes a
+    ``funder.imported`` audit row via the injected ``audit_factory``.
+    Mirrors the route-side audit emit; CLAUDE.md requires audit rows
+    for every state change."""
+    preview_path = tmp_path / "preview.json"
+    preview_path.write_text(
+        add_funder.preview_to_json(stub_extraction), encoding="utf-8"
+    )
+    args = argparse.Namespace(command="save", from_path=preview_path, dry_run=False)
+    repo = InMemoryFunderRepository()
+    audit = InMemoryAuditLog()
+    out_buf, err_buf = io.StringIO(), io.StringIO()
+
+    rc = add_funder.run_save(
+        args,
+        repo_factory=lambda: repo,
+        audit_factory=lambda: audit,
+        stdout=out_buf,
+        stderr=err_buf,
+    )
+
+    assert rc == add_funder.EXIT_OK
+    rows = [e for e in audit.entries if e["action"] == "funder.imported"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["actor"] == "claude_code"
+    assert row["subject_type"] == "funder"
+    assert row["subject_id"] == str(stub_extraction.draft.id)
+    assert row["details"]["funder_name"] == stub_extraction.draft.name
+    assert row["details"]["source"] == "scripts/add_funder.py"
+
+
+def test_run_save_audit_failure_fails_the_command(
+    stub_extraction: FunderGuidelineExtraction, tmp_path: Path
+) -> None:
+    """Per CLAUDE.md: audit-write failures FAIL the operation, never
+    silently log-and-continue. A raising audit_factory must surface as
+    ``EXIT_RUNTIME_ERROR`` with a clear stderr message even though the
+    upsert itself succeeded."""
+    preview_path = tmp_path / "preview.json"
+    preview_path.write_text(
+        add_funder.preview_to_json(stub_extraction), encoding="utf-8"
+    )
+    args = argparse.Namespace(command="save", from_path=preview_path, dry_run=False)
+    repo = InMemoryFunderRepository()
+    out_buf, err_buf = io.StringIO(), io.StringIO()
+
+    def _broken_audit() -> InMemoryAuditLog:
+        raise RuntimeError("audit backend offline")
+
+    rc = add_funder.run_save(
+        args,
+        repo_factory=lambda: repo,
+        audit_factory=_broken_audit,
+        stdout=out_buf,
+        stderr=err_buf,
+    )
+
+    assert rc == add_funder.EXIT_RUNTIME_ERROR
+    err_text = err_buf.getvalue()
+    assert "audit emit failed" in err_text
+    assert "audit backend offline" in err_text
+    # The upsert itself DID happen — the audit failure leaves the repo
+    # in a state where the funder exists but no audit row was written.
+    # That's the explicit failure path; reconciliation is operator-level.
+    assert repo.get(stub_extraction.draft.id).name == stub_extraction.draft.name
 
 
 # ----------------------------------------------------------------------

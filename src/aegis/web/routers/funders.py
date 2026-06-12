@@ -373,7 +373,9 @@ async def funder_import_review(
 async def funder_import_save(
     request: Request,
     repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
     name: Annotated[str, Form()],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
     accepts_stacking: Annotated[str, Form()] = "false",
     min_monthly_revenue: Annotated[str, Form()] = "",
     min_avg_daily_balance: Annotated[str, Form()] = "",
@@ -474,6 +476,17 @@ async def funder_import_save(
             {"error": f"upsert failed: {exc}"},
             status_code=status.HTTP_409_CONFLICT,
         )
+    audit.record(
+        actor="dashboard",
+        actor_email=actor_email,
+        action="funder.imported",
+        subject_type="funder",
+        subject_id=saved.id,
+        details={
+            "funder_name": saved.name,
+            "tier_count": len(saved.tiers),
+        },
+    )
     return RedirectResponse(
         f"/ui/funders/{saved.id}", status_code=status.HTTP_303_SEE_OTHER
     )
@@ -498,7 +511,9 @@ async def funder_new_form(request: Request) -> HTMLResponse:
 async def funder_new_submit(
     request: Request,
     repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
     name: Annotated[str, Form()],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
     active: Annotated[str, Form()] = "true",
     # Hard gates
     min_monthly_revenue:    Annotated[str, Form()] = "",
@@ -579,6 +594,14 @@ async def funder_new_submit(
         return _funder_form_error(
             request, str(exc), _funder_form_dict_from_locals(locals())
         )
+    audit.record(
+        actor="dashboard",
+        actor_email=actor_email,
+        action="funder.created",
+        subject_type="funder",
+        subject_id=saved.id,
+        details={"funder_name": saved.name},
+    )
     return RedirectResponse(
         f"/ui/funders/{saved.id}", status_code=status.HTTP_303_SEE_OTHER
     )
