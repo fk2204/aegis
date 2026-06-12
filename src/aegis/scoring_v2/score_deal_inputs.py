@@ -31,6 +31,8 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from aegis.parser.models import ClassifiedTransaction
 from aegis.scoring_v2.dossier_panel import (
     UnifiedTracksView,
@@ -115,6 +117,21 @@ def compute_score_deal_track_inputs(
             list_transactions=list_transactions,
             analyses_by_doc=analyses_by_doc,
         )
+    except ValidationError as exc:
+        # Pydantic ValidationError is a CODE BUG, not a data oddity — a
+        # constraint (e.g. ``IntegrityVerdict.rationale`` max_length=320)
+        # was violated by code, not by malformed input. CRITICAL so the
+        # operator's structured-log monitoring surfaces it. Full ``exc``
+        # repr includes the per-field error path needed to fix the bug.
+        from aegis.logger import get_logger
+
+        get_logger(__name__).critical(
+            "score_deal_track_inputs.validation_error "
+            "merchant_id=%s err=%s",
+            merchant_id,
+            exc,
+        )
+        return None, None
     except Exception as exc:
         # Import deferred so module import doesn't trip the boot guard in
         # ``aegis.logger.configure_logging`` (which reads settings).
