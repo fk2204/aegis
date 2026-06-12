@@ -92,3 +92,10 @@ node_modules/
 .tmp/
 
 CLAUDE.local.md
+
+# Editor / AI-tooling backups + caches (H6 from docs/repo_hygiene_2026-06-12.md).
+# Added 2026-06-12 — these patterns slipped through the prior pass.
+*.bak
+*.swp
+*~
+.aider*
