@@ -31,8 +31,6 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts import triage_disagreement as cli  # noqa: E402
-
 from aegis.scoring_v2.shadow_disagreements import (  # noqa: E402
     CATEGORY_AGREEMENT,
     CATEGORY_AMBIGUOUS,
@@ -44,6 +42,7 @@ from aegis.scoring_v2.shadow_disagreements import (  # noqa: E402
     ScoringDisagreementWriteError,
     record_disagreement,
 )
+from scripts import triage_disagreement as cli  # noqa: E402
 
 _FIXED_TS = datetime(2026, 6, 8, 12, 0, tzinfo=UTC)
 
