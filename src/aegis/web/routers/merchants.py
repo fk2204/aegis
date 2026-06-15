@@ -31,7 +31,7 @@ import io
 import re
 import zipfile
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any, Final, cast
 from uuid import UUID
@@ -50,6 +50,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from aegis.api.deps import (
     get_audit,
     get_close_client,
+    get_decision_snapshot,
     get_funder_note_submission_repository,
     get_funder_repository,
     get_merchant_repository,
@@ -63,6 +64,10 @@ from aegis.audit import AuditLog
 from aegis.close.client import CloseClient, CloseError
 from aegis.close.funder_note import format_funder_note
 from aegis.close.orchestration import enqueue_close_orchestration
+from aegis.compliance.snapshot import (
+    DecisionSnapshot,
+    InMemoryDecisionSnapshot,
+)
 from aegis.compliance.states import STATES
 from aegis.funder_note_submissions import (
     FunderNoteSubmissionRepository,
@@ -100,6 +105,13 @@ from aegis.pdf_store import (
     PdfStoreRepository,
     PdfStoreWriteError,
 )
+from aegis.scoring.historical_approval import (
+    LOOKBACK_DAYS as _HISTORICAL_LOOKBACK_DAYS,
+)
+from aegis.scoring.historical_approval import (
+    build_historical_approval_index,
+    lookup_historical_approval_rate,
+)
 from aegis.scoring.match_funders import match_funder
 from aegis.scoring.models import FunderMatch, ScoreInput, ScoreResult
 from aegis.scoring.multi_month import (
@@ -112,7 +124,7 @@ from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
 from aegis.scoring.submission_package import build_submission_files
 from aegis.scoring_v2.balance_health import compute_balance_health
-from aegis.scoring_v2.industry import industry_risk_tier
+from aegis.scoring_v2.industry import IndustryTier, industry_risk_tier
 from aegis.scoring_v2.mca_stack import aggregate_mca_stack
 from aegis.scoring_v2.offer import compute_offer
 from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
@@ -326,6 +338,136 @@ async def merchant_edit_submit(
 # ---------------------------------------------------------------------------
 
 
+def _build_historical_index_for_match(
+    *,
+    funder_note_subs: FunderNoteSubmissionRepository,
+    merchants_repo: MerchantRepository,
+    snapshot: DecisionSnapshot,
+    documents: DocumentRepository,
+) -> dict[UUID, dict[tuple[IndustryTier, str], Decimal]]:
+    """Load the inputs the matcher's Sprint-4 boost needs and project
+    them through ``build_historical_approval_index``.
+
+    Three reads, all cheap relative to the funder-iteration that
+    follows (which already touches every active funder):
+
+      * ``funder_note_subs.list_in_window`` -- 90 days of submissions.
+      * ``merchants_repo.list_all`` -- one row per merchant for the
+        industry_choice map.
+      * ``snapshot`` rows -- in-memory branch reads ``snapshot.rows()``
+        directly; the Supabase branch reads the ``decisions`` table.
+        ``documents`` is consulted only to map ``decisions.deal_id``
+        back to the merchant.
+
+    Any exception in the I/O layer collapses to an empty index so the
+    /match panel never 500s on a transient outage -- the matcher then
+    behaves identically to pre-Sprint-4.
+    """
+    from aegis.logger import get_logger
+
+    empty: dict[UUID, dict[tuple[IndustryTier, str], Decimal]] = {}
+
+    now_dt = datetime.now(UTC)
+    try:
+        submissions = funder_note_subs.list_in_window(
+            from_dt=now_dt - timedelta(days=_HISTORICAL_LOOKBACK_DAYS),
+            to_dt=now_dt,
+        )
+    except Exception:
+        get_logger(__name__).warning("match.historical_submissions_fetch_failed", exc_info=True)
+        return empty
+
+    if not submissions:
+        return empty
+
+    try:
+        all_merchants = merchants_repo.list_all()
+    except Exception:
+        get_logger(__name__).warning("match.historical_merchants_fetch_failed", exc_info=True)
+        return empty
+
+    industry_choice_by_merchant: dict[UUID, str | None] = {
+        m.id: m.industry_choice for m in all_merchants
+    }
+
+    score_tier_by_merchant: dict[UUID, str] = _load_latest_score_tier_per_merchant(
+        snapshot=snapshot,
+        documents=documents,
+    )
+
+    return build_historical_approval_index(
+        submissions=submissions,
+        industry_choice_by_merchant=industry_choice_by_merchant,
+        score_tier_by_merchant=score_tier_by_merchant,
+        now=now_dt,
+    )
+
+
+def _load_latest_score_tier_per_merchant(
+    *,
+    snapshot: DecisionSnapshot,
+    documents: DocumentRepository,
+) -> dict[UUID, str]:
+    """Merchant -> letter tier of the merchant's most-recent decision.
+
+    Mirrors the projection in
+    ``aegis.web.routers.portfolio.portfolio_view`` so the historical-
+    approval index and the portfolio dashboard agree on a merchant's
+    score tier. Returns ``{}`` on any I/O failure -- the matcher then
+    reads ``"unknown"`` per missing merchant, which the operator-spec
+    cell-keying treats as no signal.
+    """
+    from aegis.logger import get_logger
+
+    deal_to_merchant: dict[str, UUID] = {}
+    try:
+        for d in documents.list_documents(limit=5000):
+            if d.merchant_id is not None:
+                deal_to_merchant[str(d.id)] = d.merchant_id
+    except Exception:
+        get_logger(__name__).warning("match.historical_documents_fetch_failed", exc_info=True)
+        return {}
+
+    rows: list[dict[str, Any]] = []
+    if isinstance(snapshot, InMemoryDecisionSnapshot):
+        rows = list(snapshot.rows())
+    else:
+        try:
+            from aegis.db import get_supabase
+
+            result = (
+                get_supabase()
+                .table("decisions")
+                .select("deal_id,decided_at,score_factors")
+                .order("decided_at", desc=True)
+                .limit(5000)
+                .execute()
+            )
+            rows = cast(list[dict[str, Any]], result.data or [])
+        except Exception:
+            get_logger(__name__).warning("match.historical_decisions_fetch_failed", exc_info=True)
+            return {}
+
+    latest_at: dict[UUID, str] = {}
+    latest_tier: dict[UUID, str] = {}
+    for row in rows:
+        deal_id = str(row.get("deal_id") or "")
+        merchant_id = deal_to_merchant.get(deal_id)
+        if merchant_id is None:
+            continue
+        factors = row.get("score_factors")
+        if not isinstance(factors, dict):
+            continue
+        tier = factors.get("tier")
+        if not isinstance(tier, str):
+            continue
+        decided_at = str(row.get("decided_at") or "")
+        if decided_at >= latest_at.get(merchant_id, ""):
+            latest_at[merchant_id] = decided_at
+            latest_tier[merchant_id] = tier
+    return latest_tier
+
+
 @router.get("/merchants/{merchant_id}/match", response_class=HTMLResponse)
 async def merchant_match(
     request: Request,
@@ -335,6 +477,11 @@ async def merchant_match(
     funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     audit: Annotated[AuditLog, Depends(get_audit)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
+    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
     preselect_funder: UUID | None = None,
 ) -> HTMLResponse:
     """Phase 7B matched-funders panel.
@@ -419,9 +566,36 @@ async def merchant_match(
             detail=f"ofac_unavailable: {exc}",
         ) from exc
 
+    # Sprint 4 Feature 2 — historical-approval index. Once per request
+    # we load the 90-day window of submissions + a merchant→industry
+    # map + a merchant→score-tier map and pre-aggregate per-funder
+    # approval rates. Each ``match_funder`` call then looks up its
+    # own cell. A failure in this block falls back to an empty index
+    # (no boost, identical pre-Sprint-4 behaviour) so the panel never
+    # 500s on a submissions outage.
+    historical_index = _build_historical_index_for_match(
+        funder_note_subs=funder_note_subs,
+        merchants_repo=merchants,
+        snapshot=snapshot,
+        documents=docs,
+    )
+    deal_industry_tier = industry_risk_tier(merchant.industry_choice)
+    deal_score_tier = score_result.tier
+
     cards: list[dict[str, Any]] = []
     for funder in funder_repo.list_active():
-        m = match_funder(funder, score_input, score_result)
+        historical_rate = lookup_historical_approval_rate(
+            historical_index,
+            funder_id=funder.id,
+            industry_tier=deal_industry_tier,
+            score_tier=deal_score_tier,
+        )
+        m = match_funder(
+            funder,
+            score_input,
+            score_result,
+            historical_approval_rate=historical_rate,
+        )
         if m is None:
             continue
         cards.append(_match_card(funder, m, score_input))
@@ -2461,6 +2635,13 @@ def _match_card(
         # no tiers JSONB populated (most brokers/affiliates) — template
         # suppresses the tier block in that case.
         "tier_matches": match.tier_matches,
+        # Sprint 4 -- historical approval rate for similar prior
+        # submissions (same merchant industry tier, same AEGIS score
+        # tier, last 90 days). None when the matcher had no data, when
+        # the cell fell below the 5-submission floor, or when the
+        # route's index build hit an outage. Template renders as a
+        # short "track record" qualifier on the card when present.
+        "historical_approval_rate": match.historical_approval_rate,
     }
 
 

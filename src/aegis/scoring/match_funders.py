@@ -249,6 +249,8 @@ def match_funder(
     funder: FunderRow,
     deal: ScoreInput,
     score: ScoreResult,
+    *,
+    historical_approval_rate: Decimal | None = None,
 ) -> FunderMatch | None:
     """Match a deal against a single funder. None if funder has no criteria configured.
 
@@ -267,6 +269,25 @@ def match_funder(
     When ``funder.tiers`` is empty the existing funder-level minimums
     drive every gate — no behaviour change for funders that never
     published a tier matrix.
+
+    Sprint 4 — ``historical_approval_rate`` boost
+    ---------------------------------------------
+    Optional caller-supplied prior-approval rate for similar deals
+    (same merchant industry tier, same AEGIS score tier, last 90
+    days, >= 5 sample). The caller — the route layer with access to
+    the funder_note_submissions repo — pre-filters and computes the
+    rate per (funder, industry_tier, score_tier) before invoking
+    ``match_funder`` per funder. The matcher applies the boost AFTER
+    the base score is computed and BEFORE the 0-100 cap:
+
+      * rate >  0.60  ->  +5  match_score (track record positive)
+      * rate <  0.20  ->  -10 match_score (track record poor)
+      * 0.20 <= rate <= 0.60 OR rate is None  ->  no change
+
+    The supplied rate also surfaces on ``FunderMatch.historical_approval_rate``
+    so the dossier can render the track-record explicitly. Callers
+    with no historical data pass ``None`` and the matcher behaves
+    identically to pre-Sprint-4.
     """
     if not funder.active:
         return None
@@ -493,6 +514,10 @@ def match_funder(
     else:
         likelihood = _likelihood(qualifies, soft, score.tier)
 
+    # Sprint 4 — historical-approval boost (applied AFTER base score,
+    # BEFORE the 0-100 cap). See the docstring above for the band.
+    likelihood = _apply_historical_boost(likelihood, historical_approval_rate)
+
     estimated_terms = compute_estimated_terms(funder, score, deal)
     # Per-tier shadow rows still surface on the dossier so the operator
     # sees the full matrix (which tiers qualified, which didn't, and why).
@@ -507,6 +532,7 @@ def match_funder(
         soft_concerns=hard + soft,  # union — caller wants the full picture
         estimated_terms=estimated_terms,
         tier_matches=tier_matches,
+        historical_approval_rate=historical_approval_rate,
     )
 
 
@@ -526,6 +552,45 @@ def _pick_qualifying_tier(
         if not _evaluate_tier_criteria(tier, deal):
             return tier, idx
     return None
+
+
+_HISTORICAL_BOOST_HIGH_THRESHOLD: Final[Decimal] = Decimal("0.60")
+"""Boost ``match_score`` by ``+5`` when the funder's similar-deal
+approval rate is strictly greater than this. ``> 0.60`` per the
+operator's spec — 60% exactly does NOT boost (the band is open)."""
+
+_HISTORICAL_BOOST_LOW_THRESHOLD: Final[Decimal] = Decimal("0.20")
+"""Penalise ``match_score`` by ``-10`` when the rate is strictly less
+than this. ``< 0.20`` per the operator's spec — 20% exactly does NOT
+penalise."""
+
+_HISTORICAL_BOOST_AMOUNT: Final[int] = 5
+_HISTORICAL_PENALTY_AMOUNT: Final[int] = -10
+_MATCH_SCORE_MAX: Final[int] = 100
+_MATCH_SCORE_MIN: Final[int] = 0
+
+
+def _apply_historical_boost(
+    base_score: int,
+    historical_approval_rate: Decimal | None,
+) -> int:
+    """Project a base ``match_score`` + an optional historical rate
+    onto the boost-adjusted, capped score.
+
+    Pure function. ``None`` rate (no sample, insufficient sample, or
+    caller didn't supply) returns ``base_score`` unchanged. Result
+    clamped to ``[0, 100]`` so the +5 doesn't overflow past the
+    ``Field(le=100)`` constraint on FunderMatch.match_score.
+    """
+    if historical_approval_rate is None:
+        return base_score
+    if historical_approval_rate > _HISTORICAL_BOOST_HIGH_THRESHOLD:
+        adjusted = base_score + _HISTORICAL_BOOST_AMOUNT
+    elif historical_approval_rate < _HISTORICAL_BOOST_LOW_THRESHOLD:
+        adjusted = base_score + _HISTORICAL_PENALTY_AMOUNT
+    else:
+        adjusted = base_score
+    return max(_MATCH_SCORE_MIN, min(_MATCH_SCORE_MAX, adjusted))
 
 
 def _tier_match_score(position: int, soft: list[str]) -> int:

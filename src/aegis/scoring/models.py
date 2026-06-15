@@ -387,6 +387,17 @@ class FunderMatch(_StrictModel):
     operator review; does not influence ``match_score``,
     ``soft_concerns``, or ``reasons``. See ``TierMatch`` docstring."""
 
+    historical_approval_rate: Decimal | None = None
+    """Sprint 4 — approval rate for *similar* prior submissions
+    against this funder (same merchant industry tier, same AEGIS
+    score tier, last 90 days). ``None`` when there's no sample, an
+    insufficient sample (< 5 submissions), or the caller didn't
+    supply the data (legacy callers / tests that don't yet route the
+    funder_note_submissions repo). When supplied, the matcher
+    applies a +5 / -10 / 0 boost to ``match_score`` before capping
+    at 100. Surfaced on the dossier so the underwriter can see the
+    funder's track record on this deal shape."""
+
 
 class SubmissionPackage(_StrictModel):
     """Everything a funder needs to evaluate the deal."""

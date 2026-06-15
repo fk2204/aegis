@@ -150,6 +150,23 @@
                   <div style="margin-top:6px;font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--approve)">No blockers</div>
                 {% endif %}
 
+                {# Sprint 4 — historical approval rate for similar
+                   prior submissions (same merchant industry tier, same
+                   AEGIS score tier, last 90 days). Surfaces only when
+                   the matcher had a ≥5-sample cell; absence reads as
+                   "no track record yet" rather than 0%. The +5 / -10
+                   match_score swing has already been applied — this
+                   row is the explanation. #}
+                {% if c.historical_approval_rate is not none %}
+                  {% set _rate_pct = (c.historical_approval_rate * 100) | round(0, 'floor') | int %}
+                  {% set _rate_color = 'var(--approve)' if c.historical_approval_rate > 0.60 else 'var(--decline)' if c.historical_approval_rate < 0.20 else 'var(--ink-3)' %}
+                  <div style="margin-top:8px;display:flex;align-items:baseline;gap:6px">
+                    <span style="font-family:var(--mono);font-size:9.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--ink-3)">Track record · 90d</span>
+                    <span style="font-family:var(--mono);font-size:11px;color:{{ _rate_color }};font-variant-numeric:tabular-nums">{{ _rate_pct }}% approved</span>
+                    <span style="font-family:var(--serif);font-size:11px;color:var(--ink-3)">on similar deals</span>
+                  </div>
+                {% endif %}
+
                 {# === Estimated terms (R4.2 + R4.3) ===
                    Per-funder pricing guidance interpolated from the
                    funder's typical_factor / typical_holdback envelope
