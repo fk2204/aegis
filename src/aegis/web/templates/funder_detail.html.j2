@@ -26,6 +26,7 @@
   </div>
   <div class="actions">
     <a class="btn ghost" href="/ui/funders">← All funders</a>
+    <a class="btn" href="/ui/funders/{{ funder.id }}/performance">Performance ↗</a>
     <button class="btn" type="button"
             hx-get="/ui/funders/{{ funder.id }}/reextract-modal"
             hx-target="#submit-modal-host"

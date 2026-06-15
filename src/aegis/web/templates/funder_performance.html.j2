@@ -1,0 +1,92 @@
+{% extends "base.html.j2" %}
+{% set active = 'Funders' %}
+{% block title %}{{ funder.name }} — Performance — AEGIS{% endblock %}
+
+{% block body %}
+<section class="page-content">
+
+  <div class="page-header">
+    <h2>{{ funder.name }} <em>— performance</em></h2>
+    <p class="sub">
+      Per-funder roll-up over every funder_note_submission AEGIS has on
+      file. Read-only. ·
+      <a href="/ui/funders/{{ funder.id }}">← back to detail</a>
+    </p>
+  </div>
+
+  <div class="card" data-test-id="funder-performance">
+
+    <h3>Volume</h3>
+    <div class="kpi-row" style="display:flex;gap:24px;flex-wrap:wrap;margin:14px 0;font-size:13px">
+      <div data-test-id="funder-perf-total">
+        <div class="sub" style="text-transform:uppercase;letter-spacing:0.08em;font-size:11px;color:var(--ink-3)">Total submissions</div>
+        <div style="font-size:22px;font-weight:600">{{ performance.total_submissions }}</div>
+      </div>
+      <div data-test-id="funder-perf-approval">
+        <div class="sub" style="text-transform:uppercase;letter-spacing:0.08em;font-size:11px;color:var(--ink-3)">Approval rate</div>
+        <div style="font-size:22px;font-weight:600">
+          {% if performance.approval_rate_pct is not none %}
+            {{ performance.approval_rate_pct }}%
+          {% else %}—{% endif %}
+        </div>
+        <div class="sub">{{ performance.approved }} approved / {{ performance.approved + performance.declined + performance.countered }} decided</div>
+      </div>
+      <div data-test-id="funder-perf-days">
+        <div class="sub" style="text-transform:uppercase;letter-spacing:0.08em;font-size:11px;color:var(--ink-3)">Avg days to response</div>
+        <div style="font-size:22px;font-weight:600">
+          {% if performance.avg_days_to_response is not none %}
+            {{ performance.avg_days_to_response }}
+          {% else %}—{% endif %}
+        </div>
+      </div>
+      <div data-test-id="funder-perf-offer-ratio">
+        <div class="sub" style="text-transform:uppercase;letter-spacing:0.08em;font-size:11px;color:var(--ink-3)">Avg offer vs AEGIS suggested</div>
+        <div style="font-size:22px;font-weight:600">
+          {% if performance.avg_offer_ratio_pct is not none %}
+            {{ performance.avg_offer_ratio_pct }}%
+          {% else %}—{% endif %}
+        </div>
+        <div class="sub">{{ performance.offer_ratio_sample_size }} approved sample{{ '' if performance.offer_ratio_sample_size == 1 else 's' }}</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin:14px 0;font-size:12px">
+      <span class="chip pos">{{ performance.approved }} approved</span>
+      <span class="chip neg">{{ performance.declined }} declined</span>
+      <span class="chip info">{{ performance.countered }} countered</span>
+      <span class="chip">{{ performance.pending }} pending</span>
+    </div>
+
+    <h3>Recent decline notes</h3>
+    {% if not performance.recent_decline_notes %}
+      <p class="sub">No declined submissions have notes attached yet.</p>
+    {% else %}
+      <table class="ledger" data-test-id="funder-perf-decline-notes">
+        <thead>
+          <tr>
+            <th style="width:140px">Submitted</th>
+            <th style="width:140px">Responded</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for n in performance.recent_decline_notes %}
+            <tr data-merchant-id="{{ n.merchant_id }}">
+              <td class="mono-cell">{{ n.submitted_at.strftime('%Y-%m-%d') }}</td>
+              <td class="mono-cell">
+                {% if n.responded_at %}{{ n.responded_at.strftime('%Y-%m-%d') }}{% else %}—{% endif %}
+              </td>
+              <td>
+                <a href="/ui/merchants/{{ n.merchant_id }}" class="sub" style="font-size:11px">↗ merchant</a>
+                <div>{{ n.note }}</div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+  </div>
+
+</section>
+{% endblock %}

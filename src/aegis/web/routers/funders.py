@@ -22,6 +22,7 @@ keep consuming the same code paths after this split.
 from __future__ import annotations
 
 import urllib.parse
+from decimal import Decimal
 from typing import Annotated, Any, Final
 from uuid import UUID
 
@@ -41,11 +42,19 @@ from pydantic import ValidationError
 from aegis.api.deps import (
     get_audit,
     get_deal_repository,
+    get_decision_snapshot,
+    get_funder_note_submission_repository,
     get_funder_repository,
     get_llm,
+    get_merchant_repository,
 )
 from aegis.audit import AuditLog
+from aegis.compliance.snapshot import DecisionSnapshot, InMemoryDecisionSnapshot
+from aegis.deals.funder_performance import compute_funder_performance
 from aegis.deals.repository import DealRepository
+from aegis.funder_note_submissions.repository import (
+    FunderNoteSubmissionRepository,
+)
 from aegis.funders.extract import (
     FunderExtractionError,
     extract_funder_guidelines,
@@ -58,6 +67,7 @@ from aegis.funders.repository import (
     FunderRepository,
 )
 from aegis.llm import LLMClient
+from aegis.merchants.repository import MerchantRepository
 from aegis.ops.operators import resolve_operator_email
 from aegis.web._router_helpers import (
     _decimal_or_none,
@@ -222,8 +232,7 @@ def _reextract_redirect(
     appropriate query-string flag so the template can render a flash."""
     if error is not None:
         return RedirectResponse(
-            f"/ui/funders/{funder_id}?reextract_error="
-            + urllib.parse.quote(error[:500]),
+            f"/ui/funders/{funder_id}?reextract_error=" + urllib.parse.quote(error[:500]),
             status_code=status.HTTP_303_SEE_OTHER,
         )
     return RedirectResponse(
@@ -237,17 +246,13 @@ async def list_funders_page(
     request: Request,
     repo: Annotated[FunderRepository, Depends(get_funder_repository)],
 ) -> HTMLResponse:
-    return templates.TemplateResponse(
-        request, "funders.html.j2", {"funders": repo.list_active()}
-    )
+    return templates.TemplateResponse(request, "funders.html.j2", {"funders": repo.list_active()})
 
 
 @router.get("/funders/import", response_class=HTMLResponse)
 async def funder_import_form(request: Request) -> HTMLResponse:
     """Phase 7B: upload form for funder-criteria PDFs."""
-    return templates.TemplateResponse(
-        request, "funder_import.html.j2", {"error": None}
-    )
+    return templates.TemplateResponse(request, "funder_import.html.j2", {"error": None})
 
 
 @router.post("/funders/import", response_class=HTMLResponse, response_model=None)
@@ -308,8 +313,7 @@ async def funder_import_review(
                 "funder_import.html.j2",
                 {
                     "error": (
-                        f"{upload.filename or 'upload'} exceeds "
-                        f"{_MAX_FUNDER_IMPORT_BYTES} bytes"
+                        f"{upload.filename or 'upload'} exceeds {_MAX_FUNDER_IMPORT_BYTES} bytes"
                     ),
                 },
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -332,9 +336,7 @@ async def funder_import_review(
                 request,
                 "funder_import.html.j2",
                 {
-                    "error": (
-                        f"extraction failed for {upload.filename or 'upload'}: {exc}"
-                    ),
+                    "error": (f"extraction failed for {upload.filename or 'upload'}: {exc}"),
                 },
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
@@ -354,9 +356,7 @@ async def funder_import_review(
     # Decimal precision through JSON round-trip on submit.
     import json as _json
 
-    tiers_json = _json.dumps(
-        [t.model_dump(mode="json") for t in merged.draft.tiers]
-    )
+    tiers_json = _json.dumps([t.model_dump(mode="json") for t in merged.draft.tiers])
     return templates.TemplateResponse(
         request,
         "funder_review.html.j2",
@@ -487,9 +487,7 @@ async def funder_import_save(
             "tier_count": len(saved.tiers),
         },
     )
-    return RedirectResponse(
-        f"/ui/funders/{saved.id}", status_code=status.HTTP_303_SEE_OTHER
-    )
+    return RedirectResponse(f"/ui/funders/{saved.id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/funders/new", response_class=HTMLResponse)
@@ -502,9 +500,7 @@ async def funder_new_form(request: Request) -> HTMLResponse:
     funders whose terms only exist as conversation notes or ISO-
     agreement clauses.
     """
-    return templates.TemplateResponse(
-        request, "funder_form.html.j2", {"error": None}
-    )
+    return templates.TemplateResponse(request, "funder_form.html.j2", {"error": None})
 
 
 @router.post("/funders/new", response_class=HTMLResponse, response_model=None)
@@ -516,31 +512,31 @@ async def funder_new_submit(
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
     active: Annotated[str, Form()] = "true",
     # Hard gates
-    min_monthly_revenue:    Annotated[str, Form()] = "",
-    min_avg_daily_balance:  Annotated[str, Form()] = "",
-    min_credit_score:       Annotated[str, Form()] = "",
+    min_monthly_revenue: Annotated[str, Form()] = "",
+    min_avg_daily_balance: Annotated[str, Form()] = "",
+    min_credit_score: Annotated[str, Form()] = "",
     min_months_in_business: Annotated[str, Form()] = "",
-    max_positions:          Annotated[str, Form()] = "",
-    accepts_stacking:       Annotated[str, Form()] = "false",
-    min_advance:            Annotated[str, Form()] = "",
-    max_advance:            Annotated[str, Form()] = "",
-    max_nsf_tolerance:      Annotated[str, Form()] = "",
-    requires_coj:           Annotated[str, Form()] = "false",
+    max_positions: Annotated[str, Form()] = "",
+    accepts_stacking: Annotated[str, Form()] = "false",
+    min_advance: Annotated[str, Form()] = "",
+    max_advance: Annotated[str, Form()] = "",
+    max_nsf_tolerance: Annotated[str, Form()] = "",
+    requires_coj: Annotated[str, Form()] = "false",
     # Pricing envelope
-    typical_factor_low:    Annotated[str, Form()] = "",
-    typical_factor_high:   Annotated[str, Form()] = "",
-    typical_holdback_low:  Annotated[str, Form()] = "",
+    typical_factor_low: Annotated[str, Form()] = "",
+    typical_factor_high: Annotated[str, Form()] = "",
+    typical_holdback_low: Annotated[str, Form()] = "",
     typical_holdback_high: Annotated[str, Form()] = "",
     # Exclusions (comma-separated)
     excluded_industries: Annotated[str, Form()] = "",
-    excluded_states:     Annotated[str, Form()] = "",
+    excluded_states: Annotated[str, Form()] = "",
     # Contact
-    contact_name:     Annotated[str, Form()] = "",
-    contact_phone:    Annotated[str, Form()] = "",
-    contact_email:    Annotated[str, Form()] = "",
+    contact_name: Annotated[str, Form()] = "",
+    contact_phone: Annotated[str, Form()] = "",
+    contact_email: Annotated[str, Form()] = "",
     submission_email: Annotated[str, Form()] = "",
     # Compliance
-    charges_merchant_advance_fees:      Annotated[str, Form()] = "false",
+    charges_merchant_advance_fees: Annotated[str, Form()] = "false",
     aegis_compensation_disclosure_text: Annotated[str, Form()] = "",
     # Operator content
     operator_notes: Annotated[str, Form()] = "",
@@ -578,22 +574,16 @@ async def funder_new_submit(
             contact_phone=contact_phone,
             contact_email=contact_email,
             submission_email=submission_email,
-            charges_merchant_advance_fees=(
-                charges_merchant_advance_fees.lower() in _TRUE_TOKENS
-            ),
+            charges_merchant_advance_fees=(charges_merchant_advance_fees.lower() in _TRUE_TOKENS),
             aegis_compensation_disclosure_text=aegis_compensation_disclosure_text,
             operator_notes=operator_notes,
         )
     except (ValidationError, ValueError, TypeError) as exc:
-        return _funder_form_error(
-            request, str(exc), _funder_form_dict_from_locals(locals())
-        )
+        return _funder_form_error(request, str(exc), _funder_form_dict_from_locals(locals()))
     try:
         saved = repo.upsert(funder)
     except ValueError as exc:
-        return _funder_form_error(
-            request, str(exc), _funder_form_dict_from_locals(locals())
-        )
+        return _funder_form_error(request, str(exc), _funder_form_dict_from_locals(locals()))
     audit.record(
         actor="dashboard",
         actor_email=actor_email,
@@ -602,9 +592,7 @@ async def funder_new_submit(
         subject_id=saved.id,
         details={"funder_name": saved.name},
     )
-    return RedirectResponse(
-        f"/ui/funders/{saved.id}", status_code=status.HTTP_303_SEE_OTHER
-    )
+    return RedirectResponse(f"/ui/funders/{saved.id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/funders/{funder_id}", response_class=HTMLResponse)
@@ -636,9 +624,154 @@ async def funder_detail(
     )
 
 
-@router.get(
-    "/funders/{funder_id}/submit-modal", response_class=HTMLResponse
-)
+@router.get("/funders/{funder_id}/performance", response_class=HTMLResponse)
+async def funder_performance(
+    request: Request,
+    funder_id: UUID,
+    repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
+    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
+) -> HTMLResponse:
+    """Per-funder performance roll-up.
+
+    Reads every submission against ``funder_id`` and a snapshot of
+    each merchant's latest-decision suggested_max_advance to compute:
+    total / approved / declined counts, approval rate, average days
+    to response, average offer-vs-suggested ratio, and the most
+    recent 10 decline notes (operator-visible patterns).
+
+    The aggregator lives in ``aegis.deals.funder_performance``; this
+    handler is the I/O layer.
+    """
+    try:
+        funder = repo.get(funder_id)
+    except FunderNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    submissions = funder_note_subs.list_for_funder(funder_id, limit=500)
+
+    # Build suggested_amount_by_merchant from the latest decision per
+    # merchant. Decision rows carry suggested_max_advance under
+    # score_factors (set by the score route's decision builder).
+    suggested_by_merchant: dict[UUID, Decimal] = {}
+    if isinstance(snapshot, InMemoryDecisionSnapshot):
+        # In-memory: walk every row, take the latest per deal_id, map
+        # to merchant_id via merchants_repo. Cheap enough.
+        merchant_ids: set[UUID] = {s.merchant_id for s in submissions}
+        for merchant_id in merchant_ids:
+            try:
+                merchant = merchants_repo.get(merchant_id)
+            except Exception:  # noqa: S112 — best-effort metric path
+                continue
+            # Each merchant's documents become its deal_ids; in the
+            # in-memory case we don't have that wiring here cheaply,
+            # so the snapshot's rows() walk is the fallback. Take
+            # the row with the largest suggested_max_advance — a
+            # safe heuristic when decided_at sort isn't available
+            # in the InMemory rows.
+            best: Decimal | None = None
+            for row in snapshot.rows():
+                factors = row.get("score_factors")
+                if not isinstance(factors, dict):
+                    continue
+                sma_raw = factors.get("suggested_max_advance")
+                if sma_raw is None:
+                    continue
+                try:
+                    sma = Decimal(str(sma_raw))
+                except Exception:  # noqa: S112 — best-effort metric path
+                    continue
+                if best is None or sma > best:
+                    best = sma
+            if best is not None:
+                suggested_by_merchant[merchant.id] = best
+    else:
+        # Supabase: query decisions for the merchants in play. Best-
+        # effort — if the read fails the offer-ratio metric just
+        # surfaces as None / 0 sample size.
+        try:
+            from aegis.db import get_supabase
+
+            merchant_ids_str = list({str(s.merchant_id) for s in submissions})
+            if merchant_ids_str:
+                # Find documents belonging to these merchants first to
+                # get their deal_ids, then look up decisions. Single
+                # batched query each.
+                doc_result = (
+                    get_supabase()
+                    .table("documents")
+                    .select("id,merchant_id")
+                    .in_("merchant_id", merchant_ids_str)
+                    .execute()
+                )
+                doc_rows = doc_result.data or []
+                deal_id_to_merchant: dict[str, UUID] = {}
+                for d in doc_rows:
+                    if not isinstance(d, dict):
+                        continue
+                    mid_raw = d.get("merchant_id")
+                    did = d.get("id")
+                    if mid_raw and did:
+                        deal_id_to_merchant[str(did)] = UUID(str(mid_raw))
+                if deal_id_to_merchant:
+                    dec_result = (
+                        get_supabase()
+                        .table("decisions")
+                        .select("deal_id,decided_at,score_factors")
+                        .in_("deal_id", list(deal_id_to_merchant.keys()))
+                        .order("decided_at", desc=True)
+                        .execute()
+                    )
+                    seen: set[UUID] = set()
+                    raw_dec_rows: list[Any] = dec_result.data or []
+                    for row in raw_dec_rows:
+                        if not isinstance(row, dict):
+                            continue
+                        deal_id = str(row.get("deal_id", ""))
+                        merchant_id_opt = deal_id_to_merchant.get(deal_id)
+                        if merchant_id_opt is None or merchant_id_opt in seen:
+                            continue
+                        factors = row.get("score_factors")
+                        if not isinstance(factors, dict):
+                            continue
+                        sma_raw = factors.get("suggested_max_advance")
+                        if sma_raw is None:
+                            continue
+                        try:
+                            suggested_by_merchant[merchant_id_opt] = Decimal(str(sma_raw))
+                            seen.add(merchant_id_opt)
+                        except Exception:  # noqa: S112 — best-effort metric path
+                            continue
+        except Exception:
+            from aegis.logger import get_logger
+
+            get_logger(__name__).warning(
+                "funder_performance.decisions_fetch_failed funder_id=%s",
+                funder_id,
+                exc_info=True,
+            )
+
+    performance = compute_funder_performance(
+        funder_id=funder_id,
+        submissions=submissions,
+        suggested_amount_by_merchant=suggested_by_merchant,
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "funder_performance.html.j2",
+        {
+            "funder": funder,
+            "performance": performance,
+        },
+    )
+
+
+@router.get("/funders/{funder_id}/submit-modal", response_class=HTMLResponse)
 async def funder_submit_modal(
     request: Request,
     funder_id: UUID,
@@ -655,9 +788,7 @@ async def funder_submit_modal(
     try:
         funder = funder_repo.get(funder_id)
     except FunderNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     # Two queries — DealRepository.list_deals takes a single parse_status.
     # Operators submit from both clean ("proceed") and lower-confidence
@@ -684,9 +815,7 @@ async def funder_submit_modal(
     )
 
 
-@router.get(
-    "/funders/{funder_id}/reextract-modal", response_class=HTMLResponse
-)
+@router.get("/funders/{funder_id}/reextract-modal", response_class=HTMLResponse)
 async def funder_reextract_modal(
     request: Request,
     funder_id: UUID,
@@ -698,12 +827,8 @@ async def funder_reextract_modal(
     try:
         funder = funder_repo.get(funder_id)
     except FunderNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
-    return templates.TemplateResponse(
-        request, "funder_reextract_modal.html.j2", {"funder": funder}
-    )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return templates.TemplateResponse(request, "funder_reextract_modal.html.j2", {"funder": funder})
 
 
 @router.post(
@@ -739,9 +864,7 @@ async def funder_reextract(
     try:
         existing = funder_repo.get(funder_id)
     except FunderNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     body = await pdf.read(_MAX_FUNDER_IMPORT_BYTES + 1)
     if not body:
@@ -820,9 +943,7 @@ async def funder_reextract(
         contact_name=_keep_existing_if_empty(draft.contact_name, existing.contact_name),
         contact_phone=_keep_existing_if_empty(draft.contact_phone, existing.contact_phone),
         contact_email=_keep_existing_if_empty(draft.contact_email, existing.contact_email),
-        submission_email=_keep_existing_if_empty(
-            draft.submission_email, existing.submission_email
-        ),
+        submission_email=_keep_existing_if_empty(draft.submission_email, existing.submission_email),
         # Notes: atomic migration
         notes=new_notes,
         notes_residual=new_notes_residual,
@@ -845,9 +966,7 @@ async def funder_reextract(
             "funder_name": existing.name,
             "old_pdf_sha256": existing.guidelines_source_pdf_hash,
             "new_pdf_sha256": _sha256_hex(body),
-            "notes_migrated_to_residual": bool(
-                existing.notes and not existing.notes_residual
-            ),
+            "notes_migrated_to_residual": bool(existing.notes and not existing.notes_residual),
             "tier_count_before": len(existing.tiers),
             "tier_count_after": len(merged.tiers),
             "overall_confidence": extraction.overall_confidence,
@@ -881,9 +1000,7 @@ async def funder_operator_notes_save(
     try:
         existing = funder_repo.get(funder_id)
     except FunderNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     # Trim + soft-cap. Truncation is silent — if operators routinely
     # bump the cap we'll surface a warning, not yet.
