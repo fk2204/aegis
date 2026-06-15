@@ -291,6 +291,28 @@
               {% else %}
                 <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders</a>
               {% endif %}
+              {# Submit-to-funder posts the AEGIS dossier summary as a
+                 Note on the Close Lead activity feed. Disabled when no
+                 Close Lead is linked; HTMX swaps the button to a
+                 "Submitted ✓" chip on 200. #}
+              {% if merchant.close_lead_id %}
+                <button class="btn"
+                        type="button"
+                        data-submit-to-funder="true"
+                        hx-post="/ui/merchants/{{ merchant.id }}/submit-to-funder"
+                        hx-target="this"
+                        hx-swap="outerHTML"
+                        hx-confirm="Post the AEGIS funder-submission summary as a Close Note?">
+                  Submit to Funder
+                </button>
+              {% else %}
+                <span class="btn is-disabled"
+                      data-submit-to-funder="disabled"
+                      aria-disabled="true"
+                      title="Link a Close Lead before submitting to a funder">
+                  Submit to Funder
+                </span>
+              {% endif %}
               <a class="btn" href="/ui/merchants/{{ merchant.id }}/edit">Edit deal terms</a>
               <a class="btn" href="/ui/merchants/{{ merchant.id }}/findings.csv">Audit CSV</a>
               <a class="btn" href="/ui/merchants/{{ merchant.id }}/dossier.pdf">Download PDF dossier</a>

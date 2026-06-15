@@ -48,6 +48,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from aegis.api.deps import (
     get_audit,
+    get_close_client,
     get_funder_repository,
     get_merchant_repository,
     get_merchant_shadow_signal_repository,
@@ -56,6 +57,8 @@ from aegis.api.deps import (
     get_submission_repository,
 )
 from aegis.audit import AuditLog
+from aegis.close.client import CloseClient, CloseError
+from aegis.close.funder_note import format_funder_note
 from aegis.close.orchestration import enqueue_close_orchestration
 from aegis.compliance.states import STATES
 from aegis.funders.models import FunderRow
@@ -99,6 +102,7 @@ from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
 from aegis.scoring_v2.score_for_sync import (
     recommended_factor_rate_from as _recommended_factor_rate_from,
 )
+from aegis.scoring_v2.track_a import IntegrityVerdict
 from aegis.storage import (
     AnalysisRow,
     DocumentRepository,
@@ -693,6 +697,198 @@ async def merchant_submit_to_funders(
         content=download_bytes,
         media_type=download_media,
         headers={"content-disposition": f'attachment; filename="{download_filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Submit-to-funder note — formats the AEGIS dossier into a plain-text
+# summary and posts it to the Close Lead's activity feed.
+# ---------------------------------------------------------------------------
+
+
+def _integrity_verdict_word(verdict: IntegrityVerdict | None) -> str | None:
+    """Project a Track A verdict onto the funder-note's one-word slot.
+
+    ``clean`` → ``"clean"``, ``review`` → ``"flagged for review"``,
+    ``fail`` → ``"flagged"``, ``None`` → ``None`` (note falls through
+    to the formatter's default).
+    """
+    if verdict is None:
+        return None
+    if verdict.verdict == "clean":
+        return "clean"
+    if verdict.verdict == "review":
+        return "flagged for review"
+    if verdict.verdict == "fail":
+        return "flagged"
+    return None
+
+
+@router.post("/merchants/{merchant_id}/submit-to-funder", response_model=None)
+async def merchant_submit_to_funder(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    close_client: Annotated[CloseClient, Depends(get_close_client)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> HTMLResponse:
+    """Post the AEGIS funder-submission note to the Close Lead activity feed.
+
+    Pipeline:
+      1. Load merchant; 404 if missing or not finalized.
+      2. Refuse with 400 when ``close_lead_id`` is not set — the dossier
+         button is gated on the same condition, but a stale tab could
+         POST against a just-unlinked merchant.
+      3. Build the score + offer + stack + balance-health rollups from
+         the most-recent analyzed bundle, exactly like the matched-
+         funders panel does.
+      4. Match every active funder against the score result; pass the
+         ranked list to ``format_funder_note``.
+      5. POST the note via ``CloseClient.post_note``. On 4xx/5xx after
+         retries, the Close error propagates as a 502 — the operator
+         sees the cause and can retry.
+      6. Write ``deal.funder_note_posted`` audit on success, then
+         return the "Submitted ✓" swap HTML (HTMX outerHTML).
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    if not merchant.is_finalized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=("merchant is not finalized — name the merchant before submitting to funder"),
+        )
+
+    if not merchant.close_lead_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"merchant {merchant_id} has no close_lead_id; "
+                "submit-to-funder requires a linked Close Lead"
+            ),
+        )
+
+    items = _collect_analyzed_for_merchant(docs, merchant_id)
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="merchant has no analyzed document — upload + parse first",
+        )
+
+    score_input = _score_input_multi_month(merchant, items)
+    submit_documents = [d for d, _ in items]
+    submit_analyses_by_doc = {d.id: a for d, a in items}
+    track_a_verdict, track_b_band = compute_score_deal_track_inputs(
+        documents=submit_documents,
+        list_transactions=docs.list_transactions,
+        analyses_by_doc=submit_analyses_by_doc,
+        merchant_id=merchant_id,
+        industry_tier=industry_risk_tier(merchant.industry_choice),
+    )
+    try:
+        score_result = score_deal(
+            score_input,
+            ofac=ofac,
+            track_a_verdict=track_a_verdict,
+            track_b_band=track_b_band,
+        )
+    except OFACStaleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"ofac_unavailable: {exc}",
+        ) from exc
+
+    latest_doc, latest_analysis = items[0]
+    latest_transactions = docs.list_transactions(latest_doc.id)
+    mca_stack = aggregate_mca_stack(
+        transactions=latest_transactions,
+        monthly_revenue=latest_analysis.monthly_revenue,
+        period_days=latest_analysis.statement_days,
+    )
+    balance_health = compute_balance_health(
+        transactions=latest_transactions,
+        period_days=latest_analysis.statement_days,
+    )
+    offer = compute_offer(
+        true_revenue_monthly=latest_analysis.monthly_revenue,
+        holdback_capacity_monthly=(latest_analysis.monthly_revenue * Decimal("0.25")),
+        mca_stack=mca_stack,
+    )
+
+    matched: list[FunderMatch] = []
+    for f in funder_repo.list_active():
+        m = match_funder(f, score_input, score_result)
+        if m is None:
+            continue
+        matched.append(m)
+    matched.sort(key=lambda fm: fm.match_score, reverse=True)
+
+    note_text = format_funder_note(
+        merchant=merchant,
+        score_result=score_result,
+        offer=offer,
+        mca_stack=mca_stack,
+        balance_health=balance_health,
+        industry_tier=industry_risk_tier(merchant.industry_choice),
+        matched_funders=matched,
+        months_of_statements=len(items),
+        true_revenue_monthly=latest_analysis.monthly_revenue,
+        integrity_verdict=_integrity_verdict_word(track_a_verdict),
+        num_nsf=score_input.num_nsf,
+        days_negative=score_input.days_negative,
+    )
+
+    try:
+        close_response = close_client.post_note(
+            merchant.close_lead_id,
+            note_text,
+        )
+    except CloseError as exc:
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="deal.funder_note_post_failed",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": merchant.close_lead_id,
+                "status_code": exc.status_code,
+                "error": str(exc)[:200],
+                "note_length": len(note_text),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"close note POST failed: {exc}",
+        ) from exc
+
+    audit.record(
+        actor="dashboard",
+        actor_email=actor_email,
+        action="deal.funder_note_posted",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={
+            "close_lead_id": merchant.close_lead_id,
+            "close_activity_id": close_response.get("id"),
+            "note_length": len(note_text),
+            "score": score_result.score,
+            "tier": score_result.tier,
+            "matched_funder_count": len(matched),
+        },
+    )
+
+    return HTMLResponse(
+        content=(
+            '<span class="btn primary is-disabled" '
+            'data-submitted-to-funder="true" aria-disabled="true">'
+            "Submitted &check;</span>"
+        ),
     )
 
 
