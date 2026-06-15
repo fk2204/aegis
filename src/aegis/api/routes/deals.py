@@ -66,6 +66,7 @@ from aegis.compliance.snapshot import (
 from aegis.compliance.state_matrix import StateMatrix
 from aegis.funders.repository import FunderRepository
 from aegis.logger import get_logger
+from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import MerchantNotFoundError, MerchantRepository
 from aegis.ops.operators import resolve_operator_email
 from aegis.scoring.match_funders import match_funder
@@ -421,6 +422,7 @@ def sync_to_close(
     snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
     audit: Annotated[AuditLog, Depends(get_audit)],
     close_client: Annotated[CloseClient, Depends(get_close_client)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> CloseSyncResponse:
     """Operator-triggered write-back of a merchant's latest decision to
@@ -538,13 +540,14 @@ def sync_to_close(
     # rows say what happened on each, and the dossier still renders.
     if merchant.close_opportunity_id is not None:
         _try_push_offer_to_opportunity(
+            merchant=merchant,
             merchant_id=merchant_id,
             close_opportunity_id=merchant.close_opportunity_id,
             decision_id=decision.id,
-            merchants=merchants,
             docs=docs,
             close_client=close_client,
             audit=audit,
+            ofac=ofac,
         )
 
     return CloseSyncResponse(
@@ -559,13 +562,14 @@ def sync_to_close(
 
 def _try_push_offer_to_opportunity(
     *,
+    merchant: MerchantRow,
     merchant_id: UUID,
     close_opportunity_id: str,
     decision_id: UUID,
-    merchants: MerchantRepository,
     docs: DocumentRepository,
     close_client: CloseClient,
     audit: AuditLog,
+    ofac: OFACClient | None,
 ) -> None:
     """Compute the offer + supporting fields and PATCH them onto the
     Close Opportunity. Best-effort: any compute-side failure logs and
@@ -574,18 +578,24 @@ def _try_push_offer_to_opportunity(
 
     Sources the seven push fields from:
 
-      * ``analysis.monthly_revenue``      → True Revenue
-      * ``analysis.monthly_revenue * 0.25`` -> Holdback Capacity (v1
-        default; commit-2 wave 2 sources from the Close-side
-        operator-entered value once the read-back lands)
-      * ``mca_stack.active_mca_count``    → Existing MCA Debits Identified
-      * ``analysis.mca_daily_total``      → Existing MCA Daily Debits Total
-      * ``offer.recommended_amount``      → Suggested Max Advance
-      * ``offer.holdback_pct``            → Recommended Holdback Pct
-      * ``None`` for ``recommended_factor_rate`` in v1 — sourcing it
-        requires re-scoring at sync time. Push left blank (None);
-        Close-side value untouched. Follow-up commit can refactor a
-        shared dossier+sync helper that surfaces score_result.
+      * ``analysis.monthly_revenue``      -> True Revenue
+      * Operator-entered ``Holdback Capacity`` on the opportunity,
+        with ``analysis.monthly_revenue * 0.25`` as the fallback when
+        Close hasn't been populated yet. Read once via the
+        ``opportunity_payload`` GET that's already needed for the
+        push's read-before-write diff — no second round-trip.
+      * ``mca_stack.active_mca_count``    -> Existing MCA Debits Identified
+      * ``analysis.mca_daily_total``      -> Existing MCA Daily Debits Total
+      * ``offer.recommended_amount``      -> Suggested Max Advance
+      * ``offer.holdback_pct``            -> Recommended Holdback Pct
+      * ``ScoreResult.recommended_factor_rate`` via
+        ``recommended_factor_rate_from`` -> Recommended Factor Rate.
+        ``None`` when scorer didn't produce a meaningful recommendation
+        (merchant unscored, hard decline, sub-1.0 factor).
+
+    ``holdback_capacity_monthly`` is NOT pushed back to Close: the
+    operator owns that field. AEGIS reads it for sizing but treats it
+    as operator-write-only.
 
     Decision-boundary posture: SHADOW ONLY. None of these fields drive
     the AEGIS live decline path.
@@ -593,8 +603,13 @@ def _try_push_offer_to_opportunity(
     # Avoid circular imports for the scoring_v2 modules — this helper
     # only runs on the operator-triggered sync route, not the dossier
     # render hot path.
+    from aegis.close.field_map import CLOSE_OPPORTUNITY_FIELD_IDS, parse_money
     from aegis.scoring_v2.mca_stack import aggregate_mca_stack
     from aegis.scoring_v2.offer import compute_offer
+    from aegis.scoring_v2.score_for_sync import (
+        compute_score_result_for_default_bundle,
+        recommended_factor_rate_from,
+    )
 
     documents_list = docs.list_documents(merchant_id=merchant_id)
     if not documents_list:
@@ -605,16 +620,55 @@ def _try_push_offer_to_opportunity(
         return
     transactions = docs.list_transactions(latest_doc.id)
 
+    # GET the opportunity once. Used to (a) read the operator-entered
+    # ``Holdback Capacity`` value and (b) feed ``push_offer_to_opportunity``'s
+    # read-before-write diff without a second round-trip.
+    try:
+        opportunity_payload = close_client.get_opportunity(close_opportunity_id)
+    except CloseError as exc:
+        if exc.status_code == 404:
+            audit.record(
+                actor="close_sync",
+                action="close.opportunity.sync_failed_not_found",
+                details={
+                    "close_opportunity_id": close_opportunity_id,
+                    "decision_id": str(decision_id),
+                    "status_code": 404,
+                },
+            )
+            return
+        # Other CloseError: best-effort — Lead-side PATCH already landed.
+        return
+
+    operator_holdback_raw = opportunity_payload.get(
+        f"custom.{CLOSE_OPPORTUNITY_FIELD_IDS['holdback_capacity']}"
+    )
+    try:
+        operator_holdback = parse_money(operator_holdback_raw)
+    except Exception:
+        operator_holdback = None
+    holdback_capacity = (
+        operator_holdback
+        if operator_holdback is not None and operator_holdback > 0
+        else analysis.monthly_revenue * Decimal("0.25")
+    )
+
     mca_stack = aggregate_mca_stack(
         transactions=transactions,
         monthly_revenue=analysis.monthly_revenue,
         period_days=analysis.statement_days,
     )
-    holdback_capacity = analysis.monthly_revenue * Decimal("0.25")
     offer = compute_offer(
         true_revenue_monthly=analysis.monthly_revenue,
         holdback_capacity_monthly=holdback_capacity,
         mca_stack=mca_stack,
+    )
+
+    score_result = compute_score_result_for_default_bundle(
+        merchant=merchant,
+        merchant_id=merchant_id,
+        docs=docs,
+        ofac=ofac,
     )
 
     try:
@@ -622,27 +676,25 @@ def _try_push_offer_to_opportunity(
             close_opportunity_id=close_opportunity_id,
             decision_id=decision_id,
             suggested_max_advance=(offer.recommended_amount if offer is not None else None),
-            recommended_factor_rate=None,  # v1 deferred — see docstring
+            recommended_factor_rate=recommended_factor_rate_from(score_result),
             recommended_holdback_pct=(offer.holdback_pct if offer is not None else None),
             true_revenue_monthly=analysis.monthly_revenue,
-            holdback_capacity_monthly=holdback_capacity,
+            # Operator owns ``Holdback Capacity``. We READ it above to
+            # feed the offer math; we do NOT push back — passing None
+            # makes ``push_offer_to_opportunity`` skip the field entirely.
+            holdback_capacity_monthly=None,
             existing_mca_count=mca_stack.active_mca_count,
             existing_mca_daily_total=analysis.mca_daily_total,
             client=close_client,
             audit=audit,
+            opportunity_payload=opportunity_payload,
         )
     except (CloseError, CloseAuthError):
         # Audit rows already captured by ``push_offer_to_opportunity``;
         # Lead-side PATCH from earlier in this request already landed.
         # Don't 5xx the whole sync — the operator can re-trigger
         # /sync-to-close cheaply (idempotent).
-        # ``_ = merchants`` keeps the dependency-injected repo
-        # reachable here without an unused-arg warning; future
-        # refactors that need it (renewal-driven opportunity rotation,
-        # etc.) won't have to wire it through again.
-        _ = merchants
         return
-    _ = merchants  # reserved for the renewal-rotation surface above.
 
 
 __all__ = ["router"]

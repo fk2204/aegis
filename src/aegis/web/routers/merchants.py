@@ -95,6 +95,9 @@ from aegis.scoring_v2.balance_health import compute_balance_health
 from aegis.scoring_v2.mca_stack import aggregate_mca_stack
 from aegis.scoring_v2.offer import compute_offer
 from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
+from aegis.scoring_v2.score_for_sync import (
+    recommended_factor_rate_from as _recommended_factor_rate_from,
+)
 from aegis.storage import (
     AnalysisRow,
     DocumentRepository,
@@ -610,11 +613,11 @@ async def merchant_submit_to_funders(
         if score_result.suggested_max_advance > 0
         else score_input.requested_amount
     )
-    proposed_factor = (
-        score_result.recommended_factor_rate
-        if score_result.recommended_factor_rate > Decimal("1")
-        else score_input.requested_factor
-    )
+    # ``recommended_factor_rate_from`` returns None when the scorer
+    # didn't produce a meaningful factor (hard decline path, sub-1.0
+    # floor). Same "no recommendation" semantics the Close
+    # Opportunity sync uses for the Recommended Factor Rate field.
+    proposed_factor = _recommended_factor_rate_from(score_result) or score_input.requested_factor
     proposed_holdback = (
         score_result.recommended_holdback_pct
         if score_result.recommended_holdback_pct > 0

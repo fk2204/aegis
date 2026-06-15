@@ -272,6 +272,7 @@ def push_offer_to_opportunity(
     existing_mca_daily_total: Decimal | None,
     client: CloseClient,
     audit: AuditLog,
+    opportunity_payload: dict[str, Any] | None = None,
 ) -> SyncResult:
     """PATCH the AEGIS offer + supporting cashflow snapshot onto a Close
     Opportunity, idempotently.
@@ -330,27 +331,39 @@ def push_offer_to_opportunity(
     figures feed the underwriter's view; they do NOT participate in
     AEGIS's live decline path. See ``scoring_v2/offer.py`` module
     docstring.
+
+    ``opportunity_payload``: callers that already fetched the
+    opportunity (e.g. to read the operator-entered ``Holdback Capacity``
+    before computing the offer) pass the dict through to avoid a second
+    GET. ``None`` (default) falls back to the in-function GET so
+    standalone callers don't need to do their own fetch. The 404
+    short-circuit only fires when this function does its own GET — a
+    pre-fetched payload necessarily came from a successful GET, so 404
+    is impossible at that point.
     """
-    # 1) GET the opportunity. 404 -> graceful return.
-    try:
-        opportunity = client.get_opportunity(close_opportunity_id)
-    except CloseError as exc:
-        if exc.status_code == 404:
-            audit.record(
-                actor="close_sync",
-                action="close.opportunity.sync_failed_not_found",
-                details={
-                    "close_opportunity_id": close_opportunity_id,
-                    "decision_id": str(decision_id),
-                    "status_code": 404,
-                },
-            )
-            return SyncResult(
-                patched=False,
-                fields_diffed=[],
-                reason="opportunity_not_found",
-            )
-        raise
+    # 1) GET the opportunity (or accept the pre-fetched payload).
+    if opportunity_payload is not None:
+        opportunity = opportunity_payload
+    else:
+        try:
+            opportunity = client.get_opportunity(close_opportunity_id)
+        except CloseError as exc:
+            if exc.status_code == 404:
+                audit.record(
+                    actor="close_sync",
+                    action="close.opportunity.sync_failed_not_found",
+                    details={
+                        "close_opportunity_id": close_opportunity_id,
+                        "decision_id": str(decision_id),
+                        "status_code": 404,
+                    },
+                )
+                return SyncResult(
+                    patched=False,
+                    fields_diffed=[],
+                    reason="opportunity_not_found",
+                )
+            raise
 
     # 2) Desired values. ``None`` means "don't touch the Close-side
     #    value" — every desired entry below is conditional.

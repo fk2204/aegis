@@ -327,6 +327,43 @@ def test_opportunity_not_found_returns_gracefully(
 # ─────────────────────────────────────────────────────────────────────
 
 
+def test_prefetched_payload_skips_initial_get(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``opportunity_payload=<dict>`` short-circuits the GET — the
+    transport sees a PUT only. Callers that already fetched the
+    opportunity (e.g. to read the operator-entered Holdback Capacity)
+    avoid a duplicate round-trip."""
+    _set_close_env(monkeypatch)
+    transport = _MockCloseTransport(
+        # Set the GET response to 500 so the test would fail if the
+        # function fell through to its own fetch.
+        get_response=httpx.Response(500, json={"error": "should not be called"}),
+    )
+    client = _client_with_transport(transport)
+    audit = InMemoryAuditLog()
+
+    prefetched = _opportunity_with_fields()  # empty — every field will diff
+    result = push_offer_to_opportunity(
+        close_opportunity_id="oppo_abc",
+        decision_id=uuid4(),
+        suggested_max_advance=Decimal("50000.00"),
+        recommended_factor_rate=Decimal("1.180"),
+        recommended_holdback_pct=Decimal("0.1500"),
+        true_revenue_monthly=Decimal("30000.00"),
+        holdback_capacity_monthly=Decimal("7500.00"),
+        existing_mca_count=2,
+        existing_mca_daily_total=Decimal("250.00"),
+        client=client,
+        audit=audit,
+        opportunity_payload=prefetched,
+    )
+    assert result.patched is True
+    # Exactly one PUT, zero GETs.
+    methods = [r.method for r in transport.requests]
+    assert methods == ["PUT"]
+
+
 def test_patch_failure_audits_and_reraises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
