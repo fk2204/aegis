@@ -73,6 +73,11 @@ from aegis.merchants.shadow_signals import (
     MerchantShadowSignalRepository,
     SupabaseMerchantShadowSignalRepository,
 )
+from aegis.pdf_store import (
+    InMemoryPdfStoreRepository,
+    PdfStoreRepository,
+    SupabasePdfStoreRepository,
+)
 from aegis.scoring.ofac import OFACClient
 from aegis.scoring_v2.shadow_disagreements import (
     InMemoryScoringDisagreementRepository,
@@ -120,6 +125,21 @@ def get_merchant_repository() -> MerchantRepository:
     if get_settings().aegis_storage_backend == "memory":
         return InMemoryMerchantRepository()
     return SupabaseMerchantRepository()
+
+
+@lru_cache(maxsize=1)
+def get_pdf_store_repository() -> PdfStoreRepository:
+    """Process-wide PdfStoreRepository (migration 060 — chunk B + C).
+
+    Backs the in-Postgres ciphertext blob store the 2026-06-15 operator
+    directive substitutes for the Supabase Storage chunk-B path. The
+    worker writes here after a successful parse; the view route
+    ``GET /ui/merchants/{merchant_id}/documents/{document_id}/pdf``
+    reads here to stream the original PDF back to the operator.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryPdfStoreRepository()
+    return SupabasePdfStoreRepository()
 
 
 @lru_cache(maxsize=1)
@@ -327,6 +347,7 @@ def reset_dependency_caches() -> None:
     get_repository.cache_clear()
     get_merchant_repository.cache_clear()
     get_renewal_attestation_repository.cache_clear()
+    get_pdf_store_repository.cache_clear()
     get_merchant_shadow_signal_repository.cache_clear()
     get_funder_repository.cache_clear()
     get_deal_repository.cache_clear()
@@ -360,6 +381,7 @@ __all__ = [
     "get_merchant_shadow_signal_repository",
     "get_ofac_client",
     "get_override_repository",
+    "get_pdf_store_repository",
     "get_renewal_attestation_repository",
     "get_repository",
     "get_schema_migrations_reader",

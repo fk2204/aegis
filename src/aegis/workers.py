@@ -37,6 +37,7 @@ from aegis.api.deps import (
     get_llm,
     get_merchant_repository,
     get_merchant_shadow_signal_repository,
+    get_pdf_store_repository,
     get_repository,
 )
 from aegis.api.routes.upload import EnqueueParse, persist_pdf_upload
@@ -82,6 +83,10 @@ from aegis.parser.processor import (
     run_processor_pipeline,
 )
 from aegis.parser.tampering import TamperingEvaluation
+from aegis.pdf_store import (
+    PdfStoreRepository,
+    PdfStoreWriteError,
+)
 from aegis.storage import DocumentNotFoundError, DocumentRepository
 
 _log = get_logger(__name__)
@@ -105,9 +110,7 @@ async def parse_document(
     # finalize step (after persist_parse_result) reads from this; the
     # failure-path flag helper writes to it. Pulled here so tests can
     # inject an in-memory repo via the ctx dict.
-    merchants_repo: MerchantRepository = (
-        ctx.get("merchants") or get_merchant_repository()
-    )
+    merchants_repo: MerchantRepository = ctx.get("merchants") or get_merchant_repository()
     # U22 — merchant-scope shadow-signal persistence. Pulled here so
     # tests can inject an in-memory repo via the ctx dict, mirroring
     # the ``merchants`` slot above. The U15 worker hook
@@ -116,6 +119,11 @@ async def parse_document(
     shadow_signals_repo: MerchantShadowSignalRepository = (
         ctx.get("shadow_signals") or get_merchant_shadow_signal_repository()
     )
+    # Migration 060 — chunk-B-via-Postgres pdf_store. Pulled here so
+    # tests can inject an in-memory repo via the ctx dict (mirrors the
+    # ``merchants`` / ``shadow_signals`` slots above). The post-parse
+    # storage step calls ``store`` before the local PDF is unlinked.
+    pdf_store_repo: PdfStoreRepository = ctx.get("pdf_store") or get_pdf_store_repository()
 
     # Wrap the production BedrockClient with cost tracking so every
     # Bedrock call writes one bedrock.usage audit row tagged with this
@@ -124,7 +132,9 @@ async def parse_document(
     # used in tests don't expose that surface. (mp Phase 11 #2.)
     if isinstance(llm, BedrockClient):
         llm = CostTrackingBedrockClient(
-            inner=llm, audit=audit, document_id=document_id,
+            inner=llm,
+            audit=audit,
+            document_id=document_id,
         )
 
     try:
@@ -184,6 +194,7 @@ async def parse_document(
             audit=audit,
             repository=repository,
             merchants_repo=merchants_repo,
+            pdf_store_repo=pdf_store_repo,
         )
 
     # ===================================================================
@@ -312,10 +323,7 @@ async def parse_document(
     # the operator can review the matrix before any applicant gets
     # rejected; ``live`` reports what DID decline. The scoring layer
     # consumes the same evaluation via ``score_input_multi_month``.
-    if (
-        result.tampering_evaluation is not None
-        and result.tampering_evaluation.fires
-    ):
+    if result.tampering_evaluation is not None and result.tampering_evaluation.fires:
         _audit_tampering_evaluation(
             audit=audit,
             document_id=document_id,
@@ -354,15 +362,29 @@ async def parse_document(
     # local-file cleanup in EVERY outcome (success / transient
     # quarantine / terminal dead-letter) so the day-one "no plaintext
     # at rest past parse" rule is preserved across the failure paths.
+    #
+    # 2026-06-15 operator directive: ALSO write the AES-GCM ciphertext
+    # into the Postgres ``pdf_store`` table (migration 060). Runs FIRST
+    # so a Postgres-side failure preserves the plaintext on disk for
+    # retry — the legacy Supabase step is what unlinks on every outcome
+    # path, so skipping it on pdf_store failure keeps the plaintext
+    # available for the operator. The view route streams from Postgres.
     # ===================================================================
-    await _try_encrypted_storage_step(
+    pdf_store_ok = await _try_pdf_store_step(
         pdf_path=pdf_path,
         document_id=document_id,
-        merchant_id=doc_after_persist.merchant_id,
-        file_hash=doc_after_persist.file_hash,
-        repository=repository,
+        pdf_store_repo=pdf_store_repo,
         audit=audit,
     )
+    if pdf_store_ok:
+        await _try_encrypted_storage_step(
+            pdf_path=pdf_path,
+            document_id=document_id,
+            merchant_id=doc_after_persist.merchant_id,
+            file_hash=doc_after_persist.file_hash,
+            repository=repository,
+            audit=audit,
+        )
 
     return {
         "document_id": str(document_id),
@@ -380,6 +402,7 @@ async def _run_processor_branch(
     audit: AuditLog,
     repository: DocumentRepository,
     merchants_repo: MerchantRepository,
+    pdf_store_repo: PdfStoreRepository,
 ) -> dict[str, Any]:
     """Run the processor pipeline + audit the result (mp Phase 6.6).
 
@@ -401,7 +424,11 @@ async def _run_processor_branch(
     try:
         pdf_bytes = await asyncio.to_thread(Path(pdf_path).read_bytes)
         result: ProcessorPipelineResult = await asyncio.to_thread(
-            run_processor_pipeline, pdf_path, pdf_bytes, llm, brand=brand,  # type: ignore[arg-type]
+            run_processor_pipeline,
+            pdf_path,
+            pdf_bytes,
+            llm,
+            brand=brand,  # type: ignore[arg-type]
         )
     except asyncio.CancelledError:
         # Same Python-3.12 CancelledError-is-BaseException case as the
@@ -445,9 +472,7 @@ async def _run_processor_branch(
         )
         raise
     except Exception as exc:
-        _log.exception(
-            "worker.processor.failed document_id=%s brand=%s", document_id, brand
-        )
+        _log.exception("worker.processor.failed document_id=%s brand=%s", document_id, brand)
         audit.record(
             actor="worker",
             action="document.parse.error",
@@ -530,15 +555,27 @@ async def _run_processor_branch(
     # terminal failure → dead-letter + plaintext deleted. Passes
     # ``plaintext_bytes`` since the processor pipeline already read the
     # PDF at the top of this function — avoids a second disk read.
-    await _try_encrypted_storage_step(
+    #
+    # 2026-06-15 operator directive: also write into ``pdf_store``
+    # (migration 060). Runs first so a Postgres-side failure preserves
+    # the plaintext on disk for retry.
+    pdf_store_ok = await _try_pdf_store_step(
         pdf_path=pdf_path,
         document_id=document_id,
-        merchant_id=doc_after.merchant_id,
-        file_hash=doc_after.file_hash,
-        repository=repository,
+        pdf_store_repo=pdf_store_repo,
         audit=audit,
         plaintext_bytes=pdf_bytes,
     )
+    if pdf_store_ok:
+        await _try_encrypted_storage_step(
+            pdf_path=pdf_path,
+            document_id=document_id,
+            merchant_id=doc_after.merchant_id,
+            file_hash=doc_after.file_hash,
+            repository=repository,
+            audit=audit,
+            plaintext_bytes=pdf_bytes,
+        )
 
     return {
         "document_id": str(document_id),
@@ -713,11 +750,7 @@ def _audit_tampering_evaluation(
     systemd-unit env change + restart, without a code deploy.
     """
     mode = get_settings().aegis_tampering_decline_mode
-    action = (
-        "tampering_would_decline"
-        if mode == "shadow"
-        else "tampering_decline_applied"
-    )
+    action = "tampering_would_decline" if mode == "shadow" else "tampering_decline_applied"
     audit.record(
         actor="worker",
         action=action,
@@ -787,9 +820,7 @@ def _finalize_or_flag_merchant_from_statement(
     clean_name = (account_holder or "").strip()
 
     if not clean_name:
-        updated = merchants_repo.mark_needs_manual_naming(
-            merchant_id=merchant_id
-        )
+        updated = merchants_repo.mark_needs_manual_naming(merchant_id=merchant_id)
         if updated == 1:
             audit.record(
                 actor="worker",
@@ -804,9 +835,7 @@ def _finalize_or_flag_merchant_from_statement(
             )
         return
 
-    updated = merchants_repo.finalize_provisional(
-        merchant_id=merchant_id, business_name=clean_name
-    )
+    updated = merchants_repo.finalize_provisional(merchant_id=merchant_id, business_name=clean_name)
     if updated == 1:
         audit.record(
             actor="worker",
@@ -871,9 +900,7 @@ def _flag_provisional_for_manual_naming(
         return
 
     try:
-        updated = merchants_repo.mark_needs_manual_naming(
-            merchant_id=doc.merchant_id
-        )
+        updated = merchants_repo.mark_needs_manual_naming(merchant_id=doc.merchant_id)
     except Exception:
         # DB blip on the UPDATE — log and bail. The caller's exception
         # is the load-bearing failure; we don't add a second exception
@@ -1046,9 +1073,7 @@ def _write_quarantine(
     blob_path = qdir / f"{document_id}.pdf.enc"
     meta_path = qdir / f"{document_id}.meta.json"
     blob_path.write_bytes(ciphertext)
-    meta_path.write_text(
-        json.dumps({"document_id": str(document_id), **meta}, sort_keys=True)
-    )
+    meta_path.write_text(json.dumps({"document_id": str(document_id), **meta}, sort_keys=True))
 
 
 def _write_dead_letter(
@@ -1073,9 +1098,99 @@ def _write_dead_letter(
     if ciphertext is not None:
         (ddir / f"{document_id}.pdf.enc").write_bytes(ciphertext)
     meta_path = ddir / f"{document_id}.meta.json"
-    meta_path.write_text(
-        json.dumps({"document_id": str(document_id), **meta}, sort_keys=True)
+    meta_path.write_text(json.dumps({"document_id": str(document_id), **meta}, sort_keys=True))
+
+
+async def _try_pdf_store_step(
+    *,
+    pdf_path: str,
+    document_id: UUID,
+    pdf_store_repo: PdfStoreRepository,
+    audit: AuditLog,
+    plaintext_bytes: bytes | None = None,
+) -> bool:
+    """Seal the plaintext PDF and persist into Postgres ``pdf_store``.
+
+    Runs immediately after ``persist_parse_result`` and BEFORE the
+    legacy Supabase Storage step (which is what unlinks the local
+    plaintext). Outcomes:
+
+      * SUCCESS — row written; audit ``document.encrypted_stored`` with
+        char-count audit details only (NEVER bytes, NEVER PII per
+        CLAUDE.md). Returns ``True``. The caller proceeds to the
+        Supabase Storage step.
+      * FAILURE (``PdfStoreWriteError`` or ``CryptoConfigError``) — no
+        row written; audit ``document.encrypted_store_failed`` with
+        ``error_type`` + truncated message; returns ``False``. The
+        caller skips the Supabase Storage step and leaves the local
+        plaintext in place for ops inspection (the legacy step is what
+        would have unlinked).
+
+    ``plaintext_bytes`` is an optimization: the processor branch already
+    read the file at the top of the handler, so pass through to avoid
+    a second disk read. Bank branch passes ``None`` and we read here.
+
+    NEVER raises — the parse + analyses are already persisted by the
+    time this runs, and storage problems must not fail the job.
+    """
+    try:
+        if plaintext_bytes is None:
+            plaintext_bytes = await asyncio.to_thread(Path(pdf_path).read_bytes)
+        row = await asyncio.to_thread(
+            pdf_store_repo.store,
+            document_id=document_id,
+            plaintext=plaintext_bytes,
+        )
+    except PdfStoreWriteError as exc:
+        # Transient-or-permanent persistence failure. Skip the Supabase
+        # step and preserve the plaintext for retry; the operator sees
+        # the audit row and can re-enqueue the parse once the cause is
+        # fixed.
+        audit.record(
+            actor="worker",
+            action="document.encrypted_store_failed",
+            subject_type="document",
+            subject_id=document_id,
+            details={
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:500],
+                "outcome": "preserve_local_plaintext",
+            },
+        )
+        return False
+    except CryptoConfigError as exc:
+        # Boot-time config drift surfaced at runtime: the key version
+        # the row was sealed under is no longer present in
+        # ``/etc/aegis/aegis.env``. Audit + skip; the operator's fix is
+        # an env-var change, not a code change.
+        audit.record(
+            actor="worker",
+            action="document.encrypted_store_failed",
+            subject_type="document",
+            subject_id=document_id,
+            details={
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:500],
+                "outcome": "crypto_config_error",
+            },
+        )
+        return False
+
+    audit.record(
+        actor="worker",
+        action="document.encrypted_stored",
+        subject_type="document",
+        subject_id=document_id,
+        details={
+            # NEVER log the plaintext bytes or the ciphertext blob —
+            # both are PII-adjacent. Char-count + key version are
+            # sufficient for the audit story.
+            "key_version": row.key_version,
+            "byte_size_plaintext": row.byte_size_plaintext,
+            "sha256_plaintext": row.sha256_plaintext,
+        },
     )
+    return True
 
 
 async def _try_encrypted_storage_step(
@@ -1104,9 +1219,7 @@ async def _try_encrypted_storage_step(
     try:
         # Read plaintext + compute integrity hash
         if plaintext_bytes is None:
-            plaintext_bytes = await asyncio.to_thread(
-                Path(pdf_path).read_bytes
-            )
+            plaintext_bytes = await asyncio.to_thread(Path(pdf_path).read_bytes)
         sha256_original = hashlib.sha256(plaintext_bytes).hexdigest()
 
         # TERMINAL CHECK — sha256 divergence. The bytes on disk
@@ -1176,9 +1289,7 @@ async def _try_encrypted_storage_step(
 
         # Upload — TRANSIENT-CAPABLE
         try:
-            await asyncio.to_thread(
-                storage_objects.upload, storage_path, ciphertext
-            )
+            await asyncio.to_thread(storage_objects.upload, storage_path, ciphertext)
         except Exception as exc:
             _write_quarantine(
                 document_id,
@@ -1191,9 +1302,7 @@ async def _try_encrypted_storage_step(
                     "encryption_key_version": key_version,
                     "storage_path": storage_path,
                     "retention_until": retention_until.isoformat(),
-                    "merchant_id": (
-                        str(merchant_id) if merchant_id else None
-                    ),
+                    "merchant_id": (str(merchant_id) if merchant_id else None),
                     "byte_size": len(plaintext_bytes),
                 },
             )
@@ -1239,9 +1348,7 @@ async def _try_encrypted_storage_step(
                     "encryption_key_version": key_version,
                     "storage_path": storage_path,
                     "retention_until": retention_until.isoformat(),
-                    "merchant_id": (
-                        str(merchant_id) if merchant_id else None
-                    ),
+                    "merchant_id": (str(merchant_id) if merchant_id else None),
                     "byte_size": len(plaintext_bytes),
                 },
             )
@@ -1324,9 +1431,9 @@ async def _try_encrypted_storage_step(
         # below can't raise even on the file-already-gone case.
         is_write_failure = isinstance(exc, OSError)
         _log.critical(
-            "ops.worker.encrypted_storage.unknown document_id=%s "
-            "is_write_failure=%s",
-            document_id, is_write_failure,
+            "ops.worker.encrypted_storage.unknown document_id=%s is_write_failure=%s",
+            document_id,
+            is_write_failure,
             exc_info=True,
         )
         try:
@@ -1340,16 +1447,13 @@ async def _try_encrypted_storage_step(
                     "error_type": type(exc).__name__,
                     "error_message": str(exc)[:500],
                     "outcome": (
-                        "write_failure_preserved"
-                        if is_write_failure
-                        else "best_effort_cleanup"
+                        "write_failure_preserved" if is_write_failure else "best_effort_cleanup"
                     ),
                 },
             )
         except Exception:
             _log.critical(
-                "ops.worker.encrypted_storage.audit_also_failed "
-                "document_id=%s",
+                "ops.worker.encrypted_storage.audit_also_failed document_id=%s",
                 document_id,
                 exc_info=True,
             )
@@ -1409,9 +1513,7 @@ def _decode_reply_payload(raw_json: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"reply payload is not valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
-        raise ValueError(
-            f"reply payload top-level must be an object; got {type(payload).__name__}"
-        )
+        raise ValueError(f"reply payload top-level must be an object; got {type(payload).__name__}")
     for required in ("deal_id", "funder_id", "raw_text", "ingested_via"):
         if required not in payload:
             raise ValueError(f"reply payload missing required field: {required}")
@@ -1456,9 +1558,7 @@ async def process_funder_reply(
     ingested_via_raw: str = payload["ingested_via"]
     # Narrow to the IngestSource literal — _decode_reply_payload guards
     # the value set above, but mypy can't see through that runtime check.
-    ingested_via: IngestSource = (
-        "webhook" if ingested_via_raw == "webhook" else "operator_paste"
-    )
+    ingested_via: IngestSource = "webhook" if ingested_via_raw == "webhook" else "operator_paste"
 
     audit: AuditLog = ctx.get("audit") or get_audit()
     llm: LLMClient = ctx.get("llm") or get_llm()
@@ -1470,7 +1570,9 @@ async def process_funder_reply(
     # real BedrockClient; test stubs keep their bare interface.
     if isinstance(llm, BedrockClient):
         llm = CostTrackingBedrockClient(
-            inner=llm, audit=audit, document_id=document_id,
+            inner=llm,
+            audit=audit,
+            document_id=document_id,
         )
 
     audit.record(
@@ -1583,9 +1685,7 @@ async def process_funder_reply(
             "validation_passed": result.validation.passed,
             "parsed_confidence": extraction.parsed_confidence,
             "stamped_override_id": (
-                str(result.stamped_override_id)
-                if result.stamped_override_id is not None
-                else None
+                str(result.stamped_override_id) if result.stamped_override_id is not None else None
             ),
             "reprompted": extraction.reprompted,
         },
@@ -1599,9 +1699,7 @@ async def process_funder_reply(
         "reply_id": str(result.reply_id),
         "validation_passed": result.validation.passed,
         "stamped_override_id": (
-            str(result.stamped_override_id)
-            if result.stamped_override_id is not None
-            else None
+            str(result.stamped_override_id) if result.stamped_override_id is not None else None
         ),
     }
 
@@ -1685,9 +1783,7 @@ async def process_close_attachments(
     same documents row per attachment. Confirmed at
     upload.persist_pdf_upload's ``find_by_hash`` gate.
     """
-    merchants: MerchantRepository = (
-        ctx.get("merchants") or get_merchant_repository()
-    )
+    merchants: MerchantRepository = ctx.get("merchants") or get_merchant_repository()
     repository: DocumentRepository = ctx.get("repository") or get_repository()
     audit: AuditLog = ctx.get("audit") or get_audit()
     close_client: CloseClient = ctx.get("close_client") or get_close_client()
@@ -1900,9 +1996,7 @@ class WorkerSettings:
     functions = (parse_document, process_funder_reply, process_close_attachments)
     # Nightly at 02:00 UTC — low-traffic window. Per master plan §17,
     # the archive cron runs daily and is the only cron registered here.
-    cron_jobs = (
-        cron(run_archive_cron, hour=2, minute=0, run_at_startup=False),
-    )
+    cron_jobs = (cron(run_archive_cron, hour=2, minute=0, run_at_startup=False),)
     on_startup = _on_startup
     on_shutdown = _on_shutdown
 

@@ -26,6 +26,7 @@ Several merchant-private helpers (``_state_tier``, ``_ofac_ribbon_status``,
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 import zipfile
@@ -54,6 +55,7 @@ from aegis.api.deps import (
     get_merchant_repository,
     get_merchant_shadow_signal_repository,
     get_ofac_client,
+    get_pdf_store_repository,
     get_repository,
     get_submission_repository,
 )
@@ -87,6 +89,13 @@ from aegis.parser.patterns import (
     analyze_patterns,
     pattern_analysis_from_dto,
 )
+from aegis.pdf_store import (
+    CorruptCiphertextError,
+    PdfStoreIntegrityError,
+    PdfStoreNotFoundError,
+    PdfStoreRepository,
+    PdfStoreWriteError,
+)
 from aegis.scoring.match_funders import match_funder
 from aegis.scoring.models import FunderMatch, ScoreInput, ScoreResult
 from aegis.scoring.multi_month import (
@@ -110,6 +119,7 @@ from aegis.scoring_v2.track_a import IntegrityVerdict
 from aegis.scoring_v2.trends import compute_revenue_trends
 from aegis.storage import (
     AnalysisRow,
+    DocumentNotFoundError,
     DocumentRepository,
     DocumentRow,
 )
@@ -1436,6 +1446,153 @@ def _dossier_pattern_analysis(
 
 
 # ---------------------------------------------------------------------------
+# Original PDF stream — chunk-C of the PDF retention redesign.
+#
+# 2026-06-15 operator directive: the chunk-B simplification stores AES-GCM
+# ciphertext in the Postgres ``pdf_store`` table (migration 060). This
+# route decrypts on demand and streams plaintext bytes back to the
+# operator. NEVER returns a Supabase signed URL — the security-invariant
+# test in tests/test_security_invariants.py greps source for the
+# forbidden URL-helper names and fails CI if either appears (see
+# docs/PDF_RETENTION_DESIGN.md §9).
+#
+# Auth: CF Access middleware gates /ui/ routes; no per-route auth here.
+# Cross-merchant access: the route enforces ``document.merchant_id ==
+# merchant_id`` so an operator with knowledge of one merchant's id +
+# another merchant's document id cannot pull the second merchant's PDF
+# through the first merchant's path. Mismatch → 404 (not 403) so the
+# response surface gives no signal that the document exists at all.
+# ---------------------------------------------------------------------------
+
+
+_PDF_CONTENT_DISPOSITION_HEADER = 'inline; filename="{document_id}.pdf"'
+
+
+@router.get(
+    "/merchants/{merchant_id}/documents/{document_id}/pdf",
+    response_model=None,
+)
+async def merchant_document_pdf(
+    merchant_id: UUID,
+    document_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    pdf_store: Annotated[PdfStoreRepository, Depends(get_pdf_store_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> Response:
+    """Stream the original (plaintext) PDF for a merchant's document.
+
+    Pipeline:
+      1. Verify the merchant exists (404 if not).
+      2. Load the document; 404 on missing OR on a merchant_id mismatch
+         (prevents cross-merchant access).
+      3. Fetch + decrypt via ``pdf_store.fetch_plaintext``. SHA-256 is
+         verified inside the repository — a mismatch raises
+         ``PdfStoreIntegrityError`` which maps to HTTP 500 + a
+         ``document.pdf_streamed_integrity_failed`` audit row.
+      4. Audit ``document.pdf_streamed`` (char-count + merchant scope —
+         NEVER bytes per CLAUDE.md PII rule). Stream the bytes.
+    """
+    try:
+        merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    try:
+        document = docs.get_document(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if document.merchant_id != merchant_id:
+        # Cross-merchant access attempt. 404 (not 403) so the response
+        # surface gives no signal the document exists under another
+        # merchant — same posture as a missing row. Audit the attempt
+        # so an operator misuse pattern surfaces in the log.
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="document.pdf_streamed_denied",
+            subject_type="document",
+            subject_id=document_id,
+            details={
+                "reason": "cross_merchant_access",
+                "requested_merchant_id": str(merchant_id),
+                "owning_merchant_id": (str(document.merchant_id) if document.merchant_id else None),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"document {document_id} not found under merchant {merchant_id}",
+        )
+
+    try:
+        plaintext = pdf_store.fetch_plaintext(document_id)
+    except PdfStoreNotFoundError as exc:
+        # Pre-chunk-B documents OR a document whose pdf_store row was
+        # never written (worker store-step failure). 404 — the dossier
+        # link should only render when the row exists, but a stale tab
+        # could still POST.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"no pdf_store row for document {document_id}",
+        ) from exc
+    except (CorruptCiphertextError, PdfStoreIntegrityError) as exc:
+        # Integrity failure — auth-tag rejection OR SHA-256 mismatch.
+        # 500 with ``original_viewed_integrity_failed`` audit row per
+        # CLAUDE.md PDF retention rule.
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="document.pdf_streamed_integrity_failed",
+            subject_type="document",
+            subject_id=document_id,
+            details={
+                "merchant_id": str(merchant_id),
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:500],
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"pdf integrity check failed for document {document_id}",
+        ) from exc
+    except PdfStoreWriteError as exc:
+        # Read-side Supabase failure (rare). Surface as 503; the
+        # operator retries.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"pdf store read failed: {exc}",
+        ) from exc
+
+    audit.record(
+        actor="dashboard",
+        actor_email=actor_email,
+        action="document.pdf_streamed",
+        subject_type="document",
+        subject_id=document_id,
+        details={
+            "merchant_id": str(merchant_id),
+            "byte_size": len(plaintext),
+            # SHA-256 is the integrity signal; never log the bytes.
+            "sha256_prefix": hashlib.sha256(plaintext).hexdigest()[:16],
+        },
+    )
+
+    return Response(
+        content=plaintext,
+        media_type="application/pdf",
+        headers={
+            "content-disposition": _PDF_CONTENT_DISPOSITION_HEADER.format(document_id=document_id),
+            # Defense-in-depth: even though the operator-facing dossier
+            # is the only caller, mark the response un-cacheable so a
+            # browser back-button doesn't surface bytes without a
+            # fresh audit row.
+            "cache-control": "private, no-store",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Merchant detail (HTML dossier) + PDF dossier + findings.csv
 # ---------------------------------------------------------------------------
 
@@ -1446,6 +1603,7 @@ async def merchant_detail(
     merchant_id: UUID,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     docs: Annotated[DocumentRepository, Depends(get_repository)],
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     audit: Annotated[AuditLog, Depends(get_audit)],
     shadow_signals_repo: Annotated[
@@ -1494,6 +1652,7 @@ async def merchant_detail(
     selected_bundle = _parse_bundle_query(request.query_params.get("bundle"))
 
     score_result = None
+    score_input: ScoreInput | None = None
     stacking = None
     mca_stack = None
     balance_health = None

@@ -949,7 +949,22 @@
               <td class="details" style="text-align:right;font-family:var(--mono)">{% if a %}{{ a.num_nsf }}{% else %}—{% endif %}</td>
               <td class="details" style="text-align:right;font-family:var(--mono)">{% if a %}{{ a.days_negative }}{% else %}—{% endif %}</td>
               <td class="details" style="font-family:var(--mono);font-size:10.5px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px" title="{{ d.original_filename }}">{{ d.original_filename }}</td>
-              <td class="details" style="text-align:right"><a href="/ui/documents/{{ d.id }}" onclick="event.stopPropagation()" style="font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--accent);border-bottom:0">open ↗</a></td>
+              <td class="details" style="text-align:right">
+                {# Chunk-C view-original link. Only shown when the parse
+                   reached a status that implies a pdf_store row has
+                   been written by the worker (proceed / review /
+                   manual_review). ``error`` and ``pending`` documents
+                   have no ciphertext on file. #}
+                {% if d.parse_status in ('proceed', 'review', 'manual_review') %}
+                  <a href="/ui/merchants/{{ merchant.id }}/documents/{{ d.id }}/pdf"
+                     target="_blank"
+                     onclick="event.stopPropagation()"
+                     style="font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--accent);border-bottom:0;margin-right:8px">
+                    PDF ↗
+                  </a>
+                {% endif %}
+                <a href="/ui/documents/{{ d.id }}" onclick="event.stopPropagation()" style="font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--accent);border-bottom:0">open ↗</a>
+              </td>
             </tr>
           {% endfor %}
         </tbody>

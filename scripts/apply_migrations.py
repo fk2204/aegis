@@ -487,6 +487,15 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='bank_layouts'"
     ),
+    "060_pdf_store.sql": (
+        # 060 creates the pdf_store table (chunk-B simplification — in-
+        # Postgres ciphertext blobs instead of Supabase Storage per the
+        # 2026-06-15 operator directive). Existence of the table is the
+        # load-bearing artifact; the check constraints + index land in
+        # the same transaction or fail it.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='pdf_store'"
+    ),
 }
 
 
