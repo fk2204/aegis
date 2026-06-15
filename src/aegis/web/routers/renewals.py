@@ -43,6 +43,7 @@ from aegis.merchants.renewal_attestations import (
 from aegis.merchants.repository import (
     MerchantNotFoundError,
     MerchantRepository,
+    list_renewal_pipeline,
     list_upcoming_renewals,
 )
 from aegis.ops.operators import resolve_operator_email
@@ -110,6 +111,16 @@ async def upcoming_renewals(
         and not isinstance(getattr(m, "maturity_date", None), datetime)
         for m in merchants_repo.list_all()
     )
+    # Feature 3 (2026-06-15) — renewal-pipeline queue. Separate from the
+    # 90-day attestation calendar above: the pipeline is the 14-day
+    # "merchants approaching maturity — re-engage for renewal" view.
+    # Implementation choice (b) — derive from ``maturity_date``
+    # directly (``funding_date + term_days = maturity_date`` is the
+    # same predicate). Option (a) — adding ``funding_date`` + ``term_days``
+    # columns to merchants — is deferred until the operator wants to
+    # surface them as separate columns. See ``list_renewal_pipeline``
+    # docstring for the rationale.
+    pipeline_rows = list_renewal_pipeline(merchants_repo)
     return cast(
         "HTMLResponse",
         templates.TemplateResponse(
@@ -118,6 +129,7 @@ async def upcoming_renewals(
             {
                 "active": "Renewals",
                 "rows": rows,
+                "pipeline_rows": pipeline_rows,
                 "window_days": window_days,
                 "schema_missing": schema_missing,
                 "flash": flash,
@@ -160,9 +172,7 @@ async def renewal_attestation_submit(
     try:
         merchant = merchants.get(merchant_id)
     except MerchantNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     if not merchant.is_renewal:
         raise HTTPException(
@@ -224,9 +234,7 @@ async def renewal_attestation_submit(
     if len(cleaned_notes) > _RENEWAL_ATTESTATION_NOTES_MAX_LEN:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"notes exceeds {_RENEWAL_ATTESTATION_NOTES_MAX_LEN} characters"
-            ),
+            detail=(f"notes exceeds {_RENEWAL_ATTESTATION_NOTES_MAX_LEN} characters"),
         )
 
     try:
@@ -246,17 +254,13 @@ async def renewal_attestation_submit(
         # 409: duplicate attestation. The operator sees the conflict
         # message in the rendered HTTPException response; the row is
         # NOT written and no audit entry is recorded.
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except RenewalAttestationWriteError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
 
-    flash_msg = (
-        f"Recorded {cleaned_funder} attestation for {parsed_sent_at.isoformat()}."
-    )
+    flash_msg = f"Recorded {cleaned_funder} attestation for {parsed_sent_at.isoformat()}."
     return RedirectResponse(
         url=f"/ui/renewals?flash={urllib.parse.quote(flash_msg)}",
         status_code=status.HTTP_303_SEE_OTHER,

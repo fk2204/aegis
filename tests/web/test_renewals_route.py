@@ -211,10 +211,24 @@ def test_renewals_route_lists_matching_rows_sorted_by_urgency(
 ) -> None:
     """Default 90-day window picks up NY 25d, CA 50d, FL 80d — and skips
     the 120d GA, the non-renewal, and the past-maturity row. Sorted by
-    days_until_maturity ascending: NY first, FL last."""
+    days_until_maturity ascending: NY first, FL last.
+
+    Scope: this test asserts the attestation calendar's contents.
+    Feature 3 added a separate 14-day pipeline section on the same
+    route — past-maturity renewals appear there with negative days
+    (operator-explicit decision; see
+    ``tests/web/test_renewals_pipeline.py``). The slice below isolates
+    the attestation-calendar markup via the table's data-test-id so
+    the two surfaces don't bleed into each other's assertions.
+    """
     resp = client_with_renewals.get("/ui/renewals")
     assert resp.status_code == 200, resp.text
-    body = resp.text
+    full_body = resp.text
+    # Isolate the attestation-calendar table (90-day window) from the
+    # Feature-3 pipeline section above it.
+    calendar_marker = 'data-test-id="attestation-calendar-table"'
+    assert calendar_marker in full_body, "attestation calendar table missing"
+    body = full_body[full_body.index(calendar_marker) :]
     ny_idx = body.find("NY Pizza LLC")
     ca_idx = body.find("CA Salon Inc")
     fl_idx = body.find("FL Auto LLC")
@@ -222,7 +236,7 @@ def test_renewals_route_lists_matching_rows_sorted_by_urgency(
     assert ca_idx != -1, "CA renewal row missing"
     assert fl_idx != -1, "FL renewal row missing"
     assert ny_idx < ca_idx < fl_idx, "rows not sorted most-urgent first"
-    # Filtered rows are absent.
+    # Filtered rows are absent FROM THE ATTESTATION CALENDAR.
     assert "GA Roofing LLC" not in body  # beyond window
     assert "NY New Deal Inc" not in body  # not a renewal
     assert "Past Maturity LLC" not in body  # already past
@@ -275,9 +289,7 @@ def test_list_upcoming_renewals_returns_empty_when_no_maturity_set(
     with caplog.at_level(logging.INFO, logger="aegis.merchants.repository"):
         result = list_upcoming_renewals(repo)
     assert result == []
-    assert any(
-        "no renewals in window" in r.message for r in caplog.records
-    )
+    assert any("no renewals in window" in r.message for r in caplog.records)
 
 
 def test_list_upcoming_renewals_ny_state_deadline_uses_30_day_lead() -> None:

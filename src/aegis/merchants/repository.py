@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import UUID, uuid4
 
@@ -110,6 +111,97 @@ class RenewalSummary(BaseModel):
     days_until_maturity: int
     days_until_state_deadline: int | None
     renewal_status: str
+
+
+class RenewalPipelineRow(BaseModel):
+    """One row on the 14-day renewal-pipeline queue at /ui/renewals.
+
+    Distinct from :class:`RenewalSummary`: that summary drives the
+    90-day state-disclosure-deadline calendar (the regulator-facing
+    surface, which funders own). This row drives the operator
+    re-engagement queue — "which merchants are inside the window
+    where I should reach out about a renewal advance?"
+
+    Pure projection — never persisted. ``last_score_tier`` and
+    ``suggested_renewal_amount`` are read tolerantly: a merchant
+    without a stored decision or analysis surfaces ``None`` for both
+    and the dossier column renders an em-dash. ``days_until_maturity``
+    may be negative — overdue maturities still appear (operator can
+    chase the stale renewal) and the template highlights them in red.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    merchant_id: UUID
+    business_name: str
+    maturity_date: date
+    days_until_maturity: int
+    last_score_tier: str | None
+    # Decimal per CLAUDE.md money-math rule. ``None`` when the merchant
+    # had no requested_amount and no prior decision to fall back on.
+    suggested_renewal_amount: Decimal | None
+
+
+_RENEWAL_PIPELINE_WINDOW_DAYS: int = 14
+
+
+def list_renewal_pipeline(
+    repo: MerchantRepository,
+    *,
+    today: date | None = None,
+) -> list[RenewalPipelineRow]:
+    """Renewals queue: merchants whose ``maturity_date`` is within the
+    next 14 days (or overdue).
+
+    Implementation choice (b) — derived directly from
+    ``merchants.maturity_date``. ``funding_date + term_days`` are not
+    yet separately captured on the merchants table; ``maturity_date``
+    (migration 039) already encodes the sum. The operator's spec asks
+    for "within 2 weeks of renewal eligible" which is exactly
+    ``maturity_date <= today + 14``.
+
+    Overdue merchants (``maturity_date < today``) DO appear — the
+    operator may need to chase a stale renewal. Sort order is
+    ``maturity_date`` ascending, so the soonest-due / most-overdue
+    row lands at the top.
+
+    ``last_score_tier`` and ``suggested_renewal_amount`` default to
+    ``None`` here — the production wiring layer reads the latest
+    ``DecisionSnapshot`` row and patches them in via a list
+    comprehension at the route site. Keeping them ``None`` at the
+    repo layer avoids dragging a decisions dependency into this
+    module.
+    """
+    as_of = today or datetime.now(UTC).date()
+    cutoff = as_of.toordinal() + _RENEWAL_PIPELINE_WINDOW_DAYS
+    rows: list[RenewalPipelineRow] = []
+    for m in repo.list_all():
+        # Pipeline is the RENEWAL queue. Filter out non-renewal merchants
+        # so the operator-decision view stays focused; first-deal
+        # maturities live elsewhere in the flow.
+        if not m.is_renewal:
+            continue
+        maturity = m.maturity_date
+        if maturity is None:
+            continue
+        if maturity.toordinal() > cutoff:
+            continue
+        rows.append(
+            RenewalPipelineRow(
+                merchant_id=m.id,
+                business_name=m.business_name,
+                maturity_date=maturity,
+                days_until_maturity=(maturity - as_of).days,
+                last_score_tier=None,
+                # Decimal money — CLAUDE.md "never float for money".
+                # ``requested_amount`` is already Money (Decimal-backed)
+                # so the assignment round-trips cleanly through
+                # Pydantic.
+                suggested_renewal_amount=m.requested_amount,
+            )
+        )
+    rows.sort(key=lambda r: r.maturity_date)
+    return rows
 
 
 def _derive_renewal_status(
@@ -641,7 +733,9 @@ __all__ = [
     "MerchantConflictError",
     "MerchantNotFoundError",
     "MerchantRepository",
+    "RenewalPipelineRow",
     "RenewalSummary",
     "SupabaseMerchantRepository",
+    "list_renewal_pipeline",
     "list_upcoming_renewals",
 ]

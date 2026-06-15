@@ -34,7 +34,71 @@
       </div>
     {% endif %}
 
-    <header class="sect-head">
+    {# ============== Renewal pipeline (Feature 3 — 14-day) ============== #}
+    <header class="sect-head" data-test-id="renewal-pipeline-header">
+      <h2>Renewal pipeline · 14-day window</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ pipeline_rows|length }} · operator queue</div>
+    </header>
+    <p class="copy" style="color:var(--ink-3);margin-bottom:12px;font-size:12px">
+      Merchants whose <code>maturity_date</code> falls within 14 days (or
+      is already past). Re-engage in order — overdue rows are surfaced
+      with a negative <em>days</em> count so they don't get lost.
+    </p>
+    {% if not pipeline_rows %}
+      <div class="empty" data-test-id="renewal-pipeline-empty">
+        No merchants are within 14 days of maturity.
+        <span class="copy">
+          The pipeline reads <code>maturity_date</code>; merchants whose
+          column is unset never appear here. The 90-day attestation
+          calendar below shows the regulatory-disclosure horizon.
+        </span>
+      </div>
+    {% else %}
+      <table class="queue" data-test-id="renewal-pipeline-table">
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th class="num">Days until maturity</th>
+            <th>Maturity</th>
+            <th>Last score tier</th>
+            <th class="num">Suggested renewal amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in pipeline_rows %}
+            <tr data-test-id="renewal-pipeline-row" data-merchant-id="{{ p.merchant_id }}">
+              <td class="merchant">
+                <a href="/ui/merchants/{{ p.merchant_id }}">{{ p.business_name }}</a>
+              </td>
+              <td class="mono-cell"
+                  style="text-align:right;{% if p.days_until_maturity < 0 %}color:var(--decline, #b94a2a);font-weight:600{% endif %}"
+                  data-overdue="{{ 'true' if p.days_until_maturity < 0 else 'false' }}">
+                {{ p.days_until_maturity }}
+              </td>
+              <td class="mono-cell">{{ p.maturity_date.isoformat() }}</td>
+              <td>
+                {% if p.last_score_tier %}
+                  <span class="chip info">{{ p.last_score_tier }}</span>
+                {% else %}
+                  <span class="sub">—</span>
+                {% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right">
+                {% if p.suggested_renewal_amount is not none %}
+                  ${{ "{:,.0f}".format(p.suggested_renewal_amount) }}
+                {% else %}
+                  <span class="sub">—</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    {# ============== Attestation calendar (existing) ============== #}
+    <header class="sect-head" style="margin-top:32px">
       <h2>Maturities within {{ window_days }} days</h2>
       <div class="rule"></div>
       <div class="meta">n = {{ rows|length }}{% if schema_missing %} · maturity_date column absent{% endif %}</div>
@@ -53,14 +117,14 @@
         </span>
       </div>
     {% elif not rows %}
-      <div class="empty">
+      <div class="empty" data-test-id="attestation-calendar-empty">
         No renewals approaching maturity in the next {{ window_days }} days.
         <span class="copy">
           Adjust the window with <code>?window_days=N</code>.
         </span>
       </div>
     {% else %}
-      <table class="queue">
+      <table class="queue" data-test-id="attestation-calendar-table">
         <thead>
           <tr>
             <th>Merchant</th>
