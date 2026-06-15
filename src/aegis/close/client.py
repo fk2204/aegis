@@ -399,6 +399,27 @@ class CloseClient:
         """
         return self.request("PUT", f"/api/v1/opportunity/{opportunity_id}/", json=fields)
 
+    def post_note(self, lead_id: str, note_text: str) -> dict[str, Any]:
+        """POST /api/v1/activity/note/ — append a plain-text Note to a Lead.
+
+        Close's Note activities accept ``{"lead_id": "...", "note": "..."}``
+        as the minimal body. The response is the created activity dict
+        (carries ``id``, ``date_created``, etc.). Same auth + retry
+        semantics as :meth:`request` — 401 fails fast, 429 sleeps the
+        ``RateLimit`` reset value then retries within the tenacity
+        budget, 5xx retries, other 4xx propagates.
+
+        Callers must build the note text themselves
+        (``aegis.close.funder_note.format_funder_note`` is the standard
+        producer). This method does NOT validate or shape the body —
+        Close enforces its own length / content policy server-side.
+        """
+        return self.request(
+            "POST",
+            "/api/v1/activity/note/",
+            json={"lead_id": lead_id, "note": note_text},
+        )
+
     def list_lead_attachments(self, lead_id: str) -> list[CloseAttachment]:
         """Enumerate PDF attachments across all Note + Email activities
         for the lead.
