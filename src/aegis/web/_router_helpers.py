@@ -319,10 +319,7 @@ def _bundle_keys_for_merchant(
     for _, analysis in items:
         key = _bundle_key(analysis)
         counts[key] = counts.get(key, 0) + 1
-        if (
-            key not in latest_end
-            or analysis.statement_period_end > latest_end[key]
-        ):
+        if key not in latest_end or analysis.statement_period_end > latest_end[key]:
             latest_end[key] = analysis.statement_period_end
 
     def _sort_key(item: tuple[BundleKey, int]) -> tuple[int, date]:
@@ -465,9 +462,7 @@ def _project_monthly(period_revenue: Decimal, statement_days: int) -> Decimal:
     """
     if statement_days <= 0:
         return Decimal("0.00")
-    return (period_revenue / Decimal(statement_days) * Decimal(30)).quantize(
-        Decimal("0.01")
-    )
+    return (period_revenue / Decimal(statement_days) * Decimal(30)).quantize(Decimal("0.01"))
 
 
 def _score_input_from_dashboard(
@@ -495,6 +490,7 @@ def _score_input_from_dashboard(
         state=(merchant.state or "").upper(),
         industry_naics=merchant.industry_naics,
         industry_risk_tier=merchant.industry_risk_tier,
+        industry_choice=merchant.industry_choice,
         time_in_business_months=merchant.time_in_business_months,
         credit_score=merchant.credit_score,
         avg_daily_balance=analysis.avg_daily_balance,

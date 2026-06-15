@@ -40,9 +40,7 @@ from aegis.storage import AnalysisRow, DocumentRow
 def _project_monthly(period_revenue: Decimal, statement_days: int) -> Decimal:
     if statement_days <= 0:
         return Decimal("0.00")
-    return (period_revenue / Decimal(statement_days) * Decimal(30)).quantize(
-        Decimal("0.01")
-    )
+    return (period_revenue / Decimal(statement_days) * Decimal(30)).quantize(Decimal("0.01"))
 
 
 def _tampering_confirmed_for_window(latest_doc: DocumentRow) -> bool:
@@ -92,19 +90,17 @@ def score_input_multi_month(
     summed_revenue = sum((a.true_revenue for a in analyses), start=Decimal("0"))
     summed_days = sum(a.statement_days for a in analyses)
 
-    mean_adb = (
-        sum((a.avg_daily_balance for a in analyses), start=Decimal("0")) / n
-    ).quantize(Decimal("0.01"))
+    mean_adb = (sum((a.avg_daily_balance for a in analyses), start=Decimal("0")) / n).quantize(
+        Decimal("0.01")
+    )
     # Funder underwriting cares about the worst observed month, not the
     # average. Mean-of-lowest masks a near-zero month behind a quiet
     # average (verified on VU Development 2026-06: mean=$162K hid
     # min=$3,257, a real liquidity event invisible to downstream match).
-    min_lowest = min(a.lowest_balance for a in analyses).quantize(
-        Decimal("0.01")
+    min_lowest = min(a.lowest_balance for a in analyses).quantize(Decimal("0.01"))
+    mean_dtr = (sum((a.debt_to_revenue for a in analyses), start=Decimal("0")) / n).quantize(
+        Decimal("0.0001")
     )
-    mean_dtr = (
-        sum((a.debt_to_revenue for a in analyses), start=Decimal("0")) / n
-    ).quantize(Decimal("0.0001"))
 
     # Phase 9 counterparty + detector fields take the latest analysis's
     # values when available. AnalysisRow may not yet carry them (storage
@@ -125,6 +121,7 @@ def score_input_multi_month(
         state=(merchant.state or "").upper(),
         industry_naics=merchant.industry_naics,
         industry_risk_tier=merchant.industry_risk_tier,
+        industry_choice=merchant.industry_choice,
         time_in_business_months=merchant.time_in_business_months,
         credit_score=merchant.credit_score,
         avg_daily_balance=mean_adb,
@@ -157,8 +154,7 @@ def score_input_multi_month(
         # ``ParseStatus`` in ``aegis.storage`` and the architecture
         # rule on parser status semantics.
         validation_passed=all(
-            d.parse_status in ("proceed", "review", "manual_review")
-            for d in docs_list
+            d.parse_status in ("proceed", "review", "manual_review") for d in docs_list
         ),
         extraction_confidence=100,
         requested_amount=Decimal("50000.00"),

@@ -162,9 +162,9 @@ def compute_estimated_terms(
     if score.estimated_payback_days is None or score.estimated_payback_days <= 0:
         return None
 
-    factor = _interpolate(
-        funder.typical_factor_low, funder.typical_factor_high, position
-    ).quantize(_RATE_QUANT, rounding=ROUND_HALF_UP)
+    factor = _interpolate(funder.typical_factor_low, funder.typical_factor_high, position).quantize(
+        _RATE_QUANT, rounding=ROUND_HALF_UP
+    )
     holdback = _interpolate(
         funder.typical_holdback_low, funder.typical_holdback_high, position
     ).quantize(_RATE_QUANT, rounding=ROUND_HALF_UP)
@@ -261,25 +261,19 @@ def match_funder(
     if funder.min_monthly_revenue is not None:
         criteria_count += 1
         if deal.monthly_revenue < funder.min_monthly_revenue:
-            hard.append(
-                f"revenue ${deal.monthly_revenue} < min ${funder.min_monthly_revenue}"
-            )
+            hard.append(f"revenue ${deal.monthly_revenue} < min ${funder.min_monthly_revenue}")
 
     if funder.min_avg_daily_balance is not None:
         criteria_count += 1
         if deal.avg_daily_balance < funder.min_avg_daily_balance:
-            hard.append(
-                f"adb ${deal.avg_daily_balance} < min ${funder.min_avg_daily_balance}"
-            )
+            hard.append(f"adb ${deal.avg_daily_balance} < min ${funder.min_avg_daily_balance}")
 
     if funder.min_credit_score is not None:
         criteria_count += 1
         if deal.credit_score is None:
             soft.append("credit_score_unknown")
         elif deal.credit_score < funder.min_credit_score:
-            hard.append(
-                f"credit {deal.credit_score} < min {funder.min_credit_score}"
-            )
+            hard.append(f"credit {deal.credit_score} < min {funder.min_credit_score}")
 
     if funder.min_months_in_business is not None:
         criteria_count += 1
@@ -300,9 +294,7 @@ def match_funder(
         criteria_count += 1
         if funder.max_positions is not None and deal.mca_positions > funder.max_positions:
             # Branch 2: published constraint is binding.
-            hard.append(
-                f"exceeds_max_positions: {deal.mca_positions} > max {funder.max_positions}"
-            )
+            hard.append(f"exceeds_max_positions: {deal.mca_positions} > max {funder.max_positions}")
         elif not funder.accepts_stacking and deal.mca_positions >= 1:
             # Branch 1: no opt-in published; ambiguous default. Operator confirms.
             soft.append(
@@ -326,22 +318,22 @@ def match_funder(
     if funder.min_advance is not None:
         criteria_count += 1
         if deal.requested_amount < funder.min_advance:
-            hard.append(
-                f"requested ${deal.requested_amount} < min advance ${funder.min_advance}"
-            )
+            hard.append(f"requested ${deal.requested_amount} < min advance ${funder.min_advance}")
 
     if funder.max_advance is not None:
         criteria_count += 1
         if deal.requested_amount > funder.max_advance:
-            hard.append(
-                f"requested ${deal.requested_amount} > max advance ${funder.max_advance}"
-            )
+            hard.append(f"requested ${deal.requested_amount} > max advance ${funder.max_advance}")
 
     if funder.excluded_industries:
         criteria_count += 1
-        naics = (deal.industry_naics or "").lower()
-        if any(ind.lower() == naics for ind in funder.excluded_industries):
-            hard.append(f"industry_excluded: {deal.industry_naics}")
+        matched_token = _excluded_industry_match(
+            funder.excluded_industries,
+            industry_choice=deal.industry_choice,
+            industry_naics=deal.industry_naics,
+        )
+        if matched_token is not None:
+            hard.append(f"industry_excluded: {matched_token}")
 
     if funder.excluded_states:
         criteria_count += 1
@@ -359,9 +351,7 @@ def match_funder(
     # single source of truth for which states are covered (other
     # states pass through silently).
     try:
-        validate_broker_compensation_disclosure(
-            merchant_state=deal.state, funder=funder
-        )
+        validate_broker_compensation_disclosure(merchant_state=deal.state, funder=funder)
     except BrokerCompensationDisclosureMissing as exc:
         criteria_count += 1
         hard.append(f"broker_compensation_text_missing: {exc}")
@@ -372,17 +362,13 @@ def match_funder(
     # language — we surface every non-empty entry, classifying based on
     # absolute-language keywords. See module docstring "Auto-decline /
     # conditional requirements" for the rationale.
-    auto_decline_hard, auto_decline_soft = _evaluate_auto_decline(
-        funder.auto_decline_conditions
-    )
+    auto_decline_hard, auto_decline_soft = _evaluate_auto_decline(funder.auto_decline_conditions)
     if funder.auto_decline_conditions:
         criteria_count += 1
     hard.extend(auto_decline_hard)
     soft.extend(auto_decline_soft)
 
-    conditional_soft = _evaluate_conditional_requirements(
-        funder.conditional_requirements
-    )
+    conditional_soft = _evaluate_conditional_requirements(funder.conditional_requirements)
     if funder.conditional_requirements:
         criteria_count += 1
     soft.extend(conditional_soft)
@@ -400,10 +386,7 @@ def match_funder(
         and deal.state.upper() in _ADVANCE_FEE_PROHIBITED_STATES
     ):
         criteria_count += 1
-        soft.append(
-            "state_enforcement_concern:"
-            "FL_GA_advance_fee_prohibition_for_this_funder"
-        )
+        soft.append("state_enforcement_concern:FL_GA_advance_fee_prohibition_for_this_funder")
 
     if criteria_count == 0:
         return None
@@ -465,18 +448,16 @@ def evaluate_tier_matches(
     out: list[TierMatch] = []
     for tier in funder.tiers:
         reasons = _evaluate_tier_criteria(tier, deal)
-        clamped_advance = _clamp_advance_to_tier(
-            score.suggested_max_advance, tier.max_advance
-        )
+        clamped_advance = _clamp_advance_to_tier(score.suggested_max_advance, tier.max_advance)
         # U37 — pricing guidance per tier. Computed against the clamped
         # advance so payback_total reflects the ceiling the tier actually
         # writes (Elite caps at $250k even when the score suggests more).
         # Falls back to ``score.suggested_max_advance`` when the tier
         # publishes no ``max_advance`` (clamp returns None in that case).
-        pricing_advance = clamped_advance if clamped_advance is not None else (
-            score.suggested_max_advance
-            if score.suggested_max_advance > 0
-            else None
+        pricing_advance = (
+            clamped_advance
+            if clamped_advance is not None
+            else (score.suggested_max_advance if score.suggested_max_advance > 0 else None)
         )
         pricing = estimate_tier_pricing(tier, pricing_advance)
         out.append(
@@ -510,41 +491,26 @@ def _evaluate_tier_criteria(tier: FunderTier, deal: ScoreInput) -> list[str]:
         if deal.credit_score is None:
             reasons.append("credit_score_unknown")
         elif deal.credit_score < tier.min_credit_score:
-            reasons.append(
-                f"credit {deal.credit_score} < min {tier.min_credit_score}"
-            )
+            reasons.append(f"credit {deal.credit_score} < min {tier.min_credit_score}")
 
     if tier.min_months_in_business is not None:
         if deal.time_in_business_months is None:
             reasons.append("time_in_business_unknown")
         elif deal.time_in_business_months < tier.min_months_in_business:
             reasons.append(
-                f"tib {deal.time_in_business_months}mo < "
-                f"min {tier.min_months_in_business}mo"
+                f"tib {deal.time_in_business_months}mo < min {tier.min_months_in_business}mo"
             )
 
-    if (
-        tier.min_monthly_revenue is not None
-        and deal.monthly_revenue < tier.min_monthly_revenue
-    ):
-        reasons.append(
-            f"revenue ${deal.monthly_revenue} < min ${tier.min_monthly_revenue}"
-        )
+    if tier.min_monthly_revenue is not None and deal.monthly_revenue < tier.min_monthly_revenue:
+        reasons.append(f"revenue ${deal.monthly_revenue} < min ${tier.min_monthly_revenue}")
 
-    if (
-        tier.max_positions is not None
-        and deal.mca_positions > tier.max_positions
-    ):
-        reasons.append(
-            f"positions {deal.mca_positions} > max {tier.max_positions}"
-        )
+    if tier.max_positions is not None and deal.mca_positions > tier.max_positions:
+        reasons.append(f"positions {deal.mca_positions} > max {tier.max_positions}")
 
     return reasons
 
 
-def _clamp_advance_to_tier(
-    suggested: Decimal, tier_max: Decimal | None
-) -> Decimal | None:
+def _clamp_advance_to_tier(suggested: Decimal, tier_max: Decimal | None) -> Decimal | None:
     """Clamp the score's suggested advance down to the tier's ceiling.
 
     Returns ``None`` when the tier did not publish a ``max_advance`` —
@@ -580,6 +546,91 @@ def _evaluate_auto_decline(
         else:
             soft.append(f"auto_decline_review: {text} — review with funder")
     return hard, soft
+
+
+def _excluded_industry_match(
+    excluded_tokens: tuple[str, ...],
+    *,
+    industry_choice: str | None,
+    industry_naics: str | None,
+) -> str | None:
+    """Return the first excluded token that matches the deal's industry,
+    or ``None`` when no exclusion fires.
+
+    Two strategies, tried in order:
+
+    1. **Word-set match against ``industry_choice``** — the Close Lead-
+       side ``Industry`` string the merchant carries (em-dash form,
+       e.g. ``"Restaurant / Food Service"``). The token's tokenised
+       words (after lowercasing + non-alphanumeric → space → split)
+       must be a subset of the choice's tokenised words. So
+       ``"restaurant"`` -> ``{"restaurant"}`` is a subset of
+       ``{"restaurant", "food", "service"}`` and the exclusion fires;
+       ``"trucking"`` -> ``{"trucking"}`` is NOT a subset and skips.
+       Hyphenated tokens like ``"adult-entertainment"`` tokenise to
+       ``{"adult", "entertainment"}`` which matches against
+       ``"Adult / Entertainment"`` even though the punctuation differs.
+
+    2. **Fallback against NAICS-derived industry name** — when the
+       merchant has no ``industry_choice`` on file (legacy pre-
+       migration 055 rows or operator-typed NAICS without a Close
+       Industry pick), reverse-look the NAICS code through
+       ``CLOSE_INDUSTRY_TO_NAICS`` to derive the canonical choice
+       string, then apply the same word-set test. Lossy by design
+       (multiple choices can share a NAICS), but every entry in
+       ``CLOSE_INDUSTRY_TO_NAICS`` is documented operator-curated;
+       the reverse lookup is deterministic for those rows.
+
+    Returns the matched token verbatim (lowercased / hyphenated form
+    the extractor produced) so the operator sees what fired in the
+    ``industry_excluded:`` reason.
+    """
+    candidates: list[str] = []
+    if industry_choice:
+        candidates.append(industry_choice)
+    if industry_naics:
+        derived = _industry_name_from_naics(industry_naics)
+        if derived is not None:
+            candidates.append(derived)
+
+    if not candidates:
+        return None
+
+    candidate_word_sets = [_industry_words(c) for c in candidates]
+    for raw_token in excluded_tokens:
+        token_words = _industry_words(raw_token)
+        if not token_words:
+            continue
+        for words in candidate_word_sets:
+            if token_words.issubset(words):
+                return raw_token
+    return None
+
+
+def _industry_words(text: str) -> frozenset[str]:
+    """Lowercase, replace non-alphanumeric chars with spaces, split
+    into a word set. Used by ``_excluded_industry_match`` to compare
+    funder exclusion tokens against the merchant's industry string
+    without caring about hyphens vs spaces vs slashes."""
+    lowered = text.lower()
+    cleaned = "".join(c if c.isalnum() else " " for c in lowered)
+    return frozenset(w for w in cleaned.split() if w)
+
+
+def _industry_name_from_naics(naics: str) -> str | None:
+    """Reverse lookup ``CLOSE_INDUSTRY_TO_NAICS`` — given a 6-digit
+    NAICS code, return the first matching Close Industry choice
+    string. ``None`` when the code isn't in the table.
+
+    Imported lazily so the scoring layer doesn't pull in
+    ``aegis.close`` at module-import time (the close package loads
+    integration plumbing this gate doesn't need)."""
+    from aegis.close.field_map import CLOSE_INDUSTRY_TO_NAICS
+
+    for choice, code in CLOSE_INDUSTRY_TO_NAICS.items():
+        if code == naics:
+            return choice
+    return None
 
 
 def _evaluate_conditional_requirements(entries: tuple[str, ...]) -> list[str]:

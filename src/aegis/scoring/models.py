@@ -84,6 +84,12 @@ class ScoreInput(_StrictModel):
     state: str = Field(min_length=2, max_length=2, description="USPS state code")
     industry_naics: str | None = None
     industry_risk_tier: Literal["low", "moderate", "elevated", "high", "avoid"] | None = None
+    # Close Lead-side ``Industry`` choice string (em-dash form) the
+    # merchant carries on ``merchant.industry_choice``. Drives the
+    # ``match_funder`` exclusion gate (word-set match against funder
+    # ``excluded_industries``). ``None`` falls through to the NAICS-
+    # derived industry-name fallback in ``aegis.scoring.match_funders``.
+    industry_choice: str | None = None
     time_in_business_months: int | None = Field(default=None, ge=0)
     credit_score: int | None = Field(default=None, ge=300, le=850)
 

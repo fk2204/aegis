@@ -84,6 +84,7 @@ def build_score_input(
         state=str(merchant_row["state"]).upper(),
         industry_naics=merchant_row.get("industry_naics"),
         industry_risk_tier=merchant_row.get("industry_risk_tier"),
+        industry_choice=merchant_row.get("industry_choice"),
         time_in_business_months=merchant_row.get("time_in_business_months"),
         credit_score=merchant_row.get("credit_score"),
         avg_daily_balance=parser.aggregates.avg_daily_balance.value,
