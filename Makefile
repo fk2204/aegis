@@ -1,4 +1,4 @@
-.PHONY: install install-hooks dev worker test test-fast typecheck lint format check migrate migrate-dry verify-bedrock verify-db verify-db-list
+.PHONY: install install-hooks dev worker test test-fast typecheck lint format check migrate migrate-dry verify-bedrock verify-db verify-db-list cutover-check
 
 install:
 	uv sync
@@ -86,3 +86,25 @@ verify-db:
 
 verify-db-list:
 	uv run python scripts/db_verify.py --list
+
+# Cutover readiness gate. Fans out the four pre-cutover checks
+# (tampering shadow review, Track A historical lookback, pending
+# migrations dry-run, prod-health DB probe) and prints one PASS/FAIL
+# summary. Exit 0 only when every check passes — paste the whole
+# output into the cutover log for an auditable trail.
+#
+# Usage:
+#   make cutover-check TARGET=prod
+#   make cutover-check TARGET=staging
+#   make cutover-check TARGET=prod SKIP=prod_health
+#
+# SKIP accepts comma-separated check names (tampering, track_a,
+# pending_migrations, prod_health). Use sparingly — skipped gates
+# do not participate in the verdict, so a half-skipped green run
+# is meaningless for cutover.
+cutover-check:
+	@if [ -z "$(TARGET)" ]; then \
+		echo "usage: make cutover-check TARGET=<dev|staging|prod> [SKIP=<name,name>]"; \
+		exit 2; \
+	fi
+	uv run python scripts/cutover_check.py --target $(TARGET) $(if $(SKIP),--skip $(SKIP),)
