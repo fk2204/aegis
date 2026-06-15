@@ -33,7 +33,7 @@ from aegis.config import get_settings
 from aegis.merchants.models import MerchantRow
 from aegis.parser.patterns import PatternAnalysis
 from aegis.parser.tampering import evaluate_tampering_from_scores
-from aegis.scoring.models import ScoreInput
+from aegis.scoring.models import MonthBreakdown, ScoreInput
 from aegis.storage import AnalysisRow, DocumentRow
 
 
@@ -64,6 +64,48 @@ def _tampering_confirmed_for_window(latest_doc: DocumentRow) -> bool:
         metadata_score=int(breakdown.get("metadata_score", 0)),
         math_score=int(breakdown.get("math_score", 0)),
     )
+
+
+def _merge_monthly_breakdown(
+    items: list[tuple[DocumentRow, AnalysisRow]],
+) -> list[MonthBreakdown]:
+    """Project the per-analysis ``monthly_breakdown`` dict-lists into a
+    deduped, chronologically-sorted ``list[MonthBreakdown]``.
+
+    Each analysis stores its own per-calendar-month dict-list (see
+    ``parser.aggregate._monthly_breakdown``). When the same calendar
+    month appears in multiple analyses (overlapping statements,
+    re-uploads), the LATEST analysis wins on a per-month basis —
+    "items" arrives newest-first per the route convention. This
+    matches the operator's mental model: the freshest read of any
+    given month is canonical.
+
+    Empty input → empty list. Sprint 4: backfill of ``nsf_count`` for
+    pre-Sprint-4 analyses falls through cleanly via the
+    ``MonthBreakdown.nsf_count`` default of 0.
+    """
+    by_month: dict[str, dict[str, str]] = {}
+    # Walk oldest-first so newest-first inputs (items[0] = newest)
+    # overwrite older entries — yielding "newest wins per month."
+    for _doc, analysis in reversed(items):
+        for entry in analysis.monthly_breakdown:
+            month = entry.get("month")
+            if not month:
+                continue
+            by_month[month] = dict(entry)
+    out: list[MonthBreakdown] = []
+    for month in sorted(by_month.keys()):
+        entry = by_month[month]
+        out.append(
+            MonthBreakdown(
+                month=month,
+                deposits=Decimal(entry["deposits"]),
+                withdrawals=Decimal(entry["withdrawals"]),
+                avg_balance=Decimal(entry["avg_balance"]),
+                nsf_count=int(entry.get("nsf_count", 0)),
+            )
+        )
+    return out
 
 
 def score_input_multi_month(
@@ -201,6 +243,12 @@ def score_input_multi_month(
             if pattern_analysis is not None
             else int(getattr(latest, "ai_generated_score", 0) or 0)
         ),
+        # Sprint 4 — wire monthly_breakdown into the score input so
+        # downstream trend chips (revenue / ADB / NSF) read the per-
+        # month buckets. Without this, score_input.monthly_breakdown
+        # was always the empty default and every trend collapsed to
+        # "flat" regardless of the underlying data.
+        monthly_breakdown=_merge_monthly_breakdown(items),
     )
 
 

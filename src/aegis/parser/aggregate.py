@@ -121,9 +121,9 @@ def aggregate(
     # source_ids stay in the excluded transactions' uuids — drillable
     # from the transactions table via the row.id values listed below.
     if lender_exclusions:
-        total_excluded = sum(
-            (e.amount for e in lender_exclusions), Decimal("0")
-        ).quantize(Decimal("0.01"))
+        total_excluded = sum((e.amount for e in lender_exclusions), Decimal("0")).quantize(
+            Decimal("0.01")
+        )
         # Preserve match-name evidence; dedupe & sort for stable rendering.
         names = sorted({e.matched_name for e in lender_exclusions})
         flags.append(
@@ -200,9 +200,8 @@ def _monthly_breakdown(
     for month in sorted(by_month.keys()):
         rows = by_month[month]
         deposits = sum((r.amount for r in rows if r.amount > 0), Decimal("0"))
-        withdrawals = sum(
-            (-r.amount for r in rows if r.amount < 0), Decimal("0")
-        )
+        withdrawals = sum((-r.amount for r in rows if r.amount < 0), Decimal("0"))
+        nsf_count = sum(1 for r in rows if r.category == "nsf_fee")
         # Avg balance approximation: time-weighted across the month's rows.
         # We accept the small inaccuracy of using end-of-row balances
         # without daily carry-forward — month-over-month deltas are
@@ -221,6 +220,11 @@ def _monthly_breakdown(
                 "deposits": str(deposits.quantize(Decimal("0.01"))),
                 "withdrawals": str(withdrawals.quantize(Decimal("0.01"))),
                 "avg_balance": str(avg_balance.quantize(Decimal("0.01"))),
+                # nsf_count surfaces as str (mirroring the Decimal-as-str
+                # convention) so the round-trip through jsonb stays
+                # uniform across keys. MonthBreakdown.model_validate
+                # coerces the str back to int.
+                "nsf_count": str(nsf_count),
             }
         )
     return out
@@ -276,11 +280,7 @@ def _customer_concentration_flag(
     distinct counterparties show up (concentration is meaningful only
     with some baseline of payers).
     """
-    deposits = [
-        t
-        for t in transactions
-        if t.amount > 0 and t.category in _REVENUE_INCLUDED
-    ]
+    deposits = [t for t in transactions if t.amount > 0 and t.category in _REVENUE_INCLUDED]
     if not deposits:
         return None
     gross_revenue = sum((t.amount for t in deposits), Decimal("0"))
@@ -335,9 +335,7 @@ def _payroll_cadence_flag(
 
     if true_revenue <= 0:
         return f"payroll_cadence:{cadence}"
-    payroll_total = sum(
-        (abs(t.amount) for t in payroll_rows), Decimal("0")
-    )
+    payroll_total = sum((abs(t.amount) for t in payroll_rows), Decimal("0"))
     pct = round((payroll_total / true_revenue) * 100)
     return f"payroll_cadence:{cadence}_{pct}%_of_revenue"
 
@@ -425,9 +423,7 @@ def _avg_daily_balance(
     # Detect mode from in-period rows. Mixing modes silently masks drift,
     # so once any printed running_balance is present we commit to printed
     # mode and require it on every day's last row.
-    printed_mode = any(
-        r.running_balance is not None for rows in by_day.values() for r in rows
-    )
+    printed_mode = any(r.running_balance is not None for rows in by_day.values() for r in rows)
 
     sources: list[UUID] = []
     closing = beginning_balance
@@ -600,9 +596,7 @@ def _mca_daily_total(
     Source ids = every classified mca_debit row inside the period.
     """
     period_days = max(1, (period_end - period_start).days + 1)
-    in_period = [
-        t for t in transactions if period_start <= t.posted_date <= period_end
-    ]
+    in_period = [t for t in transactions if period_start <= t.posted_date <= period_end]
     total = sum(
         (-t.amount for t in in_period if t.category == "mca_debit" and t.amount < 0),
         Decimal("0"),
@@ -612,9 +606,7 @@ def _mca_daily_total(
     return _Sourced(value=avg_per_day, source_ids=sources)
 
 
-def _debt_to_revenue(
-    mca_daily: Decimal, true_revenue: Decimal, period_days: int
-) -> Decimal:
+def _debt_to_revenue(mca_daily: Decimal, true_revenue: Decimal, period_days: int) -> Decimal:
     """MCA monthly burden / monthly revenue.
 
     Both numerator and denominator are normalized to a 30-day month so

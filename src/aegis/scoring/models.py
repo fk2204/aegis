@@ -33,6 +33,11 @@ class MonthBreakdown(_StrictModel):
     deposits: Money
     withdrawals: Money
     avg_balance: Money
+    # Sprint 4 — number of transactions classified as ``nsf_fee`` posted
+    # within the calendar month. Drives the per-month NSF trend chip on
+    # the dossier. Defaulted to 0 so analyses persisted before this
+    # field landed still validate cleanly.
+    nsf_count: int = Field(default=0, ge=0)
 
 
 class ScoreInput(_StrictModel):

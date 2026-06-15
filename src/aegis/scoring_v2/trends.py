@@ -8,14 +8,16 @@ top-line growing, holding, or fading? Same question for cash buffer
 * ``revenue_trend`` — derived from ``MonthBreakdown.deposits`` (gross
   monthly deposits, the operator-confirmed proxy for revenue).
 * ``adb_trend`` — derived from ``MonthBreakdown.avg_balance``.
-* ``nsf_trend`` — KNOWN TEMPORARY GAP: ``MonthBreakdown`` does not yet
-  carry an ``nsf_count`` field, so this trend is hard-coded to
-  ``"flat"`` until the operator extends the model. The function
-  signature is forward-compatible: callers pass the same list, and a
-  future patch will swap the placeholder for real per-month NSF
-  comparison without touching the call site or the return shape. Pin
-  test ``test_nsf_trend_is_flat_placeholder`` asserts the placeholder
-  so a silent flip is caught.
+* ``nsf_trend`` — derived from ``MonthBreakdown.nsf_count`` (per-month
+  count of transactions classified as ``nsf_fee``). Sprint 4 (2026-06-15)
+  wired this end-to-end; the prior ``"flat"`` placeholder is gone.
+  Reads ``growing`` when NSF count goes up between the prior and
+  latest months (operator-bad — more cashflow distress) and
+  ``declining`` when it goes down (operator-good — merchant is
+  stabilising). 0-anchor handling is special-cased: 0→N counts as
+  ``growing`` and N→0 counts as ``declining`` regardless of
+  percentage, since "one NSF appearing" is a meaningful signal
+  the percentage band would otherwise mis-classify.
 * ``months_compared`` — number of buckets that participated. ``0`` for
   an empty list, ``1`` for a single bucket (fallback to all-flat),
   ``2+`` for the real comparison. Surfaced for audit per CLAUDE.md
@@ -104,11 +106,11 @@ class RevenueTrends(_StrictModel):
     )
     nsf_trend: TrendDirection = Field(
         description=(
-            "PLACEHOLDER — always ``flat`` until ``MonthBreakdown`` "
-            "carries a per-month NSF count. Forward-compatible: the "
-            "field exists so callers and the dossier render path can "
-            "wire it now and the value flips automatically when the "
-            "real comparator lands."
+            "Direction of NSF-fee transaction count between the prior "
+            "month and the latest month. growing means NSFs went up "
+            "(operator-bad — more cashflow distress); declining means "
+            "NSFs went down (operator-good — merchant stabilising). "
+            "Same ±10% / count-based threshold band as ``revenue_trend``."
         ),
     )
     months_compared: int = Field(
@@ -144,8 +146,12 @@ def compute_revenue_trends(monthly_buckets: list[MonthBreakdown]) -> RevenueTren
 
     Notes
     -----
-    ``nsf_trend`` is a fixed ``"flat"`` placeholder. See the module
-    docstring for the rationale and the upgrade path.
+    ``nsf_trend`` reads ``MonthBreakdown.nsf_count`` (per-month NSF-fee
+    transaction count). The ±10% threshold band applies on top of an
+    absolute floor: a 0→1 jump is ``growing`` (the operator wants to
+    see the first NSF surface), a 1→0 drop is ``declining`` (the
+    merchant cleaned up), 0→0 is ``flat``. Above 1, the percentage
+    band applies the same way as revenue / ADB.
     """
     months_compared = len(monthly_buckets)
 
@@ -164,9 +170,28 @@ def compute_revenue_trends(monthly_buckets: list[MonthBreakdown]) -> RevenueTren
     return RevenueTrends(
         revenue_trend=_classify(anchor.deposits, latest.deposits),
         adb_trend=_classify(anchor.avg_balance, latest.avg_balance),
-        nsf_trend="flat",
+        nsf_trend=_classify_count(anchor.nsf_count, latest.nsf_count),
         months_compared=months_compared,
     )
+
+
+def _classify_count(anchor: int, latest: int) -> TrendDirection:
+    """Map an anchor → latest pair of NSF counts to a trend direction.
+
+    The percentage-band classifier degrades poorly at small integer
+    counts (1 → 2 is +100%, but operationally still "one more
+    incident"). Below an absolute floor of 1, the direction reads
+    literally — any non-zero appearance is ``growing``, any drop to
+    zero is ``declining``. Above 1, fall through to the same
+    Decimal-percentage classifier the money fields use.
+    """
+    if anchor == 0 and latest == 0:
+        return "flat"
+    if anchor == 0:
+        return "growing"
+    if latest == 0:
+        return "declining"
+    return _classify(Decimal(anchor), Decimal(latest))
 
 
 def _classify(anchor: Decimal, latest: Decimal) -> TrendDirection:

@@ -29,6 +29,7 @@ def _bucket(
     deposits: Decimal,
     avg_balance: Decimal,
     withdrawals: Decimal = Decimal("0.00"),
+    nsf_count: int = 0,
 ) -> MonthBreakdown:
     """Build a ``MonthBreakdown`` with sensible defaults for the
     fields the trends function doesn't read."""
@@ -37,6 +38,7 @@ def _bucket(
         deposits=deposits,
         withdrawals=withdrawals,
         avg_balance=avg_balance,
+        nsf_count=nsf_count,
     )
 
 
@@ -189,25 +191,67 @@ def test_empty_list_returns_all_flat_without_raising() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Case 10 — NSF placeholder pin
+# Case 10 — NSF trend reads MonthBreakdown.nsf_count (Sprint 4 unblock)
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_nsf_trend_is_flat_placeholder() -> None:
-    """``nsf_trend`` is hard-coded to ``"flat"`` until
-    ``MonthBreakdown`` carries ``nsf_count``. Pin so a silent flip is
-    caught — when the real implementation lands this test gets
-    rewritten to drive the comparator."""
-    growing_buckets = [
-        _bucket("2026-01", Decimal("10000.00"), Decimal("5000.00")),
-        _bucket("2026-02", Decimal("20000.00"), Decimal("10000.00")),
+def test_nsf_trend_growing_from_zero_to_one() -> None:
+    """0 → 1 is meaningful — first NSF surfaces. ``growing``."""
+    buckets = [
+        _bucket("2026-01", Decimal("10000.00"), Decimal("5000.00"), nsf_count=0),
+        _bucket("2026-02", Decimal("10000.00"), Decimal("5000.00"), nsf_count=1),
     ]
-    declining_buckets = [
-        _bucket("2026-01", Decimal("10000.00"), Decimal("5000.00")),
-        _bucket("2026-02", Decimal("5000.00"), Decimal("2500.00")),
+    assert compute_revenue_trends(buckets).nsf_trend == "growing"
+
+
+def test_nsf_trend_declining_from_some_to_zero() -> None:
+    """N → 0 is the merchant cleaning up. ``declining``."""
+    buckets = [
+        _bucket("2026-01", Decimal("10000.00"), Decimal("5000.00"), nsf_count=3),
+        _bucket("2026-02", Decimal("10000.00"), Decimal("5000.00"), nsf_count=0),
     ]
-    assert compute_revenue_trends(growing_buckets).nsf_trend == "flat"
-    assert compute_revenue_trends(declining_buckets).nsf_trend == "flat"
+    assert compute_revenue_trends(buckets).nsf_trend == "declining"
+
+
+def test_nsf_trend_flat_both_zero() -> None:
+    """0 → 0 stays flat — the clean operating norm shouldn't read as
+    a trend either way."""
+    buckets = [
+        _bucket("2026-01", Decimal("10000.00"), Decimal("5000.00"), nsf_count=0),
+        _bucket("2026-02", Decimal("10000.00"), Decimal("5000.00"), nsf_count=0),
+    ]
+    assert compute_revenue_trends(buckets).nsf_trend == "flat"
+
+
+def test_nsf_trend_uses_percentage_band_above_one() -> None:
+    """Above 1, the same ±10% / count-based band applies.
+    4 → 5 = +25% → ``growing``; 5 → 4 = -20% → ``declining``."""
+    growing = [
+        _bucket("2026-01", Decimal("10000.00"), Decimal("5000.00"), nsf_count=4),
+        _bucket("2026-02", Decimal("10000.00"), Decimal("5000.00"), nsf_count=5),
+    ]
+    declining = [
+        _bucket("2026-01", Decimal("10000.00"), Decimal("5000.00"), nsf_count=5),
+        _bucket("2026-02", Decimal("10000.00"), Decimal("5000.00"), nsf_count=4),
+    ]
+    assert compute_revenue_trends(growing).nsf_trend == "growing"
+    assert compute_revenue_trends(declining).nsf_trend == "declining"
+
+
+def test_nsf_trend_flat_when_change_below_threshold() -> None:
+    """10 → 11 is +10% (on the inclusive boundary → growing); 10 → 10
+    is flat. Use 10 → 10 here and 5 → 5 with the no-change reading."""
+    buckets = [
+        _bucket("2026-01", Decimal("10000.00"), Decimal("5000.00"), nsf_count=10),
+        _bucket("2026-02", Decimal("10000.00"), Decimal("5000.00"), nsf_count=10),
+    ]
+    assert compute_revenue_trends(buckets).nsf_trend == "flat"
+
+
+def test_nsf_trend_flat_on_single_or_empty_input() -> None:
+    """Same fallback as revenue / ADB: < 2 buckets → ``flat``."""
+    one_bucket = [_bucket("2026-01", Decimal("10000.00"), Decimal("5000.00"), nsf_count=3)]
+    assert compute_revenue_trends(one_bucket).nsf_trend == "flat"
     assert compute_revenue_trends([]).nsf_trend == "flat"
 
 
