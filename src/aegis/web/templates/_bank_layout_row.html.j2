@@ -1,0 +1,41 @@
+{# One row of the bank-layouts list — also returned as the HTMX
+   outerHTML swap target from POST /ui/bank-layouts/{bank_name}/hints.
+
+   The wrapping <tr id="bank-layout-row-{{ row.id }}"> is the HTMX swap
+   anchor; the form's `hx-target` matches this id so the response
+   payload replaces the same row in place. #}
+<tr id="bank-layout-row-{{ row.id }}" class="bank-layout-row">
+  <td class="merchant">
+    <strong>{{ row.bank_name }}</strong>
+    {% if row.successful_parses == 0 %}
+      <span class="sub">primed (no parses yet)</span>
+    {% elif row.successful_parses < 3 %}
+      <span class="sub">below hint threshold (need 3)</span>
+    {% else %}
+      <span class="sub">{% if row.extraction_hints and row.extraction_hints.strip() %}hints active{% else %}no hints set{% endif %}</span>
+    {% endif %}
+  </td>
+  <td class="mono-cell" style="text-align:right">{{ row.successful_parses }}</td>
+  <td>
+    {% if row.last_seen %}
+      <span class="mono-cell">{{ row.last_seen.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+    {% else %}
+      <span class="sub">never</span>
+    {% endif %}
+  </td>
+  <td>
+    <form method="post"
+          action="/ui/bank-layouts/{{ row.bank_name|urlencode }}/hints"
+          hx-post="/ui/bank-layouts/{{ row.bank_name|urlencode }}/hints"
+          hx-target="#bank-layout-row-{{ row.id }}"
+          hx-swap="outerHTML">
+      <textarea name="hints"
+                rows="3"
+                style="width:100%;font-family:inherit;font-size:12px"
+                placeholder="Describe layout quirks the LLM should know about — column order, multi-line descriptions, running-balance position, etc.">{{ row.extraction_hints or '' }}</textarea>
+      <div style="margin-top:4px;text-align:right">
+        <button class="btn" type="submit">Save hints</button>
+      </div>
+    </form>
+  </td>
+</tr>

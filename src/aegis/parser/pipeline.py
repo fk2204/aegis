@@ -41,6 +41,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Final, Literal
 
+from aegis.bank_layouts import BankLayoutRepository, BankLayoutWriteError
 from aegis.config import get_settings
 from aegis.llm import LLMClient
 from aegis.logger import get_logger
@@ -172,11 +173,29 @@ def run_pipeline(
     llm: LLMClient,
     *,
     today: date | None = None,
+    bank_layouts: BankLayoutRepository | None = None,
+    known_bank_name: str | None = None,
 ) -> PipelineResult:
     """Run the full parser pipeline.
 
     Phase 5 will wrap this in an arq worker; for now it's synchronous.
     LLM is injected so tests can pass a fake.
+
+    ``bank_layouts`` is the optional layout-learning surface (migration
+    059). When provided AND ``known_bank_name`` resolves to a row that
+    has crossed ``HINTS_AVAILABLE_THRESHOLD`` successful parses with
+    non-empty hints, the operator's hints text is appended to the
+    Bedrock extraction prompt. After a successful parse
+    (``parse_status in ('proceed', 'review')``), the pipeline calls
+    ``bank_layouts.upsert_success`` with a PII-free layout fingerprint
+    so subsequent parses of the same bank can benefit.
+
+    ``known_bank_name`` is the caller-provided bank-name hint for the
+    upcoming parse — typically pulled from a prior analysis's
+    ``BankIdentity.bank_name`` on the same merchant. The first-ever
+    parse for a bank (no prior analyses) has no hint; that's expected
+    behavior — there's nothing to learn from yet. Tests that don't
+    care about layout learning leave both kwargs at their defaults.
     """
     metadata = analyze_metadata(pdf_path)
 
@@ -206,13 +225,28 @@ def run_pipeline(
                 all_flags=_collect_flags(metadata, synthetic_validation, None, []),
             )
 
+    # Bank-layout hint injection. Only fires when the caller wired a
+    # repo AND supplied a bank-name hint AND that bank has crossed the
+    # hints-available threshold with non-empty operator text. Otherwise
+    # extraction_prompt_suffix stays ``None`` and the base prompt runs
+    # unchanged.
+    extraction_prompt_suffix = _build_extraction_prompt_suffix(
+        bank_layouts=bank_layouts,
+        known_bank_name=known_bank_name,
+    )
+
     used_ocr_fallback = False
     used_per_page_routing = False
     if settings.aegis_parser_page_routing and page_decisions and not is_homogeneous(page_decisions):
         # Mixed strategies → per-page extraction. is_homogeneous None /
         # homogeneous → fall through to the legacy single-call path so
         # the simple cases keep the cheaper one-shot behavior.
-        extraction = extract_statement_per_page(pdf_bytes, llm, page_decisions)
+        extraction = extract_statement_per_page(
+            pdf_bytes,
+            llm,
+            page_decisions,
+            prompt_suffix=extraction_prompt_suffix,
+        )
         used_per_page_routing = True
         used_ocr_fallback = any(d.strategy == "vision" for d in page_decisions)
     elif not metadata.has_text_layer:
@@ -223,8 +257,7 @@ def run_pipeline(
             synthetic_validation = ValidationResult(
                 passed=False,
                 failures=[
-                    f"ocr_oversize_image_pdf: page_count={metadata.page_count}"
-                    f" max={MAX_OCR_PAGES}"
+                    f"ocr_oversize_image_pdf: page_count={metadata.page_count} max={MAX_OCR_PAGES}"
                 ],
             )
             return PipelineResult(
@@ -234,10 +267,12 @@ def run_pipeline(
                 validation=synthetic_validation,
                 all_flags=_collect_flags(metadata, synthetic_validation, None, []),
             )
-        extraction = extract_statement_via_vision(pdf_bytes, llm)
+        extraction = extract_statement_via_vision(
+            pdf_bytes, llm, prompt_suffix=extraction_prompt_suffix
+        )
         used_ocr_fallback = True
     else:
-        extraction = extract_statement(pdf_bytes, llm)
+        extraction = extract_statement(pdf_bytes, llm, prompt_suffix=extraction_prompt_suffix)
 
     validation = validate_extraction(
         extraction.statement,
@@ -346,6 +381,29 @@ def run_pipeline(
     if tampering_flag is not None:
         all_flags.append(tampering_flag)
 
+    # Bank-layout learning: record the successful parse so the next
+    # parse for the same bank can leverage operator-curated hints. Only
+    # fires on parse_status ('proceed', 'review') — manual_review docs
+    # are not "successful" by the learning surface's definition. The
+    # learning is best-effort; persistence failures are logged but do
+    # NOT fail the parse (an inability to learn must not break the
+    # working pipeline).
+    if parse_status in ("proceed", "review") and bank_layouts is not None:
+        parsed_bank_name = (
+            extraction.statement.summary.bank_name if extraction is not None else None
+        )
+        if parsed_bank_name:
+            try:
+                bank_layouts.upsert_success(
+                    bank_name=parsed_bank_name,
+                    fingerprint=_build_layout_fingerprint(extraction, metadata),
+                )
+            except BankLayoutWriteError:
+                _log.warning(
+                    "parser.bank_layout.upsert_failed bank_name=%s",
+                    parsed_bank_name,
+                )
+
     return PipelineResult(
         parse_status=parse_status,
         metadata=metadata,
@@ -364,6 +422,66 @@ def run_pipeline(
     )
 
 
+def _build_extraction_prompt_suffix(
+    *,
+    bank_layouts: BankLayoutRepository | None,
+    known_bank_name: str | None,
+) -> str | None:
+    """Return the prompt-suffix text for operator-curated layout hints.
+
+    ``None`` when:
+      * No repository was wired in (test / offline path), OR
+      * No caller-supplied bank-name hint (first-ever parse path), OR
+      * The bank exists but has no usable hints (under threshold or
+        empty text — ``BankLayoutRepository.get_hints`` returns None
+        in either case).
+
+    Otherwise returns a single block of the form::
+
+        Layout hints from prior successful parses of this bank:
+        <verbatim hints text>
+
+    that the extract helpers append after the base extraction prompt.
+    The hints are operator-curated free-form text; this helper treats
+    them as a verbatim string append with no templating.
+    """
+    if bank_layouts is None or not known_bank_name:
+        return None
+    hints = bank_layouts.get_hints(known_bank_name)
+    if hints is None:
+        return None
+    return "Layout hints from prior successful parses of this bank:\n" + hints
+
+
+def _build_layout_fingerprint(
+    extraction: object,
+    metadata: MetadataAnalysis,
+) -> dict[str, object]:
+    """Build the PII-free fingerprint dict for ``upsert_success``.
+
+    Captures observable layout properties only: transaction count,
+    whether running balances were printed on the rows, page count,
+    currency. NEVER includes account holder names, transaction
+    descriptions, or any merchant identifier (CLAUDE.md PII rule).
+
+    The ``extraction`` parameter is typed ``object`` rather than
+    ``ExtractionPass1Result`` to keep this helper module-local without
+    importing the type at runtime — the structural attribute access
+    suffices and the caller guarantees the value is non-None on the
+    success path.
+    """
+    # Attribute access is duck-typed against ExtractionPass1Result.
+    statement = getattr(extraction, "statement", None)
+    transactions = getattr(statement, "transactions", []) if statement else []
+    has_running_balance = any(getattr(t, "running_balance", None) is not None for t in transactions)
+    return {
+        "transaction_count": len(transactions),
+        "has_running_balance": has_running_balance,
+        "page_count": metadata.page_count,
+        "currency": "USD",
+    }
+
+
 def _read_pdf(pdf_path: str) -> bytes:
     from pathlib import Path
 
@@ -378,9 +496,7 @@ def _math_score(validation: ValidationResult) -> int:
     if not validation.failures:
         return 0
     critical_prefixes = ("reconciliation_failed", "future_dated", "extraction_truncated")
-    critical = sum(
-        1 for f in validation.failures if f.startswith(critical_prefixes)
-    )
+    critical = sum(1 for f in validation.failures if f.startswith(critical_prefixes))
     n = len(validation.failures)
     if n == 1:
         return 55 if critical else 25
@@ -440,11 +556,7 @@ def _decide(
         # suspect and downstream patterns/aggregates inherit the noise.
         # Same severity as a math gate failure.
         return "manual_review"
-    if (
-        fraud_score >= REVIEW_THRESHOLD
-        or not validation.passed
-        or metadata.eof_markers > 1
-    ):
+    if fraud_score >= REVIEW_THRESHOLD or not validation.passed or metadata.eof_markers > 1:
         return "review"
     return "proceed"
 
@@ -463,15 +575,10 @@ def _fraud_cluster_triangulation(patterns: PatternAnalysis | None) -> str | None
     if not any(p.severity >= 25 for p in patterns.patterns):
         return None
     codes = [p.code for p in patterns.patterns]
-    return (
-        f"fraud_cluster_triangulated:{len(patterns.patterns)}_signals_"
-        + ",".join(codes[:5])
-    )
+    return f"fraud_cluster_triangulated:{len(patterns.patterns)}_signals_" + ",".join(codes[:5])
 
 
-def _confidence_failures(
-    avg_conf: int, per_cat_conf: dict[str, int]
-) -> list[str]:
+def _confidence_failures(avg_conf: int, per_cat_conf: dict[str, int]) -> list[str]:
     """Return failure codes for classification confidence below the floor.
 
     Empty list = no failure. Two paths trigger:
@@ -518,7 +625,7 @@ def _adb_coverage_thin_flag(aggregate_flags: list[str]) -> str | None:
     for flag in aggregate_flags:
         if not flag.startswith(prefix):
             continue
-        payload = flag[len(prefix):]
+        payload = flag[len(prefix) :]
         parts = payload.split("/", maxsplit=1)
         if len(parts) != 2:
             return None

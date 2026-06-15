@@ -98,7 +98,12 @@ _MAX_PDF_BYTES: Final[int] = 25 * 1024 * 1024
 _VISION_DPI: Final[int] = 200
 
 
-def extract_statement(pdf_bytes: bytes, llm: LLMClient) -> ExtractionPass1Result:
+def extract_statement(
+    pdf_bytes: bytes,
+    llm: LLMClient,
+    *,
+    prompt_suffix: str | None = None,
+) -> ExtractionPass1Result:
     """Run pass 1 — extract raw transactions + printed summary.
 
     Parameters
@@ -107,6 +112,13 @@ def extract_statement(pdf_bytes: bytes, llm: LLMClient) -> ExtractionPass1Result
         Raw PDF bytes. Caller is responsible for size and on-disk handling.
     llm
         An `LLMClient` (BedrockClient in production, fake in tests).
+    prompt_suffix
+        Optional verbatim text appended to the extraction system prompt.
+        Used by the bank-layout-learning surface
+        (``aegis.bank_layouts.BankLayoutRepository.get_hints``) to feed
+        operator-curated layout hints into the prompt on subsequent
+        parses of a bank we've seen before. ``None`` (default) keeps the
+        base prompt unchanged.
 
     Raises
     ------
@@ -121,15 +133,14 @@ def extract_statement(pdf_bytes: bytes, llm: LLMClient) -> ExtractionPass1Result
             f"PDF buffer too large: {len(pdf_bytes)} bytes (max {_MAX_PDF_BYTES})"
         )
 
+    prompt = EXTRACTION_PROMPT + "\n\n" + prompt_suffix if prompt_suffix else EXTRACTION_PROMPT
     try:
-        raw, truncated = llm.extract_raw_json(pdf_bytes, EXTRACTION_PROMPT)
+        raw, truncated = llm.extract_raw_json(pdf_bytes, prompt)
     except ValueError as exc:
         raise ExtractionError(f"LLM returned malformed JSON: {exc}") from exc
 
     if "summary" not in raw or "transactions" not in raw:
-        raise ExtractionError(
-            f"extraction JSON missing required keys; got {sorted(raw.keys())}"
-        )
+        raise ExtractionError(f"extraction JSON missing required keys; got {sorted(raw.keys())}")
 
     indicators = _coerce_indicators(raw.get("synthetic_risk_indicators", []))
 
@@ -154,7 +165,10 @@ def extract_statement(pdf_bytes: bytes, llm: LLMClient) -> ExtractionPass1Result
 
 
 def extract_statement_via_vision(
-    pdf_bytes: bytes, llm: LLMClient
+    pdf_bytes: bytes,
+    llm: LLMClient,
+    *,
+    prompt_suffix: str | None = None,
 ) -> ExtractionPass1Result:
     """OCR fallback for image-only PDFs.
 
@@ -163,6 +177,10 @@ def extract_statement_via_vision(
     `extract_statement`, so the downstream validation gate runs unchanged.
     The pipeline branches on `metadata.has_text_layer`; this function is
     only invoked when the document has no extractable text layer.
+
+    Same ``prompt_suffix`` semantics as ``extract_statement``: when
+    provided, the operator-curated bank-layout hints are appended to
+    the base vision prompt.
     """
     if len(pdf_bytes) == 0:
         raise ExtractionError("empty PDF buffer")
@@ -182,17 +200,18 @@ def extract_statement_via_vision(
     except pymupdf.FileDataError as exc:
         raise ExtractionError(f"pymupdf could not open PDF: {exc}") from exc
 
+    prompt = (
+        EXTRACTION_PROMPT_VISION + "\n\n" + prompt_suffix
+        if prompt_suffix
+        else EXTRACTION_PROMPT_VISION
+    )
     try:
-        raw, truncated = llm.extract_raw_json_from_images(
-            page_images, EXTRACTION_PROMPT_VISION
-        )
+        raw, truncated = llm.extract_raw_json_from_images(page_images, prompt)
     except ValueError as exc:
         raise ExtractionError(f"LLM returned malformed JSON: {exc}") from exc
 
     if "summary" not in raw or "transactions" not in raw:
-        raise ExtractionError(
-            f"extraction JSON missing required keys; got {sorted(raw.keys())}"
-        )
+        raise ExtractionError(f"extraction JSON missing required keys; got {sorted(raw.keys())}")
 
     indicators = _coerce_indicators(raw.get("synthetic_risk_indicators", []))
 
@@ -376,6 +395,8 @@ def extract_statement_per_page(
     pdf_bytes: bytes,
     llm: LLMClient,
     decisions: list[PageStrategyDecision],
+    *,
+    prompt_suffix: str | None = None,
 ) -> ExtractionPass1Result:
     """Extract the statement using per-page strategy routing.
 
@@ -415,9 +436,9 @@ def extract_statement_per_page(
     for strategy, page_indices in groups:
         slice_bytes = _slice_pdf(pdf_bytes, page_indices)
         if strategy == "text":
-            result = extract_statement(slice_bytes, llm)
+            result = extract_statement(slice_bytes, llm, prompt_suffix=prompt_suffix)
         else:
-            result = extract_statement_via_vision(slice_bytes, llm)
+            result = extract_statement_via_vision(slice_bytes, llm, prompt_suffix=prompt_suffix)
         sub_results.append((result, page_indices))
 
     return _merge_sub_results(sub_results)

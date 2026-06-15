@@ -1,0 +1,58 @@
+{% extends "base.html.j2" %}
+{% set active = 'Admin' %}
+{% block title %}Bank layouts — AEGIS{% endblock %}
+
+{% block deck %}
+{% set title = "Bank layouts" %}
+{% set subtitle = "· extraction-hint learning" %}
+{% set meta = (rows|length|string) ~ ' bank' ~ ('' if rows|length == 1 else 's') ~ ' on file' %}
+{% set actions = [] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+  <div>
+    <header class="sect-head">
+      <h2>Banks the parser has seen</h2>
+      <div class="rule"></div>
+      <div class="meta">
+        Hints become active after 3 successful parses. Operator can prime a bank ahead of time —
+        the hint text persists with a parse count of zero until the parser sees a matching statement.
+      </div>
+    </header>
+
+    {% if not rows %}
+      <div class="empty">
+        No bank layouts on file yet
+        <span class="copy">As statements parse successfully, banks accumulate here automatically.</span>
+      </div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Bank</th>
+            <th class="num">Parses</th>
+            <th>Last seen</th>
+            <th>Extraction hints</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            {% include "_bank_layout_row.html.j2" %}
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    <div class="marginalia" style="margin-top:14px">
+      <strong>How this works</strong> · Every successful parse merges a layout fingerprint
+      (transaction count, running-balance presence, page count, currency) into the bank's row
+      and bumps the success counter. After 3 successful parses, any non-empty hints text on
+      that row is appended verbatim to the Bedrock extraction system prompt the next time AEGIS
+      parses a statement from this bank. Hints are operator-authored free-form text — describe
+      the layout quirks the LLM should know about, not the merchant details.
+    </div>
+  </div>
+</section>
+{% endblock %}

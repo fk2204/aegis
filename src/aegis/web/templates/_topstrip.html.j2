@@ -14,7 +14,8 @@
   Inputs (all optional):
     active — one of "Today" | "Deals" | "Merchants" | "Funders"
              | "Upload" | "Intake" | "Review" | "CloseQueue"
-             | "Portfolio" | "DisclosureEvents" | "Triage" | "Admin";
+             | "Portfolio" | "DisclosureEvents" | "Triage"
+             | "BankLayouts" | "Admin";
              the matching link gets `class="is-active"`. Pages that do
              not highlight any nav (e.g. the dossier) simply omit
              `active`. ``Triage`` covers both /ui/triage and
@@ -43,6 +44,7 @@
     <a href="/ui/portfolio" {% if _active == 'Portfolio' %}class="is-active"{% endif %}>Portfolio</a>
     <a href="/ui/disclosure-events" {% if _active == 'DisclosureEvents' %}class="is-active"{% endif %}>Disclosure events</a>
     <a href="/ui/triage" {% if _active == 'Triage' %}class="is-active"{% endif %}>Triage</a>
+    <a href="/ui/bank-layouts" {% if _active == 'BankLayouts' %}class="is-active"{% endif %}>Bank layouts</a>
     <a href="/ui/admin/health" {% if _active == 'Admin' %}class="is-active"{% endif %}>Admin</a>
   </div>
   <div class="view-toggle">

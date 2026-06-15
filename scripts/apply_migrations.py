@@ -480,6 +480,13 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='merchants' "
         "AND column_name='notes'"
     ),
+    "059_bank_layouts.sql": (
+        # 059 creates the bank_layouts table. Existence of the table
+        # is the load-bearing artifact; the index lands in the same
+        # transaction or fails it.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='bank_layouts'"
+    ),
 }
 
 

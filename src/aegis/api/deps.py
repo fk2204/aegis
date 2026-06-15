@@ -15,6 +15,11 @@ from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from aegis.audit import AuditLog, InMemoryAuditLog, SupabaseAuditLog
+from aegis.bank_layouts import (
+    BankLayoutRepository,
+    InMemoryBankLayoutRepository,
+    SupabaseBankLayoutRepository,
+)
 from aegis.close.client import CloseClient
 from aegis.compliance.overrides import (
     InMemoryOverrideRepository,
@@ -232,6 +237,20 @@ def get_funder_note_submission_repository() -> FunderNoteSubmissionRepository:
 
 
 @lru_cache(maxsize=1)
+def get_bank_layout_repository() -> BankLayoutRepository:
+    """Process-wide BankLayoutRepository (migration 059).
+
+    Persists per-bank layout fingerprints + operator-authored
+    ``extraction_hints`` that the parser pipeline injects into the
+    Bedrock extraction system prompt on subsequent parses of the same
+    bank. Same memory / supabase toggle as the other repositories.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryBankLayoutRepository()
+    return SupabaseBankLayoutRepository()
+
+
+@lru_cache(maxsize=1)
 def get_scoring_disagreement_repository() -> ScoringDisagreementRepository:
     """Process-wide ScoringDisagreementRepository (U4 — migration 037+038).
 
@@ -319,6 +338,7 @@ def reset_dependency_caches() -> None:
     get_scoring_disagreement_repository.cache_clear()
     get_submission_repository.cache_clear()
     get_funder_note_submission_repository.cache_clear()
+    get_bank_layout_repository.cache_clear()
     get_schema_migrations_reader.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
@@ -327,6 +347,7 @@ def reset_dependency_caches() -> None:
 
 __all__ = [
     "get_audit",
+    "get_bank_layout_repository",
     "get_close_client",
     "get_deal_repository",
     "get_decision_snapshot",
