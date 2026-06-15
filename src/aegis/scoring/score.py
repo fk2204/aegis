@@ -31,6 +31,7 @@ from aegis.money import safe_divide
 from aegis.parser.pipeline import HARD_DECLINE_THRESHOLD
 from aegis.scoring.models import PaperGrade, ScoreInput, ScoreResult
 from aegis.scoring.ofac import OFACClient
+from aegis.scoring_v2.seasonal import is_seasonal_trough
 from aegis.scoring_v2.track_a import IntegrityVerdict
 from aegis.scoring_v2.track_b import BusinessRiskBand
 
@@ -43,16 +44,16 @@ from aegis.scoring_v2.track_b import BusinessRiskBand
 # still fires; the shadow flag tells the operator "this would have been
 # recategorized as seasonal under a future config flip."
 _SEASONAL_NAICS_PREFIXES: Final[tuple[str, ...]] = (
-    "1113",   # Fruit and tree-nut farming (strongly seasonal harvest)
-    "1133",   # Logging (seasonal access / weather constraints)
-    "4413",   # Auto parts / tire dealers (tire + maintenance seasonality)
-    "451",    # Sporting goods / hobby / book / music stores (holiday seasonal)
+    "1113",  # Fruit and tree-nut farming (strongly seasonal harvest)
+    "1133",  # Logging (seasonal access / weather constraints)
+    "4413",  # Auto parts / tire dealers (tire + maintenance seasonality)
+    "451",  # Sporting goods / hobby / book / music stores (holiday seasonal)
     "45112",  # Sporting goods stores (explicit overlap with 451)
-    "488210", # Support activities for rail transportation — snow removal often coded here
+    "488210",  # Support activities for rail transportation — snow removal often coded here
     "56172",  # Janitorial — services to buildings (seasonal yard work overlap)
     "56173",  # Landscaping services (canonical seasonal industry)
-    "7223",   # Special food services — event-seasonal catering
-    "7225",   # Restaurants and other eating places (seasonal patterns common)
+    "7223",  # Special food services — event-seasonal catering
+    "7225",  # Restaurants and other eating places (seasonal patterns common)
     "71390",  # Other amusement and recreation industries
     "71391",  # Golf courses and country clubs
 )
@@ -282,9 +283,7 @@ def _check_hard_declines(
         reasons.append(f"stacking_exceeds_limit: {deal.mca_positions} active positions")
 
     if deal.debt_to_revenue > MAX_DEBT_TO_REVENUE:
-        reasons.append(
-            f"debt_to_revenue_exceeds_40pct: {(deal.debt_to_revenue * 100):.0f}%"
-        )
+        reasons.append(f"debt_to_revenue_exceeds_40pct: {(deal.debt_to_revenue * 100):.0f}%")
 
     # Audit B2 Step 2 — under ``track_abc`` the live decline path moves
     # from fraud_score to Track A + Track B. The legacy threshold rule is
@@ -302,13 +301,9 @@ def _check_hard_declines(
         # elsewhere; the scorer just annotates so the dossier shows it.
         if track_a_verdict is not None:
             if track_a_verdict.verdict == "fail":
-                reasons.append(
-                    f"track_a_integrity_fail:branch={track_a_verdict.branch}"
-                )
+                reasons.append(f"track_a_integrity_fail:branch={track_a_verdict.branch}")
             elif track_a_verdict.verdict == "review":
-                shadow_flags.append(
-                    f"track_a_integrity_review:branch={track_a_verdict.branch}"
-                )
+                shadow_flags.append(f"track_a_integrity_review:branch={track_a_verdict.branch}")
         # Track B: business-risk band drives the secondary decline. Only
         # ``high`` is auto-decline (matches BAND_TO_ACTION's
         # ``review_decline_default``); ``elevated`` annotates so the
@@ -333,9 +328,7 @@ def _check_hard_declines(
         if eof_threshold == 1:
             # Default: legacy behavior. Scorer declines at 2+, pipeline
             # routes 2 → review. Mismatch remains until the flip.
-            shadow_flags.append(
-                "eof_policy_mismatch:scorer_declines_at_2_pipeline_routes_review"
-            )
+            shadow_flags.append("eof_policy_mismatch:scorer_declines_at_2_pipeline_routes_review")
         else:
             # Lifted: scorer aligns with pipeline policy. Flag confirms
             # the lift so the operator sees which threshold is active.
@@ -564,12 +557,9 @@ def _soft_score(
         recommended_holdback_pct=holdback,
         estimated_payback_days=payback_days,
     )
-    if apr is None and _apr_inputs_present(
-        suggested_max, factor, holdback, payback_days
-    ):
+    if apr is None and _apr_inputs_present(suggested_max, factor, holdback, payback_days):
         soft_concerns.append(
-            "apr_not_computable: optimizer could not bracket a root for "
-            "the recommended terms"
+            "apr_not_computable: optimizer could not bracket a root for the recommended terms"
         )
 
     return ScoreResult(
@@ -603,12 +593,7 @@ def _apr_inputs_present(
     a zero advance. Only fire the soft_concern when APR *should* have
     been computable but wasn't.
     """
-    return (
-        suggested_max > 0
-        and factor > Decimal("1.0")
-        and holdback > 0
-        and payback_days > 0
-    )
+    return suggested_max > 0 and factor > Decimal("1.0") and holdback > 0 and payback_days > 0
 
 
 def _compute_deal_apr(
@@ -637,12 +622,8 @@ def _compute_deal_apr(
     ):
         return None
 
-    total_repayment = (
-        suggested_max_advance * recommended_factor_rate
-    ).quantize(Decimal("0.01"))
-    daily_payment = (
-        total_repayment / Decimal(estimated_payback_days)
-    ).quantize(Decimal("0.01"))
+    total_repayment = (suggested_max_advance * recommended_factor_rate).quantize(Decimal("0.01"))
+    daily_payment = (total_repayment / Decimal(estimated_payback_days)).quantize(Decimal("0.01"))
     if daily_payment <= 0:
         return None
 
@@ -917,9 +898,7 @@ def _score_counterparty_concentration(deal: ScoreInput, b: _Builder) -> None:
     top5_exp = deal.top_5_expense_share_pct
     if top5_exp is not None and top5_exp >= 80:
         # Concentrated expense side is informational; a small soft note.
-        b.soft_concerns.append(
-            f"top_5_expense_concentration_{top5_exp}pct"
-        )
+        b.soft_concerns.append(f"top_5_expense_concentration_{top5_exp}pct")
 
 
 def _score_payroll_present(deal: ScoreInput, b: _Builder) -> None:
@@ -972,7 +951,16 @@ def _score_ai_generated(deal: ScoreInput, b: _Builder) -> None:
 
 
 def _score_revenue_trend(deal: ScoreInput, b: _Builder) -> None:
-    """Last-3-month revenue trajectory. Declining 15%+ or growing 10%+."""
+    """Last-3-month revenue trajectory. Declining 15%+ or growing 10%+.
+
+    Sprint 5 Track B — when the dip is explainable by the merchant's
+    industry-typical low season (restaurants in January,
+    construction in February, landscaping in winter, etc.), the
+    ``-15 revenue_declining_15pct+`` penalty is suppressed and a
+    zero-weight ``seasonal_trough_expected`` annotation is recorded
+    in its place. See :func:`aegis.scoring_v2.seasonal.is_seasonal_trough`
+    for the detector. The growth branch is unaffected.
+    """
     # cite: docs/AEGIS_MASTER_PLAN.md §5.1 — "Revenue trend: Slope of
     # monthly true revenue. Up: factor improves 0.05-0.10. Down: tier
     # downgrade." 15% decline / 10% growth chosen as conservative
@@ -987,7 +975,17 @@ def _score_revenue_trend(deal: ScoreInput, b: _Builder) -> None:
         return
     trend = (last - first) / first
     if trend <= Decimal("-0.15"):
-        b.add(-15, "revenue_declining_15pct+")
+        if is_seasonal_trough(
+            industry_naics=deal.industry_naics,
+            industry_choice=deal.industry_choice,
+            month_buckets=list(deal.monthly_breakdown),
+        ):
+            # Seasonal trough explains the dip. Zero-weight annotation
+            # so the dossier surface still shows the seasonal observation
+            # without applying the false-positive -15.
+            b.add(0, "seasonal_trough_expected")
+        else:
+            b.add(-15, "revenue_declining_15pct+")
     elif trend >= Decimal("0.10"):
         b.add(8, "revenue_growing_10pct+")
 
@@ -1155,9 +1153,7 @@ def compute_paper_grade(deal: ScoreInput) -> tuple[PaperGrade, list[str]]:
         reasons_a.append("has_mca_position")
         a_ok = False
     if credit is None or credit >= _PAPER_GRADE_A_CREDIT:
-        reasons_a.append(
-            "credit_650+" if credit is not None else "credit_unknown_pass"
-        )
+        reasons_a.append("credit_650+" if credit is not None else "credit_unknown_pass")
     else:
         reasons_a.append("credit_below_650")
         a_ok = False
