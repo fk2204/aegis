@@ -1,28 +1,46 @@
-"""Track A historical lookback — confirm Track A would catch every
-legacy ``fraud_score_critical`` hard-decline.
+"""Track A + Track B historical lookback — confirm the track_abc
+engine would catch every legacy ``fraud_score_critical`` hard-decline.
 
 Plan 4.1 (the first Step-2 cutover gate). DEFAULT MODE: read-only.
 Zero writes. Walks every document in the corpus whose ``fraud_score``
 meets the legacy hard-decline threshold (default 65, the
 ``aegis.parser.pipeline.HARD_DECLINE_THRESHOLD`` value), reconstructs
 the per-document integrity signals from already-persisted data
-(``fraud_score_breakdown["metadata"]``, ``metadata_flags``, and the
-``[MATH]`` entries on ``all_flags``), and runs Track A's
-``compute_integrity_verdict``.
+(``fraud_score_breakdown["metadata_score"]``, ``metadata_flags``, and
+the ``[MATH]`` entries on ``all_flags``), runs Track A's
+``compute_integrity_verdict``, and reconstructs Track B's band from
+``fraud_score_breakdown["patterns_score"]`` + ``[PATTERN]`` flag
+count.
 
 Reports each document as a CSV row to stdout:
 
   merchant_id, document_id, original_fraud_score,
   metadata_score, math_score, legacy_would_decline,
-  track_a_verdict, track_a_branch, miss
+  track_a_verdict, track_a_branch, track_b_band, miss
 
-A row is a **miss** when the legacy rule would have declined
-(``fraud_score >= threshold``) but Track A produced a non-``fail``
-verdict. Misses are the operator-triage items: each one is either
-(a) a genuine regression Track A doesn't catch, (b) a detector gap
+A row is a **miss** when ALL THREE conditions hold:
+
+  * legacy_would_decline (``fraud_score >= threshold``)
+  * Track A's verdict is NOT ``"fail"`` — i.e. integrity is clean / review
+  * Reconstructed Track B band is NOT ``"high"``
+
+Misses are the operator-triage items under the ``track_abc`` engine
+(both Track A AND Track B let the deal through): each one is either
+(a) a genuine regression neither track catches, (b) a detector gap
 worth patching, or (c) a corpus-shape artifact. The script does NOT
 categorise — that's the operator's call (see ``docs/REMAINING_WORK.md``
 Wave 4.1 gating conditions).
+
+Track B reconstruction discipline
+---------------------------------
+The lookback synthesises a Track B band from the document row alone
+— no transactions read, no Bedrock call. Thresholds mirror the
+legacy escalation rules at ``patterns_score >= 80`` (auto-bump above
+HARD_DECLINE_THRESHOLD) and the compound ``fraud_cluster_triangulated``
+rule at 4+ concurrent patterns. The reconstruction is coarse by
+design — decision-quality only for the ``high vs not`` gate, not for
+diagnostic Track B reporting. The dossier panel runs
+``compute_risk_band`` directly with full transaction context.
 
 Exit codes (mirror ``shadow_comparison_a_b_c_vs_fraud_score.py``):
   0 — no misses (Track A caught everything the legacy rule did).
@@ -59,6 +77,7 @@ from aegis.scoring_v2.track_a import (
     IntegrityVerdict,
     compute_integrity_verdict,
 )
+from aegis.scoring_v2.track_b.models import BandLevel
 from aegis.storage import DocumentRow, ParseStatus
 
 # Exit codes — keep aligned with the shadow-comparison script.
@@ -77,8 +96,20 @@ class LookbackRow:
     """One document's lookback result.
 
     ``is_miss`` is the gate the exit code reads. A miss = the legacy
-    rule declines but Track A would not. Both ``False`` flags ("legacy
-    didn't decline" or "Track A correctly fails") produce ``is_miss=False``.
+    rule declines AND Track A would not fail AND Track B's
+    reconstructed band is NOT ``high``. The Track B addition (2026-06-15)
+    closes the false-positive where a pattern-driven legacy decline
+    (e.g. preloan_spike + payroll_absent + customer_concentration)
+    had Track A correctly clean on document integrity but the
+    business-risk signal was already captured by Track B's high band.
+
+    ``track_b_band`` is reconstructed from
+    ``fraud_score_breakdown.patterns_score`` and the ``[PATTERN] …``
+    entries on the document row — no transactions read, no Bedrock
+    call. The reconstruction is intentionally lightweight and tracks
+    the legacy escalation thresholds rather than mirroring
+    ``compute_risk_band`` (which requires per-transaction context the
+    document row does not preserve).
     """
 
     merchant_id: str
@@ -89,6 +120,7 @@ class LookbackRow:
     legacy_would_decline: bool
     track_a_verdict: str
     track_a_branch: str
+    track_b_band: str
     is_miss: bool
 
 
@@ -124,6 +156,85 @@ def _read_score_component(breakdown: dict[str, int], name: str) -> int:
     return int(breakdown.get(f"{name}_score", breakdown.get(name, 0)))
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Track B reconstruction — lightweight, document-row only
+# ─────────────────────────────────────────────────────────────────────
+
+
+# patterns_score thresholds used by the legacy ``_fraud_score``
+# escalation rules (parser.pipeline._fraud_score lines 412-413). The
+# ``>= 80`` band is the line the legacy scorer treats as severe
+# enough to escalate above HARD_DECLINE_THRESHOLD on patterns alone;
+# we read that as Track B ``high``. Below is interpolated to lighter
+# bands so the reconstruction degrades gracefully on weaker signals.
+_TRACK_B_HIGH_PATTERNS_SCORE: Final[int] = 80
+_TRACK_B_ELEVATED_PATTERNS_SCORE: Final[int] = 50
+_TRACK_B_MODERATE_PATTERNS_SCORE: Final[int] = 25
+
+# When the per-component ``patterns_score`` is missing or low but the
+# document carries many distinct pattern signals, that fan-out is
+# itself a high-risk signal (mirrors the parser's
+# ``fraud_cluster_triangulated`` compound rule which fires at 4+
+# concurrent patterns). The lookback's reconstruction reflects that
+# without needing the compound flag to be present.
+_TRACK_B_HIGH_PATTERN_COUNT: Final[int] = 4
+_TRACK_B_ELEVATED_PATTERN_COUNT: Final[int] = 2
+
+
+def _count_pattern_flags(all_flags: list[str]) -> int:
+    """Count entries on ``documents.all_flags`` prefixed with
+    ``[PATTERN]``. The parser pipeline writes one such row per
+    detector hit (preloan_spike, customer_concentration, etc.)."""
+    return sum(1 for f in all_flags if isinstance(f, str) and f.startswith("[PATTERN]"))
+
+
+def _reconstruct_track_b_band(doc: DocumentRow) -> BandLevel:
+    """Approximate Track B's band from a persisted ``DocumentRow``.
+
+    Reconstruction uses ONLY ``doc.fraud_score_breakdown`` and
+    ``doc.all_flags`` — no transactions, no counterparty
+    classifications, no Bedrock. The real ``compute_risk_band``
+    needs all three and is therefore unsuitable for a historical
+    lookback. The lookback's question is narrower: "would Track B
+    have caught what the legacy rule caught, on the documents where
+    Track A says clean?"
+
+    Output band rules:
+
+    * ``"high"``     — ``patterns_score >= 80`` OR pattern_count >= 4.
+                       Mirrors the legacy escalation rule at
+                       ``patterns_score >= 80`` (auto-bump above
+                       ``HARD_DECLINE_THRESHOLD``) and the compound
+                       ``fraud_cluster_triangulated`` rule at 4+
+                       concurrent patterns.
+    * ``"elevated"`` — ``patterns_score >= 50`` OR pattern_count >= 2.
+    * ``"moderate"`` — ``patterns_score >= 25`` OR pattern_count == 1.
+    * ``"low"``      — anything below.
+
+    The thresholds are coarse by design. The reconstruction is
+    decision-quality only for the ``is_miss`` gate (high vs. not),
+    not for diagnostic Track B reporting. For real Track B output
+    the dossier panel calls ``compute_risk_band`` directly.
+    """
+    breakdown = doc.fraud_score_breakdown or {}
+    patterns_score = _read_score_component(breakdown, "patterns")
+    pattern_count = _count_pattern_flags(doc.all_flags or [])
+
+    if patterns_score >= _TRACK_B_HIGH_PATTERNS_SCORE:
+        return "high"
+    if pattern_count >= _TRACK_B_HIGH_PATTERN_COUNT:
+        return "high"
+    if patterns_score >= _TRACK_B_ELEVATED_PATTERNS_SCORE:
+        return "elevated"
+    if pattern_count >= _TRACK_B_ELEVATED_PATTERN_COUNT:
+        return "elevated"
+    if patterns_score >= _TRACK_B_MODERATE_PATTERNS_SCORE:
+        return "moderate"
+    if pattern_count >= 1:
+        return "moderate"
+    return "low"
+
+
 def _integrity_signals_from_document(doc: DocumentRow) -> DocumentIntegritySignals:
     """Reconstruct Track A's input shape from a persisted DocumentRow."""
     breakdown = doc.fraud_score_breakdown or {}
@@ -145,9 +256,18 @@ def evaluate_document(doc: DocumentRow, *, threshold: int = HARD_DECLINE_THRESHO
     ``legacy_would_decline`` mirrors the parser pipeline's gate:
     ``fraud_score >= HARD_DECLINE_THRESHOLD``.
 
-    ``is_miss`` is ``True`` only when the legacy rule declines AND
-    Track A's verdict is NOT ``fail`` — i.e. Step 2 would let the
-    deal through where the legacy rule wouldn't.
+    ``is_miss`` is ``True`` only when ALL THREE conditions hold:
+
+      * legacy_would_decline
+      * Track A's verdict is NOT ``"fail"``
+      * Reconstructed Track B band is NOT ``"high"``
+
+    The Track B clause closes the pattern-driven false positive — a
+    deal whose legacy fraud_score escalated above the threshold from
+    pattern signals (preloan_spike, customer_concentration, etc.)
+    is correctly caught by Track B's ``high`` band under the
+    track_abc engine, even though Track A says ``clean`` on
+    document integrity.
     """
     breakdown = doc.fraud_score_breakdown or {}
     metadata_score = _read_score_component(breakdown, "metadata")
@@ -155,8 +275,9 @@ def evaluate_document(doc: DocumentRow, *, threshold: int = HARD_DECLINE_THRESHO
     legacy_would_decline = (doc.fraud_score or 0) >= threshold
 
     verdict: IntegrityVerdict = compute_integrity_verdict(_integrity_signals_from_document(doc))
+    track_b_band: BandLevel = _reconstruct_track_b_band(doc)
 
-    is_miss = legacy_would_decline and verdict.verdict != "fail"
+    is_miss = legacy_would_decline and verdict.verdict != "fail" and track_b_band != "high"
 
     return LookbackRow(
         merchant_id=str(doc.merchant_id) if doc.merchant_id else "",
@@ -167,6 +288,7 @@ def evaluate_document(doc: DocumentRow, *, threshold: int = HARD_DECLINE_THRESHO
         legacy_would_decline=legacy_would_decline,
         track_a_verdict=verdict.verdict,
         track_a_branch=verdict.branch,
+        track_b_band=track_b_band,
         is_miss=is_miss,
     )
 
@@ -242,6 +364,7 @@ _CSV_HEADER: Final[tuple[str, ...]] = (
     "legacy_would_decline",
     "track_a_verdict",
     "track_a_branch",
+    "track_b_band",
     "miss",
 )
 
@@ -265,6 +388,7 @@ def write_csv(rows: list[LookbackRow], stream: object) -> None:
                 "true" if r.legacy_would_decline else "false",
                 r.track_a_verdict,
                 r.track_a_branch,
+                r.track_b_band,
                 "true" if r.is_miss else "false",
             )
         )

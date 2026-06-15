@@ -139,6 +139,180 @@ def test_read_score_component_zero_when_missing() -> None:
 
 
 # ----------------------------------------------------------------------
+# _reconstruct_track_b_band — patterns_score / pattern-count heuristic
+# ----------------------------------------------------------------------
+
+
+def _doc_with_patterns(
+    *,
+    patterns_score: int = 0,
+    pattern_flags: tuple[str, ...] = (),
+    fraud_score: int = 70,
+) -> DocumentRow:
+    """DocumentRow shaped for the Track B reconstruction tests.
+
+    ``pattern_flags`` are the raw ``[PATTERN] …`` entries persisted on
+    ``documents.all_flags``; the count + the patterns_score are the
+    two inputs the reconstructor reads.
+    """
+    return DocumentRow(
+        id=uuid4(),
+        file_hash=f"sha256-{uuid4().hex}",
+        byte_size=1024,
+        original_filename="stmt.pdf",
+        merchant_id=uuid4(),
+        parse_status="manual_review",
+        fraud_score=fraud_score,
+        fraud_score_breakdown={
+            "metadata_score": 0,
+            "math_score": 0,
+            "patterns_score": patterns_score,
+        },
+        all_flags=list(pattern_flags),
+        metadata_flags=[],
+        uploaded_at=datetime.now(UTC),
+    )
+
+
+def test_track_b_high_from_patterns_score_at_threshold() -> None:
+    """patterns_score >= 80 maps to ``high`` — the legacy escalation
+    rule's boundary for auto-bumping above HARD_DECLINE_THRESHOLD."""
+    assert lookback._reconstruct_track_b_band(_doc_with_patterns(patterns_score=80)) == "high"
+
+
+def test_track_b_high_from_pattern_count_at_threshold() -> None:
+    """4+ concurrent pattern signals = high band even when
+    patterns_score is low (mirrors fraud_cluster_triangulated)."""
+    band = lookback._reconstruct_track_b_band(
+        _doc_with_patterns(
+            patterns_score=10,
+            pattern_flags=(
+                "[PATTERN] preloan_spike: x",
+                "[PATTERN] unreconciled_internal_transfer: y",
+                "[PATTERN] customer_concentration: z",
+                "[PATTERN] payroll_absent: w",
+            ),
+        )
+    )
+    assert band == "high"
+
+
+def test_track_b_high_from_vu_development_shape() -> None:
+    """Real-world regression: VU DEVELOPMENT (doc 49c7d058) had
+    patterns_score=100 + 4 pattern flags. Reconstruction must land
+    at ``high`` so the cutover gate doesn't flag it as a miss."""
+    band = lookback._reconstruct_track_b_band(
+        _doc_with_patterns(
+            patterns_score=100,
+            pattern_flags=(
+                "[PATTERN] preloan_spike: 7d spike $349k vs $5.8k avg",
+                "[PATTERN] unreconciled_internal_transfer: 6 legs",
+                "[PATTERN] customer_concentration: 61%",
+                "[PATTERN] payroll_absent: no payroll over 28d",
+            ),
+        )
+    )
+    assert band == "high"
+
+
+def test_track_b_elevated_band() -> None:
+    """50 <= patterns_score < 80 maps to ``elevated``."""
+    assert lookback._reconstruct_track_b_band(_doc_with_patterns(patterns_score=50)) == "elevated"
+
+
+def test_track_b_elevated_from_pattern_count_2() -> None:
+    """Two patterns with low score still elevate."""
+    band = lookback._reconstruct_track_b_band(
+        _doc_with_patterns(
+            patterns_score=10,
+            pattern_flags=(
+                "[PATTERN] preloan_spike: a",
+                "[PATTERN] customer_concentration: b",
+            ),
+        )
+    )
+    assert band == "elevated"
+
+
+def test_track_b_moderate_band() -> None:
+    """25 <= patterns_score < 50 maps to ``moderate``."""
+    assert lookback._reconstruct_track_b_band(_doc_with_patterns(patterns_score=25)) == "moderate"
+
+
+def test_track_b_low_band_when_clean() -> None:
+    """No patterns + zero patterns_score = ``low``."""
+    assert lookback._reconstruct_track_b_band(_doc_with_patterns(patterns_score=0)) == "low"
+
+
+def test_track_b_ignores_non_pattern_flags() -> None:
+    """Only [PATTERN] entries on all_flags count toward the count
+    threshold; [META] / [MATH] / [WARN] are not pattern signals."""
+    band = lookback._reconstruct_track_b_band(
+        _doc_with_patterns(
+            patterns_score=10,
+            pattern_flags=(
+                "[META] editor_detected: iText",
+                "[MATH] reconciliation_failed: x",
+                "[WARN] adb_coverage_thin: y",
+                "[PATTERN] customer_concentration: z",
+            ),
+        )
+    )
+    assert band == "moderate"
+
+
+# ----------------------------------------------------------------------
+# evaluate_document — Track B closes the pattern-driven false positive
+# ----------------------------------------------------------------------
+
+
+def test_legacy_decline_track_a_clean_track_b_high_is_not_a_miss() -> None:
+    """The VU DEVELOPMENT case: pattern-driven legacy decline,
+    integrity clean, Track B high. Under the extended is_miss rule,
+    the deal is correctly caught by Track B and is NOT a miss."""
+    doc = _doc_with_patterns(
+        fraud_score=70,
+        patterns_score=100,
+        pattern_flags=(
+            "[PATTERN] preloan_spike: a",
+            "[PATTERN] unreconciled_internal_transfer: b",
+            "[PATTERN] customer_concentration: c",
+            "[PATTERN] payroll_absent: d",
+        ),
+    )
+    row = lookback.evaluate_document(doc)
+    assert row.legacy_would_decline is True
+    assert row.track_a_verdict == "clean"
+    assert row.track_b_band == "high"
+    assert row.is_miss is False
+
+
+def test_legacy_decline_track_a_clean_track_b_moderate_is_a_miss() -> None:
+    """When neither track catches a legacy decline, it's a genuine
+    regression. is_miss must fire so the cutover gate FAILs."""
+    doc = _doc_with_patterns(
+        fraud_score=66,
+        patterns_score=10,
+        pattern_flags=("[PATTERN] customer_concentration: a",),
+    )
+    row = lookback.evaluate_document(doc)
+    assert row.legacy_would_decline is True
+    assert row.track_a_verdict == "clean"
+    assert row.track_b_band == "moderate"
+    assert row.is_miss is True
+
+
+def test_legacy_decline_track_a_fail_track_b_low_is_not_a_miss() -> None:
+    """Existing case unchanged: Track A failing is the integrity-side
+    gate; no Track B contribution needed to clear is_miss."""
+    doc = _doc(fraud_score=80, metadata_score=70)
+    row = lookback.evaluate_document(doc)
+    assert row.legacy_would_decline is True
+    assert row.track_a_verdict == "fail"
+    assert row.is_miss is False
+
+
+# ----------------------------------------------------------------------
 # evaluate_document — the four corner cases
 # ----------------------------------------------------------------------
 
@@ -345,7 +519,8 @@ def test_cli_default_skip_orphans_is_false(monkeypatch: pytest.MonkeyPatch) -> N
 def test_csv_header_is_locked() -> None:
     """The operator's downstream tooling (grep, awk, spreadsheet
     imports) keys off the column names — lock them so a future tweak
-    surfaces here, not at the wrong moment."""
+    surfaces here, not at the wrong moment. Track B column added
+    2026-06-15 alongside the is_miss extension."""
     assert lookback._CSV_HEADER == (
         "merchant_id",
         "document_id",
@@ -355,6 +530,7 @@ def test_csv_header_is_locked() -> None:
         "legacy_would_decline",
         "track_a_verdict",
         "track_a_branch",
+        "track_b_band",
         "miss",
     )
 
