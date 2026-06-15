@@ -187,8 +187,17 @@
     <tr><td class="k">Days negative</td><td class="v">{{ analysis.days_negative }}</td><td class="q">distinct dates where running balance &lt; 0</td></tr>
     <tr><td class="k">MCA positions</td><td class="v">{{ analysis.mca_positions }}</td><td class="q">distinct funder cadences detected</td></tr>
     <tr><td class="k">MCA daily total</td><td class="v">{{ analysis.mca_daily_total | whole_money }}</td><td class="q">sum of detected daily MCA debits</td></tr>
+    {% if mca_stack and mca_stack.active_mca_count > 0 %}
+    <tr><td class="k">Active MCA counterparties</td><td class="v">{{ mca_stack.active_mca_count }}</td><td class="q">distinct funder labels in the period</td></tr>
+    <tr><td class="k">MCA monthly load</td><td class="v">{{ mca_stack.mca_monthly_load | whole_money }}</td><td class="q">daily × 22 business days, all counterparties</td></tr>
+    <tr><td class="k">Combined holdback %</td><td class="v">{% if mca_stack.estimated_combined_holdback_pct is none %}—{% else %}{{ mca_stack.estimated_combined_holdback_pct }}%{% endif %}</td><td class="q">monthly load / monthly revenue</td></tr>
+    <tr><td class="k">Largest single MCA</td><td class="v">{{ mca_stack.largest_single_mca_monthly | whole_money }}</td><td class="q">{{ mca_stack.largest_single_mca_lender or '—' }} (monthly)</td></tr>
+    {% endif %}
     <tr><td class="k">Debt to revenue</td><td class="v">{{ analysis.debt_to_revenue }}</td><td class="q">monthly MCA burden / monthly revenue</td></tr>
   </table>
+  {% if mca_stack and mca_stack.shadow_triggers %}
+  <p class="meta"><strong>Shadow trigger{{ '' if mca_stack.shadow_triggers|length == 1 else 's' }}:</strong> {{ mca_stack.shadow_triggers | join(' · ') }} — annotation only; live decline still governed by debt_to_revenue &gt; 40% / mca_positions &gt; 2.</p>
+  {% endif %}
 </section>
 {% endif %}
 

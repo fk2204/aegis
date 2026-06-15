@@ -91,6 +91,7 @@ from aegis.scoring.multi_month import (
 from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
 from aegis.scoring.submission_package import build_submission_files
+from aegis.scoring_v2.mca_stack import aggregate_mca_stack
 from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
 from aegis.storage import (
     AnalysisRow,
@@ -141,9 +142,7 @@ async def list_merchants(
     request: Request,
     repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
 ) -> HTMLResponse:
-    return templates.TemplateResponse(
-        request, "merchants.html.j2", {"merchants": repo.list_all()}
-    )
+    return templates.TemplateResponse(request, "merchants.html.j2", {"merchants": repo.list_all()})
 
 
 @router.get("/merchants/new", response_class=HTMLResponse)
@@ -406,17 +405,14 @@ async def merchant_match(
     preselect_banner: dict[str, Any] | None = None
     if preselect_funder is not None:
         target_id = str(preselect_funder)
-        matched_card = next(
-            (c for c in cards if c["funder_id"] == target_id), None
-        )
+        matched_card = next((c for c in cards if c["funder_id"] == target_id), None)
         if matched_card is None:
             try:
                 f = funder_repo.get(preselect_funder)
                 preselect_banner = {
                     "name": f.name,
                     "reasons": [
-                        "This funder is not active or has no matchable "
-                        "criteria for this merchant."
+                        "This funder is not active or has no matchable criteria for this merchant."
                     ],
                 }
             except FunderNotFoundError:
@@ -441,9 +437,7 @@ async def merchant_match(
         "months_used": len(items),
         "period_start": score_input.statement_period_start,
         "period_end": score_input.statement_period_end,
-        "any_manual_review": any(
-            d.parse_status == "manual_review" for d, _ in items
-        ),
+        "any_manual_review": any(d.parse_status == "manual_review" for d, _ in items),
     }
 
     funder_responses = _latest_funder_responses(audit, merchant_id)
@@ -477,9 +471,7 @@ async def merchant_submit_to_funders(
     funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     audit: Annotated[AuditLog, Depends(get_audit)],
-    submissions_repo: Annotated[
-        SubmissionRepository, Depends(get_submission_repository)
-    ],
+    submissions_repo: Annotated[SubmissionRepository, Depends(get_submission_repository)],
     funder_ids: Annotated[list[str], Form()],
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> Response:
@@ -493,9 +485,7 @@ async def merchant_submit_to_funders(
     try:
         merchant = merchants.get(merchant_id)
     except MerchantNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     requested_ids = _parse_funder_ids(funder_ids)
     if not requested_ids:
@@ -600,9 +590,7 @@ async def merchant_submit_to_funders(
             "score": score_result.score,
             "attachment_sha256": _sha256_hex(download_bytes),
             "attachment_filename": download_filename,
-            "dossier_pdf_sha256": (
-                _sha256_hex(dossier_pdf) if dossier_pdf is not None else None
-            ),
+            "dossier_pdf_sha256": (_sha256_hex(dossier_pdf) if dossier_pdf is not None else None),
             "dossier_pdf_filename": dossier_filename,
         },
     )
@@ -674,9 +662,7 @@ async def merchant_submit_to_funders(
         merchants.upsert(
             merchant.model_copy(
                 update={
-                    "submitted_to_funder_ids": [
-                        UUID(sub.funder_id) for sub in files
-                    ],
+                    "submitted_to_funder_ids": [UUID(sub.funder_id) for sub in files],
                     "last_submitted_at": datetime.now(UTC),
                 }
             )
@@ -700,9 +686,7 @@ async def merchant_submit_to_funders(
     return Response(
         content=download_bytes,
         media_type=download_media,
-        headers={
-            "content-disposition": f'attachment; filename="{download_filename}"'
-        },
+        headers={"content-disposition": f'attachment; filename="{download_filename}"'},
     )
 
 
@@ -733,9 +717,7 @@ async def merchant_funder_response(
     try:
         merchant = merchants.get(merchant_id)
     except MerchantNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     rs = response_status.strip().lower()
     if rs not in _FUNDER_RESPONSE_STATUSES:
@@ -755,18 +737,14 @@ async def merchant_funder_response(
     try:
         funder = funder_repo.get(funder_uuid)
     except FunderNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     try:
         amount = _decimal_or_none(offered_amount)
         factor = _decimal_or_none(offered_factor)
         term = _int_or_none(offered_term_days)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     audit.record(
         actor="dashboard",
@@ -786,9 +764,7 @@ async def merchant_funder_response(
     )
 
     # Redirect back to the match panel so the operator sees the row land.
-    return RedirectResponse(
-        url=f"/ui/merchants/{merchant.id}/match", status_code=303
-    )
+    return RedirectResponse(url=f"/ui/merchants/{merchant.id}/match", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -830,16 +806,13 @@ async def merchant_close_rescan(
     try:
         merchant = merchants.get(merchant_id)
     except MerchantNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     if merchant.close_lead_id is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
-                f"merchant {merchant_id} has no close_lead_id; rescan "
-                "requires a linked Close Lead"
+                f"merchant {merchant_id} has no close_lead_id; rescan requires a linked Close Lead"
             ),
         )
 
@@ -865,9 +838,7 @@ async def merchant_close_rescan(
         },
     )
 
-    return RedirectResponse(
-        url=f"/ui/merchants/{merchant.id}", status_code=303
-    )
+    return RedirectResponse(url=f"/ui/merchants/{merchant.id}", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -893,9 +864,7 @@ def _close_orchestration_last_capped(history: list[dict[str, Any]]) -> bool:
     return False
 
 
-def _latest_funder_responses(
-    audit: AuditLog, merchant_id: UUID
-) -> dict[str, dict[str, Any]]:
+def _latest_funder_responses(audit: AuditLog, merchant_id: UUID) -> dict[str, dict[str, Any]]:
     """Pull latest ``deal.funder_response`` audit row per funder_id.
 
     Keyed by funder_id (string UUID). Empty dict if none recorded yet.
@@ -942,9 +911,7 @@ def _maybe_render_dossier_pdf(
         import weasyprint
 
         context = _build_pdf_dossier_context(merchant, docs, ofac)
-        html = templates.get_template("merchant_detail_dossier_pdf.html.j2").render(
-            context
-        )
+        html = templates.get_template("merchant_detail_dossier_pdf.html.j2").render(context)
         pdf_bytes = cast(bytes, weasyprint.HTML(string=html).write_pdf())
         filename = f"{slugify(merchant.business_name)}_dossier.pdf"
         return pdf_bytes, filename
@@ -978,9 +945,7 @@ def _parse_funder_ids(values: list[str]) -> list[UUID]:
     return out
 
 
-_SHADOW_FLAG_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\[(?:SHADOW|WARN)\]\s*"
-)
+_SHADOW_FLAG_PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^\[(?:SHADOW|WARN)\]\s*")
 
 
 def _collect_shadow_flags_for_dossier(
@@ -1195,6 +1160,7 @@ async def merchant_detail(
 
     score_result = None
     stacking = None
+    mca_stack = None
     score_window = None
     bundle_summaries: list[dict[str, Any]] = []
     statement_coverage: dict[str, Any] | None = None
@@ -1204,29 +1170,19 @@ async def merchant_detail(
     # and pull pre-spike deposits for the comparison reference.
     latest_transactions: list[Any] = []
     soft_signals = (
-        parse_soft_signal_flags(list(latest_doc.all_flags))
-        if latest_doc is not None
-        else None
+        parse_soft_signal_flags(list(latest_doc.all_flags)) if latest_doc is not None else None
     )
     # Held for the post-template ``has_concentration_pattern`` check so
     # the suppression doesn't re-walk the AnalysisRow cache.
     pattern_analysis_for_view: Any = None
     if latest_doc is not None and latest_analysis is not None:
-        all_items = _collect_analyzed_for_merchant(
-            docs, merchant_id, window=999, bundle=None
-        )
+        all_items = _collect_analyzed_for_merchant(docs, merchant_id, window=999, bundle=None)
         bundle_options = _bundle_keys_for_merchant(all_items)
-        if selected_bundle is not None and selected_bundle not in {
-            k for k, _ in bundle_options
-        }:
+        if selected_bundle is not None and selected_bundle not in {k for k, _ in bundle_options}:
             selected_bundle = None
-        items = _collect_analyzed_for_merchant(
-            docs, merchant_id, bundle=selected_bundle
-        )
+        items = _collect_analyzed_for_merchant(docs, merchant_id, bundle=selected_bundle)
         active_bundle = (
-            selected_bundle
-            if selected_bundle is not None
-            else _select_default_bundle(all_items)
+            selected_bundle if selected_bundle is not None else _select_default_bundle(all_items)
         )
         bundle_summaries = _build_bundle_summaries(bundle_options, active_bundle)
         # Pattern analysis is sourced from the AnalysisRow cache
@@ -1237,9 +1193,12 @@ async def merchant_detail(
         # (master plan §9).
         latest_transactions = docs.list_transactions(latest_doc.id)
         stacking = build_stacking_card(latest_analysis, latest_transactions)
-        pattern_analysis = _dossier_pattern_analysis(
-            latest_analysis, latest_transactions
+        mca_stack = aggregate_mca_stack(
+            transactions=latest_transactions,
+            monthly_revenue=latest_analysis.monthly_revenue,
+            period_days=latest_analysis.statement_days,
         )
+        pattern_analysis = _dossier_pattern_analysis(latest_analysis, latest_transactions)
         pattern_analysis_for_view = pattern_analysis
         # Migration 034 — scoring requires a finalized merchant.
         # Skip the score panel + statement_coverage build for
@@ -1272,9 +1231,7 @@ async def merchant_detail(
                 "months_used": len(items),
                 "period_start": score_input.statement_period_start,
                 "period_end": score_input.statement_period_end,
-                "any_manual_review": any(
-                    d.parse_status == "manual_review" for d, _ in items
-                ),
+                "any_manual_review": any(d.parse_status == "manual_review" for d, _ in items),
             }
             statement_coverage = {
                 "bundle_bank_name": active_bundle[0] if active_bundle else None,
@@ -1292,9 +1249,7 @@ async def merchant_detail(
         # build on the non-finalized branch with ``hard_decline_reasons``
         # absent — the worker sees every pattern card until scoring
         # runs.
-        _hard_decline_reasons = (
-            list(score_result.hard_decline_reasons) if score_result else None
-        )
+        _hard_decline_reasons = list(score_result.hard_decline_reasons) if score_result else None
         pattern_cards = list(
             build_pattern_cards(
                 pattern_analysis,
@@ -1311,18 +1266,14 @@ async def merchant_detail(
     # ``is_finalized`` so OFAC fires only on real names. Non-finalized
     # merchants surface ``ofac_status='not_consulted'`` in the ribbon.
     if merchant.is_finalized:
-        ofac_status, ofac_match = _ofac_ribbon_status(
-            ofac, merchant.business_name
-        )
+        ofac_status, ofac_match = _ofac_ribbon_status(ofac, merchant.business_name)
     else:
         ofac_status, ofac_match = ("not_consulted", None)
 
     from aegis.api.routes.findings import _compute_trend
 
     trend = _compute_trend(all_docs, docs)
-    history = audit.list_for_subject(
-        subject_type="merchant", subject_id=merchant_id, limit=20
-    )
+    history = audit.list_for_subject(subject_type="merchant", subject_id=merchant_id, limit=20)
     close_last_orchestration_capped = _close_orchestration_last_capped(history)
 
     # Dossier is the only merchant-detail surface. The legacy v2 panel
@@ -1365,9 +1316,7 @@ async def merchant_detail(
     # counterparty share of revenue). When both fire the dossier used to
     # render two cards side-by-side; suppress the soft-signals one when
     # the richer pattern card is already on the page.
-    _has_concentration_pattern = pattern_has_customer_concentration(
-        pattern_analysis_for_view
-    )
+    _has_concentration_pattern = pattern_has_customer_concentration(pattern_analysis_for_view)
 
     # U18 — humanized shadow flags rolled up across the parser /
     # validation / scoring layers for the discreet "Operator review
@@ -1391,9 +1340,7 @@ async def merchant_detail(
     merchant_shadow_signal_rows = shadow_signals_repo.list_by_merchant(
         merchant_id=merchant_id, limit=50
     )
-    merchant_shadow_signals = _humanize_merchant_shadow_signals(
-        merchant_shadow_signal_rows
-    )
+    merchant_shadow_signals = _humanize_merchant_shadow_signals(merchant_shadow_signal_rows)
 
     # Build the unified A+B+C view alongside the existing score block.
     # Pure presentation; no decline-path impact. Step 2 of the scoring
@@ -1428,6 +1375,7 @@ async def merchant_detail(
             "score_window": score_window,
             "statement_coverage": statement_coverage,
             "stacking": stacking,
+            "mca_stack": mca_stack,
             "state_tier": state_tier_dossier,
             "ofac_status": ofac_dossier_status,
             "ofac_match": ofac_match,
@@ -1517,13 +1465,12 @@ def _build_pdf_dossier_context(
     score_window = None
     statement_coverage: dict[str, Any] | None = None
     stacking = None
+    mca_stack = None
     pattern_cards: list[Any] = []
     pattern_analysis_for_view: Any = None
 
     if latest_doc is not None and latest_analysis is not None:
-        all_items = _collect_analyzed_for_merchant(
-            docs, merchant.id, window=999, bundle=None
-        )
+        all_items = _collect_analyzed_for_merchant(docs, merchant.id, window=999, bundle=None)
         bundle_options = _bundle_keys_for_merchant(all_items)
         items = _collect_analyzed_for_merchant(docs, merchant.id, bundle=None)
         active_bundle = _select_default_bundle(all_items)
@@ -1535,9 +1482,12 @@ def _build_pdf_dossier_context(
         # scorer.
         latest_transactions = docs.list_transactions(latest_doc.id)
         stacking = build_stacking_card(latest_analysis, latest_transactions)
-        pattern_analysis = _dossier_pattern_analysis(
-            latest_analysis, latest_transactions
+        mca_stack = aggregate_mca_stack(
+            transactions=latest_transactions,
+            monthly_revenue=latest_analysis.monthly_revenue,
+            period_days=latest_analysis.statement_days,
         )
+        pattern_analysis = _dossier_pattern_analysis(latest_analysis, latest_transactions)
         pattern_analysis_for_view = pattern_analysis
 
         # Migration 034 — same is_finalized scoring gate as the
@@ -1566,9 +1516,7 @@ def _build_pdf_dossier_context(
                 "months_used": len(items),
                 "period_start": score_input.statement_period_start,
                 "period_end": score_input.statement_period_end,
-                "any_manual_review": any(
-                    d.parse_status == "manual_review" for d, _ in items
-                ),
+                "any_manual_review": any(d.parse_status == "manual_review" for d, _ in items),
             }
             statement_coverage = {
                 "bundle_bank_name": active_bundle[0] if active_bundle else None,
@@ -1584,9 +1532,7 @@ def _build_pdf_dossier_context(
         # (acceleration_clause_triggered / unauthorized_withdrawal_dispute)
         # don't render once as a hard-decline line + once as a soft
         # severity card. See ``build_pattern_cards.hard_decline_reasons``.
-        _hard_decline_reasons = (
-            list(score_result.hard_decline_reasons) if score_result else None
-        )
+        _hard_decline_reasons = list(score_result.hard_decline_reasons) if score_result else None
         pattern_cards = list(
             build_pattern_cards(
                 pattern_analysis,
@@ -1616,9 +1562,7 @@ def _build_pdf_dossier_context(
     # never screen a placeholder name. Non-finalized merchants render
     # with the "pending" ribbon (the existing "not_consulted" arm).
     if merchant.is_finalized:
-        ofac_status_raw, ofac_match = _ofac_ribbon_status(
-            ofac, merchant.business_name
-        )
+        ofac_status_raw, ofac_match = _ofac_ribbon_status(ofac, merchant.business_name)
     else:
         ofac_status_raw, ofac_match = ("not_consulted", None)
     if ofac_status_raw == "checked":
@@ -1639,10 +1583,9 @@ def _build_pdf_dossier_context(
         "score_window": score_window,
         "statement_coverage": statement_coverage,
         "stacking": stacking,
+        "mca_stack": mca_stack,
         "pattern_cards": pattern_cards,
-        "has_concentration_pattern": pattern_has_customer_concentration(
-            pattern_analysis_for_view
-        ),
+        "has_concentration_pattern": pattern_has_customer_concentration(pattern_analysis_for_view),
         "state_tier": state_tier_dossier,
         "ofac_status": ofac_dossier_status,
         "ofac_match": ofac_match,
@@ -1697,9 +1640,7 @@ def _find_latest_for_merchant(
     return latest, docs.get_analysis(latest.id)
 
 
-def _criteria_comparison(
-    funder: FunderRow, score_input: ScoreInput
-) -> list[dict[str, Any]]:
+def _criteria_comparison(funder: FunderRow, score_input: ScoreInput) -> list[dict[str, Any]]:
     """Side-by-side ``funder gate -> deal value`` rows for the merchant_match card.
 
     Only emits a row when the funder has set the gate (None means "no
@@ -1829,9 +1770,7 @@ def _criteria_comparison(
             unit="money",
         )
     if score_input.industry_naics and funder.excluded_industries:
-        excluded = any(
-            score_input.industry_naics.startswith(x) for x in funder.excluded_industries
-        )
+        excluded = any(score_input.industry_naics.startswith(x) for x in funder.excluded_industries)
         add(
             "Industry exclusion",
             ", ".join(funder.excluded_industries[:5])
@@ -1960,9 +1899,7 @@ def _state_tier(state: str | None) -> int | str:
     return int(reg.tier)
 
 
-def _ofac_ribbon_status(
-    ofac: OFACClient | None, business_name: str
-) -> tuple[str, bool | None]:
+def _ofac_ribbon_status(ofac: OFACClient | None, business_name: str) -> tuple[str, bool | None]:
     """Best-effort OFAC indicator for the ribbon.
 
     Returns a (status, match) tuple where status is one of:

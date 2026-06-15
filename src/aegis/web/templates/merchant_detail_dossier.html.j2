@@ -546,7 +546,39 @@
               <button hx-get="/ui/documents/{{ document.id }}/aggregate/mca_daily_total" hx-target="#drilldown" hx-swap="innerHTML">drill down ↓</button>
             </div>
           </div>
+          {# MCA stack chips — shadow-only decline triggers; live decline still
+             governed by debt_to_revenue > 40% and mca_positions > 2 per
+             score.py. Hidden when no MCA debits are detected. #}
+          {% if mca_stack and mca_stack.active_mca_count > 0 %}
+            <div class="{% if 'mca_stack_count_shadow' in (mca_stack.shadow_triggers | join(' ')) %}warn{% endif %}">
+              <span class="k">Active MCA Counterparties</span>
+              <span class="v">{{ mca_stack.active_mca_count }}</span>
+              <span class="qual">distinct funder labels in the period</span>
+            </div>
+            <div class="warn">
+              <span class="k">MCA Monthly Load</span>
+              <span class="v">{{ mca_stack.mca_monthly_load | whole_money }}</span>
+              <span class="qual">daily × 22 business days, all counterparties</span>
+            </div>
+            <div class="{% if 'mca_stack_overloaded_shadow' in (mca_stack.shadow_triggers | join(' ')) %}warn{% endif %}">
+              <span class="k">Combined Holdback %</span>
+              <span class="v">{% if mca_stack.estimated_combined_holdback_pct is none %}—{% else %}{{ mca_stack.estimated_combined_holdback_pct }}%{% endif %}</span>
+              <span class="qual">monthly load / monthly revenue</span>
+            </div>
+            <div>
+              <span class="k">Largest Single MCA</span>
+              <span class="v">{{ mca_stack.largest_single_mca_monthly | whole_money }}</span>
+              <span class="qual">{{ mca_stack.largest_single_mca_lender or '—' }} (monthly)</span>
+            </div>
+          {% endif %}
         </div>
+        {% if mca_stack and mca_stack.shadow_triggers %}
+          <p class="marginalia">
+            <strong>Shadow trigger{{ '' if mca_stack.shadow_triggers|length == 1 else 's' }}:</strong>
+            {{ mca_stack.shadow_triggers | join(' · ') }}
+            <em>(annotation only — live decline still governed by debt_to_revenue &gt; 40% / mca_positions &gt; 2)</em>
+          </p>
+        {% endif %}
 
         <div id="drilldown" class="drilldown-out"></div>
 
