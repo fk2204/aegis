@@ -93,6 +93,7 @@ from aegis.scoring.score import score_deal
 from aegis.scoring.submission_package import build_submission_files
 from aegis.scoring_v2.balance_health import compute_balance_health
 from aegis.scoring_v2.mca_stack import aggregate_mca_stack
+from aegis.scoring_v2.offer import compute_offer
 from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
 from aegis.storage import (
     AnalysisRow,
@@ -1163,6 +1164,7 @@ async def merchant_detail(
     stacking = None
     mca_stack = None
     balance_health = None
+    offer = None
     score_window = None
     bundle_summaries: list[dict[str, Any]] = []
     statement_coverage: dict[str, Any] | None = None
@@ -1203,6 +1205,17 @@ async def merchant_detail(
         balance_health = compute_balance_health(
             transactions=latest_transactions,
             period_days=latest_analysis.statement_days,
+        )
+        # ``holdback_capacity_monthly`` is operator-confirmed on the Close
+        # Opportunity ("Holdback Capacity" custom field). Until the
+        # Close→AEGIS sync of that field lands (commit-2 in this series),
+        # default to 25% of monthly revenue — the MCA-shop convention for
+        # the max sustainable debt-service load on a "clean" cashflow.
+        # Documented in src/aegis/scoring_v2/offer.py.
+        offer = compute_offer(
+            true_revenue_monthly=latest_analysis.monthly_revenue,
+            holdback_capacity_monthly=(latest_analysis.monthly_revenue * Decimal("0.25")),
+            mca_stack=mca_stack,
         )
         pattern_analysis = _dossier_pattern_analysis(latest_analysis, latest_transactions)
         pattern_analysis_for_view = pattern_analysis
@@ -1383,6 +1396,7 @@ async def merchant_detail(
             "stacking": stacking,
             "mca_stack": mca_stack,
             "balance_health": balance_health,
+            "offer": offer,
             "state_tier": state_tier_dossier,
             "ofac_status": ofac_dossier_status,
             "ofac_match": ofac_match,
@@ -1474,6 +1488,7 @@ def _build_pdf_dossier_context(
     stacking = None
     mca_stack = None
     balance_health = None
+    offer = None
     pattern_cards: list[Any] = []
     pattern_analysis_for_view: Any = None
 
@@ -1498,6 +1513,17 @@ def _build_pdf_dossier_context(
         balance_health = compute_balance_health(
             transactions=latest_transactions,
             period_days=latest_analysis.statement_days,
+        )
+        # ``holdback_capacity_monthly`` is operator-confirmed on the Close
+        # Opportunity ("Holdback Capacity" custom field). Until the
+        # Close→AEGIS sync of that field lands (commit-2 in this series),
+        # default to 25% of monthly revenue — the MCA-shop convention for
+        # the max sustainable debt-service load on a "clean" cashflow.
+        # Documented in src/aegis/scoring_v2/offer.py.
+        offer = compute_offer(
+            true_revenue_monthly=latest_analysis.monthly_revenue,
+            holdback_capacity_monthly=(latest_analysis.monthly_revenue * Decimal("0.25")),
+            mca_stack=mca_stack,
         )
         pattern_analysis = _dossier_pattern_analysis(latest_analysis, latest_transactions)
         pattern_analysis_for_view = pattern_analysis
@@ -1597,6 +1623,7 @@ def _build_pdf_dossier_context(
         "stacking": stacking,
         "mca_stack": mca_stack,
         "balance_health": balance_health,
+        "offer": offer,
         "pattern_cards": pattern_cards,
         "has_concentration_pattern": pattern_has_customer_concentration(pattern_analysis_for_view),
         "state_tier": state_tier_dossier,

@@ -198,6 +198,9 @@
     <tr><td class="k">ADB % of deposits</td><td class="v">{% if balance_health.adb_as_pct_of_monthly_deposits is none %}—{% else %}{{ balance_health.adb_as_pct_of_monthly_deposits }}%{% endif %}</td><td class="q">avg daily balance / monthly gross deposits</td></tr>
     <tr><td class="k">Neg days (trailing 3m)</td><td class="v">{{ balance_health.negative_days_trailing_3m }}</td><td class="q">days with end-of-day balance ≤ 0 in last 90 days</td></tr>
     {% endif %}
+    {% if offer %}
+    <tr><td class="k">Suggested offer</td><td class="v">{{ offer.recommended_amount | whole_money }} – {{ offer.max_amount | whole_money }}</td><td class="q">{{ offer.rationale }}</td></tr>
+    {% endif %}
   </table>
   {% if mca_stack and mca_stack.shadow_triggers %}
   <p class="meta"><strong>Shadow trigger{{ '' if mca_stack.shadow_triggers|length == 1 else 's' }}:</strong> {{ mca_stack.shadow_triggers | join(' · ') }} — annotation only; live decline still governed by debt_to_revenue &gt; 40% / mca_positions &gt; 2.</p>

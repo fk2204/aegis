@@ -586,6 +586,16 @@
               <span class="qual">days with end-of-day balance ≤ 0 in last 90 days</span>
             </div>
           {% endif %}
+          {# Suggested-offer chip — informational only; does not affect the
+             live decline path. Hidden when the offer math returned None
+             (sub-$5,000 floor or no remaining holdback capacity). #}
+          {% if offer %}
+            <div>
+              <span class="k">Suggested Offer</span>
+              <span class="v">{{ offer.recommended_amount | whole_money }} – {{ offer.max_amount | whole_money }}</span>
+              <span class="qual">{{ offer.rationale }}</span>
+            </div>
+          {% endif %}
         </div>
         {% if mca_stack and mca_stack.shadow_triggers %}
           <p class="marginalia">
