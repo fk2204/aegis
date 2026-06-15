@@ -61,6 +61,34 @@ class FunderNoteSubmissionRepository(Protocol):
         limit: int = 50,
     ) -> list[FunderNoteSubmissionRow]: ...
 
+    def list_in_window(
+        self,
+        *,
+        from_dt: datetime,
+        to_dt: datetime,
+    ) -> list[FunderNoteSubmissionRow]:
+        """Return submissions whose ``submitted_at`` falls in
+        ``[from_dt, to_dt]`` inclusive, newest first.
+
+        Powers the Sprint 3 portfolio dashboard (per-funder approval
+        rate, monthly volume, industry breakdown).
+        """
+
+    def list_for_funder(
+        self,
+        funder_id: UUID,
+        *,
+        limit: int = 500,
+    ) -> list[FunderNoteSubmissionRow]:
+        """Return every submission against ``funder_id``, newest first.
+
+        Powers the Sprint 3 funder-performance page.
+        """
+
+    def get(self, submission_id: UUID) -> FunderNoteSubmissionRow:
+        """Fetch a single submission by id. Raises
+        ``FunderNoteSubmissionNotFoundError`` when absent."""
+
     def update_status(
         self,
         submission_id: UUID,
@@ -109,6 +137,32 @@ class InMemoryFunderNoteSubmissionRepository:
         rows = [r for r in self._by_id.values() if r.merchant_id == merchant_id]
         rows.sort(key=lambda r: r.submitted_at, reverse=True)
         return rows[:limit]
+
+    def list_in_window(
+        self,
+        *,
+        from_dt: datetime,
+        to_dt: datetime,
+    ) -> list[FunderNoteSubmissionRow]:
+        rows = [r for r in self._by_id.values() if from_dt <= r.submitted_at <= to_dt]
+        rows.sort(key=lambda r: r.submitted_at, reverse=True)
+        return rows
+
+    def list_for_funder(
+        self,
+        funder_id: UUID,
+        *,
+        limit: int = 500,
+    ) -> list[FunderNoteSubmissionRow]:
+        rows = [r for r in self._by_id.values() if r.funder_id == funder_id]
+        rows.sort(key=lambda r: r.submitted_at, reverse=True)
+        return rows[:limit]
+
+    def get(self, submission_id: UUID) -> FunderNoteSubmissionRow:
+        try:
+            return self._by_id[submission_id]
+        except KeyError as exc:
+            raise FunderNoteSubmissionNotFoundError(str(submission_id)) from exc
 
     def update_status(
         self,
@@ -202,6 +256,54 @@ class SupabaseFunderNoteSubmissionRepository:
             .execute()
         )
         return [_row_from_dict(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    def list_in_window(
+        self,
+        *,
+        from_dt: datetime,
+        to_dt: datetime,
+    ) -> list[FunderNoteSubmissionRow]:
+        result = (
+            get_supabase()
+            .table("funder_note_submissions")
+            .select("*")
+            .gte("submitted_at", from_dt.isoformat())
+            .lte("submitted_at", to_dt.isoformat())
+            .order("submitted_at", desc=True)
+            .execute()
+        )
+        return [_row_from_dict(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    def list_for_funder(
+        self,
+        funder_id: UUID,
+        *,
+        limit: int = 500,
+    ) -> list[FunderNoteSubmissionRow]:
+        result = (
+            get_supabase()
+            .table("funder_note_submissions")
+            .select("*")
+            .eq("funder_id", str(funder_id))
+            .order("submitted_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [_row_from_dict(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    def get(self, submission_id: UUID) -> FunderNoteSubmissionRow:
+        result = (
+            get_supabase()
+            .table("funder_note_submissions")
+            .select("*")
+            .eq("id", str(submission_id))
+            .limit(1)
+            .execute()
+        )
+        rows = cast(list[dict[str, Any]], result.data or [])
+        if not rows:
+            raise FunderNoteSubmissionNotFoundError(str(submission_id))
+        return _row_from_dict(rows[0])
 
     def update_status(
         self,

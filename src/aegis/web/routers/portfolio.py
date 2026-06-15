@@ -18,8 +18,9 @@ route — the route reads only.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, cast
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
@@ -28,6 +29,7 @@ from aegis.api.deps import (
     get_audit,
     get_decision_snapshot,
     get_disclosure_render_event_repository,
+    get_funder_note_submission_repository,
     get_funder_repository,
     get_merchant_repository,
     get_repository,
@@ -43,6 +45,13 @@ from aegis.deals.portfolio_analytics import (
     DateRange,
     compute_portfolio_metrics,
     resolve_date_range,
+)
+from aegis.deals.sprint3_portfolio import (
+    APPROVAL_LOOKBACK_DAYS,
+    compute_sprint3_metrics,
+)
+from aegis.funder_note_submissions.repository import (
+    FunderNoteSubmissionRepository,
 )
 from aegis.funders.repository import FunderRepository
 from aegis.merchants.repository import MerchantRepository
@@ -139,10 +148,7 @@ def _fetch_portfolio_data(
             decisions_result = (
                 get_supabase()
                 .table("decisions")
-                .select(
-                    "id,deal_id,decided_at,decision,state_code,"
-                    "score,score_factors"
-                )
+                .select("id,deal_id,decided_at,decision,state_code,score,score_factors")
                 .gte("decided_at", from_iso)
                 .lte("decided_at", to_iso + "T23:59:59Z")
                 .order("decided_at", desc=True)
@@ -156,8 +162,9 @@ def _fetch_portfolio_data(
             # the structured log captures the failure for ops.
             from aegis.logger import get_logger
 
-            get_logger(__name__).warning("portfolio.fetch_failed window=%s..%s",
-                date_range.from_date, date_range.to_date)
+            get_logger(__name__).warning(
+                "portfolio.fetch_failed window=%s..%s", date_range.from_date, date_range.to_date
+            )
             audit_rows = []
             reply_rows = []
             decision_rows = []
@@ -191,24 +198,22 @@ async def portfolio_view(
         DisclosureRenderEventRepository,
         Depends(get_disclosure_render_event_repository),
     ],
-    submissions_repo: Annotated[
-        SubmissionRepository, Depends(get_submission_repository)
+    submissions_repo: Annotated[SubmissionRepository, Depends(get_submission_repository)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
     ],
     from_: Annotated[
         str | None,
         Query(
             alias="from",
-            description=(
-                "Window start (YYYY-MM-DD). Defaults to today minus 30 days."
-            ),
+            description=("Window start (YYYY-MM-DD). Defaults to today minus 30 days."),
         ),
     ] = None,
     to: Annotated[
         str | None,
         Query(
-            description=(
-                "Window end (YYYY-MM-DD). Defaults to today."
-            ),
+            description=("Window end (YYYY-MM-DD). Defaults to today."),
         ),
     ] = None,
 ) -> HTMLResponse:
@@ -240,9 +245,7 @@ async def portfolio_view(
     # explicit limit; the supabase backend honors the same.
     documents_list = docs_repo.list_documents(limit=5000)
 
-    audit_rows, reply_rows, decision_rows = _fetch_portfolio_data(
-        audit, snapshot, date_range
-    )
+    audit_rows, reply_rows, decision_rows = _fetch_portfolio_data(audit, snapshot, date_range)
 
     # Render-event records for the disclosure_render_queue tile (U21).
     # Defensive try/except — a repo whose backend is unreachable should
@@ -293,6 +296,68 @@ async def portfolio_view(
         render_events=render_event_records,
     )
 
+    # ── Sprint 3 — funder-note-submissions analytics ───────────────
+    # Pull a 90-day window of funder_note_submissions and derive the
+    # six aggregate metrics for the Sprint 3 portfolio block. The
+    # window matches APPROVAL_LOOKBACK_DAYS; the calendar-month
+    # comparison inside compute_sprint3_metrics is naturally bounded
+    # by the same window (this/last month fall well inside 90 days).
+    # Defensive try/except mirrors the other portfolio fetches — a
+    # repo outage renders the block empty, not a 500.
+    now_dt = datetime.now(UTC)
+    funder_note_submissions: list[Any] = []
+    try:
+        funder_note_submissions = funder_note_subs.list_in_window(
+            from_dt=now_dt - timedelta(days=APPROVAL_LOOKBACK_DAYS),
+            to_dt=now_dt,
+        )
+    except Exception:
+        from aegis.logger import get_logger
+
+        get_logger(__name__).warning(
+            "portfolio.funder_note_submissions_fetch_failed",
+            exc_info=True,
+        )
+
+    # Build latest-decision-tier-per-merchant from already-loaded
+    # decision_rows. The decisions schema keys tier at
+    # ``score_factors.tier`` (see
+    # ``aegis.deals.portfolio_analytics._decision_tier``); rows whose
+    # deal_id maps to a document with no merchant_id (orphan upload)
+    # are dropped so the dict is keyed solely by real merchants.
+    doc_merchant_by_deal_id: dict[str, UUID] = {}
+    for d in documents_list:
+        if d.merchant_id is not None:
+            doc_merchant_by_deal_id[str(d.id)] = d.merchant_id
+    latest_decision_at: dict[UUID, str] = {}
+    latest_decision_tier: dict[UUID, str] = {}
+    for row in decision_rows:
+        deal_id = str(row.get("deal_id", ""))
+        merchant_id = doc_merchant_by_deal_id.get(deal_id)
+        if merchant_id is None:
+            continue
+        factors = row.get("score_factors")
+        tier = (
+            factors.get("tier")
+            if isinstance(factors, dict) and isinstance(factors.get("tier"), str)
+            else None
+        )
+        if tier is None:
+            continue
+        decided_at = str(row.get("decided_at") or "")
+        prev = latest_decision_at.get(merchant_id, "")
+        if decided_at >= prev:
+            latest_decision_at[merchant_id] = decided_at
+            latest_decision_tier[merchant_id] = tier
+
+    sprint3_metrics = compute_sprint3_metrics(
+        submissions=list(funder_note_submissions),
+        merchants=merchants_list,
+        documents=documents_list,
+        latest_decision_tier_by_merchant=latest_decision_tier,
+        now=now_dt,
+    )
+
     return cast(
         "HTMLResponse",
         templates.TemplateResponse(
@@ -301,6 +366,7 @@ async def portfolio_view(
             {
                 "active": "Portfolio",
                 "metrics": metrics,
+                "sprint3_metrics": sprint3_metrics,
                 "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             },
         ),

@@ -278,5 +278,148 @@
     {% endif %}
   </div>
 
+  {# ============== Sprint 3 — funder_note_submissions analytics ============== #}
+  {% if sprint3_metrics %}
+  <div class="card" data-test-id="sprint3-portfolio">
+    <h3>Submissions intelligence
+      <span class="footnote">funder_note_submissions · 90-day window</span>
+    </h3>
+
+    <div class="kpi-row" style="display:flex;gap:24px;flex-wrap:wrap;margin:14px 0;font-size:13px">
+      <div data-test-id="sprint3-monthly">
+        <div class="sub" style="text-transform:uppercase;letter-spacing:0.08em;font-size:11px;color:var(--ink-3)">Deals submitted</div>
+        <div style="font-size:22px;font-weight:600">{{ sprint3_metrics.deals_this_month }}</div>
+        <div class="sub">this month
+          {% if sprint3_metrics.deals_month_delta_pct is not none %}
+            · <strong>{{ '+' if sprint3_metrics.deals_month_delta_pct > 0 }}{{ sprint3_metrics.deals_month_delta_pct }}%</strong> vs last month ({{ sprint3_metrics.deals_last_month }})
+          {% else %}
+            · {{ sprint3_metrics.deals_last_month }} last month
+          {% endif %}
+        </div>
+      </div>
+      <div data-test-id="sprint3-tier-breakdown">
+        <div class="sub" style="text-transform:uppercase;letter-spacing:0.08em;font-size:11px;color:var(--ink-3)">Tier breakdown</div>
+        <div style="display:flex;gap:8px;margin-top:4px;align-items:baseline">
+          {% for letter in ['A', 'B', 'C', 'D', 'F', 'unknown'] %}
+            {% set count = sprint3_metrics.tier_breakdown.get(letter, 0) %}
+            {% if count > 0 %}
+              <span class="chip {% if letter == 'A' %}pos{% elif letter == 'F' %}neg{% endif %}"
+                    data-tier="{{ letter }}">
+                {{ letter }} · {{ count }}
+              </span>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <h4 style="margin-top:14px">Approval rate per funder</h4>
+    {% if not sprint3_metrics.approval_rate_per_funder %}
+      <p class="sub">No submissions in the last 90 days.</p>
+    {% else %}
+      <table class="ledger" data-test-id="sprint3-funder-table">
+        <thead>
+          <tr>
+            <th>Funder</th>
+            <th class="num">Submitted</th>
+            <th class="num">Approved</th>
+            <th class="num">Declined</th>
+            <th class="num">Countered</th>
+            <th class="num">Pending</th>
+            <th class="num">Approval rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in sprint3_metrics.approval_rate_per_funder %}
+            <tr data-funder-id="{{ row.funder_id }}">
+              <td class="mono-cell">
+                <a href="/ui/funders/{{ row.funder_id }}/performance">{{ row.funder_id|string|truncate(8, True, '') }}</a>
+              </td>
+              <td class="mono-cell" style="text-align:right">{{ row.submitted }}</td>
+              <td class="mono-cell" style="text-align:right">{{ row.approved }}</td>
+              <td class="mono-cell" style="text-align:right">{{ row.declined }}</td>
+              <td class="mono-cell" style="text-align:right">{{ row.countered }}</td>
+              <td class="mono-cell" style="text-align:right">{{ row.pending }}</td>
+              <td class="mono-cell" style="text-align:right">
+                {% if row.approval_rate_pct is not none %}{{ row.approval_rate_pct }}%{% else %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    <div style="display:flex;gap:32px;margin-top:14px;flex-wrap:wrap">
+      <div style="min-width:280px;flex:1">
+        <h4>Top industries by volume</h4>
+        {% if not sprint3_metrics.top_industries_by_volume %}
+          <p class="sub">No submissions in the last 90 days.</p>
+        {% else %}
+          <table class="ledger" data-test-id="sprint3-industry-volume">
+            <thead><tr><th>Industry</th><th class="num">Submitted</th></tr></thead>
+            <tbody>
+              {% for row in sprint3_metrics.top_industries_by_volume %}
+                <tr><td>{{ row.industry }}</td><td class="mono-cell" style="text-align:right">{{ row.submitted }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+      </div>
+      <div style="min-width:280px;flex:1">
+        <h4>Top industries by decline rate</h4>
+        {% if not sprint3_metrics.top_industries_by_decline_rate %}
+          <p class="sub">No industry with ≥3 submissions in the last 90 days.</p>
+        {% else %}
+          <table class="ledger" data-test-id="sprint3-industry-decline">
+            <thead><tr><th>Industry</th><th class="num">Submitted</th><th class="num">Declined</th><th class="num">Decline %</th></tr></thead>
+            <tbody>
+              {% for row in sprint3_metrics.top_industries_by_decline_rate %}
+                <tr>
+                  <td>{{ row.industry }}</td>
+                  <td class="mono-cell" style="text-align:right">{{ row.submitted }}</td>
+                  <td class="mono-cell" style="text-align:right">{{ row.declined }}</td>
+                  <td class="mono-cell" style="text-align:right">
+                    {% if row.decline_rate_pct is not none %}{{ row.decline_rate_pct }}%{% else %}—{% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+      </div>
+    </div>
+
+    <h4 style="margin-top:14px">Stale merchants — no activity in 30+ days</h4>
+    {% if not sprint3_metrics.stale_merchants %}
+      <p class="sub">No stale merchants. Every finalized merchant has recent activity.</p>
+    {% else %}
+      <table class="ledger" data-test-id="sprint3-stale">
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th>State</th>
+            <th class="num">Days since activity</th>
+            <th>Last activity</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in sprint3_metrics.stale_merchants %}
+            <tr data-merchant-id="{{ row.merchant_id }}">
+              <td><a href="/ui/merchants/{{ row.merchant_id }}">{{ row.business_name }}</a></td>
+              <td>{{ row.state or '—' }}</td>
+              <td class="mono-cell" style="text-align:right">
+                {% if row.days_since_activity is not none %}{{ row.days_since_activity }}{% else %}—{% endif %}
+              </td>
+              <td class="mono-cell">
+                {% if row.last_activity_at %}{{ row.last_activity_at.strftime('%Y-%m-%d') }}{% else %}never{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+  {% endif %}
+
 </section>
 {% endblock %}
