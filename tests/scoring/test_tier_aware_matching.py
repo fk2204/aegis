@@ -405,9 +405,7 @@ def test_shadow_match_score_unchanged_regardless_of_tier_matches() -> None:
     strong = _deal(
         credit_score=760, time_in_business_months=60, monthly_revenue=Decimal("80000.00")
     )
-    weak = _deal(
-        credit_score=580, time_in_business_months=8, monthly_revenue=Decimal("22000.00")
-    )
+    weak = _deal(credit_score=580, time_in_business_months=8, monthly_revenue=Decimal("22000.00"))
 
     # Strong: clears every funder-level gate AND every tier.
     strong_match = match_funder(funder, strong, _score(tier="A"))
@@ -431,9 +429,7 @@ def test_shadow_disqualifying_tiers_do_not_pollute_soft_concerns() -> None:
     FunderMatch.soft_concerns. The whole point of shadow mode is keeping
     these separate until the operator validates."""
     funder = _logic_advance_funder()
-    weak = _deal(
-        credit_score=580, time_in_business_months=8, monthly_revenue=Decimal("22000.00")
-    )
+    weak = _deal(credit_score=580, time_in_business_months=8, monthly_revenue=Decimal("22000.00"))
     match = match_funder(funder, weak, _score(tier="A"))
     assert match is not None
 
@@ -449,16 +445,16 @@ def test_shadow_disqualifying_tiers_do_not_pollute_soft_concerns() -> None:
         )
 
 
-def test_shadow_reasons_field_unchanged_by_tier_evaluation() -> None:
-    """FunderMatch.reasons should only contain ``tier_<score.tier>`` when
-    the funder-level criteria pass — it must NOT include per-tier
-    qualification strings."""
+def test_reasons_includes_qualifying_tier_name_now_that_matrix_is_live() -> None:
+    """Post-commit ``5a9b85a + tier-matrix-live``: when a funder has
+    tiers, the qualifying tier name lands in ``reasons`` ahead of the
+    score-tier marker. The dossier reads "Qualifies at Tier Elite"
+    instead of just "tier_B"."""
     funder = _logic_advance_funder()
     deal = _deal()
     match = match_funder(funder, deal, _score(tier="B"))
     assert match is not None
-    # Funder-level pass on a default merchant — exactly one reason.
-    assert match.reasons == ["tier_B"]
-    # Verify nothing else snuck in.
-    for r in match.reasons:
-        assert "Elite" not in r and "Premium" not in r and "High-Risk" not in r
+    # One qualifies_at_tier entry + the score-tier marker.
+    qualifies_entries = [r for r in match.reasons if r.startswith("qualifies_at_tier:")]
+    assert len(qualifies_entries) == 1
+    assert "tier_B" in match.reasons

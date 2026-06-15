@@ -250,50 +250,83 @@ def match_funder(
     deal: ScoreInput,
     score: ScoreResult,
 ) -> FunderMatch | None:
-    """Match a deal against a single funder. None if funder has no criteria configured."""
+    """Match a deal against a single funder. None if funder has no criteria configured.
+
+    Tier-aware matching
+    -------------------
+    When ``funder.tiers`` is non-empty the per-tier matrix supersedes the
+    funder-level revenue / credit / TIB / position minimums — those four
+    axes are exactly what tiers carve up per risk level. We evaluate each
+    tier in order (convention: best/cheapest first) and use the first
+    qualifying tier's gates. If no tier qualifies, ``no_qualifying_tier``
+    hard-fails the match. ADB stays funder-wide because ``FunderTier``
+    has no ADB field; all the other funder-wide policies (exclusions,
+    NSF, advance min/max, CoJ, broker compensation, advance-fee
+    enforcement, auto-decline / conditional requirements) still apply.
+
+    When ``funder.tiers`` is empty the existing funder-level minimums
+    drive every gate — no behaviour change for funders that never
+    published a tier matrix.
+    """
     if not funder.active:
         return None
 
     hard: list[str] = []
     soft: list[str] = []
     criteria_count = 0
+    has_tiers = bool(funder.tiers)
 
-    if funder.min_monthly_revenue is not None:
-        criteria_count += 1
-        if deal.monthly_revenue < funder.min_monthly_revenue:
-            hard.append(f"revenue ${deal.monthly_revenue} < min ${funder.min_monthly_revenue}")
+    # Revenue / credit / TIB are tier-driven when a matrix is published.
+    # Skip the funder-level minimum to avoid double-gating against the
+    # same axis. The per-tier evaluation below covers them.
+    if not has_tiers:
+        if funder.min_monthly_revenue is not None:
+            criteria_count += 1
+            if deal.monthly_revenue < funder.min_monthly_revenue:
+                hard.append(f"revenue ${deal.monthly_revenue} < min ${funder.min_monthly_revenue}")
 
+        if funder.min_credit_score is not None:
+            criteria_count += 1
+            if deal.credit_score is None:
+                soft.append("credit_score_unknown")
+            elif deal.credit_score < funder.min_credit_score:
+                hard.append(f"credit {deal.credit_score} < min {funder.min_credit_score}")
+
+        if funder.min_months_in_business is not None:
+            criteria_count += 1
+            if deal.time_in_business_months is None:
+                soft.append("time_in_business_unknown")
+            elif deal.time_in_business_months < funder.min_months_in_business:
+                hard.append(
+                    f"tib {deal.time_in_business_months}mo < min {funder.min_months_in_business}mo"
+                )
+
+    # ADB stays funder-wide — ``FunderTier`` carries no ADB field.
     if funder.min_avg_daily_balance is not None:
         criteria_count += 1
         if deal.avg_daily_balance < funder.min_avg_daily_balance:
             hard.append(f"adb ${deal.avg_daily_balance} < min ${funder.min_avg_daily_balance}")
 
-    if funder.min_credit_score is not None:
-        criteria_count += 1
-        if deal.credit_score is None:
-            soft.append("credit_score_unknown")
-        elif deal.credit_score < funder.min_credit_score:
-            hard.append(f"credit {deal.credit_score} < min {funder.min_credit_score}")
-
-    if funder.min_months_in_business is not None:
-        criteria_count += 1
-        if deal.time_in_business_months is None:
-            soft.append("time_in_business_unknown")
-        elif deal.time_in_business_months < funder.min_months_in_business:
-            hard.append(
-                f"tib {deal.time_in_business_months}mo < min {funder.min_months_in_business}mo"
-            )
-
-    # Stacking — see module docstring "Stacking semantics" for the four branches.
+    # Stacking — funder-wide semantics. When tiers are published, the
+    # tier evaluation handles the ``max_positions`` hard cap per tier;
+    # the funder-level ``accepts_stacking`` soft signals (the "operator
+    # must manually confirm stacking" branches) still apply because
+    # they're funder-wide policy, not tier-level.
+    funder_max_positions_active = funder.max_positions is not None and not has_tiers
     has_stacking_policy = (
-        funder.max_positions is not None
+        funder_max_positions_active
         or funder.accepts_stacking
         or deal.mca_positions >= 1  # raises a soft concern even with default policy
     )
     if has_stacking_policy:
         criteria_count += 1
-        if funder.max_positions is not None and deal.mca_positions > funder.max_positions:
-            # Branch 2: published constraint is binding.
+        if (
+            funder_max_positions_active
+            and funder.max_positions is not None
+            and deal.mca_positions > funder.max_positions
+        ):
+            # Branch 2: published constraint is binding (only when no tier
+            # matrix is in play; tiers handle ``max_positions`` per tier).
             hard.append(f"exceeds_max_positions: {deal.mca_positions} > max {funder.max_positions}")
         elif not funder.accepts_stacking and deal.mca_positions >= 1:
             # Branch 1: no opt-in published; ambiguous default. Operator confirms.
@@ -301,8 +334,10 @@ def match_funder(
                 "stacking_acceptance_unconfirmed: "
                 "funder has not confirmed stacking acceptance — manual confirmation needed"
             )
-        elif funder.accepts_stacking and funder.max_positions is None:
+        elif funder.accepts_stacking and funder.max_positions is None and not has_tiers:
             # Branch 3: opt-in but cap is fuzzy. Verify before submitting.
+            # Suppressed when a tier matrix is in play — the qualifying
+            # tier's ``max_positions`` is the explicit cap.
             soft.append(
                 "stacking_max_unspecified: "
                 "stacking accepted but no maximum specified — verify with funder"
@@ -388,26 +423,86 @@ def match_funder(
         criteria_count += 1
         soft.append("state_enforcement_concern:FL_GA_advance_fee_prohibition_for_this_funder")
 
+    # Tier-matrix qualification (live). When the funder publishes a
+    # tier matrix, run it here so the qualifying-tier result feeds
+    # ``reasons`` and ``match_score``. ``no_qualifying_tier`` hard-
+    # fails the match — the funder won't write at any of its published
+    # risk levels for this merchant.
+    qualifying_tier: FunderTier | None = None
+    qualifying_tier_position: int = -1
+    if has_tiers:
+        criteria_count += 1
+        picked = _pick_qualifying_tier(funder.tiers, deal)
+        if picked is None:
+            hard.append("no_qualifying_tier")
+        else:
+            qualifying_tier, qualifying_tier_position = picked
+
     if criteria_count == 0:
         return None
 
     qualifies = len(hard) == 0
-    likelihood = _likelihood(qualifies, soft, score.tier)
+    reasons: list[str] = []
+    if qualifies:
+        if qualifying_tier is not None:
+            reasons.append(f"qualifies_at_tier:{qualifying_tier.name}")
+        reasons.append(f"tier_{score.tier}")
+
+    if qualifying_tier is not None and qualifies:
+        likelihood = _tier_match_score(qualifying_tier_position, soft)
+    else:
+        likelihood = _likelihood(qualifies, soft, score.tier)
+
     estimated_terms = compute_estimated_terms(funder, score, deal)
-    # U28 — SHADOW MODE per-tier evaluation. Does NOT influence
-    # match_score, soft_concerns, reasons, or any field downstream code
-    # reads for decline routing. See `evaluate_tier_matches` and the
-    # `TierMatch` docstring for the contract.
+    # Per-tier shadow rows still surface on the dossier so the operator
+    # sees the full matrix (which tiers qualified, which didn't, and why).
+    # The qualifying tier above drives match_score; the full ``tier_matches``
+    # below drives the operator-facing detail panel.
     tier_matches = evaluate_tier_matches(funder, score, deal)
     return FunderMatch(
         funder_id=funder.id,
         funder_name=funder.name,
         match_score=likelihood,
-        reasons=[f"tier_{score.tier}"] if qualifies else [],
+        reasons=reasons,
         soft_concerns=hard + soft,  # union — caller wants the full picture
         estimated_terms=estimated_terms,
         tier_matches=tier_matches,
     )
+
+
+def _pick_qualifying_tier(
+    tiers: tuple[FunderTier, ...], deal: ScoreInput
+) -> tuple[FunderTier, int] | None:
+    """Walk ``tiers`` in order; return the first tier the deal qualifies
+    for and its 0-based position. ``None`` when no tier qualifies.
+
+    Convention (per ``FunderTier`` docstring) is most-permissive-for-
+    the-merchant first — i.e. Elite (lowest buy rate, tightest
+    criteria) before B before C. The first qualifying tier is therefore
+    the BEST tier the merchant can land — and the highest match_score
+    they should be eligible for.
+    """
+    for idx, tier in enumerate(tiers):
+        if not _evaluate_tier_criteria(tier, deal):
+            return tier, idx
+    return None
+
+
+def _tier_match_score(position: int, soft: list[str]) -> int:
+    """Tier position -> base match_score, then -10 per soft concern.
+
+    * Position 0 (best/cheapest tier qualifies) -> base 90
+    * Position 1                                -> base 75
+    * Position 2                                -> base 60
+    * Position 3                                -> base 45
+    * Position 4+                               -> base 30 (floor)
+
+    Same ``-10 * soft`` penalty as the funder-level ``_likelihood``
+    path so the dossier comparison between tier-funders and funder-
+    level funders stays calibrated.
+    """
+    base = max(30, 90 - position * 15)
+    return max(0, base - 10 * len(soft))
 
 
 def evaluate_tier_matches(
