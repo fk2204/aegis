@@ -1,4 +1,4 @@
-.PHONY: install install-hooks dev worker test test-fast typecheck lint format check migrate migrate-dry verify-bedrock verify-db verify-db-list cutover-check
+.PHONY: install install-hooks dev worker test test-fast typecheck lint format check migrate migrate-dry verify-bedrock verify-db verify-db-list cutover-check deploy rollback
 
 install:
 	uv sync
@@ -108,3 +108,33 @@ cutover-check:
 		exit 2; \
 	fi
 	uv run python scripts/cutover_check.py --target $(TARGET) $(if $(SKIP),--skip $(SKIP),)
+
+# Sprint 5 Track A — automated prod deploy. Replaces "ssh in and run
+# commands by hand". See scripts/deploy.sh for the full sequence.
+#
+# Usage:
+#   make deploy TARGET=prod
+#   make deploy TARGET=prod DRY_RUN=1
+#   make deploy TARGET=staging
+#
+# Sequence: local pre-flight -> on-box pull -> local migrate -> on-box
+# restart + is-active -> /healthz smoke. Fails fast on any step.
+deploy:
+	@if [ -z "$(TARGET)" ]; then \
+		echo "usage: make deploy TARGET=<dev|staging|prod> [DRY_RUN=1]"; \
+		exit 2; \
+	fi
+	TARGET=$(TARGET) DRY_RUN=$(if $(DRY_RUN),1,0) bash scripts/deploy.sh
+
+# Sprint 5 Track A — safety net for a bad deploy. Reverts one commit
+# on the box, restarts services, smoke-checks. See scripts/rollback.sh.
+#
+# Usage:
+#   make rollback TARGET=prod
+#   make rollback TARGET=prod DRY_RUN=1
+rollback:
+	@if [ -z "$(TARGET)" ]; then \
+		echo "usage: make rollback TARGET=<dev|staging|prod> [DRY_RUN=1]"; \
+		exit 2; \
+	fi
+	TARGET=$(TARGET) DRY_RUN=$(if $(DRY_RUN),1,0) bash scripts/rollback.sh
