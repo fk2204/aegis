@@ -69,13 +69,15 @@ def extract_drift_failures(
     by stripping the category prefix before matching.
     """
     return tuple(
-        f for f in validation_failures
+        f
+        for f in validation_failures
         if _strip_category_prefix(f).startswith(DRIFT_FAILURE_PREFIXES)
     )
 
 
 def extract_editor_metadata_flag(
     metadata_flags: tuple[str, ...],
+    validation_failures: tuple[str, ...] = (),
 ) -> str | None:
     """Return the literal editor flag string if any, otherwise None.
 
@@ -87,8 +89,26 @@ def extract_editor_metadata_flag(
     so downstream evidence renders consistently regardless of
     whether the caller passed flags from the in-memory ValidationResult
     or the persisted DB column.
+
+    ``metadata_flags`` is the primary source (the parser writes editor
+    detections there, and ``storage.py`` round-trips them on
+    ``DocumentRow.metadata_flags``). When that source yields nothing,
+    we fall back to scanning ``validation_failures`` for the same
+    ``editor_detected:`` prefix — ``parser/pipeline.py::_collect_flags``
+    also mirrors every metadata flag into ``all_flags`` with a
+    ``[META] `` prefix, and ``dossier_panel._signals_for_document``
+    populates Track A's ``validation_failures`` from ``all_flags``. The
+    dual-source persistence means a future partial-update or
+    re-parse race that drops ``metadata_flags`` but preserves
+    ``all_flags`` (or vice versa) still surfaces the editor flag.
+
+    Closes F4 in docs/track_a_audit_2026-06-12.md.
     """
     for f in metadata_flags:
+        stripped = _strip_category_prefix(f)
+        if stripped.startswith(_EDITOR_FLAG_PREFIX):
+            return stripped
+    for f in validation_failures:
         stripped = _strip_category_prefix(f)
         if stripped.startswith(_EDITOR_FLAG_PREFIX):
             return stripped
@@ -104,7 +124,8 @@ def extract_other_metadata_flags(
     category prefix the same way ``extract_editor_metadata_flag``
     does."""
     return tuple(
-        _strip_category_prefix(f) for f in metadata_flags
+        _strip_category_prefix(f)
+        for f in metadata_flags
         if not _strip_category_prefix(f).startswith(_EDITOR_FLAG_PREFIX)
     )
 

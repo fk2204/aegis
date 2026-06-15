@@ -67,7 +67,7 @@ def compute_integrity_verdict(
     See module docstring for branch precedence.
     """
     drift_failures = extract_drift_failures(signals.validation_failures)
-    editor_flag = extract_editor_metadata_flag(signals.metadata_flags)
+    editor_flag = extract_editor_metadata_flag(signals.metadata_flags, signals.validation_failures)
     other_meta = extract_other_metadata_flags(signals.metadata_flags)
 
     # ── Branch 1: strong metadata (fail) ──────────────────────────
@@ -85,9 +85,7 @@ def compute_integrity_verdict(
         # Surface ALL metadata flags as supporting evidence so the
         # underwriter sees what specifically tripped the score.
         if editor_flag is not None:
-            evidence.append(
-                EvidenceItem(signal="editor_detected", detail=editor_flag)
-            )
+            evidence.append(EvidenceItem(signal="editor_detected", detail=editor_flag))
         for f in other_meta:
             evidence.append(EvidenceItem(signal="metadata_flag", detail=f))
         # Reconciliation drift, if present, IS corroborating evidence for
@@ -96,9 +94,7 @@ def compute_integrity_verdict(
         # 4 behavior) instead of mistaking a strong-metadata fail for
         # "just metadata noise" and softening it to review.
         for f in drift_failures:
-            evidence.append(
-                EvidenceItem(signal=_drift_signal_token(f), detail=f)
-            )
+            evidence.append(EvidenceItem(signal=_drift_signal_token(f), detail=f))
         return IntegrityVerdict(
             document_id=signals.document_id,
             verdict="fail",
@@ -133,12 +129,7 @@ def compute_integrity_verdict(
         )
 
     # ── Branch 3: medium metadata + math failure (review) ─────────
-    if (
-        _MEDIUM_METADATA_FLOOR
-        <= signals.metadata_score
-        <= _MEDIUM_METADATA_CEIL
-        and drift_failures
-    ):
+    if _MEDIUM_METADATA_FLOOR <= signals.metadata_score <= _MEDIUM_METADATA_CEIL and drift_failures:
         evidence = [
             EvidenceItem(
                 signal="metadata_score",
@@ -163,9 +154,7 @@ def compute_integrity_verdict(
             branch="medium_corroborated",
             metadata_score=signals.metadata_score,
             evidence=tuple(evidence),
-            rationale=frame_medium_corroborated(
-                signals.metadata_score, len(drift_failures)
-            ),
+            rationale=frame_medium_corroborated(signals.metadata_score, len(drift_failures)),
         )
 
     # ── Branch 4: drift alone (review) ────────────────────────────
@@ -184,9 +173,7 @@ def compute_integrity_verdict(
             branch="drift_alone",
             metadata_score=signals.metadata_score,
             evidence=tuple(evidence),
-            rationale=frame_drift_alone(
-                len(drift_failures), signals.metadata_score
-            ),
+            rationale=frame_drift_alone(len(drift_failures), signals.metadata_score),
         )
 
     # ── Branch 5: clean ───────────────────────────────────────────

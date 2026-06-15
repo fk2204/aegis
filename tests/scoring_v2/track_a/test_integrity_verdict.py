@@ -373,6 +373,75 @@ def test_metadata_score_boundary_transitions(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# F4 — editor flag dual-location fallback
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_editor_flag_falls_back_to_validation_failures_for_drift_plus_editor() -> None:
+    """Closes F4 in docs/track_a_audit_2026-06-12.md.
+
+    `parser/pipeline.py::_collect_flags` writes every metadata flag into
+    BOTH `metadata_flags` (raw) AND `all_flags` (with [META] prefix);
+    `dossier_panel._signals_for_document` populates Track A's
+    `validation_failures` from `all_flags`. A persistence path that
+    drops `metadata_flags` but preserves the `[META] editor_detected:`
+    entry in `all_flags` (re-parse race, partial-update bug, legacy
+    row from a pre-metadata-column migration) used to silently
+    downgrade fail → review because `extract_editor_metadata_flag`
+    only inspected `metadata_flags`.
+
+    Post-fix it falls back to `validation_failures` and the
+    `drift_plus_editor` branch fires as it should.
+    """
+    signals = DocumentIntegritySignals(
+        document_id="doc_editor_in_all_flags_only",
+        metadata_score=22,  # below medium floor; branch depends on signals not score
+        metadata_flags=(),  # empty — simulates the partial-update / legacy case
+        validation_failures=(
+            "[META] editor_detected: iText 2.1.7 by 1T3XT",
+            "[MATH] reconciliation_failed_period: expected 1000 got 950",
+        ),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "fail"
+    assert v.branch == "drift_plus_editor"
+    # Editor flag surfaces as evidence with the [META] prefix stripped,
+    # matching the canonical form from `metadata_flags` so the dossier
+    # renders identically regardless of which column held it.
+    editor_rows = [e for e in v.evidence if e.signal == "editor_detected"]
+    assert len(editor_rows) == 1
+    assert editor_rows[0].detail.startswith("editor_detected:")
+    assert "iText 2.1.7" in editor_rows[0].detail
+
+
+def test_metadata_flags_take_precedence_over_validation_failures_for_editor() -> None:
+    """Primary source still wins. If both columns carry an editor
+    flag, the one in `metadata_flags` is returned — keeps the
+    parser-side ordering authoritative for the rare "two distinct
+    editor signatures on the same doc" case (Preview re-save of a
+    Foxit-exported source, etc.).
+    """
+    signals = DocumentIntegritySignals(
+        document_id="doc_editor_in_both",
+        metadata_score=22,
+        metadata_flags=("editor_detected: Foxit PhantomPDF 11.2",),
+        validation_failures=(
+            "[META] editor_detected: iText 2.1.7 by 1T3XT",
+            "[MATH] reconciliation_failed_period: expected 1000 got 950",
+        ),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "fail"
+    assert v.branch == "drift_plus_editor"
+    editor_rows = [e for e in v.evidence if e.signal == "editor_detected"]
+    assert len(editor_rows) == 1
+    # The metadata_flags entry (Foxit) wins, not the validation_failures
+    # entry (iText).
+    assert "Foxit" in editor_rows[0].detail
+    assert "iText" not in editor_rows[0].detail
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Structural guard — schema MUST NOT carry a decline field
 # ─────────────────────────────────────────────────────────────────────
 
