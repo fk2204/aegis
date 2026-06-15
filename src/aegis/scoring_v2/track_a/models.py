@@ -30,20 +30,16 @@ VerdictLevel = Literal["clean", "review", "fail"]
 # (``drift_alone`` for review; ``drift_plus_editor`` for fail).
 IntegrityBranch = Literal[
     "clean",
-    "strong_metadata",       # metadata_score >= 50 → fail
-    "drift_plus_editor",     # editor metadata + drift → fail
-    "medium_corroborated",   # 25-49 metadata + math failure → review
-    "drift_alone",           # drift, no editor metadata → review
+    "strong_metadata",  # metadata_score >= 50 → fail
+    "drift_plus_editor",  # editor metadata + drift → fail
+    "medium_corroborated",  # 25-49 metadata + math failure → review
+    "drift_alone",  # drift, no editor metadata → review
 ]
 
 
 # Convenient ordering for "is this branch a fail / review" lookups.
-FAIL_BRANCHES: frozenset[IntegrityBranch] = frozenset(
-    {"strong_metadata", "drift_plus_editor"}
-)
-REVIEW_BRANCHES: frozenset[IntegrityBranch] = frozenset(
-    {"medium_corroborated", "drift_alone"}
-)
+FAIL_BRANCHES: frozenset[IntegrityBranch] = frozenset({"strong_metadata", "drift_plus_editor"})
+REVIEW_BRANCHES: frozenset[IntegrityBranch] = frozenset({"medium_corroborated", "drift_alone"})
 
 
 class _StrictModel(BaseModel):
@@ -79,8 +75,11 @@ class DocumentIntegritySignals(_StrictModel):
         max_length=64,
         description=(
             "Stable identifier for the document this verdict applies "
-            "to. Track A is per-document; a bundle-level rollup is "
-            "computed separately by ``compute_bundle_verdict``."
+            "to. Track A is per-document; bundle-level rollup happens "
+            "in ``score_deal_inputs._worst_integrity_verdict`` (single "
+            "deal scoring) and ``dossier_panel._summarise_verdicts`` "
+            "(dossier panel rendering). The two pick the worst verdict "
+            "in fail > review > clean order."
         ),
     )
     metadata_score: int = Field(
@@ -107,8 +106,9 @@ class DocumentIntegritySignals(_StrictModel):
             "``ValidationResult.failures`` — e.g. "
             "'reconciliation_failed_period: expected …', "
             "'reconciliation_failed_daily_running_balance: …', "
-            "'future_dated_period: …'. The composition rule reads "
-            "these for the math/structural corroboration."
+            "'future_dated: period_end=2026-07-01 today=2026-06-12'. "
+            "The composition rule reads these for the math/structural "
+            "corroboration."
         ),
     )
 
