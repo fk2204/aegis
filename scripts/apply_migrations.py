@@ -466,6 +466,20 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='funders' "
         "AND column_name='deal_types_accepted'"
     ),
+    "057_funder_note_submissions.sql": (
+        # 057 creates the funder_note_submissions table. Existence of
+        # the table is the load-bearing artifact; the trigger +
+        # indexes either land in the same transaction or fail it.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='funder_note_submissions'"
+    ),
+    "058_merchants_notes.sql": (
+        # 058 is a single ADD COLUMN on merchants. Column existence is
+        # the entire effect.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='notes'"
+    ),
 }
 
 
