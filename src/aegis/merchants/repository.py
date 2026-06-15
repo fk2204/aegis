@@ -572,6 +572,7 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         ),
         close_lead_id=row.get("close_lead_id"),
         close_opportunity_id=row.get("close_opportunity_id"),
+        industry_choice=row.get("industry_choice"),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
     )
@@ -627,6 +628,7 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "preferred_funder_id": (str(m.preferred_funder_id) if m.preferred_funder_id else None),
         "close_lead_id": m.close_lead_id,
         "close_opportunity_id": m.close_opportunity_id,
+        "industry_choice": m.industry_choice,
     }
     return payload
 

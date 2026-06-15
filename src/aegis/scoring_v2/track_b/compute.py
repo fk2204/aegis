@@ -18,6 +18,7 @@ from uuid import UUID
 from aegis.counterparty.models import CounterpartyClassification
 from aegis.parser.models import ClassifiedTransaction
 from aegis.scoring_v2.aggregation import aggregate_bundle
+from aegis.scoring_v2.industry import IndustryTier, industry_tier_reason
 from aegis.scoring_v2.track_b.banding import (
     band_from_severity,
     severity_for_international_concentration,
@@ -38,9 +39,11 @@ from aegis.scoring_v2.track_b.framing import (
 )
 from aegis.scoring_v2.track_b.models import (
     BAND_TO_ACTION,
+    BandLevel,
     BusinessRiskBand,
     CashflowSignals,
     FactorReason,
+    SignalSeverity,
 )
 from aegis.scoring_v2.track_b.signals import (
     compute_international_share_pct,
@@ -56,15 +59,64 @@ from aegis.scoring_v2.track_b.signals import (
 _REASON_SEVERITY_RANK = {
     "critical": 0,
     "elevated": 1,
-    "concern":  2,
-    "neutral":  3,
+    "concern": 2,
+    "neutral": 3,
     "positive": 4,
+}
+
+
+# Band ordering for industry-tier adjustment. ``low < moderate <
+# elevated < high``; ``apply_industry_tier_adjustment`` clamps at
+# ``high`` so two ``+1`` bumps don't wrap.
+_BAND_ORDER: list[BandLevel] = ["low", "moderate", "elevated", "high"]
+
+
+def apply_industry_tier_adjustment(
+    cashflow_band: BandLevel,
+    industry_tier: IndustryTier,
+) -> BandLevel:
+    """Adjust the cashflow-only band per the industry tier.
+
+    * ``standard`` / ``moderate``     -> no change
+    * ``elevated``                    -> bump one step (capped at ``high``)
+    * ``high_volatility``             -> bump two steps (capped at ``high``)
+    * ``hard_decline_class``          -> force ``high`` regardless of input
+
+    Shadow-only per CLAUDE.md "Decision-boundary changes — shadow-
+    first": the band itself doesn't drive the live decline path, so
+    industry adjustment is informational. ``hard_decline_class`` is
+    the strongest signal (force-to-high) but still goes through the
+    same shadow envelope; the operator decides whether the deal
+    proceeds.
+    """
+    if industry_tier == "hard_decline_class":
+        return "high"
+    idx = _BAND_ORDER.index(cashflow_band)
+    if industry_tier == "high_volatility":
+        idx = min(idx + 2, len(_BAND_ORDER) - 1)
+    elif industry_tier == "elevated":
+        idx = min(idx + 1, len(_BAND_ORDER) - 1)
+    return _BAND_ORDER[idx]
+
+
+# Map industry tier -> severity for the FactorReason emitted on the
+# Track B reasons list. Mirrors the band-adjustment semantics:
+# ``standard`` is a positive signal, ``moderate`` is neutral noise,
+# ``elevated``/``high_volatility``/``hard_decline_class`` escalate.
+_INDUSTRY_TIER_SEVERITY: dict[IndustryTier, SignalSeverity] = {
+    "standard": "positive",
+    "moderate": "neutral",
+    "elevated": "elevated",
+    "high_volatility": "critical",
+    "hard_decline_class": "critical",
 }
 
 
 def compute_risk_band(
     transactions_by_doc: Mapping[str, list[ClassifiedTransaction]],
     classifications: Mapping[UUID, CounterpartyClassification],
+    *,
+    industry_tier: IndustryTier | None = None,
 ) -> BusinessRiskBand:
     """Compute the Track B band for one parse bundle.
 
@@ -75,6 +127,14 @@ def compute_risk_band(
     The function is deterministic, has no I/O, and reads no scoring
     config — fully unit-testable. The band-from-signals composition
     is the entire logic; threshold tuning lives in ``banding.py``.
+
+    ``industry_tier`` (kwarg) is the merchant's industry risk class
+    from ``aegis.scoring_v2.industry.industry_risk_tier``. When
+    provided, applies the band adjustment per
+    :func:`apply_industry_tier_adjustment` AFTER the cashflow band
+    is derived, and adds a FactorReason naming the tier. ``None``
+    skips the adjustment entirely (legacy callers / tests that
+    haven't been threaded with industry data).
     """
     agg = aggregate_bundle(transactions_by_doc, classifications)
 
@@ -99,8 +159,6 @@ def compute_risk_band(
     )
 
     # ── severity per factor + reasons ──────────────────────────────
-    from aegis.scoring_v2.track_b.models import SignalSeverity
-
     reasons: list[FactorReason] = []
     severities: list[SignalSeverity] = []
     insufficient: list[str] = []
@@ -151,7 +209,28 @@ def compute_risk_band(
 
     # ── band + action ──────────────────────────────────────────────
     worst = worst_severity(severities)
-    band = band_from_severity(worst)
+    cashflow_band = band_from_severity(worst)
+
+    # Industry-tier adjustment happens AFTER the cashflow-only band is
+    # computed: the cashflow signals describe what the statements say,
+    # the tier describes what kind of business AEGIS is looking at.
+    # Mixing them at the severity layer would bury the cashflow
+    # picture; keeping them separated lets the underwriter see both
+    # "cashflow says X" and "industry bumps it to Y" on the dossier.
+    if industry_tier is not None:
+        band = apply_industry_tier_adjustment(cashflow_band, industry_tier)
+        sev = _INDUSTRY_TIER_SEVERITY[industry_tier]
+        # SignalSeverity import deferred — see import block above.
+        reasons.append(
+            FactorReason(
+                factor="industry_tier",
+                severity=sev,
+                detail=f"Industry tier {industry_tier} — {industry_tier_reason(industry_tier)}",
+            )
+        )
+    else:
+        band = cashflow_band
+
     action = BAND_TO_ACTION[band]
 
     # Order reasons so the band-driving factor is first.

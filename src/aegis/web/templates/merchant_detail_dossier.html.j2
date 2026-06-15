@@ -596,6 +596,18 @@
               <span class="qual">{{ offer.rationale }}</span>
             </div>
           {% endif %}
+          {# Industry-tier chip — informational. Drawn from the merchant's
+             Close-side Industry choice via aegis.scoring_v2.industry; the
+             tier feeds Track B band adjustment elsewhere. Hidden when no
+             industry is on file. Highlight when tier is high_volatility or
+             hard_decline_class. #}
+          {% if unified_tracks and unified_tracks.industry_tier %}
+            <div class="{% if unified_tracks.industry_tier in ('high_volatility', 'hard_decline_class') %}warn{% endif %}">
+              <span class="k">Industry Tier</span>
+              <span class="v">{{ unified_tracks.industry_tier|replace('_', ' ') }}</span>
+              <span class="qual">{{ unified_tracks.industry_tier_reason }}</span>
+            </div>
+          {% endif %}
         </div>
         {% if mca_stack and mca_stack.shadow_triggers %}
           <p class="marginalia">

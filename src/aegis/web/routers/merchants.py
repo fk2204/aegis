@@ -92,6 +92,7 @@ from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
 from aegis.scoring.submission_package import build_submission_files
 from aegis.scoring_v2.balance_health import compute_balance_health
+from aegis.scoring_v2.industry import industry_risk_tier
 from aegis.scoring_v2.mca_stack import aggregate_mca_stack
 from aegis.scoring_v2.offer import compute_offer
 from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
@@ -1239,6 +1240,7 @@ async def merchant_detail(
                 list_transactions=docs.list_transactions,
                 analyses_by_doc=analyses_by_doc,
                 merchant_id=merchant_id,
+                industry_tier=industry_risk_tier(merchant.industry_choice),
             )
             try:
                 score_result = score_deal(
@@ -1374,6 +1376,7 @@ async def merchant_detail(
         documents=all_docs,
         list_transactions=docs.list_transactions,
         analyses_by_doc=analyses_by_doc,
+        industry_tier=industry_risk_tier(merchant.industry_choice),
     )
 
     return templates.TemplateResponse(
@@ -1543,6 +1546,7 @@ def _build_pdf_dossier_context(
                 list_transactions=docs.list_transactions,
                 analyses_by_doc=analyses_by_doc,
                 merchant_id=merchant.id,
+                industry_tier=industry_risk_tier(merchant.industry_choice),
             )
             try:
                 score_result = score_deal(

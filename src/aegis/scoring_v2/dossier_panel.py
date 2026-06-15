@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from aegis.counterparty import classify_bundle
 from aegis.parser.models import ClassifiedTransaction
+from aegis.scoring_v2.industry import IndustryTier
 from aegis.scoring_v2.track_a import (
     DocumentIntegritySignals,
     IntegrityVerdict,
@@ -96,6 +97,26 @@ class UnifiedTracksView(_StrictModel):
             "the two share the bundle aggregation."
         ),
     )
+    industry_tier: IndustryTier | None = Field(
+        default=None,
+        description=(
+            "Industry risk classification for the merchant — derived "
+            "from ``merchant.industry_choice`` via "
+            "``aegis.scoring_v2.industry.industry_risk_tier``. Drives "
+            "the dossier industry chip; ``None`` when caller didn't "
+            "thread industry data (legacy merchants, sync-side calls "
+            "pre-migration 055)."
+        ),
+    )
+    industry_tier_reason: str = Field(
+        default="",
+        max_length=240,
+        description=(
+            "One-line underwriter-voice explanation for the tier, "
+            "rendered as the chip qualifier. Empty when "
+            "``industry_tier`` is None."
+        ),
+    )
     insufficient_data_reason: str = Field(
         default="",
         max_length=240,
@@ -156,6 +177,7 @@ def build_unified_tracks_view(
     documents: list[Any],
     list_transactions: Callable[[UUID], list[ClassifiedTransaction]],
     analyses_by_doc: dict[UUID, Any] | None = None,
+    industry_tier: IndustryTier | None = None,
 ) -> UnifiedTracksView:
     """Assemble the A+B+C view for a merchant dossier.
 
@@ -236,10 +258,12 @@ def build_unified_tracks_view(
 
     if transactions_by_doc:
         classifications, _ = classify_bundle(transactions_by_doc, accounts)
-        risk_band = compute_risk_band(transactions_by_doc, classifications)
-        context_panel = compute_context_panel(
-            transactions_by_doc, classifications
+        risk_band = compute_risk_band(
+            transactions_by_doc,
+            classifications,
+            industry_tier=industry_tier,
         )
+        context_panel = compute_context_panel(transactions_by_doc, classifications)
     else:
         if not documents:
             insufficient_reason = "No documents on file."
@@ -256,12 +280,21 @@ def build_unified_tracks_view(
                 "integrity or transaction signals yet."
             )
 
+    if industry_tier is not None:
+        from aegis.scoring_v2.industry import industry_tier_reason as _industry_reason
+
+        industry_reason_text = _industry_reason(industry_tier)
+    else:
+        industry_reason_text = ""
+
     return UnifiedTracksView(
         integrity_verdicts=tuple(integrity_verdicts),
         integrity_worst_verdict=worst,
         integrity_summary=integrity_summary,
         risk_band=risk_band,
         context_panel=context_panel,
+        industry_tier=industry_tier,
+        industry_tier_reason=industry_reason_text,
         insufficient_data_reason=insufficient_reason,
     )
 

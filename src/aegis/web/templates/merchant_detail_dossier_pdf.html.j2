@@ -201,6 +201,9 @@
     {% if offer %}
     <tr><td class="k">Suggested offer</td><td class="v">{{ offer.recommended_amount | whole_money }} – {{ offer.max_amount | whole_money }}</td><td class="q">{{ offer.rationale }}</td></tr>
     {% endif %}
+    {% if unified_tracks and unified_tracks.industry_tier %}
+    <tr><td class="k">Industry tier</td><td class="v">{{ unified_tracks.industry_tier|replace('_', ' ') }}</td><td class="q">{{ unified_tracks.industry_tier_reason }}</td></tr>
+    {% endif %}
   </table>
   {% if mca_stack and mca_stack.shadow_triggers %}
   <p class="meta"><strong>Shadow trigger{{ '' if mca_stack.shadow_triggers|length == 1 else 's' }}:</strong> {{ mca_stack.shadow_triggers | join(' · ') }} — annotation only; live decline still governed by debt_to_revenue &gt; 40% / mca_positions &gt; 2.</p>

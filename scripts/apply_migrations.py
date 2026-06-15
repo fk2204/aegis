@@ -448,6 +448,15 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE schemaname='public' AND tablename='merchants' "
         "AND indexname='idx_merchants_close_opportunity_id'"
     ),
+    "055_merchants_industry_choice.sql": (
+        # 055 adds nullable ``industry_choice TEXT`` to merchants. No
+        # index — column isn't a lookup key, only ever read on
+        # id-keyed selects. Probe is the column's presence in
+        # information_schema.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='industry_choice'"
+    ),
 }
 
 

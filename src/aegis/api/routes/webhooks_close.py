@@ -438,6 +438,12 @@ def _lead_to_merchant_fields(
         "owner_name": str(get_custom_field(lead, "owner_name") or ""),
         "state": state,
         "industry_naics": naics,
+        # Persist the raw Lead-side Industry choice string alongside
+        # the derived NAICS. Drives ``aegis.scoring_v2.industry`` tier
+        # lookup on the dossier + Track B band adjustment. Migration 055.
+        "industry_choice": (
+            industry_choice if isinstance(industry_choice, str) and industry_choice else None
+        ),
         "time_in_business_months": tib_months,
         "credit_score": parse_fico_range(
             get_custom_field(lead, "fico_range")

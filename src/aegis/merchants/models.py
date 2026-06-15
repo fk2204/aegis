@@ -78,6 +78,13 @@ class MerchantRow(_StrictModel):
     )
     industry_naics: str | None = None
     industry_risk_tier: IndustryRiskTier | None = None
+    # Lead-side Close ``Industry`` choice string (em-dash form),
+    # captured at webhook upsert time and persisted alongside the
+    # derived ``industry_naics``. Drives the
+    # ``aegis.scoring_v2.industry`` tier lookup. ``None`` for
+    # legacy merchants pre-migration 055 or merchants Close hasn't
+    # populated yet.
+    industry_choice: str | None = None
     time_in_business_months: Annotated[int, Field(ge=0)] | None = None
     credit_score: Annotated[int, Field(ge=300, le=850)] | None = None
 

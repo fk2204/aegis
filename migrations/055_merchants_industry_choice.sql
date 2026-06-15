@@ -1,0 +1,26 @@
+-- Migration 055 — persist Close Lead-side Industry choice on merchants.
+--
+-- Adds ``industry_choice TEXT`` to ``merchants``. The Close inbound
+-- webhook (/webhooks/close) reads the raw Lead-side ``Industry``
+-- choice string (cf_Wls6nOfOp8CE8VNp4KkJxfZTSYlkqByKHkRwa0VQelr) at
+-- upsert time and persists it here alongside the NAICS code derived
+-- in ``industry_to_naics``.
+--
+-- Why persist the raw choice when ``industry_naics`` already exists:
+-- the NAICS table collapses distinct Close choices that share a code
+-- (e.g. "Retail — General" + "Retail — Specialty" both map to
+-- 459999), AND it's the operator-typed Close choice (em-dash form)
+-- that drives the new ``aegis.scoring_v2.industry`` risk tiering,
+-- not a NAICS reverse lookup which would lose the original string.
+-- For seasonal NAICS prefix matching (score.py) the NAICS column
+-- stays canonical.
+--
+-- Idempotency: schema_migrations gates re-runs at the application
+-- layer. The ALTER TABLE below is plain — a partial re-application
+-- errors explicitly rather than silently masking drift, which is the
+-- preferred fail mode.
+--
+-- No index. The column isn't a lookup key — it's only ever read off
+-- the merchant row by id-keyed selects (dossier, sync route).
+
+ALTER TABLE merchants ADD COLUMN industry_choice TEXT;

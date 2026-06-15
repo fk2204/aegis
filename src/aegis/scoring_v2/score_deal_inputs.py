@@ -38,6 +38,7 @@ from aegis.scoring_v2.dossier_panel import (
     UnifiedTracksView,
     build_unified_tracks_view,
 )
+from aegis.scoring_v2.industry import IndustryTier
 from aegis.scoring_v2.track_a import IntegrityVerdict
 from aegis.scoring_v2.track_a.models import FAIL_BRANCHES, REVIEW_BRANCHES
 from aegis.scoring_v2.track_b import BusinessRiskBand
@@ -83,6 +84,7 @@ def compute_score_deal_track_inputs(
     list_transactions: Callable[[UUID], list[ClassifiedTransaction]],
     analyses_by_doc: dict[UUID, Any] | None = None,
     merchant_id: str | UUID | None = None,
+    industry_tier: IndustryTier | None = None,
 ) -> tuple[IntegrityVerdict | None, BusinessRiskBand | None]:
     """Compute ``(track_a_verdict, track_b_band)`` for a scoring pass.
 
@@ -116,6 +118,7 @@ def compute_score_deal_track_inputs(
             documents=documents,
             list_transactions=list_transactions,
             analyses_by_doc=analyses_by_doc,
+            industry_tier=industry_tier,
         )
     except ValidationError as exc:
         # Pydantic ValidationError is a CODE BUG, not a data oddity — a
@@ -126,8 +129,7 @@ def compute_score_deal_track_inputs(
         from aegis.logger import get_logger
 
         get_logger(__name__).critical(
-            "score_deal_track_inputs.validation_error "
-            "merchant_id=%s err=%s",
+            "score_deal_track_inputs.validation_error merchant_id=%s err=%s",
             merchant_id,
             exc,
         )
@@ -138,8 +140,7 @@ def compute_score_deal_track_inputs(
         from aegis.logger import get_logger
 
         get_logger(__name__).warning(
-            "score_deal_track_inputs.compute_failed "
-            "merchant_id=%s err=%s",
+            "score_deal_track_inputs.compute_failed merchant_id=%s err=%s",
             merchant_id,
             exc.__class__.__name__,
         )

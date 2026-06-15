@@ -47,6 +47,7 @@ from aegis.scoring.models import ScoreResult
 from aegis.scoring.multi_month import score_input_multi_month
 from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
+from aegis.scoring_v2.industry import industry_risk_tier
 from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
 from aegis.storage import AnalysisRow, DocumentRepository
 
@@ -140,6 +141,7 @@ def compute_score_result_for_default_bundle(
         list_transactions=docs.list_transactions,
         analyses_by_doc=analyses_by_doc,
         merchant_id=merchant_id,
+        industry_tier=industry_risk_tier(merchant.industry_choice),
     )
     try:
         return score_deal(
