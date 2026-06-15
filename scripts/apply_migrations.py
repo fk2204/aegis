@@ -457,6 +457,15 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='merchants' "
         "AND column_name='industry_choice'"
     ),
+    "056_funders_deal_types_velocity_preferred_states.sql": (
+        # 056 adds three funder columns. Probe is the
+        # deal_types_accepted column — the migration's first ADD COLUMN
+        # — so a partial re-application that landed only this column
+        # still registers as applied.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='funders' "
+        "AND column_name='deal_types_accepted'"
+    ),
 }
 
 

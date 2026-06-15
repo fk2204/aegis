@@ -67,6 +67,9 @@ Schema:
     "typical_holdback_high": number | null,
     "excluded_industries": [string],
     "excluded_states": [string],
+    "deal_types_accepted": [string],
+    "funding_velocity_days": number | null,
+    "preferred_states": [string],
     "tiers": [
       {
         "name": string,
@@ -100,6 +103,9 @@ Schema:
     "typical_holdback_high": number,
     "excluded_industries": number,
     "excluded_states": number,
+    "deal_types_accepted": number,
+    "funding_velocity_days": number,
+    "preferred_states": number,
     "contact_name": number,
     "contact_phone": number,
     "contact_email": number,
@@ -132,6 +138,26 @@ RULES:
    This is the canonical form used across the matcher, the manual create \
    form, and the seed scripts.
 6. `excluded_states` are USPS two-letter codes uppercased ("CA", "NY").
+6a. `preferred_states` are USPS two-letter codes uppercased. Distinct \
+    from `excluded_states`: preferred is a soft preference (the funder \
+    will write outside this set, just less likely); excluded is a \
+    hard refusal. If the document says "we focus on" / "primary \
+    markets" / "prefer to write in" without a refusal verb, route to \
+    `preferred_states`. If it says "do not write in" / "excluded" / \
+    "restricted in", route to `excluded_states`. Empty array when \
+    neither is mentioned.
+6b. `deal_types_accepted` enumerates the funder's product lines. \
+    Canonical lowercase tokens: "mca", "term_loan", "loc" (line of \
+    credit), "sba", "equipment_financing", "invoice_factoring", \
+    "real_estate", "purchase_order_financing", "business_line_of_credit". \
+    Map common synonyms to the canonical token (e.g. "merchant cash \
+    advance" -> "mca", "term financing" -> "term_loan"). When the \
+    document doesn't list product lines, leave the array empty rather \
+    than guessing — empty means "no constraint" downstream.
+6c. `funding_velocity_days` is the integer number of BUSINESS days \
+    from a clean submission to a decision. Normalise common phrasings: \
+    "same-day decision" -> 1; "24-hour turnaround" -> 1; "1-2 days" -> 2; \
+    "3 business days" -> 3; "1 week" -> 5. Null when not mentioned.
 7. `accepts_stacking` is true ONLY when the document explicitly says "we \
    take stacked positions" or similar. Default false.
 8. `unparseable_fragments` is for criteria you understood as relevant but \

@@ -90,6 +90,21 @@ class ScoreInput(_StrictModel):
     # ``excluded_industries``). ``None`` falls through to the NAICS-
     # derived industry-name fallback in ``aegis.scoring.match_funders``.
     industry_choice: str | None = None
+
+    # Close Opportunity ``Deal Type`` choice (``"mca"`` /
+    # ``"term_loan"`` / ``"loc"`` / …). AEGIS is MCA-focused so the
+    # default is ``"mca"``; future opportunity-side capture flips this
+    # per-deal. ``match_funder`` hard-fails when the funder publishes
+    # ``deal_types_accepted`` and ``deal_type`` isn't in the list.
+    deal_type: str = "mca"
+
+    # Close Lead-side ``Urgency`` choice (``"ASAP (24-48 hours)"`` /
+    # ``"This Week"`` / ``"Just Exploring"`` / …). ``None`` when the
+    # merchant hasn't been captured yet (legacy / pre-urgency-capture
+    # row). ``match_funder`` emits a soft concern when ``urgency``
+    # starts with ``"ASAP"`` and the funder's ``funding_velocity_days``
+    # exceeds 2 business days.
+    urgency: str | None = None
     time_in_business_months: int | None = Field(default=None, ge=0)
     credit_score: int | None = Field(default=None, ge=300, le=850)
 

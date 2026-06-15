@@ -62,6 +62,9 @@ def _fully_populated_funder() -> FunderRow:
         typical_holdback_high=Decimal("0.1500"),
         excluded_industries=("cannabis", "adult"),
         excluded_states=("NV", "SD"),
+        deal_types_accepted=("mca", "term_loan"),
+        funding_velocity_days=3,
+        preferred_states=("CA", "TX"),
         guidelines_extracted_at=datetime(2026, 4, 12, 10, 30, tzinfo=UTC),
         guidelines_source_pdf_hash="abc123",
         contact_name="James Doe",
@@ -172,6 +175,9 @@ def test_funder_row_model_fields_match_known_set() -> None:
         "typical_holdback_high",
         "excluded_industries",
         "excluded_states",
+        "deal_types_accepted",
+        "funding_velocity_days",
+        "preferred_states",
         "guidelines_extracted_at",
         "guidelines_source_pdf_hash",
         "contact_name",
@@ -339,9 +345,7 @@ def test_datetime_z_suffix_round_trip_for_guidelines_extracted_at() -> None:
     on the write side and ``datetime.fromisoformat`` (with ``Z`` ->
     ``+00:00`` swap) on the read side. Confirm UTC preservation."""
     extracted = datetime(2026, 4, 12, 10, 30, 45, tzinfo=UTC)
-    funder = _fully_populated_funder().model_copy(
-        update={"guidelines_extracted_at": extracted}
-    )
+    funder = _fully_populated_funder().model_copy(update={"guidelines_extracted_at": extracted})
     payload = _funder_to_payload(funder)
     restored = _row_to_funder(_payload_to_row_dict(payload))
 
@@ -359,6 +363,4 @@ def test_row_to_funder_handles_z_suffix_string_for_guidelines_extracted_at() -> 
     payload["guidelines_extracted_at"] = "2026-04-12T10:30:45Z"
     restored = _row_to_funder(_payload_to_row_dict(payload))
 
-    assert restored.guidelines_extracted_at == datetime(
-        2026, 4, 12, 10, 30, 45, tzinfo=UTC
-    )
+    assert restored.guidelines_extracted_at == datetime(2026, 4, 12, 10, 30, 45, tzinfo=UTC)

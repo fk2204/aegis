@@ -42,16 +42,16 @@ class FunderTier(_StrictModel):
     """
 
     name: str = Field(min_length=1)
-    buy_rate_low:  Decimal | None = None
+    buy_rate_low: Decimal | None = None
     buy_rate_high: Decimal | None = None
     min_months_in_business: Annotated[int, Field(ge=0)] | None = None
-    min_credit_score:       Annotated[int, Field(ge=300, le=850)] | None = None
-    min_monthly_revenue:    Money | None = None
-    max_positions:          Annotated[int, Field(ge=0)] | None = None
-    max_advance:            Money | None = None
+    min_credit_score: Annotated[int, Field(ge=300, le=850)] | None = None
+    min_monthly_revenue: Money | None = None
+    max_positions: Annotated[int, Field(ge=0)] | None = None
+    max_advance: Money | None = None
     # Decimal value as fraction, e.g. Decimal("0.15") for 15%.
     # Not Decimal("15") (which would be 1500%).
-    max_holdback:           Decimal | None = None
+    max_holdback: Decimal | None = None
 
     @model_validator(mode="after")
     def _buy_rate_low_le_high(self) -> Self:
@@ -130,6 +130,27 @@ class FunderRow(_StrictModel):
     excluded_industries: tuple[str, ...] = ()
     excluded_states: tuple[str, ...] = ()
 
+    # Product / velocity / preference policy (migration 056). All three
+    # consumed by ``match_funder``:
+    #
+    # * ``deal_types_accepted``: e.g. ``("mca",)`` or ``("mca", "loc",
+    #   "term_loan")``. Empty tuple = "no constraint" (legacy
+    #   behaviour). The matcher hard-fails when this is non-empty AND
+    #   the deal's type isn't in the list.
+    # * ``funding_velocity_days``: business days from clean submission
+    #   to decision. ``None`` = "not published". Drives an
+    #   ASAP-urgency soft concern in ``match_funder`` when the
+    #   merchant's Close Urgency is ``ASAP (24-48 hours)`` and the
+    #   funder takes > 2 business days.
+    # * ``preferred_states``: USPS two-letter codes the funder
+    #   prefers (informational, not exclusion). Empty = "no
+    #   preference". When non-empty AND the merchant's state isn't
+    #   in the list, the matcher emits a soft concern. Distinct
+    #   from ``excluded_states`` which hard-fails.
+    deal_types_accepted: tuple[str, ...] = ()
+    funding_velocity_days: Annotated[int, Field(ge=0)] | None = None
+    preferred_states: tuple[str, ...] = ()
+
     # Provenance — when did the latest guideline extraction run, and
     # against which PDF? Lets us re-run extraction only when the funder
     # publishes a new criteria sheet.
@@ -139,9 +160,9 @@ class FunderRow(_StrictModel):
     # Contact info — surfaced as a card at the top of the funder detail
     # page. Submission_email is the address used for sending deals;
     # contact_email is the relationship address (may be the same person).
-    contact_name:     str = ""
-    contact_phone:    str = ""
-    contact_email:    str = ""
+    contact_name: str = ""
+    contact_phone: str = ""
+    contact_email: str = ""
     submission_email: str = ""
 
     # Underwriting tiers. Empty tuple means this funder has not yet been
@@ -152,7 +173,7 @@ class FunderRow(_StrictModel):
     # Bullet-list fields extracted alongside tiers.
     #   auto_decline_conditions: absolute disqualifiers.
     #   conditional_requirements: "OK if these documents/conditions are met".
-    auto_decline_conditions:  tuple[str, ...] = ()
+    auto_decline_conditions: tuple[str, ...] = ()
     conditional_requirements: tuple[str, ...] = ()
 
     # Operator-authored commentary. Empty after a fresh extraction;
@@ -187,6 +208,9 @@ _FIELD_CONFIDENCE_KEYS: tuple[str, ...] = (
     "typical_holdback_high",
     "excluded_industries",
     "excluded_states",
+    "deal_types_accepted",
+    "funding_velocity_days",
+    "preferred_states",
     # Added in step C — extraction targets for the redesigned detail page.
     # Tiers is array-level (not per-tier or per-tier-field) for prompt
     # simplicity; operator drills into individual tiers in the review UI.

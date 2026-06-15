@@ -162,6 +162,7 @@ _MERGE_SCALAR_FIELDS: Final[tuple[str, ...]] = (
     "typical_factor_high",
     "typical_holdback_low",
     "typical_holdback_high",
+    "funding_velocity_days",
     "contact_name",
     "contact_phone",
     "contact_email",
@@ -172,6 +173,8 @@ _MERGE_SCALAR_FIELDS: Final[tuple[str, ...]] = (
 _MERGE_TUPLE_FIELDS: Final[tuple[str, ...]] = (
     "excluded_industries",
     "excluded_states",
+    "deal_types_accepted",
+    "preferred_states",
     "auto_decline_conditions",
     "conditional_requirements",
 )
@@ -246,9 +249,7 @@ def merge_extractions(
     try:
         merged_draft = FunderRow.model_validate(merged_payload)
     except ValidationError as exc:
-        raise FunderExtractionError(
-            f"merged FunderRow failed validation: {exc}"
-        ) from exc
+        raise FunderExtractionError(f"merged FunderRow failed validation: {exc}") from exc
 
     merged_confidence = _merge_confidence(parts)
     merged_unparseable = _merge_unparseable(parts)
@@ -262,9 +263,7 @@ def merge_extractions(
             overall_confidence=merged_overall,
         )
     except ValidationError as exc:
-        raise FunderExtractionError(
-            f"merged FunderGuidelineExtraction validation: {exc}"
-        ) from exc
+        raise FunderExtractionError(f"merged FunderGuidelineExtraction validation: {exc}") from exc
 
 
 def _pick_name(parts: Sequence[FunderGuidelineExtraction]) -> str:
@@ -413,6 +412,8 @@ def _coerce_draft(value: object) -> dict[str, Any]:
     for key in (
         "excluded_industries",
         "excluded_states",
+        "deal_types_accepted",
+        "preferred_states",
         "auto_decline_conditions",
         "conditional_requirements",
     ):

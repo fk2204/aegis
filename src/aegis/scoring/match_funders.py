@@ -375,6 +375,46 @@ def match_funder(
         if deal.state.upper() in {s.upper() for s in funder.excluded_states}:
             hard.append(f"state_excluded: {deal.state}")
 
+    # Deal-type policy (migration 056). When the funder publishes
+    # ``deal_types_accepted``, the deal's product must be on the
+    # list. Empty tuple = "no constraint" (legacy behaviour). Matching
+    # is case-insensitive on the canonical lowercase tokens the
+    # extractor emits (``"mca"``, ``"term_loan"``, ``"loc"``, …).
+    if funder.deal_types_accepted:
+        criteria_count += 1
+        if deal.deal_type.strip().lower() not in {
+            t.strip().lower() for t in funder.deal_types_accepted
+        }:
+            hard.append(f"deal_type_not_accepted: {deal.deal_type}")
+
+    # Funding velocity vs Close Urgency (migration 056). Soft concern
+    # only — slow funders aren't disqualified, but the operator gets a
+    # heads-up to set expectations when an ASAP merchant lands on a
+    # funder that takes longer than 2 business days. Threshold is
+    # intentionally generous: ``"ASAP (24-48 hours)"`` translates to
+    # 1-2 business days; ``> 2`` is the first level that doesn't
+    # mathematically fit.
+    if (
+        funder.funding_velocity_days is not None
+        and deal.urgency is not None
+        and deal.urgency.strip().lower().startswith("asap")
+        and funder.funding_velocity_days > 2
+    ):
+        criteria_count += 1
+        soft.append(
+            "funding_velocity_mismatch: "
+            f"asap_merchant_funder_takes_{funder.funding_velocity_days}_business_days"
+        )
+
+    # Preferred-state soft concern (migration 056). Distinct from
+    # ``excluded_states`` which hard-fails. Funder published a soft
+    # preference but will still write outside the list; operator
+    # decides whether the discount in likelihood is worth it.
+    if funder.preferred_states:
+        criteria_count += 1
+        if deal.state.upper() not in {s.upper() for s in funder.preferred_states}:
+            soft.append(f"state_not_preferred: {deal.state}")
+
     # NY § 600.21(f) broker-compensation guard.
     # For NY merchants, the chosen funder must carry
     # ``aegis_compensation_disclosure_text`` so the funder's

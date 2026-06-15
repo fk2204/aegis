@@ -64,8 +64,7 @@ class InMemoryFunderRepository:
         for existing in self._by_id.values():
             if existing.id != funder.id and existing.name.lower() == funder.name.lower():
                 raise ValueError(
-                    f"funder name conflict: '{funder.name}' already exists "
-                    f"under id={existing.id}"
+                    f"funder name conflict: '{funder.name}' already exists under id={existing.id}"
                 )
         self._by_id[funder.id] = funder
         return funder
@@ -83,12 +82,7 @@ class SupabaseFunderRepository:
 
     def get(self, funder_id: UUID) -> FunderRow:
         result = (
-            get_supabase()
-            .table("funders")
-            .select("*")
-            .eq("id", str(funder_id))
-            .limit(1)
-            .execute()
+            get_supabase().table("funders").select("*").eq("id", str(funder_id)).limit(1).execute()
         )
         if not result.data:
             raise FunderNotFoundError(str(funder_id))
@@ -96,23 +90,13 @@ class SupabaseFunderRepository:
 
     def list_active(self) -> list[FunderRow]:
         result = (
-            get_supabase()
-            .table("funders")
-            .select("*")
-            .eq("active", True)
-            .order("name")
-            .execute()
+            get_supabase().table("funders").select("*").eq("active", True).order("name").execute()
         )
         return [_row_to_funder(cast(dict[str, Any], r)) for r in (result.data or [])]
 
     def upsert(self, funder: FunderRow) -> FunderRow:
         payload = _funder_to_payload(funder)
-        result = (
-            get_supabase()
-            .table("funders")
-            .upsert(payload, on_conflict="id")
-            .execute()
-        )
+        result = get_supabase().table("funders").upsert(payload, on_conflict="id").execute()
         if not result.data:
             raise RuntimeError("supabase.upsert returned no row")
         return _row_to_funder(cast(dict[str, Any], result.data[0]))
@@ -148,27 +132,24 @@ def _row_to_funder(row: dict[str, Any]) -> FunderRow:
         max_advance=_money("max_advance"),
         max_nsf_tolerance=row.get("max_nsf_tolerance"),
         requires_coj=row.get("requires_coj", False),
-        aegis_compensation_disclosure_text=(
-            row.get("aegis_compensation_disclosure_text") or ""
-        ),
-        charges_merchant_advance_fees=row.get(
-            "charges_merchant_advance_fees", False
-        ),
+        aegis_compensation_disclosure_text=(row.get("aegis_compensation_disclosure_text") or ""),
+        charges_merchant_advance_fees=row.get("charges_merchant_advance_fees", False),
         typical_factor_low=_money("typical_factor_low"),
         typical_factor_high=_money("typical_factor_high"),
         typical_holdback_low=_money("typical_holdback_low"),
         typical_holdback_high=_money("typical_holdback_high"),
         excluded_industries=tuple(row.get("excluded_industries") or ()),
         excluded_states=tuple(row.get("excluded_states") or ()),
+        deal_types_accepted=tuple(row.get("deal_types_accepted") or ()),
+        funding_velocity_days=row.get("funding_velocity_days"),
+        preferred_states=tuple(row.get("preferred_states") or ()),
         guidelines_extracted_at=_dt("guidelines_extracted_at"),
         guidelines_source_pdf_hash=row.get("guidelines_source_pdf_hash"),
         contact_name=row.get("contact_name") or "",
         contact_phone=row.get("contact_phone") or "",
         contact_email=row.get("contact_email") or "",
         submission_email=row.get("submission_email") or "",
-        tiers=tuple(
-            FunderTier.model_validate(t) for t in (row.get("tiers") or [])
-        ),
+        tiers=tuple(FunderTier.model_validate(t) for t in (row.get("tiers") or [])),
         auto_decline_conditions=tuple(row.get("auto_decline_conditions") or ()),
         conditional_requirements=tuple(row.get("conditional_requirements") or ()),
         notes=row.get("notes") or "",
@@ -203,18 +184,21 @@ def _funder_to_payload(f: FunderRow) -> dict[str, Any]:
         "typical_holdback_high": _str_or_none(f.typical_holdback_high),
         "excluded_industries": list(f.excluded_industries),
         "excluded_states": list(f.excluded_states),
+        "deal_types_accepted": list(f.deal_types_accepted),
+        "funding_velocity_days": f.funding_velocity_days,
+        "preferred_states": list(f.preferred_states),
         "guidelines_extracted_at": (
             f.guidelines_extracted_at.isoformat() if f.guidelines_extracted_at else None
         ),
         "guidelines_source_pdf_hash": f.guidelines_source_pdf_hash,
-        "contact_name":     f.contact_name,
-        "contact_phone":    f.contact_phone,
-        "contact_email":    f.contact_email,
+        "contact_name": f.contact_name,
+        "contact_phone": f.contact_phone,
+        "contact_email": f.contact_email,
         "submission_email": f.submission_email,
         # JSONB tiers — model_dump(mode="json") serializes Decimal as
         # strings so JSON round-trips preserve precision.
         "tiers": [t.model_dump(mode="json") for t in f.tiers],
-        "auto_decline_conditions":  list(f.auto_decline_conditions),
+        "auto_decline_conditions": list(f.auto_decline_conditions),
         "conditional_requirements": list(f.conditional_requirements),
         "notes": f.notes,
         "notes_residual": f.notes_residual,
