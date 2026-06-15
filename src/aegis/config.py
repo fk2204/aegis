@@ -66,9 +66,17 @@ class Settings(BaseSettings):
     # is the "Docs In — Pre-UW" status in the Commera Sales pipeline,
     # verified 2026-05-20 via the Close MCP. If the operator renames or
     # replaces that status, override via env.
-    close_docs_in_pre_uw_status_id: str = (
-        "stat_1YZuVqdPWC8HLjWWvnXqL3NBJUPSjw3upy9mdBYXRqI"
-    )
+    close_docs_in_pre_uw_status_id: str = "stat_1YZuVqdPWC8HLjWWvnXqL3NBJUPSjw3upy9mdBYXRqI"
+    # Sprint 4 F3 — Close lifecycle audit + submission sync. When the
+    # webhook reports an opportunity status change INTO one of these
+    # IDs, ``funder_note_submissions`` for the merchant get auto-synced
+    # (Funded -> approved, Dead - Lender -> declined). Both IDs verified
+    # 2026-06-15 via the Close MCP against the live Sales pipeline.
+    # Other terminal statuses (Dead - Merchant, Dead - UW Fail) audit
+    # the transition but do NOT touch submissions because they reflect
+    # internal kills / merchant walk-aways, not funder decisions.
+    close_funded_status_id: str = "stat_OXb0lwLgcuUwNqtm7S9FjdJxRIFtTRCbFdNZUURxcwh"
+    close_dead_lender_status_id: str = "stat_jnyp9hrSneIA2b5z52Cj9EE9C98mEtlslfOlWzw7UTw"
 
     # Filename-substring filters for auto-flowing Close attachments
     # through the parser. Case-insensitive substring match against the
@@ -76,9 +84,12 @@ class Settings(BaseSettings):
     # Non-matching attachments are audited as ``close.attachment.skipped``
     # and never reach the parser. Override via comma-separated env var,
     # e.g. CLOSE_ATTACHMENT_FILENAME_FILTERS=statement,estmt,stmt,bank,monthly.
-    close_attachment_filename_filters: Annotated[
-        tuple[str, ...], NoDecode
-    ] = ("statement", "estmt", "stmt", "bank")
+    close_attachment_filename_filters: Annotated[tuple[str, ...], NoDecode] = (
+        "statement",
+        "estmt",
+        "stmt",
+        "bank",
+    )
     # Soft cap on attachments processed per orchestration run. Warn at
     # _warn_threshold (audit row), hard-cap at _hard_cap unless the
     # rescan-with-override path is taken (chunk 5). Both protect against

@@ -39,11 +39,16 @@ import hmac
 import json
 from datetime import UTC, datetime
 from typing import Annotated, Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from aegis.api.deps import get_audit, get_close_client, get_merchant_repository
+from aegis.api.deps import (
+    get_audit,
+    get_close_client,
+    get_funder_note_submission_repository,
+    get_merchant_repository,
+)
 from aegis.audit import AuditLog
 from aegis.close.client import CloseClient, CloseError
 from aegis.close.field_map import (
@@ -56,7 +61,12 @@ from aegis.close.field_map import (
     resolve_entity_type,
 )
 from aegis.close.orchestration import enqueue_close_orchestration
-from aegis.config import get_settings
+from aegis.config import Settings, get_settings
+from aegis.funder_note_submissions import (
+    FunderNoteSubmissionNotFoundError,
+    FunderNoteSubmissionRepository,
+    FunderNoteSubmissionStatus,
+)
 from aegis.logger import get_logger
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import MerchantRepository
@@ -74,6 +84,10 @@ async def close_webhook(
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
     close_client: Annotated[CloseClient, Depends(get_close_client)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
 ) -> None:
     raw_body = await request.body()
 
@@ -118,6 +132,22 @@ async def close_webhook(
         actor="close_webhook",
         action="close.webhook.received",
         details=receipt_details,
+    )
+
+    # Sprint 4 F3 — Close lifecycle audit + submission sync. Runs
+    # alongside the Pre-UW trigger and is independent of ``matches``:
+    # every opportunity status change leaves a ``deal.close_status_changed``
+    # audit row, and Funded / Dead-Lender transitions cascade to the
+    # merchant's pending funder_note_submissions. The Pre-UW trigger
+    # (which also flips status_id but to the underwriting-start state)
+    # gets an audit row with no submission sync because its mapping is
+    # ``None`` (see ``_classify_submission_status_from_close_status``).
+    _handle_lifecycle_status_change(
+        event=event,
+        settings=settings,
+        merchants=merchants,
+        funder_note_subs=funder_note_subs,
+        audit=audit,
     )
 
     if not matches:
@@ -302,6 +332,188 @@ def _build_receipt_details(
         "trigger_status_id": trigger_status_id,
         "decision": decision,
     }
+
+
+# ----------------------------------------------------------------------
+# Sprint 4 F3 — Close lifecycle audit + submission sync
+# ----------------------------------------------------------------------
+
+
+def _classify_submission_status_from_close_status(
+    *,
+    new_status_id: str,
+    settings: Settings,
+) -> FunderNoteSubmissionStatus | None:
+    """Map a Close opportunity status_id to the submission status it
+    should cascade to (or ``None`` for no submission update).
+
+    The Commera Sales pipeline has every status configured as
+    ``type=active`` -- there are no Close-native "won" / "lost" types
+    to key off, so we match the two ID-pinned terminal statuses
+    directly:
+
+    * ``Funded``          -> ``approved``  (deal closed; pending
+      submissions land on the winning track-record bucket)
+    * ``Dead - Lender``   -> ``declined``  (funder said no; the
+      pending submissions belong on the declined bucket)
+
+    Every other ID (including ``Dead - Merchant`` and
+    ``Dead - UW Fail``, both internal kills that don't reflect a
+    funder decision) returns ``None`` -- the lifecycle audit row
+    still fires but no submission rows move.
+    """
+    if new_status_id == settings.close_funded_status_id:
+        return "approved"
+    if new_status_id == settings.close_dead_lender_status_id:
+        return "declined"
+    return None
+
+
+def _handle_lifecycle_status_change(
+    *,
+    event: dict[str, Any],
+    settings: Settings,
+    merchants: MerchantRepository,
+    funder_note_subs: FunderNoteSubmissionRepository,
+    audit: AuditLog,
+) -> None:
+    """Audit + (optionally) sync ``funder_note_submissions`` for any
+    opportunity status change.
+
+    Runs in addition to the Pre-UW trigger handling -- the two paths are
+    independent and a single webhook delivery can produce a Pre-UW
+    audit + a lifecycle audit in the same request when the Close
+    operator transitions THROUGH the Pre-UW status.
+
+    Effects:
+
+    1. ``deal.close_status_changed`` audit row whenever the event is
+       an opportunity.updated whose ``changed_fields`` includes
+       ``status_id`` and the new id is non-empty. Always written even
+       when the merchant isn't resolvable from ``close_lead_id`` (so
+       the operator can investigate the orphan), and even when the
+       new status doesn't trigger a submission sync.
+    2. Forward-only submission sync: when the new status maps to
+       ``approved`` / ``declined`` via
+       ``_classify_submission_status_from_close_status`` AND the
+       merchant resolves, every pending submission for the merchant
+       updates to that status. ``InMemoryFunderNoteSubmissionRepository``
+       and the Supabase variant both stamp ``responded_at`` on the
+       first non-pending edge so the dossier history surface keeps
+       the right "responded N hours after submission" reading.
+
+    Idempotency: redeliveries are naturally safe -- the audit row
+    captures ``event_id`` so dedup is downstream, and
+    ``update_status`` is a no-op on already-non-pending rows because
+    the only pending submissions get filtered.
+    """
+    if event.get("action") != "updated":
+        return
+    if event.get("object_type") != "opportunity":
+        return
+    changed_fields = event.get("changed_fields") or []
+    if "status_id" not in changed_fields:
+        return
+
+    data = event.get("data") or {}
+    new_status_id = data.get("status_id")
+    if not isinstance(new_status_id, str) or not new_status_id:
+        return
+
+    lead_id_raw = event.get("lead_id")
+    lead_id = lead_id_raw if isinstance(lead_id_raw, str) and lead_id_raw else None
+
+    merchant: MerchantRow | None = None
+    if lead_id is not None:
+        try:
+            merchant = merchants.find_by_close_lead_id(lead_id)
+        except Exception:
+            _log.warning(
+                "close_webhook.lifecycle_merchant_lookup_failed lead_id=%s",
+                lead_id,
+                exc_info=True,
+            )
+            merchant = None
+
+    new_submission_status = _classify_submission_status_from_close_status(
+        new_status_id=new_status_id,
+        settings=settings,
+    )
+
+    previous_data = event.get("previous_data") or {}
+    previous_status_id = previous_data.get("status_id")
+    if not isinstance(previous_status_id, str):
+        previous_status_id = None
+
+    synced_ids: list[str] = []
+    if new_submission_status is not None and merchant is not None:
+        synced_ids = _sync_pending_submissions(
+            merchant_id=merchant.id,
+            target_status=new_submission_status,
+            funder_note_subs=funder_note_subs,
+            close_lead_id=lead_id,
+        )
+
+    audit.record(
+        actor="close_webhook",
+        action="deal.close_status_changed",
+        details={
+            "event_id": event.get("id"),
+            "close_lead_id": lead_id,
+            "close_opportunity_id": event.get("object_id"),
+            "merchant_id": str(merchant.id) if merchant is not None else None,
+            "previous_status_id": previous_status_id,
+            "new_status_id": new_status_id,
+            "synced_submission_status": new_submission_status,
+            "synced_submission_ids": synced_ids,
+        },
+    )
+
+
+def _sync_pending_submissions(
+    *,
+    merchant_id: UUID,
+    target_status: FunderNoteSubmissionStatus,
+    funder_note_subs: FunderNoteSubmissionRepository,
+    close_lead_id: str | None,
+) -> list[str]:
+    """Walk every pending submission for the merchant and flip it to
+    ``target_status``. Returns the list of submission ids that were
+    actually updated so the audit row surfaces the cascade.
+
+    Forward-only: already-non-pending submissions are skipped, so a
+    redelivery (or an operator who pre-set a row by hand) leaves the
+    earlier non-pending value alone.
+    """
+    try:
+        rows = funder_note_subs.list_for_merchant(merchant_id, limit=200)
+    except Exception:
+        _log.warning(
+            "close_webhook.lifecycle_submissions_fetch_failed lead_id=%s",
+            close_lead_id,
+            exc_info=True,
+        )
+        return []
+
+    updated: list[str] = []
+    for row in rows:
+        if row.status != "pending":
+            continue
+        try:
+            funder_note_subs.update_status(
+                row.id,
+                status=target_status,
+                notes="auto-synced from Close opportunity status change",
+            )
+        except FunderNoteSubmissionNotFoundError:
+            # Concurrent delete -- treat as already-handled, log + skip.
+            _log.warning(
+                "close_webhook.lifecycle_submission_missing submission_id=%s",
+                row.id,
+            )
+            continue
+        updated.append(str(row.id))
+    return updated
 
 
 # ----------------------------------------------------------------------
