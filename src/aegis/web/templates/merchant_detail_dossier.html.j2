@@ -571,12 +571,34 @@
               <span class="qual">{{ mca_stack.largest_single_mca_lender or '—' }} (monthly)</span>
             </div>
           {% endif %}
+          {# Balance-health chips — shadow-only decline triggers; live decline
+             still governed by days_negative > 15 per score.py. Hidden when
+             the aggregation produced no balance data. #}
+          {% if balance_health and balance_health.lowest_balance_date is not none %}
+            <div class="{% if 'low_adb_shadow' in (balance_health.shadow_triggers | join(' ')) %}warn{% endif %}">
+              <span class="k">ADB % of Deposits</span>
+              <span class="v">{% if balance_health.adb_as_pct_of_monthly_deposits is none %}—{% else %}{{ balance_health.adb_as_pct_of_monthly_deposits }}%{% endif %}</span>
+              <span class="qual">avg daily balance / monthly gross deposits</span>
+            </div>
+            <div class="{% if 'negative_days_shadow' in (balance_health.shadow_triggers | join(' ')) %}warn{% endif %}">
+              <span class="k">Neg Days (trailing 3m)</span>
+              <span class="v">{{ balance_health.negative_days_trailing_3m }}</span>
+              <span class="qual">days with end-of-day balance ≤ 0 in last 90 days</span>
+            </div>
+          {% endif %}
         </div>
         {% if mca_stack and mca_stack.shadow_triggers %}
           <p class="marginalia">
             <strong>Shadow trigger{{ '' if mca_stack.shadow_triggers|length == 1 else 's' }}:</strong>
             {{ mca_stack.shadow_triggers | join(' · ') }}
             <em>(annotation only — live decline still governed by debt_to_revenue &gt; 40% / mca_positions &gt; 2)</em>
+          </p>
+        {% endif %}
+        {% if balance_health and balance_health.shadow_triggers %}
+          <p class="marginalia">
+            <strong>Shadow trigger{{ '' if balance_health.shadow_triggers|length == 1 else 's' }}:</strong>
+            {{ balance_health.shadow_triggers | join(' · ') }}
+            <em>(annotation only — live decline still governed by days_negative &gt; 15)</em>
           </p>
         {% endif %}
 

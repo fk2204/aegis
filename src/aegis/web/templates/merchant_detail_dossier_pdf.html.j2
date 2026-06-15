@@ -194,9 +194,16 @@
     <tr><td class="k">Largest single MCA</td><td class="v">{{ mca_stack.largest_single_mca_monthly | whole_money }}</td><td class="q">{{ mca_stack.largest_single_mca_lender or '—' }} (monthly)</td></tr>
     {% endif %}
     <tr><td class="k">Debt to revenue</td><td class="v">{{ analysis.debt_to_revenue }}</td><td class="q">monthly MCA burden / monthly revenue</td></tr>
+    {% if balance_health and balance_health.lowest_balance_date is not none %}
+    <tr><td class="k">ADB % of deposits</td><td class="v">{% if balance_health.adb_as_pct_of_monthly_deposits is none %}—{% else %}{{ balance_health.adb_as_pct_of_monthly_deposits }}%{% endif %}</td><td class="q">avg daily balance / monthly gross deposits</td></tr>
+    <tr><td class="k">Neg days (trailing 3m)</td><td class="v">{{ balance_health.negative_days_trailing_3m }}</td><td class="q">days with end-of-day balance ≤ 0 in last 90 days</td></tr>
+    {% endif %}
   </table>
   {% if mca_stack and mca_stack.shadow_triggers %}
   <p class="meta"><strong>Shadow trigger{{ '' if mca_stack.shadow_triggers|length == 1 else 's' }}:</strong> {{ mca_stack.shadow_triggers | join(' · ') }} — annotation only; live decline still governed by debt_to_revenue &gt; 40% / mca_positions &gt; 2.</p>
+  {% endif %}
+  {% if balance_health and balance_health.shadow_triggers %}
+  <p class="meta"><strong>Shadow trigger{{ '' if balance_health.shadow_triggers|length == 1 else 's' }}:</strong> {{ balance_health.shadow_triggers | join(' · ') }} — annotation only; live decline still governed by days_negative &gt; 15.</p>
   {% endif %}
 </section>
 {% endif %}

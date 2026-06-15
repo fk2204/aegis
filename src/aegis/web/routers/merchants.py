@@ -91,6 +91,7 @@ from aegis.scoring.multi_month import (
 from aegis.scoring.ofac import OFACClient, OFACStaleError
 from aegis.scoring.score import score_deal
 from aegis.scoring.submission_package import build_submission_files
+from aegis.scoring_v2.balance_health import compute_balance_health
 from aegis.scoring_v2.mca_stack import aggregate_mca_stack
 from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
 from aegis.storage import (
@@ -1161,6 +1162,7 @@ async def merchant_detail(
     score_result = None
     stacking = None
     mca_stack = None
+    balance_health = None
     score_window = None
     bundle_summaries: list[dict[str, Any]] = []
     statement_coverage: dict[str, Any] | None = None
@@ -1196,6 +1198,10 @@ async def merchant_detail(
         mca_stack = aggregate_mca_stack(
             transactions=latest_transactions,
             monthly_revenue=latest_analysis.monthly_revenue,
+            period_days=latest_analysis.statement_days,
+        )
+        balance_health = compute_balance_health(
+            transactions=latest_transactions,
             period_days=latest_analysis.statement_days,
         )
         pattern_analysis = _dossier_pattern_analysis(latest_analysis, latest_transactions)
@@ -1376,6 +1382,7 @@ async def merchant_detail(
             "statement_coverage": statement_coverage,
             "stacking": stacking,
             "mca_stack": mca_stack,
+            "balance_health": balance_health,
             "state_tier": state_tier_dossier,
             "ofac_status": ofac_dossier_status,
             "ofac_match": ofac_match,
@@ -1466,6 +1473,7 @@ def _build_pdf_dossier_context(
     statement_coverage: dict[str, Any] | None = None
     stacking = None
     mca_stack = None
+    balance_health = None
     pattern_cards: list[Any] = []
     pattern_analysis_for_view: Any = None
 
@@ -1485,6 +1493,10 @@ def _build_pdf_dossier_context(
         mca_stack = aggregate_mca_stack(
             transactions=latest_transactions,
             monthly_revenue=latest_analysis.monthly_revenue,
+            period_days=latest_analysis.statement_days,
+        )
+        balance_health = compute_balance_health(
+            transactions=latest_transactions,
             period_days=latest_analysis.statement_days,
         )
         pattern_analysis = _dossier_pattern_analysis(latest_analysis, latest_transactions)
@@ -1584,6 +1596,7 @@ def _build_pdf_dossier_context(
         "statement_coverage": statement_coverage,
         "stacking": stacking,
         "mca_stack": mca_stack,
+        "balance_health": balance_health,
         "pattern_cards": pattern_cards,
         "has_concentration_pattern": pattern_has_customer_concentration(pattern_analysis_for_view),
         "state_tier": state_tier_dossier,
