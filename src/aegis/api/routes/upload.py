@@ -180,9 +180,7 @@ async def persist_pdf_upload(
     fetched it first.
     """
     if not body:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="upload is empty"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="upload is empty")
     if not body.startswith(_PDF_MAGIC):
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -366,9 +364,7 @@ async def upload_from_close(
         if exc.status_code == 404 or "cache miss" in str(exc):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=(
-                    f"close attachment {body.attachment_id!r} not found"
-                ),
+                detail=(f"close attachment {body.attachment_id!r} not found"),
             ) from exc
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -441,6 +437,21 @@ def _resolve_merchant_id_for_upload(
       * Only ``merchant_id`` supplied -> use it
       * Only ``close_lead_id`` supplied -> look up merchant, 404 if missing
       * Both supplied -> they must point at the same merchant, else 400
+
+    NOTE — ``documents.merchant_id`` is intentionally NULL-able to
+    support this "neither supplied" branch. The bearer API path is
+    used for ad-hoc upload tooling that pre-dates the Close-linked
+    merchant flow; workers that read parsed docs check
+    ``doc.merchant_id is None`` and skip merchant-scoped work (see
+    ``workers._finalize_or_flag_merchant_from_statement`` and
+    ``deals/repository.py`` which excludes orphans from the deals
+    view). Track A's cutover-readiness lookback
+    (``scripts/track_a_historical_lookback.py``) accepts
+    ``--skip-orphans`` so a stale orphan can't FAIL the cutover gate.
+    Tightening this to require a merchant_id is a coordinated change
+    across the route, workers, FK (currently ``ON DELETE SET NULL``)
+    and existing orphan rows; do not narrow this signature in
+    isolation. Discussion 2026-06-15.
     """
     if close_lead_id is None:
         return merchant_id
@@ -449,10 +460,7 @@ def _resolve_merchant_id_for_upload(
     if found is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                f"no AEGIS merchant linked to close_lead_id "
-                f"{close_lead_id!r}"
-            ),
+            detail=(f"no AEGIS merchant linked to close_lead_id {close_lead_id!r}"),
         )
 
     if merchant_id is not None and merchant_id != found.id:
@@ -499,9 +507,7 @@ def _resolve_actor(request: Request) -> str:
     return f"token:{digest[:8]}"
 
 
-async def _enqueue_parse_job(
-    request: Request, *, document_id: UUID, pdf_path: str
-) -> None:
+async def _enqueue_parse_job(request: Request, *, document_id: UUID, pdf_path: str) -> None:
     """Enqueue ``parse_document`` on the arq queue.
 
     Uses ``request.app.state.arq_pool`` if present (set in app startup) so
@@ -529,8 +535,10 @@ def _make_request_enqueue(request: Request) -> EnqueueParse:
     arq orchestration worker composes a different callable that talks
     to ``ctx['redis']`` directly. Both reach the same persist path.
     """
+
     async def _enqueue(document_id: UUID, pdf_path: str) -> None:
         await _enqueue_parse_job(request, document_id=document_id, pdf_path=pdf_path)
+
     return _enqueue
 
 
