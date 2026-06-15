@@ -115,6 +115,19 @@ class MerchantRow(_StrictModel):
     # regulator-facing renewal disclosures (see CLAUDE.md mission statement).
     maturity_date: date | None = None
 
+    # Document-on-file flags (migration 061 — Feature 2). Capture the
+    # operator's confirmation that each conditionally-required document
+    # has been collected. Read by the document-completeness checker
+    # (``aegis.merchants.document_completeness.check_completeness``) at
+    # submit-to-funder time against the top matched funder's
+    # ``conditional_requirements`` string list. Defaults match the DB
+    # DEFAULTs so a row that pre-dates migration 061 reads safely as
+    # "operator hasn't checked the box yet" rather than silently
+    # passing the gate.
+    voided_check_on_file: bool = False
+    drivers_license_on_file: bool = False
+    bank_statements_months: Annotated[int, Field(ge=0)] = 0
+
     # Operator-curated funder pick after reviewing matches. The UI button
     # to set this is deferred (Phase 7 audit decision); column lives here
     # so the future button is a no-migration patch.

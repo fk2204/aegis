@@ -659,6 +659,12 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         intake_date=_parse_date(row.get("intake_date")),
         is_renewal=bool(row.get("is_renewal", False)),
         maturity_date=_parse_date(row.get("maturity_date")),
+        # Migration 061 — document-on-file flags. Default to False / 0
+        # so pre-061 reads (replica, restored backup) surface as
+        # "operator must check" rather than silently passing the gate.
+        voided_check_on_file=bool(row.get("voided_check_on_file", False)),
+        drivers_license_on_file=bool(row.get("drivers_license_on_file", False)),
+        bank_statements_months=int(row.get("bank_statements_months") or 0),
         preferred_funder_id=(
             UUID(row["preferred_funder_id"]) if row.get("preferred_funder_id") else None
         ),
@@ -718,6 +724,9 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "intake_date": m.intake_date.isoformat() if m.intake_date else None,
         "is_renewal": m.is_renewal,
         "maturity_date": m.maturity_date.isoformat() if m.maturity_date else None,
+        "voided_check_on_file": m.voided_check_on_file,
+        "drivers_license_on_file": m.drivers_license_on_file,
+        "bank_statements_months": m.bank_statements_months,
         "preferred_funder_id": (str(m.preferred_funder_id) if m.preferred_funder_id else None),
         "close_lead_id": m.close_lead_id,
         "close_opportunity_id": m.close_opportunity_id,

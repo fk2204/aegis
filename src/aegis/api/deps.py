@@ -128,6 +128,17 @@ def get_merchant_repository() -> MerchantRepository:
 
 
 @lru_cache(maxsize=1)
+def get_renewal_attestation_repository() -> RenewalAttestationRepository:
+    """Process-wide RenewalAttestationRepository (U6 — migration 040).
+
+    Same memory / supabase toggle as the merchant repository.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryRenewalAttestationRepository()
+    return SupabaseRenewalAttestationRepository()
+
+
+@lru_cache(maxsize=1)
 def get_pdf_store_repository() -> PdfStoreRepository:
     """Process-wide PdfStoreRepository (migration 060 — chunk B + C).
 
@@ -140,17 +151,6 @@ def get_pdf_store_repository() -> PdfStoreRepository:
     if get_settings().aegis_storage_backend == "memory":
         return InMemoryPdfStoreRepository()
     return SupabasePdfStoreRepository()
-
-
-@lru_cache(maxsize=1)
-def get_renewal_attestation_repository() -> RenewalAttestationRepository:
-    """Process-wide RenewalAttestationRepository (U6 — migration 040).
-
-    Same memory / supabase toggle as the merchant repository.
-    """
-    if get_settings().aegis_storage_backend == "memory":
-        return InMemoryRenewalAttestationRepository()
-    return SupabaseRenewalAttestationRepository()
 
 
 @lru_cache(maxsize=1)
@@ -347,7 +347,6 @@ def reset_dependency_caches() -> None:
     get_repository.cache_clear()
     get_merchant_repository.cache_clear()
     get_renewal_attestation_repository.cache_clear()
-    get_pdf_store_repository.cache_clear()
     get_merchant_shadow_signal_repository.cache_clear()
     get_funder_repository.cache_clear()
     get_deal_repository.cache_clear()
@@ -360,6 +359,7 @@ def reset_dependency_caches() -> None:
     get_submission_repository.cache_clear()
     get_funder_note_submission_repository.cache_clear()
     get_bank_layout_repository.cache_clear()
+    get_pdf_store_repository.cache_clear()
     get_schema_migrations_reader.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()

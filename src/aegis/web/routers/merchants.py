@@ -72,6 +72,10 @@ from aegis.funders.repository import (
     FunderNotFoundError,
     FunderRepository,
 )
+from aegis.merchants.document_completeness import (
+    DocumentCompletenessWarning,
+    check_completeness,
+)
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import (
     MerchantConflictError,
@@ -846,6 +850,28 @@ async def merchant_submit_to_funder(
             continue
         matched.append(m)
     matched.sort(key=lambda fm: fm.match_score, reverse=True)
+
+    # Document-completeness gate (Feature 2 — 2026-06-15 operator
+    # directive). Before posting the Close Note, check the top matched
+    # funder's ``conditional_requirements`` against the merchant's
+    # document-on-file flags (migration 061). Refuse with 400 +
+    # warning detail when anything required is missing — the operator
+    # toggles the flag on /ui/merchants/{id}/edit and retries. Empty
+    # ``matched`` short-circuits the check (the no-match branch
+    # downstream already records ``submission_skipped_no_matches``).
+    if matched:
+        top_funder = funder_repo.get(matched[0].funder_id)
+        completeness_warnings = check_completeness(merchant=merchant, funder=top_funder)
+        if completeness_warnings:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "document_completeness_failed",
+                    "top_funder_id": str(top_funder.id),
+                    "top_funder_name": top_funder.name,
+                    "warnings": [w.model_dump() for w in completeness_warnings],
+                },
+            )
 
     note_text = format_funder_note(
         merchant=merchant,
@@ -1880,6 +1906,26 @@ async def merchant_detail(
     # the empty-state copy).
     funder_note_submissions = funder_note_subs.list_for_merchant(merchant_id=merchant_id, limit=50)
 
+    # Document-completeness checklist (Feature 2 — 2026-06-15). Compute
+    # warnings against the top matched funder so the operator sees what
+    # the submit-to-funder gate will require before clicking. Skipped
+    # when the merchant isn't yet scoreable (no score_result) — the
+    # button is hidden / disabled in that branch anyway. Also skipped
+    # when no funder matches — the submit-to-funder POST also short-
+    # circuits the check in the same branch.
+    top_matched_funder: FunderRow | None = None
+    completeness_warnings: list[DocumentCompletenessWarning] = []
+    if score_result is not None and score_input is not None:
+        _matched: list[FunderMatch] = []
+        for _f in funder_repo.list_active():
+            _m = match_funder(_f, score_input, score_result)
+            if _m is not None:
+                _matched.append(_m)
+        if _matched:
+            _matched.sort(key=lambda fm: fm.match_score, reverse=True)
+            top_matched_funder = funder_repo.get(_matched[0].funder_id)
+            completeness_warnings = check_completeness(merchant=merchant, funder=top_matched_funder)
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -1915,6 +1961,13 @@ async def merchant_detail(
             "merchant_shadow_signals": merchant_shadow_signals,
             "revenue_trends": revenue_trends,
             "funder_note_submissions": funder_note_submissions,
+            "doc_checklist": {
+                "voided_check_on_file": merchant.voided_check_on_file,
+                "drivers_license_on_file": merchant.drivers_license_on_file,
+                "bank_statements_months": merchant.bank_statements_months,
+            },
+            "completeness_warnings": [w.model_dump() for w in completeness_warnings],
+            "top_matched_funder_name": (top_matched_funder.name if top_matched_funder else None),
         },
     )
 

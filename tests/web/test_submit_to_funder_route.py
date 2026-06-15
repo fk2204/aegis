@@ -270,3 +270,91 @@ def test_submit_to_funder_400_when_no_close_lead_id(
     assert "close_lead_id" in resp.json()["detail"]
     assert close_post_calls == []
     assert funder_note_subs.list_for_merchant(merchant.id) == []
+
+
+def test_submit_to_funder_400_when_top_funder_requires_missing_documents(
+    client: TestClient,
+    merchants: InMemoryMerchantRepository,
+    docs: InMemoryDocumentRepository,
+    funder_repo: InMemoryFunderRepository,
+    funder_note_subs: InMemoryFunderNoteSubmissionRepository,
+    close_post_calls: list[dict[str, Any]],
+) -> None:
+    """Document-completeness gate (Feature 2 — 2026-06-15). The top
+    matched funder requires a voided check + 6 months of bank
+    statements. The seeded merchant has neither flag set. Submit-to-
+    Funder must refuse 400 with a detail dict listing the warnings,
+    and must NOT call Close.
+    """
+    merchant = _seed_analyzed_merchant(merchants, docs)
+    funder = FunderRow(
+        name="Strict Capital",
+        min_monthly_revenue=Decimal("1000"),
+        max_positions=10,
+        active=True,
+        conditional_requirements=(
+            "Voided check required at funding",
+            "Last 6 months bank statements",
+        ),
+    )
+    funder_repo.upsert(funder)
+
+    resp = client.post(f"/ui/merchants/{merchant.id}/submit-to-funder")
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["detail"]["error"] == "document_completeness_failed"
+    assert body["detail"]["top_funder_name"] == "Strict Capital"
+    tokens = {w["requirement_kind"] for w in body["detail"]["warnings"]}
+    assert tokens == {"voided_check", "bank_statements_months"}
+
+    # Close was NOT called and no durable submission row was created.
+    assert close_post_calls == []
+    assert funder_note_subs.list_for_merchant(merchant.id) == []
+
+
+def test_submit_to_funder_clears_gate_when_doc_flags_are_set(
+    client: TestClient,
+    merchants: InMemoryMerchantRepository,
+    docs: InMemoryDocumentRepository,
+    funder_repo: InMemoryFunderRepository,
+    funder_note_subs: InMemoryFunderNoteSubmissionRepository,
+    close_post_calls: list[dict[str, Any]],
+) -> None:
+    """Same strict funder as the gate-fail case above, but the
+    merchant now has the on-file flags set. Route 200s + writes the
+    durable row + Close was called exactly once."""
+    merchant = MerchantRow(
+        business_name="Acme Painting LLC",
+        owner_name="Jane Owner",
+        state="CA",
+        close_lead_id="lead_abc",
+        status="finalized",
+        voided_check_on_file=True,
+        bank_statements_months=6,
+    )
+    merchants.upsert(merchant)
+    doc = docs.create_document(
+        file_hash=uuid4().hex + uuid4().hex,
+        byte_size=1024,
+        original_filename="stmt.pdf",
+    )
+    doc = doc.model_copy(update={"merchant_id": merchant.id})
+    docs._docs[doc.id] = doc
+    docs.persist_parse_result(doc.id, result=_make_pipeline_result(), merchant_id=merchant.id)
+
+    funder = FunderRow(
+        name="Strict Capital",
+        min_monthly_revenue=Decimal("1000"),
+        max_positions=10,
+        active=True,
+        conditional_requirements=(
+            "Voided check required at funding",
+            "Last 6 months bank statements",
+        ),
+    )
+    funder_repo.upsert(funder)
+
+    resp = client.post(f"/ui/merchants/{merchant.id}/submit-to-funder")
+    assert resp.status_code == 200, resp.text
+    assert len(close_post_calls) == 1
+    assert len(funder_note_subs.list_for_merchant(merchant.id)) == 1

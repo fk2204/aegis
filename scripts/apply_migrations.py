@@ -481,9 +481,6 @@ MIGRATION_PROBES: dict[str, str] = {
         "AND column_name='notes'"
     ),
     "059_bank_layouts.sql": (
-        # 059 creates the bank_layouts table. Existence of the table
-        # is the load-bearing artifact; the index lands in the same
-        # transaction or fails it.
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='bank_layouts'"
     ),
@@ -495,6 +492,15 @@ MIGRATION_PROBES: dict[str, str] = {
         # the same transaction or fail it.
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='pdf_store'"
+    ),
+    "061_merchant_doc_flags.sql": (
+        # 061 adds three columns to merchants for the document-completeness
+        # checker. ``voided_check_on_file`` is the first ADD COLUMN — the
+        # other two land in the same migration body or fail it together,
+        # so probing on the first column is sufficient.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='voided_check_on_file'"
     ),
 }
 
