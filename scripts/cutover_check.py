@@ -147,6 +147,13 @@ def _build_specs(target: str) -> list[CheckSpec]:
             label="Track A historical lookback",
             cmd=_python_argv(
                 str(REPO_ROOT / "scripts" / "track_a_historical_lookback.py"),
+                # Orphaned documents (merchant_id IS NULL) have no
+                # merchant context for Track A to reason about — they
+                # would surface as false-positive misses and FAIL the
+                # cutover gate for noise rather than a real regression.
+                # Future inserts will be blocked at the schema level
+                # (migration 059); this flag handles legacy orphans.
+                "--skip-orphans",
             ),
             pass_codes=_TRACK_A_PASS_CODES,
         ),

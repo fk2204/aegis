@@ -384,6 +384,16 @@ def test_build_specs_track_a_rejects_exit_3() -> None:
     assert 3 not in track_a.pass_codes
 
 
+def test_build_specs_track_a_passes_skip_orphans_flag() -> None:
+    """The cutover gate must call the lookback with --skip-orphans so
+    a single orphan document (merchant_id IS NULL) can't FAIL the
+    whole gate. Removing this flag would re-introduce the false
+    positive that motivated commit f3edc4a-ish (see 2026-06-15)."""
+    specs = cutover_check._build_specs("prod")
+    track_a = next(s for s in specs if s.name == "track_a")
+    assert "--skip-orphans" in track_a.cmd
+
+
 # ---------------------------------------------------------------------------
 # Smoke: subprocess.run uses argv list (no shell), prevents injection
 # ---------------------------------------------------------------------------

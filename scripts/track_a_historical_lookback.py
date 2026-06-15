@@ -102,9 +102,7 @@ def _extract_math_failures(all_flags: list[str]) -> tuple[str, ...]:
     strip the ``[MATH] `` prefix and forward the rest.
     """
     return tuple(
-        f[len("[MATH] "):]
-        for f in all_flags
-        if isinstance(f, str) and f.startswith("[MATH] ")
+        f[len("[MATH] ") :] for f in all_flags if isinstance(f, str) and f.startswith("[MATH] ")
     )
 
 
@@ -120,9 +118,7 @@ def _integrity_signals_from_document(doc: DocumentRow) -> DocumentIntegritySigna
     )
 
 
-def evaluate_document(
-    doc: DocumentRow, *, threshold: int = HARD_DECLINE_THRESHOLD
-) -> LookbackRow:
+def evaluate_document(doc: DocumentRow, *, threshold: int = HARD_DECLINE_THRESHOLD) -> LookbackRow:
     """Compute the lookback row for one document.
 
     Pure — no DB access. Useful for unit tests and for any caller that
@@ -140,9 +136,7 @@ def evaluate_document(
     math_score = int(breakdown.get("math", 0))
     legacy_would_decline = (doc.fraud_score or 0) >= threshold
 
-    verdict: IntegrityVerdict = compute_integrity_verdict(
-        _integrity_signals_from_document(doc)
-    )
+    verdict: IntegrityVerdict = compute_integrity_verdict(_integrity_signals_from_document(doc))
 
     is_miss = legacy_would_decline and verdict.verdict != "fail"
 
@@ -183,7 +177,11 @@ class _DocSource(Protocol):
 
 
 def run_lookback(
-    source: _DocSource, *, threshold: int = HARD_DECLINE_THRESHOLD, limit: int = 1000
+    source: _DocSource,
+    *,
+    threshold: int = HARD_DECLINE_THRESHOLD,
+    limit: int = 1000,
+    skip_orphans: bool = False,
 ) -> list[LookbackRow]:
     """Iterate documents that would have hit the legacy hard-decline
     and produce the lookback rows.
@@ -192,11 +190,20 @@ def run_lookback(
     the question this lookback answers is "did Track A catch what
     the legacy rule caught?", not "did Track A agree on clean deals."
 
+    ``skip_orphans=True`` drops documents with no ``merchant_id``
+    BEFORE evaluation. An orphan has no merchant context for Track A
+    to reason about (no industry tier, no monthly_breakdown, no MCA
+    stack), so scoring it as a regression is noise. The cutover gate
+    consumes this mode; ad-hoc audits keep the default off so the
+    operator can still see orphans surface.
+
     The limit is hard. A future paginated variant can lift it if the
     operator's corpus grows past the cap.
     """
     rows: list[LookbackRow] = []
     for doc in source.list_documents(limit=limit):
+        if skip_orphans and doc.merchant_id is None:
+            continue
         evaluated = evaluate_document(doc, threshold=threshold)
         if evaluated.legacy_would_decline:
             rows.append(evaluated)
@@ -274,6 +281,17 @@ def _parse_args() -> argparse.Namespace:
         default=1000,
         help="Document scan cap (default: 1000).",
     )
+    p.add_argument(
+        "--skip-orphans",
+        action="store_true",
+        help=(
+            "Skip documents whose merchant_id is NULL. Track A reasoning "
+            "depends on merchant context (industry, stack, monthly buckets); "
+            "an orphan can't be meaningfully evaluated and reading it as a "
+            "regression is false-positive noise. The cutover gate enables "
+            "this; ad-hoc audits leave it off so orphans still surface."
+        ),
+    )
     return p.parse_args()
 
 
@@ -298,7 +316,12 @@ def main() -> int:
         return EXIT_RUNTIME_ERROR
 
     try:
-        rows = run_lookback(repo, threshold=args.threshold, limit=args.limit)
+        rows = run_lookback(
+            repo,
+            threshold=args.threshold,
+            limit=args.limit,
+            skip_orphans=args.skip_orphans,
+        )
     except Exception as exc:
         # Same posture as the init guard above — keep the CLI exit-code
         # contract intact regardless of which layer raised.

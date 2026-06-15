@@ -25,6 +25,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -41,14 +43,20 @@ def _doc(
     math_score: int = 0,
     metadata_flags: tuple[str, ...] = (),
     all_flags: tuple[str, ...] = (),
+    merchant_id: object = ...,
 ) -> DocumentRow:
-    """Minimal DocumentRow with the integrity-relevant fields populated."""
+    """Minimal DocumentRow with the integrity-relevant fields populated.
+
+    ``merchant_id`` defaults to a fresh UUID; pass ``None`` explicitly
+    to build an orphaned document for the skip-orphans tests.
+    """
+    mid = uuid4() if merchant_id is ... else merchant_id
     return DocumentRow(
         id=uuid4(),
         file_hash=f"sha256-{uuid4().hex}",
         byte_size=1024,
         original_filename="stmt.pdf",
-        merchant_id=uuid4(),
+        merchant_id=mid,
         parse_status="manual_review",
         fraud_score=fraud_score,
         fraud_score_breakdown={"metadata": metadata_score, "math": math_score},
@@ -139,9 +147,7 @@ def test_decline_but_track_a_clean_is_a_miss() -> None:
 def test_threshold_boundary_strict_gte() -> None:
     """Legacy gate is ``>=``. fraud_score=65 declines; fraud_score=64 doesn't."""
     at = lookback.evaluate_document(_doc(fraud_score=HARD_DECLINE_THRESHOLD))
-    just_under = lookback.evaluate_document(
-        _doc(fraud_score=HARD_DECLINE_THRESHOLD - 1)
-    )
+    just_under = lookback.evaluate_document(_doc(fraud_score=HARD_DECLINE_THRESHOLD - 1))
     assert at.legacy_would_decline is True
     assert just_under.legacy_would_decline is False
 
@@ -177,9 +183,9 @@ def test_run_lookback_filters_to_legacy_declines_only() -> None:
     ``do they agree on clean deals``."""
     repo = _FakeRepo(
         docs=[
-            _doc(fraud_score=10, metadata_score=0),   # clean
+            _doc(fraud_score=10, metadata_score=0),  # clean
             _doc(fraud_score=70, metadata_score=70),  # decline + Track A fail
-            _doc(fraud_score=20, metadata_score=5),   # clean
+            _doc(fraud_score=20, metadata_score=5),  # clean
             _doc(
                 fraud_score=66,
                 metadata_score=30,
@@ -198,6 +204,93 @@ def test_run_lookback_honors_limit() -> None:
     repo = _FakeRepo(docs=[_doc(fraud_score=80, metadata_score=70) for _ in range(20)])
     rows = lookback.run_lookback(repo, limit=5)
     assert len(rows) == 5
+
+
+# ----------------------------------------------------------------------
+# --skip-orphans
+# ----------------------------------------------------------------------
+
+
+def test_run_lookback_default_includes_orphans() -> None:
+    """An orphan (merchant_id IS NULL) that legacy would decline AND
+    Track A would NOT fail is a miss in the default mode — operators
+    running ad-hoc audits still want to see orphans surface."""
+    repo = _FakeRepo(
+        docs=[
+            _doc(
+                fraud_score=66,
+                metadata_score=30,
+                all_flags=("[MATH] reconciliation_failed_period: x",),
+                merchant_id=None,
+            ),
+        ]
+    )
+    rows = lookback.run_lookback(repo)
+    assert len(rows) == 1
+    assert rows[0].merchant_id == ""  # serialised empty when no merchant
+    assert rows[0].is_miss is True
+
+
+def test_run_lookback_skip_orphans_drops_orphan_misses() -> None:
+    """``skip_orphans=True`` filters documents with merchant_id IS NULL
+    BEFORE evaluation — they don't surface as misses and don't
+    contribute to the cutover-gate failure count."""
+    repo = _FakeRepo(
+        docs=[
+            # Orphan that WOULD be a miss without skipping
+            _doc(
+                fraud_score=66,
+                metadata_score=30,
+                all_flags=("[MATH] reconciliation_failed_period: x",),
+                merchant_id=None,
+            ),
+            # Real-merchant decline that Track A correctly fails (not a miss)
+            _doc(fraud_score=80, metadata_score=70),
+        ]
+    )
+    rows = lookback.run_lookback(repo, skip_orphans=True)
+    assert len(rows) == 1
+    assert rows[0].track_a_verdict == "fail"
+    assert rows[0].is_miss is False
+
+
+def test_run_lookback_skip_orphans_preserves_real_misses() -> None:
+    """skip_orphans must NOT silently swallow real regressions on
+    merchant-linked documents — orphan filter applies ONLY to NULL
+    merchant_id rows."""
+    repo = _FakeRepo(
+        docs=[
+            _doc(
+                fraud_score=66,
+                metadata_score=30,
+                all_flags=("[MATH] reconciliation_failed_period: x",),
+            ),
+            _doc(fraud_score=20, metadata_score=5, merchant_id=None),  # orphan, clean
+        ]
+    )
+    rows = lookback.run_lookback(repo, skip_orphans=True)
+    assert len(rows) == 1
+    assert rows[0].is_miss is True
+
+
+def test_cli_accepts_skip_orphans_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """argparse must accept --skip-orphans without raising. The flag
+    threads through to run_lookback via main(); cutover_check passes
+    it verbatim."""
+    import argparse
+
+    monkeypatch.setattr(sys, "argv", ["lookback", "--skip-orphans"])
+    ns = lookback._parse_args()
+    assert isinstance(ns, argparse.Namespace)
+    assert ns.skip_orphans is True
+
+
+def test_cli_default_skip_orphans_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default argv (no flag) leaves orphans visible so ad-hoc audits
+    catch them."""
+    monkeypatch.setattr(sys, "argv", ["lookback"])
+    ns = lookback._parse_args()
+    assert ns.skip_orphans is False
 
 
 # ----------------------------------------------------------------------
@@ -241,7 +334,7 @@ def test_csv_serialises_miss_row_correctly() -> None:
     assert len(lines) == 2  # header + 1 row
     assert lines[0] == ",".join(lookback._CSV_HEADER)
     assert lines[1].endswith(",true")  # miss flag at end of row
-    assert "review" in lines[1]        # track_a_verdict
+    assert "review" in lines[1]  # track_a_verdict
 
 
 # ----------------------------------------------------------------------
