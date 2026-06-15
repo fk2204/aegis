@@ -131,6 +131,15 @@ class MerchantRow(_StrictModel):
     # cross-reference a Zoho-era deal.
     close_lead_id: str | None = None
 
+    # Captured from the Close webhook event's ``object_id`` field when
+    # the Opportunity transitions to "Docs In — Pre-UW" — the same
+    # trigger that owns the merchant upsert. Drives the outbound
+    # offer-sync (``aegis.close.sync.push_offer_to_opportunity``) to
+    # the right Opportunity row so the Suggested Max Advance /
+    # Recommended Factor Rate / etc. custom fields land where the
+    # underwriter is looking. Migration 054.
+    close_opportunity_id: str | None = None
+
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

@@ -158,8 +158,7 @@ MIGRATION_PROBES: dict[str, str] = {
         "AND rowsecurity=true"
     ),
     "012_deals_view.sql": (
-        "SELECT 1 FROM information_schema.views "
-        "WHERE table_schema='public' AND table_name='deals'"
+        "SELECT 1 FROM information_schema.views WHERE table_schema='public' AND table_name='deals'"
     ),
     "013_submissions_table.sql": (
         "SELECT 1 FROM information_schema.tables "
@@ -241,8 +240,7 @@ MIGRATION_PROBES: dict[str, str] = {
     "031_seed_operators.sql": (
         # filip@commerafunding.com is the canonical seeded admin row.
         # Its presence implies the INSERT body of 031 ran.
-        "SELECT 1 FROM operators "
-        "WHERE email='filip@commerafunding.com'"
+        "SELECT 1 FROM operators WHERE email='filip@commerafunding.com'"
     ),
     "032_analyses_pattern_analysis.sql": (
         # pattern_analysis is the column added by 032. Probing on the
@@ -370,8 +368,7 @@ MIGRATION_PROBES: dict[str, str] = {
         # the runner reads schema_migrations directly and never consults
         # the probe — this entry exists for probe-coverage discipline
         # (test_migration_probes_cover_every_real_migration).
-        "SELECT 1 WHERE NOT EXISTS "
-        "(SELECT 1 FROM funders WHERE notes_residual LIKE 'Seed row%%')"
+        "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM funders WHERE notes_residual LIKE 'Seed row%%')"
     ),
     "046_seed_funders_from_manual.sql": (
         # 046 inserts 6 direct funders (Logic Advance, VCG, SwiftSource,
@@ -404,8 +401,7 @@ MIGRATION_PROBES: dict[str, str] = {
         # products: MCA / Term / LOC / Equipment / Factoring / SBA /
         # Home Equity LOC). Probe is the presence of at least one tier
         # on Logic Advance's tiers JSONB.
-        "SELECT 1 FROM funders WHERE name='Logic Advance' "
-        "AND jsonb_array_length(tiers) > 0"
+        "SELECT 1 FROM funders WHERE name='Logic Advance' AND jsonb_array_length(tiers) > 0"
     ),
     "050_merge_funder_duplicates.sql": (
         # 050 deletes 'Logic Advance Group' and 'Swiftsource Funding'
@@ -422,15 +418,13 @@ MIGRATION_PROBES: dict[str, str] = {
         # 051 writes the 5-rate ladder onto Highland Hill Capital's
         # tiers JSONB (manual §7). Probe is the presence of at least one
         # tier; mirrors the 049 probe pattern.
-        "SELECT 1 FROM funders WHERE name='Highland Hill Capital' "
-        "AND jsonb_array_length(tiers) > 0"
+        "SELECT 1 FROM funders WHERE name='Highland Hill Capital' AND jsonb_array_length(tiers) > 0"
     ),
     "052_shor_notes_enrichment.sql": (
         # 052 enriches Shor Capital's notes_residual with operator-
         # curated §5 context. Probe is any non-empty notes_residual on
         # the row — migration 046 left this field as ''.
-        "SELECT 1 FROM funders WHERE name='Shor Capital' "
-        "AND length(notes_residual) > 0"
+        "SELECT 1 FROM funders WHERE name='Shor Capital' AND length(notes_residual) > 0"
     ),
     "053_funder_notes_enrichment.sql": (
         # 053 enriches notes_residual for §3 Velocity Capital Group,
@@ -441,8 +435,18 @@ MIGRATION_PROBES: dict[str, str] = {
         # block executed. Big Think + Bizi Connect aren't probed
         # separately: all three UPDATEs share the same migration body /
         # transaction, so one applied row implies all three applied.
-        "SELECT 1 FROM funders WHERE name='Velocity Capital Group' "
-        "AND length(notes_residual) > 100"
+        "SELECT 1 FROM funders WHERE name='Velocity Capital Group' AND length(notes_residual) > 100"
+    ),
+    "054_merchants_close_opportunity_id.sql": (
+        # 054 adds nullable ``close_opportunity_id TEXT`` + partial
+        # UNIQUE index on it. Probe is the partial-index relation in
+        # ``pg_indexes`` — migration 026 used the same shape for
+        # ``idx_merchants_close_lead_id``, so the index existence is
+        # the canonical signal that this migration's CREATE INDEX
+        # executed (the ADD COLUMN alone could have run partway).
+        "SELECT 1 FROM pg_indexes "
+        "WHERE schemaname='public' AND tablename='merchants' "
+        "AND indexname='idx_merchants_close_opportunity_id'"
     ),
 }
 
@@ -508,7 +512,8 @@ def discover_migrations(directory: Path = MIGRATIONS_DIR) -> list[MigrationFile]
     if not directory.exists():
         return []
     files = [
-        p for p in sorted(directory.iterdir())
+        p
+        for p in sorted(directory.iterdir())
         if p.is_file() and _MIGRATION_FILENAME_RE.match(p.name)
     ]
     return [MigrationFile.from_path(p) for p in files]
@@ -602,8 +607,7 @@ class MigrationRunner:
             holder_pid: object = "unknown"
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT pid FROM pg_locks "
-                    "WHERE locktype='advisory' AND objid=%s LIMIT 1",
+                    "SELECT pid FROM pg_locks WHERE locktype='advisory' AND objid=%s LIMIT 1",
                     (ADVISORY_LOCK_KEY,),
                 )
                 row = cur.fetchone()
@@ -636,10 +640,7 @@ class MigrationRunner:
                     "WHERE table_schema='public' AND table_name='schema_migrations'"
                 )
                 if cur.fetchone() is None:
-                    print(
-                        "[dry-run] schema_migrations does not exist; "
-                        "would create on real run"
-                    )
+                    print("[dry-run] schema_migrations does not exist; would create on real run")
             return
         with conn.cursor() as cur:
             cur.execute(
@@ -679,14 +680,12 @@ class MigrationRunner:
 
         if not detected:
             print(
-                "[bootstrap] schema_migrations empty + no pre-existing schema; "
-                "nothing to backfill"
+                "[bootstrap] schema_migrations empty + no pre-existing schema; nothing to backfill"
             )
             return []
 
         print(
-            f"[bootstrap] backfilling {len(detected)} pre-existing migrations "
-            "as manual_pre_runner:"
+            f"[bootstrap] backfilling {len(detected)} pre-existing migrations as manual_pre_runner:"
         )
         for filename in detected:
             print(f"  {filename}")
@@ -755,9 +754,9 @@ class MigrationRunner:
         # Add bootstrap-detected entries when dry-running so they show as skipped.
         if self.dry_run:
             for f in report.bootstrapped:
-                applied.setdefault(f, next(
-                    (m.sha256 for m in self.migrations if m.filename == f), ""
-                ))
+                applied.setdefault(
+                    f, next((m.sha256 for m in self.migrations if m.filename == f), "")
+                )
 
         pending: list[MigrationFile] = []
         for mig in self.migrations:

@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from aegis.close.client import CloseClient, CloseError
-from aegis.close.field_map import CLOSE_FIELD_IDS
+from aegis.close.field_map import CLOSE_FIELD_IDS, CLOSE_OPPORTUNITY_FIELD_IDS
 from aegis.logger import get_logger
 
 if TYPE_CHECKING:
@@ -167,9 +167,7 @@ def push_decision_to_close(
                     "status_code": 404,
                 },
             )
-            return SyncResult(
-                patched=False, fields_diffed=[], reason="lead_not_found"
-            )
+            return SyncResult(patched=False, fields_diffed=[], reason="lead_not_found")
         raise
 
     # 2) Read current values for the 4 business fields + Applicant ID.
@@ -216,9 +214,7 @@ def push_decision_to_close(
     patch_body: dict[str, Any] = {}
     for aegis_name, desired_value in diffs.items():
         patch_body[f"custom.{CLOSE_FIELD_IDS[aegis_name]}"] = desired_value
-    patch_body[
-        f"custom.{CLOSE_FIELD_IDS['aegis_last_synced']}"
-    ] = now.isoformat()
+    patch_body[f"custom.{CLOSE_FIELD_IDS['aegis_last_synced']}"] = now.isoformat()
 
     fields_diffed_sorted = sorted(diffs.keys())
 
@@ -250,14 +246,212 @@ def push_decision_to_close(
             "synced_at": now.isoformat(),
         },
     )
-    return SyncResult(
-        patched=True, fields_diffed=fields_diffed_sorted, reason="patched"
-    )
+    return SyncResult(patched=True, fields_diffed=fields_diffed_sorted, reason="patched")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Public — push offer to opportunity
+# ---------------------------------------------------------------------------
+
+
+def push_offer_to_opportunity(
+    *,
+    close_opportunity_id: str,
+    decision_id: UUID,
+    suggested_max_advance: Decimal | None,
+    recommended_factor_rate: Decimal | None,
+    recommended_holdback_pct: Decimal | None,
+    true_revenue_monthly: Decimal | None,
+    holdback_capacity_monthly: Decimal | None,
+    existing_mca_count: int | None,
+    existing_mca_daily_total: Decimal | None,
+    client: CloseClient,
+    audit: AuditLog,
+) -> SyncResult:
+    """PATCH the AEGIS offer + supporting cashflow snapshot onto a Close
+    Opportunity, idempotently.
+
+    Mirrors :func:`push_decision_to_close`'s read-before-write diff
+    contract: GET the opportunity, compare current vs desired across
+    the seven Aegis-driven Opportunity custom fields, PATCH only if at
+    least one value differs.
+
+    Field mapping (operator-confirmed 2026-06-15 via
+    ``find_opportunity_custom_fields`` MCP query):
+
+      ============================  ===========================================
+      AEGIS source                  Close Opportunity custom field
+      ============================  ===========================================
+      ``OfferRecommendation``       ``Suggested Max Advance``
+       .recommended_amount          (cf_XMtBI8Of38ic...)
+      ``ScoreResult``               ``Recommended Factor Rate``
+       .recommended_factor_rate     (cf_flsrZT0fTjNo...)
+      ``OfferRecommendation``       ``Recommended Holdback Pct``
+       .holdback_pct                (cf_mJxOH8wrNd4K...)
+      ``AnalysisRow``               ``True Revenue``
+       .monthly_revenue             (cf_DivasTofPYPO...)
+      route default                 ``Holdback Capacity``
+       (revenue * 0.25 in v1;       (cf_B3gXaET1Hzhf...)
+       Close-sourced later)
+      ``MCAStackAggregation``       ``Existing MCA Debits Identified``
+       .active_mca_count            (cf_exJtKEjItwsJ...)
+      ``AnalysisRow``               ``Existing MCA Daily Debits Total``
+       .mca_daily_total             (cf_xOiXpJtf1W9D...)
+      ============================  ===========================================
+
+    All seven values are nullable inputs. ``None`` means "AEGIS doesn't
+    have a value for this merchant yet" — the diff treats ``None`` as
+    "no desired value" and SKIPS that field (leaves whatever's on the
+    Close side alone). This matches the contract for the offer-sizing
+    surface: a non-finalized merchant produces no scores and no offer,
+    so partial syncs are normal.
+
+    Returns ``SyncResult``:
+
+      * ``"patched"``           PATCH fired, fields_diffed populated.
+      * ``"no_diff"``           every defined field already matched.
+      * ``"opportunity_not_found"`` 404 from the initial GET.
+
+    Audit contract mirrors ``push_decision_to_close``:
+
+      * ``close.opportunity.sync_attempted`` on every call with
+        ``details.patched`` (bool) + ``details.fields_diffed`` (list[str]).
+      * ``close.opportunity.sync_failed_not_found`` on 404.
+      * PATCH failure (4xx other than 404, or 5xx after retries): same
+        ``sync_attempted`` row with ``patched=False`` + status code,
+        then re-raise.
+
+    Decision-boundary posture: SHADOW ONLY. The offer + capacity
+    figures feed the underwriter's view; they do NOT participate in
+    AEGIS's live decline path. See ``scoring_v2/offer.py`` module
+    docstring.
+    """
+    # 1) GET the opportunity. 404 -> graceful return.
+    try:
+        opportunity = client.get_opportunity(close_opportunity_id)
+    except CloseError as exc:
+        if exc.status_code == 404:
+            audit.record(
+                actor="close_sync",
+                action="close.opportunity.sync_failed_not_found",
+                details={
+                    "close_opportunity_id": close_opportunity_id,
+                    "decision_id": str(decision_id),
+                    "status_code": 404,
+                },
+            )
+            return SyncResult(
+                patched=False,
+                fields_diffed=[],
+                reason="opportunity_not_found",
+            )
+        raise
+
+    # 2) Desired values. ``None`` means "don't touch the Close-side
+    #    value" — every desired entry below is conditional.
+    desired: dict[str, Any] = {}
+    if suggested_max_advance is not None:
+        desired["suggested_max_advance"] = _quantize_money(suggested_max_advance)
+    if recommended_factor_rate is not None:
+        desired["recommended_factor_rate"] = _quantize_factor_rate(recommended_factor_rate)
+    if recommended_holdback_pct is not None:
+        desired["recommended_holdback_pct"] = _quantize_holdback_pct(recommended_holdback_pct)
+    if true_revenue_monthly is not None:
+        desired["true_revenue"] = _quantize_money(true_revenue_monthly)
+    if holdback_capacity_monthly is not None:
+        desired["holdback_capacity"] = _quantize_money(holdback_capacity_monthly)
+    if existing_mca_count is not None:
+        desired["existing_mca_count"] = existing_mca_count
+    if existing_mca_daily_total is not None:
+        desired["existing_mca_daily_total"] = _quantize_money(existing_mca_daily_total)
+
+    # 3) Diff against current.
+    diffs: dict[str, Any] = {}
+    for aegis_name, desired_value in desired.items():
+        current = _read_opportunity_field(opportunity, aegis_name)
+        if current != desired_value:
+            diffs[aegis_name] = desired_value
+
+    if not diffs:
+        audit.record(
+            actor="close_sync",
+            action="close.opportunity.sync_attempted",
+            details={
+                "close_opportunity_id": close_opportunity_id,
+                "decision_id": str(decision_id),
+                "fields_diffed": [],
+                "patched": False,
+            },
+        )
+        return SyncResult(patched=False, fields_diffed=[], reason="no_diff")
+
+    # 4) Build PATCH payload — only diffed fields.
+    patch_body: dict[str, Any] = {}
+    for aegis_name, desired_value in diffs.items():
+        cf_id = CLOSE_OPPORTUNITY_FIELD_IDS[aegis_name]
+        patch_body[f"custom.{cf_id}"] = desired_value
+
+    fields_diffed_sorted = sorted(diffs.keys())
+
+    try:
+        client.update_opportunity_custom_fields(close_opportunity_id, patch_body)
+    except CloseError as exc:
+        audit.record(
+            actor="close_sync",
+            action="close.opportunity.sync_attempted",
+            details={
+                "close_opportunity_id": close_opportunity_id,
+                "decision_id": str(decision_id),
+                "fields_diffed": fields_diffed_sorted,
+                "patched": False,
+                "error_status": exc.status_code,
+                "error": str(exc)[:200],
+            },
+        )
+        raise
+
+    audit.record(
+        actor="close_sync",
+        action="close.opportunity.sync_attempted",
+        details={
+            "close_opportunity_id": close_opportunity_id,
+            "decision_id": str(decision_id),
+            "fields_diffed": fields_diffed_sorted,
+            "patched": True,
+        },
+    )
+    return SyncResult(patched=True, fields_diffed=fields_diffed_sorted, reason="patched")
+
+
+def _quantize_money(value: Decimal) -> str:
+    """Close's text-typed money custom fields round-trip as strings.
+    Quantize to 2dp so the diff is stable across types (a stored
+    ``"50000"`` from Close vs a freshly-computed ``Decimal("50000.00")``
+    would otherwise read as different)."""
+    return str(value.quantize(Decimal("0.01")))
+
+
+def _quantize_factor_rate(value: Decimal) -> str:
+    """Factor rates are 3dp by convention (e.g. ``1.180``)."""
+    return str(value.quantize(Decimal("0.001")))
+
+
+def _quantize_holdback_pct(value: Decimal) -> str:
+    """Holdback percentages render as 4dp decimal fractions
+    (``0.1500``) so a downstream display can present 15.00% without
+    ambiguity over whether the stored value is a fraction or a
+    pre-multiplied percentage."""
+    return str(value.quantize(Decimal("0.0001")))
+
+
+def _read_opportunity_field(opportunity: dict[str, Any], aegis_name: str) -> Any:  # noqa: ANN401 — Close custom-field values are heterogeneous
+    """Read an Opportunity custom-field value via the AEGIS-side name."""
+    return opportunity.get(f"custom.{CLOSE_OPPORTUNITY_FIELD_IDS[aegis_name]}")
 
 
 def _map_recommendation(recommendation: str) -> str:
@@ -292,4 +486,5 @@ __all__ = [
     "SyncResult",
     "derive_ofac_status",
     "push_decision_to_close",
+    "push_offer_to_opportunity",
 ]

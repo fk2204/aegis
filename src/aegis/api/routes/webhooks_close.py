@@ -132,6 +132,17 @@ async def close_webhook(
             detail="event matches trigger filter but lead_id is missing",
         )
 
+    # Capture the opportunity id straight off the event payload â€” the
+    # trigger filter (`_matches_trigger`) requires
+    # ``object_type == "opportunity"``, so ``object_id`` IS the
+    # opportunity that fired. Persisting it on the merchant row gives
+    # ``push_offer_to_opportunity`` a stable target without a follow-up
+    # Close API lookup. Missing / non-string value is non-fatal:
+    # webhook still upserts the merchant, the field stays NULL until
+    # the next trigger.
+    opp_id_raw = event.get("object_id")
+    opportunity_id = opp_id_raw if isinstance(opp_id_raw, str) and opp_id_raw else None
+
     try:
         lead = close_client.get_lead(lead_id)
     except CloseError as exc:
@@ -143,6 +154,7 @@ async def close_webhook(
     _upsert_merchant_from_lead(
         lead=lead,
         close_lead_id=lead_id,
+        close_opportunity_id=opportunity_id,
         merchants=merchants,
         audit=audit,
     )
@@ -188,9 +200,7 @@ def _verify_signature(headers: Any, raw_body: bytes) -> None:  # noqa: ANN401 â€
     presented_sig = headers.get("close-sig-hash", "")
     timestamp_str = headers.get("close-sig-timestamp", "")
     if not presented_sig or not timestamp_str:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
     # Freshness â€” Close sends Unix epoch seconds as the timestamp; some
     # client variants emit an ISO 8601 form. Accept either.
@@ -203,9 +213,7 @@ def _verify_signature(headers: Any, raw_body: bytes) -> None:  # noqa: ANN401 â€
 
     age = abs((datetime.now(UTC) - ts_dt).total_seconds())
     if age > WEBHOOK_FRESHNESS_SECONDS:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
     # HMAC â€” Close gives the signature_key hex-encoded; the HMAC input
     # is `close-sig-timestamp + raw_body` (concatenated, no separator).
@@ -224,9 +232,7 @@ def _verify_signature(headers: Any, raw_body: bytes) -> None:  # noqa: ANN401 â€
     data = timestamp_str.encode("utf-8") + raw_body
     expected = hmac.new(secret_bytes, data, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(presented_sig, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
 
 def _parse_timestamp(value: str) -> datetime:
@@ -307,6 +313,7 @@ def _upsert_merchant_from_lead(
     *,
     lead: dict[str, Any],
     close_lead_id: str,
+    close_opportunity_id: str | None,
     merchants: MerchantRepository,
     audit: AuditLog,
 ) -> None:
@@ -336,6 +343,7 @@ def _upsert_merchant_from_lead(
         new_merchant = MerchantRow(
             id=uuid4(),
             close_lead_id=close_lead_id,
+            close_opportunity_id=close_opportunity_id,
             **new_fields,
         )
         merchants.upsert(new_merchant)
@@ -352,11 +360,15 @@ def _upsert_merchant_from_lead(
         return
 
     # Read-before-write diff. If nothing changed, skip the write.
-    diff = {
-        key: val
-        for key, val in new_fields.items()
-        if getattr(existing, key, None) != val
+    diff: dict[str, Any] = {
+        key: val for key, val in new_fields.items() if getattr(existing, key, None) != val
     }
+    # ``close_opportunity_id`` rides with the diff because it's
+    # captured outside ``_lead_to_merchant_fields`` (it comes from the
+    # event envelope, not the Lead custom fields). A first-time
+    # capture or a renewal-driven new opportunity surfaces here.
+    if close_opportunity_id is not None and existing.close_opportunity_id != close_opportunity_id:
+        diff["close_opportunity_id"] = close_opportunity_id
     if not diff:
         # Pure idempotent redelivery. No write, no audit-row noise.
         return
@@ -386,12 +398,7 @@ def _lead_to_merchant_fields(
     so the cf_id table stays in one place. Pure (no DB, no HTTP).
     """
     legal_name = get_custom_field(lead, "legal_name")
-    business_name = (
-        legal_name
-        or lead.get("display_name")
-        or lead.get("name")
-        or ""
-    )
+    business_name = legal_name or lead.get("display_name") or lead.get("name") or ""
 
     state_raw = get_custom_field(lead, "state")
     state = (state_raw or "").upper() if isinstance(state_raw, str) else ""
@@ -404,9 +411,7 @@ def _lead_to_merchant_fields(
     if isinstance(naics_explicit, str) and naics_explicit.strip():
         naics = naics_explicit.strip()
     else:
-        naics = industry_to_naics(
-            industry_choice if isinstance(industry_choice, str) else None
-        )
+        naics = industry_to_naics(industry_choice if isinstance(industry_choice, str) else None)
 
     raw_entity = resolve_entity_type(
         entity_type_a=get_custom_field(lead, "entity_type_a"),
@@ -424,9 +429,7 @@ def _lead_to_merchant_fields(
         try:
             tib_months = int(tib_raw)
         except (ValueError, TypeError) as exc:
-            raise FieldMapError(
-                f"time_in_business_months not an int: {tib_raw!r}"
-            ) from exc
+            raise FieldMapError(f"time_in_business_months not an int: {tib_raw!r}") from exc
 
     return {
         "business_name": str(business_name),

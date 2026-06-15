@@ -172,9 +172,7 @@ class CloseAttachment(BaseModel):
     schema change here.
     """
 
-    model_config = ConfigDict(
-        extra="ignore", str_strip_whitespace=True, populate_by_name=True
-    )
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, populate_by_name=True)
 
     id: str = Field(default="", description="synthesized from URL when absent")
     name: str = Field(min_length=1, alias="filename")
@@ -197,13 +195,9 @@ class CloseAttachment(BaseModel):
         """
         if not self.id:
             if not self.url:
-                raise ValueError(
-                    "CloseAttachment requires at least one of id or url"
-                )
+                raise ValueError("CloseAttachment requires at least one of id or url")
             # Bypass validate_assignment to avoid recursion.
-            object.__setattr__(
-                self, "id", hashlib.sha256(self.url.encode()).hexdigest()[:16]
-            )
+            object.__setattr__(self, "id", hashlib.sha256(self.url.encode()).hexdigest()[:16])
         return self
 
 
@@ -244,9 +238,7 @@ class CloseClient:
         # When no http_client is injected, build one that verifies against
         # the OS-native trust store (see _TLS_CONTEXT). Tests inject their
         # own MockTransport-backed client, which doesn't touch TLS.
-        self._http = http_client or httpx.Client(
-            timeout=_DEFAULT_TIMEOUT, verify=_TLS_CONTEXT
-        )
+        self._http = http_client or httpx.Client(timeout=_DEFAULT_TIMEOUT, verify=_TLS_CONTEXT)
         self._audit = audit
         # In-memory cache populated by list_lead_attachments. Keyed by
         # the attachment id Close returns on each note/email activity;
@@ -270,9 +262,7 @@ class CloseClient:
     # ---------------------------------------------------------------
 
     @retry(
-        retry=retry_if_exception_type(
-            (httpx.TransportError, CloseRateLimitError)
-        ),
+        retry=retry_if_exception_type((httpx.TransportError, CloseRateLimitError)),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
         reraise=True,
@@ -301,17 +291,14 @@ class CloseClient:
         settings = get_settings()
         if settings.close_api_key is None:
             raise CloseAuthError(
-                "CLOSE_API_KEY is not configured; set it in .env or "
-                "/etc/aegis/aegis.env"
+                "CLOSE_API_KEY is not configured; set it in .env or /etc/aegis/aegis.env"
             )
 
         url = f"{settings.close_api_base.rstrip('/')}{path}"
         auth = (settings.close_api_key.get_secret_value(), "")
 
         try:
-            resp = self._http.request(
-                method, url, json=json, params=params, auth=auth
-            )
+            resp = self._http.request(method, url, json=json, params=params, auth=auth)
         except httpx.TransportError:
             # Tenacity will retry transport errors. Re-raise so the
             # decorator catches it.
@@ -338,9 +325,7 @@ class CloseClient:
                 reset_seconds,
                 body,
             )
-            self._audit_rate_limit(
-                method=method, path=path, reset_seconds=reset_seconds
-            )
+            self._audit_rate_limit(method=method, path=path, reset_seconds=reset_seconds)
             # Respect the server signal before letting tenacity retry.
             # Sleeping here means the next retry attempt starts on the
             # other side of the reset window. Tenacity's exponential
@@ -375,10 +360,7 @@ class CloseClient:
             return {}
         body_json = resp.json()
         if not isinstance(body_json, dict):
-            raise CloseError(
-                f"close returned non-object body: "
-                f"{type(body_json).__name__}"
-            )
+            raise CloseError(f"close returned non-object body: {type(body_json).__name__}")
         return body_json
 
     # ---------------------------------------------------------------
@@ -389,9 +371,7 @@ class CloseClient:
         """GET /api/v1/lead/{lead_id}/ — returns the full Lead object."""
         return self.request("GET", f"/api/v1/lead/{lead_id}/")
 
-    def update_lead_custom_fields(
-        self, lead_id: str, fields: dict[str, Any]
-    ) -> dict[str, Any]:
+    def update_lead_custom_fields(self, lead_id: str, fields: dict[str, Any]) -> dict[str, Any]:
         """PUT /api/v1/lead/{lead_id}/ — updates the named custom fields.
 
         ``fields`` must already be in Close-API shape — the field_map
@@ -404,6 +384,20 @@ class CloseClient:
     def get_opportunity(self, opportunity_id: str) -> dict[str, Any]:
         """GET /api/v1/opportunity/{opportunity_id}/."""
         return self.request("GET", f"/api/v1/opportunity/{opportunity_id}/")
+
+    def update_opportunity_custom_fields(
+        self, opportunity_id: str, fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        """PUT /api/v1/opportunity/{opportunity_id}/ — updates custom fields.
+
+        Mirrors :meth:`update_lead_custom_fields`'s shape. ``fields``
+        must already be in Close-API form (``custom.cf_<field_id>``
+        keys, type-appropriate primitive values). The Opportunity-side
+        sync helper (``aegis.close.sync.push_offer_to_opportunity``)
+        wraps this with read-before-write diffing per the same
+        idempotency guarantee the Lead sync uses.
+        """
+        return self.request("PUT", f"/api/v1/opportunity/{opportunity_id}/", json=fields)
 
     def list_lead_attachments(self, lead_id: str) -> list[CloseAttachment]:
         """Enumerate PDF attachments across all Note + Email activities
@@ -446,9 +440,7 @@ class CloseClient:
         """
         items: list[CloseAttachment] = []
         for activity_kind in ("note", "email"):
-            items.extend(
-                self._list_activity_pdf_attachments(activity_kind, lead_id)
-            )
+            items.extend(self._list_activity_pdf_attachments(activity_kind, lead_id))
         return items
 
     def _list_activity_pdf_attachments(
@@ -478,14 +470,12 @@ class CloseClient:
             raw_activities = page.get("data", [])
             if not isinstance(raw_activities, list):
                 raise CloseError(
-                    f"close {path} returned non-list data: "
-                    f"{type(raw_activities).__name__}"
+                    f"close {path} returned non-list data: {type(raw_activities).__name__}"
                 )
             for activity in raw_activities:
                 if not isinstance(activity, dict):
                     raise CloseError(
-                        f"close {path} returned non-object activity: "
-                        f"{type(activity).__name__}"
+                        f"close {path} returned non-object activity: {type(activity).__name__}"
                     )
                 activities_seen += 1
                 attachments = activity.get("attachments") or []
@@ -493,14 +483,12 @@ class CloseClient:
                     # Defensive — Close's contract says list, but a
                     # surprise should fail loud rather than silent-skip.
                     raise CloseError(
-                        f"close {path} activity attachments non-list: "
-                        f"{type(attachments).__name__}"
+                        f"close {path} activity attachments non-list: {type(attachments).__name__}"
                     )
                 for raw_att in attachments:
                     if not isinstance(raw_att, dict):
                         raise CloseError(
-                            f"close {path} attachment entry non-object: "
-                            f"{type(raw_att).__name__}"
+                            f"close {path} attachment entry non-object: {type(raw_att).__name__}"
                         )
                     if raw_att.get("content_type") != "application/pdf":
                         continue
@@ -513,8 +501,7 @@ class CloseClient:
                     items.append(attachment)
             if activities_seen >= _MAX_ACTIVITIES_PER_LEAD:
                 _log.warning(
-                    "close.list_attachments cap_hit lead_id=%s kind=%s "
-                    "activities_seen=%s",
+                    "close.list_attachments cap_hit lead_id=%s kind=%s activities_seen=%s",
                     lead_id,
                     activity_kind,
                     activities_seen,
@@ -525,9 +512,7 @@ class CloseClient:
             skip += page_size
 
     @retry(
-        retry=retry_if_exception_type(
-            (httpx.TransportError, CloseRateLimitError)
-        ),
+        retry=retry_if_exception_type((httpx.TransportError, CloseRateLimitError)),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
         reraise=True,
@@ -570,14 +555,10 @@ class CloseClient:
                 "discovered via /activity/{note,email}/, not /files/)"
             )
         source_url, filename = cached
-        return self._download_attachment_url(
-            source_url, filename, attachment_id=attachment_id
-        )
+        return self._download_attachment_url(source_url, filename, attachment_id=attachment_id)
 
     @retry(
-        retry=retry_if_exception_type(
-            (httpx.TransportError, CloseRateLimitError)
-        ),
+        retry=retry_if_exception_type((httpx.TransportError, CloseRateLimitError)),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
         reraise=True,
@@ -595,16 +576,13 @@ class CloseClient:
         settings = get_settings()
         if settings.close_api_key is None:
             raise CloseAuthError(
-                "CLOSE_API_KEY is not configured; set it in .env or "
-                "/etc/aegis/aegis.env"
+                "CLOSE_API_KEY is not configured; set it in .env or /etc/aegis/aegis.env"
             )
 
         url = source_url.replace(_CLOSE_APP_HOST, _CLOSE_API_HOST, 1)
         auth = (settings.close_api_key.get_secret_value(), "")
         try:
-            resp = self._http.request(
-                "GET", url, auth=auth, follow_redirects=True
-            )
+            resp = self._http.request("GET", url, auth=auth, follow_redirects=True)
         except httpx.TransportError:
             raise
 
@@ -619,8 +597,7 @@ class CloseClient:
             reset_seconds = self._parse_reset_seconds(resp)
             body = self._safe_body(resp)
             _log.warning(
-                "close.rate_limit_hit reset_seconds=%s body=%s "
-                "(attachment download)",
+                "close.rate_limit_hit reset_seconds=%s body=%s (attachment download)",
                 reset_seconds,
                 body,
             )
@@ -647,8 +624,7 @@ class CloseClient:
 
         if resp.status_code >= 400:
             raise CloseError(
-                f"close {resp.status_code} on attachment download: "
-                f"{self._safe_body(resp)}",
+                f"close {resp.status_code} on attachment download: {self._safe_body(resp)}",
                 status_code=resp.status_code,
                 body=self._safe_body(resp),
             )
@@ -663,9 +639,11 @@ class CloseClient:
         # Prefer the filename carried forward from the activity payload.
         # Fall back to Content-Disposition (defensive — the S3 redirect
         # target normally carries one) then to the benign default.
-        resolved_filename = filename or _filename_from_content_disposition(
-            resp.headers.get("content-disposition", "")
-        ) or "unknown.pdf"
+        resolved_filename = (
+            filename
+            or _filename_from_content_disposition(resp.headers.get("content-disposition", ""))
+            or "unknown.pdf"
+        )
         return pdf_bytes, resolved_filename
 
     # ---------------------------------------------------------------
@@ -719,9 +697,7 @@ class CloseClient:
 
         return _DEFAULT_RATE_LIMIT_SLEEP
 
-    def _audit_rate_limit(
-        self, *, method: str, path: str, reset_seconds: float
-    ) -> None:
+    def _audit_rate_limit(self, *, method: str, path: str, reset_seconds: float) -> None:
         """Best-effort audit row for 429 visibility. No-op when no audit
         sink is injected (unit tests, scripts)."""
         if self._audit is None:

@@ -198,9 +198,7 @@ def list_upcoming_renewals(
         if delta_days < 0 or delta_days > window_days:
             continue
         lead = _STATE_DISCLOSURE_LEAD_DAYS.get((m.state or "").upper())
-        days_until_state_deadline = (
-            delta_days - lead if lead is not None else None
-        )
+        days_until_state_deadline = delta_days - lead if lead is not None else None
         # When the caller passes ``attestations`` (U6 — migration 040)
         # we consult the table and compute one of the four statuses.
         # When the caller omits the repo (legacy callers, CSV export
@@ -210,9 +208,7 @@ def list_upcoming_renewals(
             renewal_status = "not_required_funder_owns"
         else:
             has_attestation = bool(
-                attestations.find_for_renewal(
-                    merchant_id=m.id, maturity_date=maturity
-                )
+                attestations.find_for_renewal(merchant_id=m.id, maturity_date=maturity)
             )
             renewal_status = _derive_renewal_status(
                 days_until_state_deadline=days_until_state_deadline,
@@ -238,9 +234,8 @@ def list_upcoming_renewals(
 
 class MerchantRepository(Protocol):
     def get(self, merchant_id: UUID) -> MerchantRow: ...
-    def find_by_close_lead_id(
-        self, close_lead_id: str
-    ) -> MerchantRow | None: ...
+    def find_by_close_lead_id(self, close_lead_id: str) -> MerchantRow | None: ...
+    def find_by_close_opportunity_id(self, close_opportunity_id: str) -> MerchantRow | None: ...
     def find_by_email(self, email: str) -> MerchantRow | None: ...
     def list_all(self, *, state: str | None = None) -> list[MerchantRow]: ...
     def count_total(self) -> int: ...
@@ -256,9 +251,7 @@ class MerchantRepository(Protocol):
         uploads without picking a merchant.
         """
 
-    def finalize_provisional(
-        self, *, merchant_id: UUID, business_name: str
-    ) -> int:
+    def finalize_provisional(self, *, merchant_id: UUID, business_name: str) -> int:
         """Transition ``provisional`` or ``needs_manual_naming`` →
         ``finalized``, setting ``business_name``. ``owner_name`` and
         ``state`` are intentionally NOT touched (see migration 034 +
@@ -304,6 +297,12 @@ class InMemoryMerchantRepository:
                 return m
         return None
 
+    def find_by_close_opportunity_id(self, close_opportunity_id: str) -> MerchantRow | None:
+        for m in self._by_id.values():
+            if m.close_opportunity_id == close_opportunity_id:
+                return m
+        return None
+
     def find_by_email(self, email: str) -> MerchantRow | None:
         needle = email.strip().lower()
         if not needle:
@@ -328,12 +327,20 @@ class InMemoryMerchantRepository:
         # enforces this at the storage layer; raise early in-memory too).
         if merchant.close_lead_id is not None:
             for existing in self._by_id.values():
-                if (
-                    existing.id != merchant.id
-                    and existing.close_lead_id == merchant.close_lead_id
-                ):
+                if existing.id != merchant.id and existing.close_lead_id == merchant.close_lead_id:
                     raise MerchantConflictError(
                         f"close_lead_id {merchant.close_lead_id!r} "
+                        f"already on merchant {existing.id}"
+                    )
+        # Same partial-UNIQUE on close_opportunity_id (migration 054).
+        if merchant.close_opportunity_id is not None:
+            for existing in self._by_id.values():
+                if (
+                    existing.id != merchant.id
+                    and existing.close_opportunity_id == merchant.close_opportunity_id
+                ):
+                    raise MerchantConflictError(
+                        f"close_opportunity_id {merchant.close_opportunity_id!r} "
                         f"already on merchant {existing.id}"
                     )
         if merchant.id not in self._by_id:
@@ -363,9 +370,7 @@ class InMemoryMerchantRepository:
         self._by_id[row.id] = row
         return row
 
-    def finalize_provisional(
-        self, *, merchant_id: UUID, business_name: str
-    ) -> int:
+    def finalize_provisional(self, *, merchant_id: UUID, business_name: str) -> int:
         existing = self._by_id.get(merchant_id)
         if existing is None:
             return 0
@@ -426,17 +431,25 @@ class SupabaseMerchantRepository:
             return None
         return _row_to_merchant(cast(dict[str, Any], result.data[0]))
 
+    def find_by_close_opportunity_id(self, close_opportunity_id: str) -> MerchantRow | None:
+        result = (
+            get_supabase()
+            .table("merchants")
+            .select("*")
+            .eq("close_opportunity_id", close_opportunity_id)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return None
+        return _row_to_merchant(cast(dict[str, Any], result.data[0]))
+
     def find_by_email(self, email: str) -> MerchantRow | None:
         needle = email.strip()
         if not needle:
             return None
         result = (
-            get_supabase()
-            .table("merchants")
-            .select("*")
-            .ilike("email", needle)
-            .limit(1)
-            .execute()
+            get_supabase().table("merchants").select("*").ilike("email", needle).limit(1).execute()
         )
         if not result.data:
             return None
@@ -451,13 +464,7 @@ class SupabaseMerchantRepository:
 
     def count_total(self) -> int:
         try:
-            result = (
-                get_supabase()
-                .table("merchants")
-                .select("id")
-                .limit(10000)
-                .execute()
-            )
+            result = get_supabase().table("merchants").select("id").limit(10000).execute()
         except Exception:
             return 0
         return len(result.data or [])
@@ -465,20 +472,13 @@ class SupabaseMerchantRepository:
     def upsert(self, merchant: MerchantRow) -> MerchantRow:
         payload = _merchant_to_payload(merchant)
         # ``ON CONFLICT (id) DO UPDATE`` semantics via supabase-py upsert().
-        result = (
-            get_supabase()
-            .table("merchants")
-            .upsert(payload, on_conflict="id")
-            .execute()
-        )
+        result = get_supabase().table("merchants").upsert(payload, on_conflict="id").execute()
         if not result.data:
             raise RuntimeError("supabase.upsert returned no row")
         return _row_to_merchant(cast(dict[str, Any], result.data[0]))
 
     def delete(self, merchant_id: UUID) -> None:
-        get_supabase().table("merchants").delete().eq(
-            "id", str(merchant_id)
-        ).execute()
+        get_supabase().table("merchants").delete().eq("id", str(merchant_id)).execute()
 
     # Migration 034 — merchant-from-statement flow ---------------------------
 
@@ -492,19 +492,12 @@ class SupabaseMerchantRepository:
             "status": "provisional",
             "business_name": PROVISIONAL_BUSINESS_NAME_PLACEHOLDER,
         }
-        result = (
-            get_supabase()
-            .table("merchants")
-            .insert(payload)
-            .execute()
-        )
+        result = get_supabase().table("merchants").insert(payload).execute()
         if not result.data:
             raise RuntimeError("supabase.insert returned no row")
         return _row_to_merchant(cast(dict[str, Any], result.data[0]))
 
-    def finalize_provisional(
-        self, *, merchant_id: UUID, business_name: str
-    ) -> int:
+    def finalize_provisional(self, *, merchant_id: UUID, business_name: str) -> int:
         # Filtered on the two in-flux statuses so a row already
         # finalized (operator manual edit) or any other state never
         # gets silently overwritten. Returns the rowcount via the
@@ -575,11 +568,10 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         is_renewal=bool(row.get("is_renewal", False)),
         maturity_date=_parse_date(row.get("maturity_date")),
         preferred_funder_id=(
-            UUID(row["preferred_funder_id"])
-            if row.get("preferred_funder_id")
-            else None
+            UUID(row["preferred_funder_id"]) if row.get("preferred_funder_id") else None
         ),
         close_lead_id=row.get("close_lead_id"),
+        close_opportunity_id=row.get("close_opportunity_id"),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
     )
@@ -632,10 +624,9 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "intake_date": m.intake_date.isoformat() if m.intake_date else None,
         "is_renewal": m.is_renewal,
         "maturity_date": m.maturity_date.isoformat() if m.maturity_date else None,
-        "preferred_funder_id": (
-            str(m.preferred_funder_id) if m.preferred_funder_id else None
-        ),
+        "preferred_funder_id": (str(m.preferred_funder_id) if m.preferred_funder_id else None),
         "close_lead_id": m.close_lead_id,
+        "close_opportunity_id": m.close_opportunity_id,
     }
     return payload
 

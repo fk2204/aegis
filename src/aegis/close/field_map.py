@@ -47,26 +47,55 @@ _log = get_logger(__name__)
 #  * "fico_score" (number) and "fico_range" (choice) both exist —
 #    we use fico_range as the primary signal since the operator's
 #    Close ingestion fills the range bucket more reliably.
+# Close OPPORTUNITY custom-field IDs. Same shape as
+# ``CLOSE_FIELD_IDS`` above (Lead-side fields). Separated by table so
+# the read / write helpers can't accidentally cross the streams — a
+# ``custom.<lead-cf>`` key won't resolve on an Opportunity payload and
+# vice versa.
+#
+# Source-of-truth: ``find_opportunity_custom_fields`` MCP query on
+# 2026-06-15. Operator-confirmed mapping for the AEGIS offer-sync:
+#   * recommended_amount  → ``Suggested Max Advance``
+#   * factor_rate         → ``Recommended Factor Rate``
+#   * holdback_pct        → ``Recommended Holdback Pct``
+#   * true_revenue        → ``True Revenue``        (monthly normalised)
+#   * holdback_capacity   → ``Holdback Capacity``   (operator budget,
+#                                                    monthly $)
+#   * mca_position_count  → ``Existing MCA Debits Identified``
+#                            (count of distinct funder counterparties)
+#   * mca_daily_total     → ``Existing MCA Daily Debits Total``
+#                            (avg daily MCA debit total, $)
+CLOSE_OPPORTUNITY_FIELD_IDS: Final[dict[str, str]] = {
+    "suggested_max_advance": "cf_XMtBI8Of38icbdX7ywUhFb0ENAUCxat6S9AqfGcOSjg",
+    "recommended_factor_rate": "cf_flsrZT0fTjNohgrRElCNIUtV0SROfw20FVnB6pXA7Ox",
+    "recommended_holdback_pct": "cf_mJxOH8wrNd4K4omsR5I6TmI8OU86HidIbQB780VNJRD",
+    "true_revenue": "cf_DivasTofPYPOdmFWnuLbts4PRTMKWZIrT9q56x698lu",
+    "holdback_capacity": "cf_B3gXaET1Hzhfffdvd453VXEMYPDUuB3FYsXEMGTmDQI",
+    "existing_mca_count": "cf_exJtKEjItwsJ5fr9k7bEzgrwArBwggrDnCsyMZEK5gr",
+    "existing_mca_daily_total": "cf_xOiXpJtf1W9DDFBrpQ5DNoYWFCQRSeemfXXMEqtrveM",
+}
+
+
 CLOSE_FIELD_IDS: Final[dict[str, str]] = {
     # Inbound: Lead identity + business profile (read by /webhooks/close)
-    "legal_name":              "cf_Atu3WT1FlUIPEHHZ5ryMJbmgGQiHZjBCptOg2YMwXWi",
-    "dba_name":                "cf_YcldmRoTpfdqpG16JTZ7Jq3is3wgNW2P6YwAIkCAwuS",
-    "ein":                     "cf_ik3aCHe67NWDzn1DeE3Q2HUbR0vFJxTcTS1PhkloOAN",
-    "owner_name":              "cf_CAGnfwW3PmzK52wzjYsgLQeqSogEQPJj5z1w63E4IhC",
-    "state":                   "cf_lA3zOyNn28vtEPiKKx2SKGvE57sQRndIdVETtZUmzZZ",
-    "industry":                "cf_Wls6nOfOp8CE8VNp4KkJxfZTSYlkqByKHkRwa0VQelr",
-    "naics_code":              "cf_SwEqRSTvhlM4zPCm0LsGNECUzOsrysqyIMdbdLoUmGD",
+    "legal_name": "cf_Atu3WT1FlUIPEHHZ5ryMJbmgGQiHZjBCptOg2YMwXWi",
+    "dba_name": "cf_YcldmRoTpfdqpG16JTZ7Jq3is3wgNW2P6YwAIkCAwuS",
+    "ein": "cf_ik3aCHe67NWDzn1DeE3Q2HUbR0vFJxTcTS1PhkloOAN",
+    "owner_name": "cf_CAGnfwW3PmzK52wzjYsgLQeqSogEQPJj5z1w63E4IhC",
+    "state": "cf_lA3zOyNn28vtEPiKKx2SKGvE57sQRndIdVETtZUmzZZ",
+    "industry": "cf_Wls6nOfOp8CE8VNp4KkJxfZTSYlkqByKHkRwa0VQelr",
+    "naics_code": "cf_SwEqRSTvhlM4zPCm0LsGNECUzOsrysqyIMdbdLoUmGD",
     "time_in_business_months": "cf_mCyntewx8FYBCtiW3NMv3HJwT7bDXwsbfOJTqoq3ClY",
-    "fico_range":              "cf_cFV00H5FFZ5Sw55JBKFskDo5HjgEpIKKBq9bkiac1kP",
-    "requested_amount":        "cf_TVx0D6Cx8qg9Dey7LgSgQqLIosZnGcYukKH0ImVuvw4",
-    "entity_type_a":           "cf_FwBTNyt2ux6OnVIoRWIn0qkjXsVpAI0d4Wy1vjPoO4V",  # "Entity type"
-    "entity_type_b":           "cf_sAtWGtaP7eqj5QYH8D91Vc1kX788DRVwHh6Ydufy3ca",  # "Entity_type"
+    "fico_range": "cf_cFV00H5FFZ5Sw55JBKFskDo5HjgEpIKKBq9bkiac1kP",
+    "requested_amount": "cf_TVx0D6Cx8qg9Dey7LgSgQqLIosZnGcYukKH0ImVuvw4",
+    "entity_type_a": "cf_FwBTNyt2ux6OnVIoRWIn0qkjXsVpAI0d4Wy1vjPoO4V",  # "Entity type"
+    "entity_type_b": "cf_sAtWGtaP7eqj5QYH8D91Vc1kX788DRVwHh6Ydufy3ca",  # "Entity_type"
     # Outbound: Aegis-* fields written by close.sync.push_decision_to_close
-    "aegis_applicant_id":      "cf_HJbCNJ2k7X4lKOPvl2Bql1FkTHDeGfS9zJL6dDafUd8",
-    "aegis_score":             "cf_0aYBJLLYHM4isq2CxyywRf6Syw5Mwe82hJvcOx3HRVW",
-    "aegis_recommendation":    "cf_hyhD8buv0SxuKCa5JsRafCXSlVz565nilXcXKxWbFBq",
-    "ofac_status":             "cf_I8Csenfde4IdiNnSEPprhL7hzzmtiGW6HYIdDAg25PB",
-    "aegis_last_synced":       "cf_W2M1v1giWa3bzx7lxBlJstda8708Ad2RMCBb9Cbt94d",
+    "aegis_applicant_id": "cf_HJbCNJ2k7X4lKOPvl2Bql1FkTHDeGfS9zJL6dDafUd8",
+    "aegis_score": "cf_0aYBJLLYHM4isq2CxyywRf6Syw5Mwe82hJvcOx3HRVW",
+    "aegis_recommendation": "cf_hyhD8buv0SxuKCa5JsRafCXSlVz565nilXcXKxWbFBq",
+    "ofac_status": "cf_I8Csenfde4IdiNnSEPprhL7hzzmtiGW6HYIdDAg25PB",
+    "aegis_last_synced": "cf_W2M1v1giWa3bzx7lxBlJstda8708Ad2RMCBb9Cbt94d",
 }
 
 
@@ -74,11 +103,11 @@ CLOSE_FIELD_IDS: Final[dict[str, str]] = {
 # (lower-bound conservative, not configurable). If the operator wants
 # midpoint later, that's a one-commit code change.
 FICO_RANGE_LOWER_BOUND: Final[dict[str, int]] = {
-    "<550":    549,
+    "<550": 549,
     "550-599": 550,
     "600-649": 600,
     "650-699": 650,
-    "700+":    700,
+    "700+": 700,
 }
 
 
@@ -104,24 +133,24 @@ FICO_RANGE_LOWER_BOUND: Final[dict[str, int]] = {
 # Revisit after 30 days of real Close-routed deals to align with
 # Commera's actual merchant mix.
 CLOSE_INDUSTRY_TO_NAICS: Final[dict[str, str]] = {
-    "Auto Repair / Service":               "811111",  # General Automotive Repair
-    "Beauty / Salon / Spa":                "812112",  # Beauty Salons
-    "Construction — General Contractor":   "236220",  # Commercial+Institutional Bldg Construction
-    "Construction — Specialty Trades":     "238990",  # All Other Specialty Trade Contractors
-    "Fitness / Gym":                       "713940",  # Fitness and Recreational Sports Centers
-    "Healthcare — Dental":                 "621210",  # Offices of Dentists
-    "Healthcare — Medical Practice":       "621111",  # Offices of Physicians
-    "Healthcare — Veterinary":             "541940",  # Veterinary Services
-    "Hospitality / Hotel":                 "721110",  # Hotels and Motels
-    "Manufacturing":                       "339999",  # All Other Miscellaneous Manufacturing
-    "Other (Approved)":                    "999999",  # Sentinel — NAICS has no generic "other"
-    "Professional Services":               "541990",  # All Other Prof/Sci/Tech Services
-    "Real Estate Services":                "531390",  # Other Activities Related to Real Estate
-    "Restaurant / Food Service":           "722511",  # Full-Service Restaurants
-    "Retail — General":                    "459999",  # All Other Miscellaneous Retailers
-    "Retail — Specialty":                  "459999",  # Same — operator's NAICS Code field refines
-    "Trucking / Logistics":                "484110",  # General Freight Trucking, Local
-    "Wholesale / Distribution":            "423990",  # Other Miscellaneous Durable Goods Wholesale
+    "Auto Repair / Service": "811111",  # General Automotive Repair
+    "Beauty / Salon / Spa": "812112",  # Beauty Salons
+    "Construction — General Contractor": "236220",  # Commercial+Institutional Bldg Construction
+    "Construction — Specialty Trades": "238990",  # All Other Specialty Trade Contractors
+    "Fitness / Gym": "713940",  # Fitness and Recreational Sports Centers
+    "Healthcare — Dental": "621210",  # Offices of Dentists
+    "Healthcare — Medical Practice": "621111",  # Offices of Physicians
+    "Healthcare — Veterinary": "541940",  # Veterinary Services
+    "Hospitality / Hotel": "721110",  # Hotels and Motels
+    "Manufacturing": "339999",  # All Other Miscellaneous Manufacturing
+    "Other (Approved)": "999999",  # Sentinel — NAICS has no generic "other"
+    "Professional Services": "541990",  # All Other Prof/Sci/Tech Services
+    "Real Estate Services": "531390",  # Other Activities Related to Real Estate
+    "Restaurant / Food Service": "722511",  # Full-Service Restaurants
+    "Retail — General": "459999",  # All Other Miscellaneous Retailers
+    "Retail — Specialty": "459999",  # Same — operator's NAICS Code field refines
+    "Trucking / Logistics": "484110",  # General Freight Trucking, Local
+    "Wholesale / Distribution": "423990",  # Other Miscellaneous Durable Goods Wholesale
 }
 
 
@@ -138,14 +167,14 @@ _NONE_MARKER: Final[str] = "-None-"
 # S-Corp; both collapse to "corp". If that distinction starts to matter
 # (it doesn't for any compliance rule today), extend MerchantRow first.
 CLOSE_ENTITY_TYPE_TO_AEGIS: Final[dict[str, str]] = {
-    "LLC":                 "llc",
-    "C-Corp":              "corp",
-    "S-Corp":              "corp",
+    "LLC": "llc",
+    "C-Corp": "corp",
+    "S-Corp": "corp",
     "Sole Proprietorship": "sole_prop",
-    "Partnership":         "partnership",
-    "Non-Profit":          "other",
-    "Other":               "other",
-    "Option 1":            "other",  # Stale Close template choice; treat as other
+    "Partnership": "partnership",
+    "Non-Profit": "other",
+    "Other": "other",
+    "Option 1": "other",  # Stale Close template choice; treat as other
 }
 
 
@@ -224,10 +253,7 @@ def parse_money(value: str | int | float | None) -> Decimal | None:
         return None
     cleaned = text.replace("$", "").replace(",", "").strip()
     if cleaned == "":
-        raise FieldMapError(
-            f"money value collapsed to empty after $ / comma strip: "
-            f"{value!r}"
-        )
+        raise FieldMapError(f"money value collapsed to empty after $ / comma strip: {value!r}")
     try:
         return Decimal(cleaned)
     except InvalidOperation as exc:
@@ -329,9 +355,7 @@ def normalize_entity_type(value: str | None) -> str | None:
 # ----------------------------------------------------------------------
 
 
-def get_custom_field(
-    payload: dict[str, Any], aegis_field_name: str
-) -> Any:  # noqa: ANN401 — Close custom-field values are heterogeneous
+def get_custom_field(payload: dict[str, Any], aegis_field_name: str) -> Any:  # noqa: ANN401 — Close custom-field values are heterogeneous
     """Pull a custom-field value out of a Close Lead payload.
 
     Close puts custom fields under keys of the form
@@ -349,9 +373,7 @@ def get_custom_field(
     return payload.get(f"custom.{cf_id}")
 
 
-def filename_matches_statement_filter(
-    filename: str, filters: tuple[str, ...]
-) -> bool:
+def filename_matches_statement_filter(filename: str, filters: tuple[str, ...]) -> bool:
     """Case-insensitive substring match of ``filename`` against ``filters``.
 
     Used by ``aegis.workers.process_close_attachments`` to decide whether
@@ -374,6 +396,7 @@ __all__ = [
     "CLOSE_ENTITY_TYPE_TO_AEGIS",
     "CLOSE_FIELD_IDS",
     "CLOSE_INDUSTRY_TO_NAICS",
+    "CLOSE_OPPORTUNITY_FIELD_IDS",
     "FICO_RANGE_LOWER_BOUND",
     "FieldMapError",
     "filename_matches_statement_filter",

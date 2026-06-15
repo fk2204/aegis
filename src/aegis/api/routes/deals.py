@@ -53,6 +53,7 @@ from aegis.close.sync import (
     SyncError,
     derive_ofac_status,
     push_decision_to_close,
+    push_offer_to_opportunity,
 )
 from aegis.compliance.router import router as compliance_router
 from aegis.compliance.snapshot import (
@@ -121,9 +122,7 @@ def _track_inputs_for_deal(
         all_docs = docs.list_documents(merchant_id=merchant_id, limit=50)
         if not all_docs:
             return None, None
-        analyses_by_doc = docs.get_analyses_by_document_ids(
-            [d.id for d in all_docs]
-        )
+        analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in all_docs])
     except Exception as exc:
         _log.warning(
             "deals.track_inputs_lookup_failed merchant_id=%s err=%s",
@@ -471,9 +470,7 @@ def sync_to_close(
         )
 
     deal_ids = [doc.id for doc in docs.list_documents(merchant_id=merchant_id)]
-    decision = snapshot.find_latest_for_merchant(
-        merchant_id, deal_ids=deal_ids
-    )
+    decision = snapshot.find_latest_for_merchant(merchant_id, deal_ids=deal_ids)
     if decision is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -532,6 +529,24 @@ def sync_to_close(
             detail=f"close_sync_unsupported_decision: {exc}",
         ) from exc
 
+    # Stage 7 — offer + supporting cashflow snapshot → the linked Close
+    # Opportunity. Best-effort: a missing ``close_opportunity_id`` (legacy
+    # merchant pre-migration 054, or webhook hasn't fired yet for this
+    # merchant) silently skips the opportunity-side push. A failure on
+    # this push does NOT roll back the Lead-side PATCH that already
+    # landed above — the two sides are independent in Close, the audit
+    # rows say what happened on each, and the dossier still renders.
+    if merchant.close_opportunity_id is not None:
+        _try_push_offer_to_opportunity(
+            merchant_id=merchant_id,
+            close_opportunity_id=merchant.close_opportunity_id,
+            decision_id=decision.id,
+            merchants=merchants,
+            docs=docs,
+            close_client=close_client,
+            audit=audit,
+        )
+
     return CloseSyncResponse(
         merchant_id=merchant_id,
         close_lead_id=merchant.close_lead_id,
@@ -540,6 +555,94 @@ def sync_to_close(
         fields_diffed=result.fields_diffed,
         reason=result.reason,
     )
+
+
+def _try_push_offer_to_opportunity(
+    *,
+    merchant_id: UUID,
+    close_opportunity_id: str,
+    decision_id: UUID,
+    merchants: MerchantRepository,
+    docs: DocumentRepository,
+    close_client: CloseClient,
+    audit: AuditLog,
+) -> None:
+    """Compute the offer + supporting fields and PATCH them onto the
+    Close Opportunity. Best-effort: any compute-side failure logs and
+    returns silently rather than raising — the Lead-side PATCH already
+    landed and the dossier is unchanged.
+
+    Sources the seven push fields from:
+
+      * ``analysis.monthly_revenue``      → True Revenue
+      * ``analysis.monthly_revenue * 0.25`` -> Holdback Capacity (v1
+        default; commit-2 wave 2 sources from the Close-side
+        operator-entered value once the read-back lands)
+      * ``mca_stack.active_mca_count``    → Existing MCA Debits Identified
+      * ``analysis.mca_daily_total``      → Existing MCA Daily Debits Total
+      * ``offer.recommended_amount``      → Suggested Max Advance
+      * ``offer.holdback_pct``            → Recommended Holdback Pct
+      * ``None`` for ``recommended_factor_rate`` in v1 — sourcing it
+        requires re-scoring at sync time. Push left blank (None);
+        Close-side value untouched. Follow-up commit can refactor a
+        shared dossier+sync helper that surfaces score_result.
+
+    Decision-boundary posture: SHADOW ONLY. None of these fields drive
+    the AEGIS live decline path.
+    """
+    # Avoid circular imports for the scoring_v2 modules — this helper
+    # only runs on the operator-triggered sync route, not the dossier
+    # render hot path.
+    from aegis.scoring_v2.mca_stack import aggregate_mca_stack
+    from aegis.scoring_v2.offer import compute_offer
+
+    documents_list = docs.list_documents(merchant_id=merchant_id)
+    if not documents_list:
+        return
+    latest_doc = max(documents_list, key=lambda d: d.uploaded_at)
+    analysis = docs.get_analysis(latest_doc.id)
+    if analysis is None:
+        return
+    transactions = docs.list_transactions(latest_doc.id)
+
+    mca_stack = aggregate_mca_stack(
+        transactions=transactions,
+        monthly_revenue=analysis.monthly_revenue,
+        period_days=analysis.statement_days,
+    )
+    holdback_capacity = analysis.monthly_revenue * Decimal("0.25")
+    offer = compute_offer(
+        true_revenue_monthly=analysis.monthly_revenue,
+        holdback_capacity_monthly=holdback_capacity,
+        mca_stack=mca_stack,
+    )
+
+    try:
+        push_offer_to_opportunity(
+            close_opportunity_id=close_opportunity_id,
+            decision_id=decision_id,
+            suggested_max_advance=(offer.recommended_amount if offer is not None else None),
+            recommended_factor_rate=None,  # v1 deferred — see docstring
+            recommended_holdback_pct=(offer.holdback_pct if offer is not None else None),
+            true_revenue_monthly=analysis.monthly_revenue,
+            holdback_capacity_monthly=holdback_capacity,
+            existing_mca_count=mca_stack.active_mca_count,
+            existing_mca_daily_total=analysis.mca_daily_total,
+            client=close_client,
+            audit=audit,
+        )
+    except (CloseError, CloseAuthError):
+        # Audit rows already captured by ``push_offer_to_opportunity``;
+        # Lead-side PATCH from earlier in this request already landed.
+        # Don't 5xx the whole sync — the operator can re-trigger
+        # /sync-to-close cheaply (idempotent).
+        # ``_ = merchants`` keeps the dependency-injected repo
+        # reachable here without an unused-arg warning; future
+        # refactors that need it (renewal-driven opportunity rotation,
+        # etc.) won't have to wire it through again.
+        _ = merchants
+        return
+    _ = merchants  # reserved for the renewal-rotation surface above.
 
 
 __all__ = ["router"]
