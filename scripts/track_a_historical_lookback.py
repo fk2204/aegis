@@ -106,10 +106,28 @@ def _extract_math_failures(all_flags: list[str]) -> tuple[str, ...]:
     )
 
 
+def _read_score_component(breakdown: dict[str, int], name: str) -> int:
+    """Read one component (metadata / math / patterns) out of
+    ``documents.fraud_score_breakdown``.
+
+    ``parser.pipeline._fraud_score`` writes the canonical keys with a
+    ``_score`` suffix (``"metadata_score"``, ``"math_score"``,
+    ``"patterns_score"``). Prior versions of this lookback read the
+    keys without the suffix and silently returned 0 for every document
+    since the script's introduction; the bug surfaced when triaging
+    VU DEVELOPMENT's miss (doc 49c7d058) on 2026-06-15.
+
+    Fallback to the suffix-less key is kept so any legacy row written
+    by an older code path still reads correctly. New writers must
+    use the ``_score`` suffix.
+    """
+    return int(breakdown.get(f"{name}_score", breakdown.get(name, 0)))
+
+
 def _integrity_signals_from_document(doc: DocumentRow) -> DocumentIntegritySignals:
     """Reconstruct Track A's input shape from a persisted DocumentRow."""
     breakdown = doc.fraud_score_breakdown or {}
-    metadata_score = int(breakdown.get("metadata", 0))
+    metadata_score = _read_score_component(breakdown, "metadata")
     return DocumentIntegritySignals(
         document_id=str(doc.id),
         metadata_score=metadata_score,
@@ -132,8 +150,8 @@ def evaluate_document(doc: DocumentRow, *, threshold: int = HARD_DECLINE_THRESHO
     deal through where the legacy rule wouldn't.
     """
     breakdown = doc.fraud_score_breakdown or {}
-    metadata_score = int(breakdown.get("metadata", 0))
-    math_score = int(breakdown.get("math", 0))
+    metadata_score = _read_score_component(breakdown, "metadata")
+    math_score = _read_score_component(breakdown, "math")
     legacy_would_decline = (doc.fraud_score or 0) >= threshold
 
     verdict: IntegrityVerdict = compute_integrity_verdict(_integrity_signals_from_document(doc))

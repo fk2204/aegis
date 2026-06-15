@@ -59,7 +59,15 @@ def _doc(
         merchant_id=mid,
         parse_status="manual_review",
         fraud_score=fraud_score,
-        fraud_score_breakdown={"metadata": metadata_score, "math": math_score},
+        # Canonical breakdown keys per parser.pipeline._fraud_score —
+        # ``metadata_score`` / ``math_score`` / ``patterns_score``. Prior
+        # fixtures used the suffix-less variants, which silently passed
+        # because the lookback was reading the wrong keys too (bug fixed
+        # 2026-06-15).
+        fraud_score_breakdown={
+            "metadata_score": metadata_score,
+            "math_score": math_score,
+        },
         all_flags=list(all_flags),
         metadata_flags=list(metadata_flags),
         uploaded_at=datetime.now(UTC),
@@ -92,6 +100,42 @@ def test_extract_math_failures_empty_when_no_math() -> None:
 
 def test_extract_math_failures_handles_empty() -> None:
     assert lookback._extract_math_failures([]) == ()
+
+
+# ----------------------------------------------------------------------
+# _read_score_component — breakdown key fix (2026-06-15)
+# ----------------------------------------------------------------------
+
+
+def test_read_score_component_reads_canonical_suffix_key() -> None:
+    """``parser.pipeline._fraud_score`` writes ``metadata_score`` /
+    ``math_score`` / ``patterns_score`` (with _score suffix). The
+    lookback must read those, not the suffix-less variants."""
+    breakdown = {"metadata_score": 42, "math_score": 70, "patterns_score": 100}
+    assert lookback._read_score_component(breakdown, "metadata") == 42
+    assert lookback._read_score_component(breakdown, "math") == 70
+    assert lookback._read_score_component(breakdown, "patterns") == 100
+
+
+def test_read_score_component_falls_back_to_suffixless_for_legacy_rows() -> None:
+    """Defensive fallback: any legacy row written by an older code path
+    with suffix-less keys still reads correctly so existing prod data
+    surveys don't silently zero out."""
+    breakdown = {"metadata": 30, "math": 55}
+    assert lookback._read_score_component(breakdown, "metadata") == 30
+    assert lookback._read_score_component(breakdown, "math") == 55
+
+
+def test_read_score_component_prefers_canonical_over_legacy() -> None:
+    """When both keys are present (shouldn't happen in practice but pin
+    it anyway), the canonical _score suffix wins."""
+    breakdown = {"metadata_score": 99, "metadata": 1}
+    assert lookback._read_score_component(breakdown, "metadata") == 99
+
+
+def test_read_score_component_zero_when_missing() -> None:
+    assert lookback._read_score_component({}, "metadata") == 0
+    assert lookback._read_score_component({"other": 5}, "math") == 0
 
 
 # ----------------------------------------------------------------------
