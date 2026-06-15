@@ -26,6 +26,7 @@ from decimal import Decimal
 from typing import Final
 
 from aegis.parser.models import ClassifiedTransaction
+from aegis.scoring_v2.lender_label import lender_label as _lender_label
 from aegis.storage import AnalysisRow
 
 _BUSINESS_DAYS_PER_MONTH: Final[Decimal] = Decimal("22")
@@ -105,9 +106,7 @@ def build_stacking_card(
     if monthly_revenue is None or monthly_revenue <= Decimal("0"):
         mca_pct_of_deposits = None
     else:
-        mca_pct_of_deposits = (
-            monthly / monthly_revenue * Decimal(100)
-        ).quantize(Decimal("0.01"))
+        mca_pct_of_deposits = (monthly / monthly_revenue * Decimal(100)).quantize(Decimal("0.01"))
 
     return StackingCard(
         daily_total=str(daily),
@@ -117,46 +116,6 @@ def build_stacking_card(
         mca_pct_of_deposits=mca_pct_of_deposits,
         debits=debits,
     )
-
-
-def _lender_label(description: str) -> str:
-    """Crude lender-name extractor.
-
-    Takes up to the first 3 alphanumeric tokens. Uppercase tokens
-    (``KAPITUS``, ``ONDECK``) are kept; mixed-case bank-noise tokens
-    (``DEBIT``, ``Pmt``) are filtered out so the label stays readable.
-    """
-    cleaned = description.strip()
-    if not cleaned:
-        return "(unknown)"
-    tokens = [tok for tok in cleaned.split() if tok.isalnum()]
-    if not tokens:
-        return cleaned[:32]
-    keep: list[str] = []
-    for tok in tokens[:5]:
-        if tok.upper() in _NOISE_TOKENS:
-            continue
-        keep.append(tok)
-        if len(keep) == 3:
-            break
-    return " ".join(keep) if keep else tokens[0][:32]
-
-
-_NOISE_TOKENS: Final[frozenset[str]] = frozenset(
-    {
-        "DEBIT",
-        "ACH",
-        "PMT",
-        "PAYMENT",
-        "WITHDRAWAL",
-        "DAILY",
-        "TRANSFER",
-        "INC",
-        "LLC",
-        "LTD",
-        "CO",
-    }
-)
 
 
 __all__ = ["StackingCard", "StackingDebit", "build_stacking_card"]
