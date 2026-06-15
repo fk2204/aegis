@@ -85,12 +85,8 @@ def test_strong_metadata_with_drift_surfaces_both() -> None:
     signals = DocumentIntegritySignals(
         document_id="doc_strong_with_drift",
         metadata_score=72,
-        metadata_flags=(
-            "editor_detected: Foxit PhantomPDF 11.2",
-        ),
-        validation_failures=(
-            "reconciliation_failed_period: bal_2026-01: expected 1000 got 950",
-        ),
+        metadata_flags=("editor_detected: Foxit PhantomPDF 11.2",),
+        validation_failures=("reconciliation_failed_period: bal_2026-01: expected 1000 got 950",),
     )
     v = compute_integrity_verdict(signals)
     assert v.verdict == "fail"
@@ -100,9 +96,7 @@ def test_strong_metadata_with_drift_surfaces_both() -> None:
     # the reconciliation drift (which branch 1 previously dropped).
     signal_kinds = {e.signal for e in v.evidence}
     assert "metadata_score" in signal_kinds
-    drift_rows = [
-        e for e in v.evidence if e.signal.startswith("reconciliation_failed_")
-    ]
+    drift_rows = [e for e in v.evidence if e.signal.startswith("reconciliation_failed_")]
     assert len(drift_rows) == 1
     assert drift_rows[0].signal == "reconciliation_failed_period"
 
@@ -114,9 +108,7 @@ def test_drift_alone_branch_fires_review() -> None:
         document_id="doc_drift_alone",
         metadata_score=12,
         metadata_flags=("page_count: 6",),
-        validation_failures=(
-            "reconciliation_failed_period: expected -263.89 got 236.11",
-        ),
+        validation_failures=("reconciliation_failed_period: expected -263.89 got 236.11",),
     )
     v = compute_integrity_verdict(signals)
     assert v.verdict == "review"
@@ -133,12 +125,8 @@ def test_medium_corroborated_branch_fires_review() -> None:
     signals = DocumentIntegritySignals(
         document_id="doc_medium",
         metadata_score=37,
-        metadata_flags=(
-            "personal_author: 'Jane Doe'",
-        ),
-        validation_failures=(
-            "reconciliation_failed_deposit_total: listed 9200 vs printed 8970",
-        ),
+        metadata_flags=("personal_author: 'Jane Doe'",),
+        validation_failures=("reconciliation_failed_deposit_total: listed 9200 vs printed 8970",),
     )
     v = compute_integrity_verdict(signals)
     assert v.verdict == "review"
@@ -157,13 +145,10 @@ def test_drift_plus_editor_branch_fires_fail() -> None:
     signals = DocumentIntegritySignals(
         document_id="doc_arkm_lili_03",
         metadata_score=38,
-        metadata_flags=(
-            "editor_detected: iText 2.1.7 by 1T3XT",
-        ),
+        metadata_flags=("editor_detected: iText 2.1.7 by 1T3XT",),
         validation_failures=(
             "reconciliation_failed_period: expected -263.89 got 236.11",
-            "reconciliation_failed_withdrawal_total: "
-            "listed 31416.55 vs printed 30726.55",
+            "reconciliation_failed_withdrawal_total: listed 31416.55 vs printed 30726.55",
         ),
     )
     v = compute_integrity_verdict(signals)
@@ -187,12 +172,8 @@ def test_drift_plus_editor_fires_even_below_medium_metadata_floor() -> None:
     signals = DocumentIntegritySignals(
         document_id="doc_low_score_editor",
         metadata_score=10,
-        metadata_flags=(
-            "editor_detected: iText 2.1.7 by 1T3XT",
-        ),
-        validation_failures=(
-            "reconciliation_failed_period: expected 12 got 0",
-        ),
+        metadata_flags=("editor_detected: iText 2.1.7 by 1T3XT",),
+        validation_failures=("reconciliation_failed_period: expected 12 got 0",),
     )
     v = compute_integrity_verdict(signals)
     assert v.verdict == "fail"
@@ -208,9 +189,7 @@ def test_editor_metadata_alone_below_threshold_does_not_fire() -> None:
     signals = DocumentIntegritySignals(
         document_id="doc_editor_only",
         metadata_score=22,
-        metadata_flags=(
-            "editor_detected: Preview (macOS)",
-        ),
+        metadata_flags=("editor_detected: Preview (macOS)",),
         validation_failures=(),
     )
     v = compute_integrity_verdict(signals)
@@ -242,9 +221,7 @@ def test_long_editor_string_truncates_to_keep_rationale_under_max_length() -> No
         document_id="doc_long_editor",
         metadata_score=38,
         metadata_flags=(long_editor,),
-        validation_failures=(
-            "reconciliation_failed_period: expected 1000 got 950",
-        ),
+        validation_failures=("reconciliation_failed_period: expected 1000 got 950",),
     )
     v = compute_integrity_verdict(signals)
     assert v.verdict == "fail"
@@ -257,6 +234,142 @@ def test_long_editor_string_truncates_to_keep_rationale_under_max_length() -> No
     # actionable bit for the underwriter) and end with an ellipsis.
     assert "Some Long Vendor" in v.rationale
     assert "..." in v.rationale
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Boundary tests — exact threshold transitions
+# ─────────────────────────────────────────────────────────────────────
+
+
+# Branch transitions live at metadata_score 25 / 50 — mirroring the
+# parser-side `_MEDIUM_METADATA_FLOOR` / `_MEDIUM_METADATA_CEIL` (25/49)
+# and `_STRONG_METADATA_FLOOR` (50) constants in `aegis.parser.tampering`.
+#
+# The existing branch-coverage tests above use scattered metadata_score
+# values (8, 72, 12, 37, 38, 10, 22) but never exercise the exact
+# transition points. Per docs/track_a_audit_2026-06-12.md F3, a future
+# refactor that nudges one constant by ±1 would ship a behavioural
+# regression caught only by manual triage of the historical lookback —
+# which is exactly what Step 2 cutover gates on staying clean.
+#
+# `test_track_a_thresholds_match_parser_tampering` (below) pins the
+# threshold VALUES via direct constant comparison. These tests pin the
+# threshold BEHAVIOUR — they catch the asymmetric drift where Track A
+# and parser thresholds move apart from each other (the value guard only
+# catches symmetric drift where both move together).
+_F3_BOUNDARY_DRIFT: tuple[str, ...] = ("reconciliation_failed_period: expected 1000 got 950",)
+_F3_BOUNDARY_EDITOR: tuple[str, ...] = ("editor_detected: Foxit PhantomPDF 11.2",)
+
+
+@pytest.mark.parametrize(
+    (
+        "metadata_score",
+        "metadata_flags",
+        "validation_failures",
+        "expected_verdict",
+        "expected_branch",
+    ),
+    [
+        # Strong-metadata floor (50): exact threshold fires fail with no
+        # corroboration required — that IS the strong-metadata branch's
+        # contract.
+        pytest.param(
+            50,
+            (),
+            (),
+            "fail",
+            "strong_metadata",
+            id="score=50_no_corroboration_strong_metadata_fail",
+        ),
+        # Strong-metadata ceiling (100): the upper bound of the score
+        # range — fails the same way as the floor, no corroboration.
+        pytest.param(
+            100,
+            (),
+            (),
+            "fail",
+            "strong_metadata",
+            id="score=100_no_corroboration_strong_metadata_fail",
+        ),
+        # One below strong floor (49) + drift, no editor: medium_corroborated
+        # is the right branch (score in [25,49] AND drift present).
+        pytest.param(
+            49,
+            (),
+            _F3_BOUNDARY_DRIFT,
+            "review",
+            "medium_corroborated",
+            id="score=49+drift_no_editor_medium_corroborated_review",
+        ),
+        # One below strong floor (49) + drift + editor: drift_plus_editor
+        # wins by branch precedence (branch 2 evaluates before branch 3).
+        # This is the load-bearing case for "score below the strong floor
+        # but the signals still corroborate a competent fabrication".
+        pytest.param(
+            49,
+            _F3_BOUNDARY_EDITOR,
+            _F3_BOUNDARY_DRIFT,
+            "fail",
+            "drift_plus_editor",
+            id="score=49+drift+editor_drift_plus_editor_fail",
+        ),
+        # Medium-metadata floor (25) + drift: exact threshold fires
+        # medium_corroborated.
+        pytest.param(
+            25,
+            (),
+            _F3_BOUNDARY_DRIFT,
+            "review",
+            "medium_corroborated",
+            id="score=25+drift_no_editor_medium_corroborated_review",
+        ),
+        # One below medium floor (24) + drift: falls through medium to
+        # drift_alone (drift present but no metadata corroboration).
+        pytest.param(
+            24,
+            (),
+            _F3_BOUNDARY_DRIFT,
+            "review",
+            "drift_alone",
+            id="score=24+drift_no_editor_drift_alone_review",
+        ),
+        # Bottom (0) + drift: drift_alone — the minimum metadata_score
+        # case where drift still surfaces as a reviewable verdict.
+        pytest.param(
+            0,
+            (),
+            _F3_BOUNDARY_DRIFT,
+            "review",
+            "drift_alone",
+            id="score=0+drift_no_editor_drift_alone_review",
+        ),
+    ],
+)
+def test_metadata_score_boundary_transitions(
+    metadata_score: int,
+    metadata_flags: tuple[str, ...],
+    validation_failures: tuple[str, ...],
+    expected_verdict: str,
+    expected_branch: str,
+) -> None:
+    """F3 boundary guard — verdict at exact threshold transitions.
+
+    Each parameterized case pins one transition. A future refactor that
+    drifts `_STRONG_METADATA_FLOOR` or `_MEDIUM_METADATA_FLOOR`/`_CEIL`
+    relative to the parser side breaks at least one case here even if
+    `test_track_a_thresholds_match_parser_tampering` continues to pass
+    (the value guard only catches symmetric drift; behavioural guards
+    catch the asymmetric kind).
+    """
+    signals = DocumentIntegritySignals(
+        document_id=f"doc_boundary_score_{metadata_score}",
+        metadata_score=metadata_score,
+        metadata_flags=metadata_flags,
+        validation_failures=validation_failures,
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == expected_verdict
+    assert v.branch == expected_branch
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -279,9 +392,7 @@ def test_verdict_has_no_decline_or_score_field() -> None:
         "tampering_confirmed",
     }
     leaked = fields & forbidden
-    assert not leaked, (
-        f"Track A output must not carry decline/score fields; leaked: {leaked}"
-    )
+    assert not leaked, f"Track A output must not carry decline/score fields; leaked: {leaked}"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -297,18 +408,9 @@ def test_track_a_thresholds_match_parser_tampering() -> None:
     from aegis.parser import tampering as parser_tampering
     from aegis.scoring_v2.track_a import compute as track_a_compute
 
-    assert (
-        track_a_compute._STRONG_METADATA_FLOOR
-        == parser_tampering._STRONG_METADATA_FLOOR
-    )
-    assert (
-        track_a_compute._MEDIUM_METADATA_FLOOR
-        == parser_tampering._MEDIUM_METADATA_FLOOR
-    )
-    assert (
-        track_a_compute._MEDIUM_METADATA_CEIL
-        == parser_tampering._MEDIUM_METADATA_CEIL
-    )
+    assert track_a_compute._STRONG_METADATA_FLOOR == parser_tampering._STRONG_METADATA_FLOOR
+    assert track_a_compute._MEDIUM_METADATA_FLOOR == parser_tampering._MEDIUM_METADATA_FLOOR
+    assert track_a_compute._MEDIUM_METADATA_CEIL == parser_tampering._MEDIUM_METADATA_CEIL
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -342,18 +444,14 @@ def arkm_lili_signals() -> DocumentIntegritySignals:
     return DocumentIntegritySignals(
         document_id="arkm_lili_2026_03",
         metadata_score=0,  # ← real prod value; editor flag present but score still 0
-        metadata_flags=(
-            "editor_detected: iText 2.1.7 by 1T3XT",
-        ),
+        metadata_flags=("editor_detected: iText 2.1.7 by 1T3XT",),
         validation_failures=(
             # Persisted-form failures (with [MATH] prefix) — verbatim
             # from the live ``all_flags`` column. The signals module
             # strips the prefix before matching.
             "[MATH] reconciliation_failed_period: expected 197.45 got 364.12",
-            "[MATH] reconciliation_failed_withdrawal_total: "
-            "listed 32508.86 vs printed 32167.19",
-            "[MATH] reconciliation_failed_intraday: "
-            "2026-03-19 p2l1: expected 8047.99 got 8214.66",
+            "[MATH] reconciliation_failed_withdrawal_total: listed 32508.86 vs printed 32167.19",
+            "[MATH] reconciliation_failed_intraday: 2026-03-19 p2l1: expected 8047.99 got 8214.66",
         ),
     )
 
@@ -375,8 +473,7 @@ def vu_7722_signals() -> DocumentIntegritySignals:
         metadata_flags=(),
         validation_failures=(
             # Verbatim from prod.
-            "[MATH] reconciliation_failed_withdrawal_total: "
-            "listed 341722.93 vs printed 341667.93",
+            "[MATH] reconciliation_failed_withdrawal_total: listed 341722.93 vs printed 341667.93",
         ),
     )
 
@@ -404,9 +501,7 @@ def test_arkm_lili_verdict_is_fail_drift_plus_editor(
     itext_evidence = [e for e in v.evidence if "iText" in e.detail]
     assert len(itext_evidence) == 1
     # And all three reconciliation failures.
-    drift_evidence = [
-        e for e in v.evidence if e.signal.startswith("reconciliation_failed")
-    ]
+    drift_evidence = [e for e in v.evidence if e.signal.startswith("reconciliation_failed")]
     assert len(drift_evidence) == 3
 
 
@@ -435,14 +530,8 @@ def test_arkm_vs_vu_verdicts_distinguish_via_editor_presence(
     vu_v = compute_integrity_verdict(vu_7722_signals)
 
     # Same drift pattern fires on both.
-    assert any(
-        e.signal.startswith("reconciliation_failed")
-        for e in arkm_v.evidence
-    )
-    assert any(
-        e.signal.startswith("reconciliation_failed")
-        for e in vu_v.evidence
-    )
+    assert any(e.signal.startswith("reconciliation_failed") for e in arkm_v.evidence)
+    assert any(e.signal.startswith("reconciliation_failed") for e in vu_v.evidence)
 
     # The verdicts differ because editor metadata is present on A&R only.
     assert arkm_v.verdict == "fail"
