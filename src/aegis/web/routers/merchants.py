@@ -49,6 +49,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from aegis.api.deps import (
     get_audit,
     get_close_client,
+    get_funder_note_submission_repository,
     get_funder_repository,
     get_merchant_repository,
     get_merchant_shadow_signal_repository,
@@ -61,6 +62,9 @@ from aegis.close.client import CloseClient, CloseError
 from aegis.close.funder_note import format_funder_note
 from aegis.close.orchestration import enqueue_close_orchestration
 from aegis.compliance.states import STATES
+from aegis.funder_note_submissions import (
+    FunderNoteSubmissionRepository,
+)
 from aegis.funders.models import FunderRow
 from aegis.funders.repository import (
     FunderNotFoundError,
@@ -103,6 +107,7 @@ from aegis.scoring_v2.score_for_sync import (
     recommended_factor_rate_from as _recommended_factor_rate_from,
 )
 from aegis.scoring_v2.track_a import IntegrityVerdict
+from aegis.scoring_v2.trends import compute_revenue_trends
 from aegis.storage import (
     AnalysisRow,
     DocumentRepository,
@@ -733,6 +738,10 @@ async def merchant_submit_to_funder(
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     audit: Annotated[AuditLog, Depends(get_audit)],
     close_client: Annotated[CloseClient, Depends(get_close_client)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> HTMLResponse:
     """Post the AEGIS funder-submission note to the Close Lead activity feed.
@@ -867,20 +876,45 @@ async def merchant_submit_to_funder(
             detail=f"close note POST failed: {exc}",
         ) from exc
 
+    # The route ranks all matched funders and posts ONE Close Note
+    # covering the top three. The funder_note_submissions table is
+    # one-row-per-click, framed against the top matched funder. When
+    # there are no matched funders (rare — e.g. fresh merchant with a
+    # very narrow industry tier), the Note has still been posted so we
+    # don't unwind the Close write; we just skip the durable row and
+    # record ``submission_skipped_no_matches`` on the audit row so a
+    # later operator question can still surface the click.
+    submission_row_id: UUID | None = None
+    if matched:
+        top_funder_id = matched[0].funder_id
+        submission_row = funder_note_subs.create(
+            merchant_id=merchant.id,
+            funder_id=top_funder_id,
+            funder_note=note_text,
+            submitted_by=actor_email or "dashboard",
+        )
+        submission_row_id = submission_row.id
+
+    audit_details: dict[str, Any] = {
+        "close_lead_id": merchant.close_lead_id,
+        "close_activity_id": close_response.get("id"),
+        "note_length": len(note_text),
+        "score": score_result.score,
+        "tier": score_result.tier,
+        "matched_funder_count": len(matched),
+    }
+    if submission_row_id is not None:
+        audit_details["funder_note_submission_id"] = str(submission_row_id)
+    else:
+        audit_details["submission_skipped_no_matches"] = True
+
     audit.record(
         actor="dashboard",
         actor_email=actor_email,
         action="deal.funder_note_posted",
         subject_type="merchant",
         subject_id=merchant.id,
-        details={
-            "close_lead_id": merchant.close_lead_id,
-            "close_activity_id": close_response.get("id"),
-            "note_length": len(note_text),
-            "score": score_result.score,
-            "tier": score_result.tier,
-            "matched_funder_count": len(matched),
-        },
+        details=audit_details,
     )
 
     return HTMLResponse(
@@ -1323,6 +1357,10 @@ async def merchant_detail(
         MerchantShadowSignalRepository,
         Depends(get_merchant_shadow_signal_repository),
     ],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
 ) -> HTMLResponse:
     try:
         merchant = merchants.get(merchant_id)
@@ -1365,6 +1403,7 @@ async def merchant_detail(
     mca_stack = None
     balance_health = None
     offer = None
+    revenue_trends = None
     score_window = None
     bundle_summaries: list[dict[str, Any]] = []
     statement_coverage: dict[str, Any] | None = None
@@ -1427,6 +1466,11 @@ async def merchant_detail(
             score_input = _score_input_multi_month(
                 merchant, items, pattern_analysis=pattern_analysis
             )
+            # Shadow-only revenue/ADB/NSF trend chips. Reads
+            # score_input.monthly_breakdown (already populated by the
+            # multi-month scorer); single-month or empty inputs collapse
+            # to all-flat per the function's contract.
+            revenue_trends = compute_revenue_trends(score_input.monthly_breakdown)
             # U33 — feed Track A integrity verdict + Track B band into the
             # scorer so ``AEGIS_SCORING_ENGINE=track_abc`` has live inputs.
             # Under the default ``legacy`` engine these are ignored and
@@ -1575,6 +1619,13 @@ async def merchant_detail(
         industry_tier=industry_risk_tier(merchant.industry_choice),
     )
 
+    # Funder-note submission history (newest-first). Dossier renders a
+    # compact list of every Submit-to-Funder click for this merchant
+    # with status + offered terms when a funder has responded. Empty
+    # list when nothing has been submitted yet (the template handles
+    # the empty-state copy).
+    funder_note_submissions = funder_note_subs.list_for_merchant(merchant_id=merchant_id, limit=50)
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -1608,6 +1659,8 @@ async def merchant_detail(
             "unified_tracks": unified_tracks,
             "shadow_signals": shadow_signals,
             "merchant_shadow_signals": merchant_shadow_signals,
+            "revenue_trends": revenue_trends,
+            "funder_note_submissions": funder_note_submissions,
         },
     )
 

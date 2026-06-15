@@ -163,6 +163,7 @@
       {% if documents %}<a href="#statements"><span class="n">§ 4½</span> Statements ledger</a>{% endif %}
       <a href="#profile"><span class="n">§ 4¾</span> Merchant profile</a>
       <a href="#disposition"><span class="n">§ 5</span> Disposition</a>
+      {% if funder_note_submissions %}<a href="#submissions"><span class="n">§ 5½</span> Funder submissions</a>{% endif %}
       {% if history %}<a href="#audit"><span class="n">§ 6</span> Audit log</a>{% endif %}
     </nav>
 
@@ -630,6 +631,27 @@
               <span class="qual">{{ unified_tracks.industry_tier_reason }}</span>
             </div>
           {% endif %}
+          {# Multi-month trend chips (revenue_trends from
+             aegis.scoring_v2.trends). Shadow-only: tokens do not
+             feed the live decline path. Hidden when fewer than two
+             months of data exist (months_compared < 2). #}
+          {% if revenue_trends and revenue_trends.months_compared >= 2 %}
+            <div class="{% if revenue_trends.revenue_trend == 'declining' %}warn{% endif %}">
+              <span class="k">Revenue Trend</span>
+              <span class="v">{{ revenue_trends.revenue_trend }}</span>
+              <span class="qual">latest month vs prior · ±10% threshold</span>
+            </div>
+            <div class="{% if revenue_trends.adb_trend == 'declining' %}warn{% endif %}">
+              <span class="k">ADB Trend</span>
+              <span class="v">{{ revenue_trends.adb_trend }}</span>
+              <span class="qual">latest month vs prior · ±10% threshold</span>
+            </div>
+            <div>
+              <span class="k">NSF Trend</span>
+              <span class="v">{{ revenue_trends.nsf_trend }}</span>
+              <span class="qual">placeholder — awaits per-month NSF on MonthBreakdown</span>
+            </div>
+          {% endif %}
         </div>
         {% if mca_stack and mca_stack.shadow_triggers %}
           <p class="marginalia">
@@ -995,6 +1017,48 @@
         </div>
       </div>
     </section>
+
+    {# ============== § 5½ FUNDER SUBMISSIONS ============== #}
+    {% if funder_note_submissions %}
+      <section id="submissions" class="section">
+        <header>
+          <span class="n">§ 5½</span>
+          <h2>Funder <em>submissions</em></h2>
+          <span class="footnote">{{ funder_note_submissions|length }} submission{{ '' if funder_note_submissions|length == 1 else 's' }} · newest first</span>
+        </header>
+        <div class="table-scroll">
+        <table class="audit-ledger">
+          <thead>
+            <tr>
+              <th style="width:170px">Submitted</th>
+              <th style="width:140px">Funder</th>
+              <th style="width:110px">Status</th>
+              <th style="width:140px">Offer</th>
+              <th>Responded</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in funder_note_submissions %}
+              <tr>
+                <td class="when">{{ (s.submitted_at or '—')|string|truncate(19, True, '') }}</td>
+                <td>{{ s.funder_id|string|truncate(8, True, '') }}</td>
+                <td class="action">{{ s.status }}</td>
+                <td>
+                  {% if s.offer_amount is not none %}
+                    {{ s.offer_amount | whole_money }}{% if s.offer_factor %} @ {{ s.offer_factor }}x{% endif %}
+                  {% else %}—{% endif %}
+                </td>
+                <td class="details">
+                  {% if s.responded_at %}{{ s.responded_at|string|truncate(19, True, '') }}{% else %}—{% endif %}
+                  {% if s.notes %} · {{ s.notes|truncate(60, True, '…') }}{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </section>
+    {% endif %}
 
     {# ============== § 6 AUDIT LOG ============== #}
     {% if history %}

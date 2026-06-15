@@ -37,6 +37,11 @@ from aegis.deals.repository import (
     InMemoryDealRepository,
     SupabaseDealRepository,
 )
+from aegis.funder_note_submissions import (
+    FunderNoteSubmissionRepository,
+    InMemoryFunderNoteSubmissionRepository,
+    SupabaseFunderNoteSubmissionRepository,
+)
 from aegis.funders.replies import (
     FunderReplyRepository,
     InMemoryFunderReplyRepository,
@@ -213,6 +218,20 @@ def get_submission_repository() -> SubmissionRepository:
 
 
 @lru_cache(maxsize=1)
+def get_funder_note_submission_repository() -> FunderNoteSubmissionRepository:
+    """Process-wide FunderNoteSubmissionRepository (migration 057).
+
+    Persists one row per ``POST /ui/merchants/{id}/submit-to-funder``
+    click — the dossier history block reads from this durable table
+    instead of parsing audit_log JSON. Same memory / supabase toggle as
+    the other repositories.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryFunderNoteSubmissionRepository()
+    return SupabaseFunderNoteSubmissionRepository()
+
+
+@lru_cache(maxsize=1)
 def get_scoring_disagreement_repository() -> ScoringDisagreementRepository:
     """Process-wide ScoringDisagreementRepository (U4 — migration 037+038).
 
@@ -299,6 +318,7 @@ def reset_dependency_caches() -> None:
     get_disclosure_render_event_repository.cache_clear()
     get_scoring_disagreement_repository.cache_clear()
     get_submission_repository.cache_clear()
+    get_funder_note_submission_repository.cache_clear()
     get_schema_migrations_reader.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
@@ -311,6 +331,7 @@ __all__ = [
     "get_deal_repository",
     "get_decision_snapshot",
     "get_disclosure_render_event_repository",
+    "get_funder_note_submission_repository",
     "get_funder_reply_repository",
     "get_funder_repository",
     "get_llm",
