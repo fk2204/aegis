@@ -80,6 +80,7 @@ from aegis.web.routers import intake as _intake_routes
 from aegis.web.routers import merchants as _merchants_routes
 from aegis.web.routers import portfolio as _portfolio_routes
 from aegis.web.routers import renewals as _renewals_routes
+from aegis.web.routers import submissions as _submissions_routes
 from aegis.web.routers import triage as _triage_routes
 from aegis.web.routers import upload as _upload_routes
 
@@ -123,6 +124,7 @@ router.include_router(_intake_routes.router)
 router.include_router(_merchants_routes.router)
 router.include_router(_renewals_routes.router)
 router.include_router(_portfolio_routes.router)
+router.include_router(_submissions_routes.router)
 router.include_router(_disclosure_events_routes.router)
 router.include_router(_triage_routes.router)
 router.include_router(_upload_routes.router)

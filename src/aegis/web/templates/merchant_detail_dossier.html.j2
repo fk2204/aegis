@@ -1106,20 +1106,7 @@
           </thead>
           <tbody>
             {% for s in funder_note_submissions %}
-              <tr>
-                <td class="when">{{ (s.submitted_at or '—')|string|truncate(19, True, '') }}</td>
-                <td>{{ s.funder_id|string|truncate(8, True, '') }}</td>
-                <td class="action">{{ s.status }}</td>
-                <td>
-                  {% if s.offer_amount is not none %}
-                    {{ s.offer_amount | whole_money }}{% if s.offer_factor %} @ {{ s.offer_factor }}x{% endif %}
-                  {% else %}—{% endif %}
-                </td>
-                <td class="details">
-                  {% if s.responded_at %}{{ s.responded_at|string|truncate(19, True, '') }}{% else %}—{% endif %}
-                  {% if s.notes %} · {{ s.notes|truncate(60, True, '…') }}{% endif %}
-                </td>
-              </tr>
+              {% include "_submission_row.html.j2" %}
             {% endfor %}
           </tbody>
         </table>

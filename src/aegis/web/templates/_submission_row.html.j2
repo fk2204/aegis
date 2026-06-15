@@ -1,0 +1,76 @@
+{# One row of the dossier's funder-submissions table.
+
+   Rendered both on initial dossier load (inside merchant_detail_
+   dossier.html.j2's § 5½) AND as the HTMX outerHTML swap target for
+   PATCH /ui/submissions/{id}/status. Keeping the row markup in one
+   place makes the swap byte-stable.
+
+   The form's status dropdown is always visible; offer-amount /
+   factor / holdback inputs are always shown — operator may capture
+   them on a status change OR record them after the fact. Empty
+   inputs leave the stored value unchanged (the route reads the form
+   tolerantly).
+#}
+<tr data-test-id="submission-row" data-submission-id="{{ s.id }}">
+  <td class="when">{{ (s.submitted_at or '—')|string|truncate(19, True, '') }}</td>
+  <td>
+    <a href="/ui/funders/{{ s.funder_id }}/performance">{{ s.funder_id|string|truncate(8, True, '') }}</a>
+  </td>
+  <td class="action" style="vertical-align:top;min-width:340px">
+    <form hx-patch="/ui/submissions/{{ s.id }}/status"
+          hx-target="closest tr"
+          hx-swap="outerHTML"
+          style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11px"
+          data-test-id="submission-status-form">
+      <select name="status"
+              style="font-size:11px;padding:2px 4px"
+              data-test-id="submission-status-select">
+        {% for opt in ['pending', 'approved', 'declined', 'countered'] %}
+          <option value="{{ opt }}" {% if s.status == opt %}selected{% endif %}>{{ opt }}</option>
+        {% endfor %}
+      </select>
+      <input type="number"
+             name="offer_amount"
+             step="100"
+             min="1"
+             placeholder="amount"
+             value="{{ s.offer_amount or '' }}"
+             style="width:90px;font-size:11px;padding:2px 4px"
+             data-test-id="submission-offer-amount">
+      <input type="number"
+             name="offer_factor"
+             step="0.001"
+             min="1.001"
+             max="2.000"
+             placeholder="factor"
+             value="{{ s.offer_factor or '' }}"
+             style="width:70px;font-size:11px;padding:2px 4px"
+             data-test-id="submission-offer-factor">
+      <input type="number"
+             name="offer_holdback"
+             step="0.005"
+             min="0.0001"
+             max="1.0000"
+             placeholder="holdback"
+             value="{{ s.offer_holdback or '' }}"
+             style="width:80px;font-size:11px;padding:2px 4px"
+             data-test-id="submission-offer-holdback">
+      <input type="text"
+             name="notes"
+             placeholder="notes"
+             value="{{ s.notes or '' }}"
+             maxlength="240"
+             style="flex:1;min-width:120px;font-size:11px;padding:2px 4px"
+             data-test-id="submission-notes">
+      <button type="submit" style="font-size:11px;padding:2px 8px">save</button>
+    </form>
+  </td>
+  <td>
+    {% if s.offer_amount is not none %}
+      {{ s.offer_amount | whole_money }}{% if s.offer_factor %} @ {{ s.offer_factor }}x{% endif %}{% if s.offer_holdback %} · {{ s.offer_holdback }} hb{% endif %}
+    {% else %}—{% endif %}
+  </td>
+  <td class="details">
+    {% if s.responded_at %}{{ s.responded_at|string|truncate(19, True, '') }}{% else %}—{% endif %}
+  </td>
+</tr>
