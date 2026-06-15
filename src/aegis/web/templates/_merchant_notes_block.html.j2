@@ -1,0 +1,34 @@
+{# Operator merchant notes — rendered at top of dossier below masthead.
+
+   Append-only display: the textarea posts a single new entry, the
+   route prepends a timestamped line, and this partial re-renders.
+   HTMX swap targets `#merchant-notes-block` on this surface; the
+   route returns the same partial so the swap is byte-stable.
+#}
+<section id="merchant-notes-block" class="merchant-notes">
+  <header class="notes-header">
+    <h3>Operator notes</h3>
+    <span class="footnote">
+      {% if merchant.notes and merchant.notes.strip() %}
+        {{ merchant.notes.split('\n')|select|list|length }} line{{ '' if merchant.notes.split('\n')|select|list|length == 1 else 's' }} on file
+      {% else %}
+        no notes yet
+      {% endif %}
+    </span>
+  </header>
+
+  {% if merchant.notes and merchant.notes.strip() %}
+    <pre class="notes-history">{{ merchant.notes }}</pre>
+  {% endif %}
+
+  <form class="notes-form"
+        hx-post="/ui/merchants/{{ merchant.id }}/notes"
+        hx-target="#merchant-notes-block"
+        hx-swap="outerHTML">
+    <textarea name="note_text"
+              rows="2"
+              placeholder="Add a note — broker quirk, pricing discussion, prior decline, …"
+              required></textarea>
+    <button type="submit">Add note</button>
+  </form>
+</section>

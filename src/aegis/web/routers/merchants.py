@@ -926,6 +926,101 @@ async def merchant_submit_to_funder(
     )
 
 
+# ---------------------------------------------------------------------------
+# Merchant notes — append-only timestamped free-form notes on the dossier.
+# ---------------------------------------------------------------------------
+
+
+_NOTE_TIMESTAMP_FORMAT: Final[str] = "%Y-%m-%d %H:%M UTC"
+
+
+def _prepend_timestamped_note(
+    *,
+    existing: str | None,
+    new_text: str,
+    now: datetime,
+    author: str,
+) -> str:
+    """Prepend a single timestamped line of new_text to existing notes.
+
+    Format: ``[YYYY-MM-DD HH:MM UTC] <author> — <text>`` followed by a
+    blank line then the prior contents. Append-only display: subsequent
+    saves stack newest-first. Pure function — testable without the DB.
+    """
+    stamp = now.strftime(_NOTE_TIMESTAMP_FORMAT)
+    line = f"[{stamp}] {author} — {new_text.strip()}"
+    if existing is None or not existing.strip():
+        return line
+    return f"{line}\n\n{existing.lstrip()}"
+
+
+@router.post("/merchants/{merchant_id}/notes", response_model=None)
+async def merchant_save_note(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    note_text: Annotated[str, Form()],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> HTMLResponse:
+    """Prepend a timestamped operator note to merchants.notes.
+
+    Append-only by convention: the textarea POSTs a single new entry,
+    the route prepends it with a timestamp + author line and writes
+    back. Operator can never overwrite history through the UI; the
+    column allows SQL-direct edits for cases where a real edit is
+    required (typo correction, PII redaction).
+
+    Returns the rendered notes block as HTMX outerHTML so the dossier
+    swaps in-place without a full reload.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    stripped = note_text.strip()
+    if not stripped:
+        # Empty submission is a no-op — return the existing block
+        # unchanged so the HTMX swap doesn't wipe what's on screen.
+        return _render_notes_block(merchant)
+
+    now = datetime.now(UTC)
+    author = actor_email or "dashboard"
+    updated_notes = _prepend_timestamped_note(
+        existing=merchant.notes,
+        new_text=stripped,
+        now=now,
+        author=author,
+    )
+
+    updated_merchant = merchant.model_copy(update={"notes": updated_notes})
+    merchants.upsert(updated_merchant)
+
+    audit.record(
+        actor="dashboard",
+        actor_email=actor_email,
+        action="merchant.note_added",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={
+            "note_chars": len(stripped),
+            "total_chars": len(updated_notes),
+        },
+    )
+
+    return _render_notes_block(updated_merchant)
+
+
+def _render_notes_block(merchant: MerchantRow) -> HTMLResponse:
+    """Render the dossier notes block partial via the shared template
+    singleton. Used both by the HTMX swap and the initial dossier
+    render."""
+    html = templates.get_template("_merchant_notes_block.html.j2").render(
+        merchant=merchant,
+    )
+    return HTMLResponse(content=html)
+
+
 _FUNDER_RESPONSE_STATUSES = frozenset({"approved", "declined", "countered", "pending"})
 
 

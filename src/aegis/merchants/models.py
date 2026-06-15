@@ -120,6 +120,14 @@ class MerchantRow(_StrictModel):
     # so the future button is a no-migration patch.
     preferred_funder_id: UUID | None = None
 
+    # Operator-curated free-form notes. The dossier textarea POSTs to
+    # /ui/merchants/{id}/notes which prepends a timestamped line to this
+    # value (append-only via the UI). NULL = no notes ever entered;
+    # ``""`` would mean "operator cleared the notes" (not currently
+    # reachable via the UI but the column allows it for SQL-direct
+    # edits). Migration 058.
+    notes: str | None = None
+
     # Phase 7B funder-submission tracking (Pydantic-only — no Supabase
     # column yet, so these reset on a Supabase round-trip; audit_log is
     # the durable record. Persistence moves to a real submissions table

@@ -150,6 +150,13 @@
   </div>
 </header>
 
+{# Operator notes — append-only timestamped free-form notes about the
+   merchant. Sits at the very top of the dossier so the underwriter
+   sees broker-source quirks, prior decline reasons, pricing
+   discussions, etc. before scanning the score. Rendered via the
+   shared partial so the route's HTMX swap returns the same shape. #}
+{% include "_merchant_notes_block.html.j2" %}
+
 {# === sheet === #}
 <div class="sheet">
 
