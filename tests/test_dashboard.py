@@ -603,7 +603,20 @@ def test_funder_import_review_renders_extraction(
     assert "renewals: case-by-case" in resp.text
 
 
-def test_funder_import_review_rejects_empty_pdf(client: TestClient) -> None:
+def test_funder_import_review_rejects_empty_pdf(
+    client: TestClient, stub_llm_extraction: object
+) -> None:
+    # Override get_llm even though this test rejects at body validation
+    # *before* the LLM is invoked: FastAPI resolves all dependencies
+    # before running the route body, and the production `get_llm` calls
+    # `AnthropicBedrock(...)` which hangs on Windows during boto3/openssl
+    # init (`OPENSSL_Uplink: no OPENSSL_Applink`). Without the override
+    # this test never reaches its `client.post` return — see the matching
+    # override pattern at `test_funder_import_review_renders_extraction`.
+    from aegis.api.deps import get_llm
+
+    cast(FastAPI, client.app).dependency_overrides[get_llm] = lambda: stub_llm_extraction
+
     resp = client.post(
         "/ui/funders/import",
         files={"pdf": ("empty.pdf", b"", "application/pdf")},
@@ -936,8 +949,18 @@ def test_funder_import_review_merges_pdf_and_image(
     assert "30000" in resp.text or "30,000" in resp.text
 
 
-def test_funder_import_review_rejects_unsupported_type(client: TestClient) -> None:
+def test_funder_import_review_rejects_unsupported_type(
+    client: TestClient, stub_llm_extraction: object
+) -> None:
     """A .docx (or any unsupported MIME) → 400 with a clear error."""
+    # Override get_llm to bypass the Windows-only `AnthropicBedrock(...)`
+    # boot hang during FastAPI dep resolution. See the same workaround on
+    # `test_funder_import_review_rejects_empty_pdf` for the full root
+    # cause.
+    from aegis.api.deps import get_llm
+
+    cast(FastAPI, client.app).dependency_overrides[get_llm] = lambda: stub_llm_extraction
+
     resp = client.post(
         "/ui/funders/import",
         files={
