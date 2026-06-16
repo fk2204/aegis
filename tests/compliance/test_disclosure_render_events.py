@@ -181,10 +181,7 @@ def test_list_by_status_respects_limit() -> None:
     repo = InMemoryDisclosureRenderEventRepository()
     for _ in range(5):
         repo.record(status=RENDER_EVENT_STATUS_APR_FAILED, **_common_kwargs())
-    assert (
-        len(repo.list_by_status(status=RENDER_EVENT_STATUS_APR_FAILED, limit=3))
-        == 3
-    )
+    assert len(repo.list_by_status(status=RENDER_EVENT_STATUS_APR_FAILED, limit=3)) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -192,11 +189,24 @@ def test_list_by_status_respects_limit() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_record_helper_writes_render_event_and_audit_row() -> None:
+def test_record_helper_writes_render_event_and_audit_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The helper writes a render-event row AND a paired audit_log row
     with ``action='aegis_disclosure_render_event'`` so the durable
     audit trail captures the event regardless of which side a reader
     queries from."""
+    # Pin the render-event UUID so the audit details and the repo row
+    # compare equal. With ``uuid4()`` the test was flaky (~1-5 %): roughly
+    # 1 in 70 random UUIDs has a 9+ consecutive-digit run, which the
+    # logger's _BARE_LONG_DIGITS_RE (\b\d{9,16}\b) treats as PII and
+    # masks to ``***`` on the audit-row read path — but not on the repo
+    # row's UUID object — so the assertion below would see
+    # ``"...-***" == "...-478554427948"`` and fail. The fixed UUID below
+    # has letters in the last hex block so no digit run reaches 9 chars.
+    fixed_id = UUID("33333333-3333-4333-8333-aabbccddeeff")
+    monkeypatch.setattr("aegis.compliance.render_events.uuid4", lambda: fixed_id)
+
     repo = InMemoryDisclosureRenderEventRepository()
     audit = InMemoryAuditLog()
     record_disclosure_render_event(
@@ -214,11 +224,7 @@ def test_record_helper_writes_render_event_and_audit_row() -> None:
     )
 
     assert len(repo.rows) == 1
-    audit_rows = [
-        e
-        for e in audit.entries
-        if e["action"] == "aegis_disclosure_render_event"
-    ]
+    audit_rows = [e for e in audit.entries if e["action"] == "aegis_disclosure_render_event"]
     assert len(audit_rows) == 1
     row = audit_rows[0]
     assert row["subject_type"] == "deal"
@@ -253,9 +259,7 @@ def client(
     app.dependency_overrides[get_funder_repository] = InMemoryFunderRepository
     app.dependency_overrides[get_repository] = InMemoryDocumentRepository
     app.dependency_overrides[get_audit] = lambda: audit_log
-    app.dependency_overrides[get_disclosure_render_event_repository] = (
-        lambda: render_event_repo
-    )
+    app.dependency_overrides[get_disclosure_render_event_repository] = lambda: render_event_repo
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -334,11 +338,7 @@ def test_happy_path_writes_paired_audit_row(
     resp = client.post("/disclosures/render", json=body, headers=AUTH)
     assert resp.status_code == 200
 
-    audit_rows = [
-        e
-        for e in audit_log.entries
-        if e["action"] == "aegis_disclosure_render_event"
-    ]
+    audit_rows = [e for e in audit_log.entries if e["action"] == "aegis_disclosure_render_event"]
     assert len(audit_rows) == 1
     assert audit_rows[0]["details"]["status"] == RENDER_EVENT_STATUS_OK
 
@@ -395,14 +395,8 @@ def test_apr_failure_still_writes_u3_audit_row(
     resp = client.post("/disclosures/render", json=body, headers=AUTH)
     assert resp.status_code == 503
 
-    u3 = [
-        e for e in audit_log.entries if e["action"] == "aegis_apr_compute_failed"
-    ]
-    u16 = [
-        e
-        for e in audit_log.entries
-        if e["action"] == "aegis_disclosure_render_event"
-    ]
+    u3 = [e for e in audit_log.entries if e["action"] == "aegis_apr_compute_failed"]
+    u16 = [e for e in audit_log.entries if e["action"] == "aegis_disclosure_render_event"]
     assert len(u3) == 1, audit_log.entries
     assert len(u16) == 1, audit_log.entries
 
