@@ -2,6 +2,24 @@
 {% set active = 'Funders' %}
 {% block title %}Funders — AEGIS{% endblock %}
 
+{# Relative-time formatter for the "Last submission" column. Pure Jinja —
+   no external helper available. Bucketing: today / Nd / Nw / Nmo / Ny.
+   Input: a tz-aware datetime; falls back to em-dash when None. #}
+{% macro relative_time(dt, now) -%}
+{%- if dt is none -%}—
+{%- else -%}
+  {%- set delta = (now - dt) -%}
+  {%- set secs = delta.total_seconds()|int -%}
+  {%- if secs < 60 -%}just now
+  {%- elif secs < 3600 -%}{{ (secs // 60) }}m ago
+  {%- elif secs < 86400 -%}{{ (secs // 3600) }}h ago
+  {%- elif secs < 86400 * 30 -%}{{ (secs // 86400) }}d ago
+  {%- elif secs < 86400 * 365 -%}{{ (secs // (86400 * 30)) }}mo ago
+  {%- else -%}{{ (secs // (86400 * 365)) }}y ago
+  {%- endif -%}
+{%- endif -%}
+{%- endmacro %}
+
 {% block deck %}
 {% set title = "Funders" %}
 {% set subtitle = "· criteria" %}
@@ -19,31 +37,92 @@
     <header class="sect-head">
       <h2>Active funders</h2>
       <div class="rule"></div>
-      <div class="meta">n = {{ funders|length }}</div>
+      <div class="meta">n = {{ funders|length }} &nbsp;·&nbsp; sorted by approval rate · last {{ performance_window_days }} days</div>
     </header>
 
-    {% if not funders %}
+    {% if not funder_rows %}
       <div class="empty">No funders configured<span class="copy">Add one via <a href="/ui/funders/import">PDF import</a> or <code>POST /funders</code>.</span></div>
     {% else %}
-      <table class="queue">
+      {# === Active-only toggle ===
+         Client-side filter on data-active="true|false". The route
+         currently calls list_active() so every rendered row carries
+         data-active="true"; the toggle is wired for the future when
+         the repo grows a list_all(). Default = on (only active rows
+         shown), matching today's behaviour. #}
+      <div class="funders-controls" data-test-id="funders-controls"
+           style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:14px 0 16px 0">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;opacity:0.9">
+          <input type="checkbox"
+                 id="funders-active-only"
+                 data-test-id="funders-active-only"
+                 checked>
+          Active only
+        </label>
+      </div>
+
+      {#
+        Default sort: approval_rate DESC, funders with None last.
+        Server-side ordering — funder_rows is rebuilt here in sorted
+        order so the table renders correct from the first paint
+        regardless of JS. None ratings sort after every real rating
+        (treated as -inf for the DESC ordering by mapping to a
+        negative sentinel that we explicitly compare against).
+      #}
+      {% set _rated = funder_rows|selectattr('approval_rate')|list %}
+      {% set _unrated = funder_rows|rejectattr('approval_rate')|list %}
+      {% set _rated_sorted = _rated|sort(attribute='approval_rate', reverse=true) %}
+      {% set _sorted_rows = _rated_sorted + _unrated %}
+
+      <table class="queue" data-test-id="funders-table">
         <thead>
           <tr>
             <th>Funder</th>
+            <th class="num">Approval rate</th>
+            <th>Last submission</th>
             <th class="num">Min revenue</th>
             <th class="num">Min FICO</th>
             <th class="num">Min TIB · mo</th>
             <th class="num">Max pos</th>
             <th>Stacking</th>
             <th>Excludes</th>
+            <th>Submit</th>
           </tr>
         </thead>
-        <tbody>
-          {% for f in funders %}
-            <tr onclick="window.location.href='/ui/funders/{{ f.id }}'">
+        <tbody data-test-id="funders-tbody">
+          {% for row in _sorted_rows %}
+            {% set f = row.funder %}
+            <tr data-test-id="funders-row"
+                data-active="{{ 'true' if f.active else 'false' }}"
+                onclick="window.location.href='/ui/funders/{{ f.id }}'">
               <td class="merchant">
                 <a href="/ui/funders/{{ f.id }}">{{ f.name }}</a>
                 <span class="sub">{{ f.id|string|truncate(8, True, '') }}</span>
               </td>
+
+              {# === Approval rate ===
+                 Decimal -> XX% conversion happens at the template boundary
+                 (not in the math). None -> em-dash. Tooltip surfaces the
+                 window so the operator can read "last 90 days" without
+                 hunting for the legend. #}
+              <td class="mono-cell num"
+                  data-test-id="funders-approval-rate"
+                  title="Approval rate · last {{ performance_window_days }} days">
+                {% if row.approval_rate is not none %}
+                  {{ "{:.0%}".format(row.approval_rate) }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+
+              {# === Last submission ===
+                 Relative-time chip + absolute ISO date as tooltip for
+                 precision when the operator needs it. #}
+              <td class="mono-cell"
+                  data-test-id="funders-last-submission"
+                  {% if row.last_submitted_at %}title="{{ row.last_submitted_at.isoformat() }}"{% endif %}>
+                {{ relative_time(row.last_submitted_at, now_utc) }}
+              </td>
+
               <td class="mono-cell" style="text-align:right">{{ "${:,.0f}".format(f.min_monthly_revenue) if f.min_monthly_revenue else '—' }}</td>
               <td class="mono-cell" style="text-align:right">{{ f.min_credit_score or '—' }}</td>
               <td class="mono-cell" style="text-align:right">{{ f.min_months_in_business or '—' }}</td>
@@ -61,6 +140,23 @@
                 {% if f.excluded_industries %}{{ f.excluded_industries|length }} ind{% endif %}
                 {% if not f.excluded_states and not f.excluded_industries %}—{% endif %}
               </td>
+              <td>
+                {# Per-row Submit button. Uses .btn (not .btn.primary) so
+                   the row's row-as-link onclick remains the dominant
+                   affordance; the button is a focused shortcut, not the
+                   primary call to action. onclick stopPropagation
+                   prevents the row-level navigation handler from firing
+                   when the operator clicks the modal button. #}
+                <button class="btn"
+                        type="button"
+                        data-test-id="funders-submit-button"
+                        hx-get="/ui/funders/{{ f.id }}/submit-modal"
+                        hx-target="#funders-submit-modal-host"
+                        hx-swap="innerHTML"
+                        onclick="event.stopPropagation()">
+                  Submit a deal
+                </button>
+              </td>
             </tr>
           {% endfor %}
         </tbody>
@@ -68,4 +164,31 @@
     {% endif %}
   </div>
 </section>
+
+{# Modal mount point — submit-a-deal modal swaps its HTML in here via HTMX. #}
+<div id="funders-submit-modal-host"></div>
+
+{% if funder_rows %}
+<script>
+// Funder list: "Active only" toggle. Pure JS, no deps.
+// data-active="true|false" on each row; when toggle is on, hide
+// data-active="false" rows; when off, show all.
+(function () {
+  const toggle = document.getElementById("funders-active-only");
+  if (!toggle) return;
+  const rows = Array.from(
+    document.querySelectorAll('tr[data-test-id="funders-row"]')
+  );
+  function applyToggle() {
+    const activeOnly = toggle.checked;
+    for (const row of rows) {
+      const isActive = row.getAttribute("data-active") === "true";
+      row.style.display = activeOnly && !isActive ? "none" : "";
+    }
+  }
+  toggle.addEventListener("change", applyToggle);
+  applyToggle();
+})();
+</script>
+{% endif %}
 {% endblock %}

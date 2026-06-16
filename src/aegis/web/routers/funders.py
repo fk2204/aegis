@@ -22,6 +22,7 @@ keep consuming the same code paths after this split.
 from __future__ import annotations
 
 import urllib.parse
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any, Final
 from uuid import UUID
@@ -52,6 +53,7 @@ from aegis.audit import AuditLog
 from aegis.compliance.snapshot import DecisionSnapshot, InMemoryDecisionSnapshot
 from aegis.deals.funder_performance import compute_funder_performance
 from aegis.deals.repository import DealRepository
+from aegis.funder_note_submissions.models import FunderNoteSubmissionRow
 from aegis.funder_note_submissions.repository import (
     FunderNoteSubmissionRepository,
 )
@@ -241,12 +243,129 @@ def _reextract_redirect(
     )
 
 
+_FUNDER_LIST_PERFORMANCE_WINDOW_DAYS: Final[int] = 90
+
+
+def _build_funder_performance_index(
+    submissions: list[FunderNoteSubmissionRow],
+) -> dict[UUID, dict[str, Any]]:
+    """Bucket a flat submission list into per-funder performance stats.
+
+    Single pass over ``submissions`` (already fetched by the caller via
+    ``list_in_window`` — ONE batched query). For each funder builds:
+      * ``approval_rate``: ``Decimal`` count(approved) / count(non-pending),
+        ``None`` when no non-pending rows.
+      * ``approval_rate_source_submission_ids``: list[UUID] of every
+        submission that counted toward the numerator or denominator
+        (i.e. every non-pending submission for the funder). Required by
+        the CLAUDE.md auditability rule — clicking the approval rate
+        in the UI should drill down to these exact submissions.
+      * ``last_submitted_at``: max ``submitted_at`` across ALL submissions
+        for the funder (pending included — "last submitted" is broader
+        than "last counted toward approval rate").
+    """
+    by_funder: dict[UUID, dict[str, Any]] = {}
+    for sub in submissions:
+        funder_id: UUID = sub.funder_id
+        bucket = by_funder.setdefault(
+            funder_id,
+            {
+                "approved_count": 0,
+                "non_pending_count": 0,
+                "source_submission_ids": [],
+                "last_submitted_at": None,
+            },
+        )
+        # last_submitted_at: max over ALL submissions, pending included.
+        prev_last = bucket["last_submitted_at"]
+        if prev_last is None or sub.submitted_at > prev_last:
+            bucket["last_submitted_at"] = sub.submitted_at
+        # Approval-rate population excludes pending. Approved goes
+        # into both numerator and denominator; declined/countered only
+        # into denominator.
+        if sub.status == "pending":
+            continue
+        bucket["non_pending_count"] += 1
+        bucket["source_submission_ids"].append(sub.id)
+        if sub.status == "approved":
+            bucket["approved_count"] += 1
+
+    # Materialise the Decimal ratio + None semantics.
+    result: dict[UUID, dict[str, Any]] = {}
+    for fid, b in by_funder.items():
+        denom = b["non_pending_count"]
+        if denom == 0:
+            rate: Decimal | None = None
+        else:
+            # Decimal arithmetic — never float. Two decimal places of
+            # precision is plenty for a percentage rendered as XX%.
+            rate = (Decimal(b["approved_count"]) / Decimal(denom)).quantize(Decimal("0.0001"))
+        result[fid] = {
+            "approval_rate": rate,
+            "approval_rate_source_submission_ids": b["source_submission_ids"],
+            "last_submitted_at": b["last_submitted_at"],
+        }
+    return result
+
+
 @router.get("/funders", response_class=HTMLResponse)
 async def list_funders_page(
     request: Request,
     repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
 ) -> HTMLResponse:
-    return templates.TemplateResponse(request, "funders.html.j2", {"funders": repo.list_active()})
+    """Render the funder catalog with rolling-window performance metrics.
+
+    Adds two performance signals per funder (last
+    ``_FUNDER_LIST_PERFORMANCE_WINDOW_DAYS`` days):
+      * approval_rate (approved / non-pending), ``None`` when no
+        qualifying submissions.
+      * last_submitted_at (most recent submission, any status),
+        ``None`` when the funder has never been submitted to.
+
+    Performance is computed from ONE batched
+    ``list_in_window`` query — never one query per funder. Auditability:
+    each row carries ``approval_rate_source_submission_ids`` so the UI
+    can drill from the aggregate back to the contributing submissions.
+    """
+    funders = repo.list_active()
+    now = datetime.now(UTC)
+    window_start = now - timedelta(days=_FUNDER_LIST_PERFORMANCE_WINDOW_DAYS)
+    submissions = funder_note_subs.list_in_window(from_dt=window_start, to_dt=now)
+    perf_index = _build_funder_performance_index(submissions)
+
+    rows: list[dict[str, Any]] = []
+    for f in funders:
+        perf = perf_index.get(
+            f.id,
+            {
+                "approval_rate": None,
+                "approval_rate_source_submission_ids": [],
+                "last_submitted_at": None,
+            },
+        )
+        rows.append(
+            {
+                "funder": f,
+                "approval_rate": perf["approval_rate"],
+                "approval_rate_source_submission_ids": perf["approval_rate_source_submission_ids"],
+                "last_submitted_at": perf["last_submitted_at"],
+            }
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "funders.html.j2",
+        {
+            "funders": funders,  # kept for any consumer still iterating
+            "funder_rows": rows,
+            "performance_window_days": _FUNDER_LIST_PERFORMANCE_WINDOW_DAYS,
+            "now_utc": now,
+        },
+    )
 
 
 @router.get("/funders/import", response_class=HTMLResponse)
