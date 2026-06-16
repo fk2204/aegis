@@ -92,18 +92,19 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
 
     env:
-      # Direct Hetzner IP -- the CF-Access hostname
+      # NOTE: SSH connection target lives ONLY in
+      # ${{ secrets.AEGIS_SERVER_IP }} -- no AEGIS_HOST / AEGIS_HOSTNAME
+      # indirection. Every ssh + ssh-keyscan invocation references the
+      # secret expression directly so there is exactly one source of
+      # truth for "where deploys go." Rationale: the CF-Access hostname
       # aegis-ssh.commerafunding.com refuses GitHub Actions runner
-      # connections (no SSO cookie). The secret holds the raw IP.
-      # SSH lands as root, not the aegis user. Rationale: the deploy
-      # keypair was provisioned into root's authorized_keys, not
-      # ~aegis/.ssh/authorized_keys, so the CI key cannot land as
-      # the aegis user. The on-box commands (git pull, systemctl
-      # restart, chown) all work under root unchanged; sudo -n is a
-      # no-op when already root, which keeps the command strings
-      # byte-identical to the manual ssh-as-aegis path.
-      AEGIS_HOST: root@${{ secrets.AEGIS_SERVER_IP }}
-      AEGIS_HOSTNAME: ${{ secrets.AEGIS_SERVER_IP }}
+      # connections (no SSO cookie), so CI goes direct to the raw IP.
+      #
+      # SSH user is root, not aegis. Rationale: the deploy keypair was
+      # provisioned into root's authorized_keys on the box, not
+      # ~aegis/.ssh/authorized_keys. Running as root makes ``sudo -n``
+      # a no-op so the on-box command strings stay byte-identical to
+      # the manual ssh-as-aegis path.
       AEGIS_REMOTE_PATH: /opt/aegis
       AEGIS_HEALTH_URL: http://127.0.0.1:5555/healthz
       # Data-residency guard so apply_migrations.py (and anything else
@@ -142,13 +143,12 @@ jobs:
       - name: Set up SSH key + known_hosts
         # Writes the deploy private key to ~/.ssh/id_ed25519 with 0600
         # and pins the prod host's public key via ssh-keyscan against
-        # the raw IP (AEGIS_HOSTNAME resolves to the
-        # secrets.AEGIS_SERVER_IP value -- see env: above). No
-        # StrictHostKeyChecking=no -- that defeats the point of pinning.
-        # The host key fingerprint travels with the IP, so re-running
-        # the deploy job on a Hetzner host migration would surface
-        # the change as a known_hosts mismatch rather than a silent
-        # MITM acceptance.
+        # the same IP every ssh call uses (the AEGIS_SERVER_IP secret).
+        # No StrictHostKeyChecking=no -- that defeats the point of
+        # pinning. The host key fingerprint travels with the IP, so
+        # re-running the deploy job on a Hetzner host migration would
+        # surface the change as a known_hosts mismatch rather than a
+        # silent MITM acceptance.
         env:
           AEGIS_DEPLOY_SSH_KEY: ${{ secrets.AEGIS_DEPLOY_SSH_KEY }}
         run: |
@@ -162,16 +162,15 @@ jobs:
           # because the key looks fine in the GH UI).
           printf '%s\n' "$AEGIS_DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p 22 -T 10 "$AEGIS_HOSTNAME" >> ~/.ssh/known_hosts
+          ssh-keyscan -p 22 -T 10 "${{ secrets.AEGIS_SERVER_IP }}" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: On-box phase A — pull latest
         # Mirrors scripts/deploy.sh REMOTE_PHASE_A: best-effort chown
-        # (skipped when the `aegis` user doesn't have sudo grant for
-        # chown — the routine deploy path), then ff-only pull.
+        # (no-op when already running as root), then ff-only pull.
         run: |
           set -euo pipefail
-          ssh "$AEGIS_HOST" 'set -euo pipefail
+          ssh "root@${{ secrets.AEGIS_SERVER_IP }}" 'set -euo pipefail
           sudo -n /usr/bin/chown -R aegis:aegis /opt/aegis 2>/dev/null || echo "[deploy] chown skipped" >&2
           cd /opt/aegis
           git pull --ff-only origin main
@@ -201,7 +200,7 @@ jobs:
         # (.claude/rules/deploy.md "Box-side operations gotchas").
         run: |
           set -euo pipefail
-          ssh "$AEGIS_HOST" 'set -euo pipefail
+          ssh "root@${{ secrets.AEGIS_SERVER_IP }}" 'set -euo pipefail
           sudo -n /usr/bin/systemctl restart aegis-web aegis-worker
           state=$(systemctl is-active aegis-web aegis-worker | tr "\n" " ")
           echo "[deploy] is-active: $state"
@@ -212,7 +211,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in 1 2 3 4 5; do
-            if ssh "$AEGIS_HOST" "curl --fail --silent --max-time 3 $AEGIS_HEALTH_URL" >/dev/null; then
+            if ssh "root@${{ secrets.AEGIS_SERVER_IP }}" "curl --fail --silent --max-time 3 $AEGIS_HEALTH_URL" >/dev/null; then
               echo "[deploy] healthz ok"
               exit 0
             fi

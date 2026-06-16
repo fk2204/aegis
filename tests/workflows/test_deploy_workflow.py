@@ -216,28 +216,46 @@ def test_ssh_host_is_root_user_via_server_ip_secret() -> None:
     """
     workflow = _load_workflow()
     job = _deploy_job(workflow)
+    blob = _flatten_run_steps(job)
+
+    # Every ssh / ssh-keyscan must reference the secret directly --
+    # no AEGIS_HOST / AEGIS_HOSTNAME indirection.
+    assert "${{ secrets.AEGIS_SERVER_IP }}" in blob, (
+        "deploy workflow must reference ${{ secrets.AEGIS_SERVER_IP }} "
+        "directly in run: blocks -- no AEGIS_HOST / AEGIS_HOSTNAME "
+        "indirection."
+    )
+    assert "root@${{ secrets.AEGIS_SERVER_IP }}" in blob, (
+        "every SSH call must use root@${{ secrets.AEGIS_SERVER_IP }}; "
+        "the CI deploy key is in root's authorized_keys, not aegis's."
+    )
+    # ssh-keyscan must target the same secret expression.
+    keyscan_lines = [line for line in blob.splitlines() if "ssh-keyscan" in line]
+    assert keyscan_lines, "deploy workflow must run ssh-keyscan"
+    assert any("${{ secrets.AEGIS_SERVER_IP }}" in line for line in keyscan_lines), (
+        "ssh-keyscan must reference ${{ secrets.AEGIS_SERVER_IP }} so the "
+        "known_hosts pin matches the SSH target"
+    )
+
+    # Defense in depth: leftover $AEGIS_HOST / $AEGIS_HOSTNAME would
+    # silently SSH to root@ with no host (env vars are gone) and fail
+    # with a confusing "Could not resolve hostname".
+    assert "$AEGIS_HOST" not in blob, (
+        "stale $AEGIS_HOST reference; use ${{ secrets.AEGIS_SERVER_IP }} directly"
+    )
+    assert "$AEGIS_HOSTNAME" not in blob, (
+        "stale $AEGIS_HOSTNAME reference; use ${{ secrets.AEGIS_SERVER_IP }} directly"
+    )
+
+    # And the job env must NOT declare the removed indirection vars.
     env = job.get("env")
-    assert isinstance(env, dict), "deploy job must declare env: with AEGIS_HOST"
-    aegis_host = str(env.get("AEGIS_HOST", ""))
-    # Must be the root user (the CI deploy key is in root's
-    # authorized_keys on the box; ssh-as-aegis would 255 on auth).
-    assert aegis_host.startswith("root@"), f"AEGIS_HOST must SSH as `root`; got {aegis_host!r}"
-    # Must template from the AEGIS_SERVER_IP secret; the CF-Access
-    # hostname would fail at the TCP handshake from a GH runner.
-    assert "secrets.AEGIS_SERVER_IP" in aegis_host, (
-        "AEGIS_HOST must template from secrets.AEGIS_SERVER_IP (raw "
-        "Hetzner IP) -- the CF-Access hostname "
-        "aegis-ssh.commerafunding.com refuses GitHub Actions runner "
-        "connections without an SSO cookie."
-    )
-    # The known_hosts pin should target the same secret so the host
-    # key fingerprint travels with the IP.
-    aegis_hostname = str(env.get("AEGIS_HOSTNAME", ""))
-    assert "secrets.AEGIS_SERVER_IP" in aegis_hostname, (
-        "AEGIS_HOSTNAME must also template from secrets.AEGIS_SERVER_IP "
-        "so ssh-keyscan pins the host key against the IP that ssh "
-        "actually connects to."
-    )
+    if isinstance(env, dict):
+        assert "AEGIS_HOST" not in env, (
+            "job env must NOT declare AEGIS_HOST -- secret-IP is referenced inline"
+        )
+        assert "AEGIS_HOSTNAME" not in env, (
+            "job env must NOT declare AEGIS_HOSTNAME -- secret-IP is referenced inline"
+        )
 
 
 def test_ssh_key_strips_crlf_before_writing() -> None:
