@@ -35,6 +35,14 @@ jobs:
       AEGIS_STORAGE_BACKEND: "memory"
       # uv: keep its cache in a known location for actions/cache.
       UV_CACHE_DIR: /tmp/.uv-cache
+      # Belt-and-suspenders: every action we pin to is already on a Node
+      # 24-native version (checkout@v5, cache@v5, setup-uv@v8.2.0), so
+      # this env var is currently a no-op. Set explicitly so that any
+      # future regression to a Node-20 action does not trip the
+      # 2026-06-16 deprecation cutoff (Node 20 actions are forced to
+      # Node 24 by default; this just makes the intent explicit and
+      # protects against any vendor reverting that default later).
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout
