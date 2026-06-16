@@ -12,12 +12,21 @@ information back into the extraction prompt; once a bank crosses
 pipeline automatically appends the hint to the Bedrock system prompt
 on every parse for that bank.
 
-This script bootstraps the hint text for banks where AEGIS has already
-crossed the threshold (JPMorgan Chase, 8 parses) plus banks where the
-operator wants the hints staged early (TD Bank, 2 parses — will go live
-once the third successful parse lands). No migration, no schema change —
-``bank_layouts`` is a regular Postgres table, ``set_hints`` is an
-existing idempotent repository method.
+The initial 2026-06-16 seed (commit ``33825d0``) covered JPMorgan Chase
+and TD Bank but used templated placeholder text ("Statement period
+formatted MM/DD/YY to MM/DD/YY", "Running balance column labeled
+'Balance'") that did NOT match the real layouts of TD Convenience
+Checking or Chase Business Complete Checking. The recovery pass on
+LOAD LIFT ENTERPRISE LLC (4 TD statements) and TMF TRANSPORT INC (4
+Chase statements) confirmed this — those merchants' statements landed
+in ``manual_review`` despite the hint being present. This revision
+replaces both hints with descriptions derived from the first-page text
+of the actual failing statements: full English month name + 'through'
+separator for Chase, three-letter month abbreviation + tight-hyphen
+range for TD, and an explicit note that NEITHER product has a per-line
+running-balance column (the original hint claimed both did). No
+migration, no schema change — ``bank_layouts`` is a regular Postgres
+table, ``set_hints`` is an existing idempotent repository method.
 
 Per CLAUDE.md operating-principles §1 the script is DRY-RUN by default.
 Run on the box once after merge::
@@ -76,16 +85,44 @@ _ACTOR: Final[str] = "seed_bank_hints_script"
 # the hint text as a continuation of that frame (no own heading).
 _BANK_HINTS: Final[dict[str, str]] = {
     "JPMorgan Chase Bank, N.A.": (
-        "Statement period is in the top-right header of page 1, "
-        "formatted MM/DD/YY to MM/DD/YY. Running balance column is "
-        "labeled 'Balance'. Daily transactions listed chronologically. "
-        "Summary totals appear at the bottom of the last page."
+        "Statement period is in the upper area of page 1 formatted "
+        "'Month DD, YYYY through Month DD, YYYY' (full English month "
+        "name, the literal word 'through' as the separator, four-digit "
+        "year) — e.g. 'January 31, 2026 through February 27, 2026'. "
+        "The Chase Business Complete Checking layout does NOT include a "
+        "per-line running-balance column; the CHECKING SUMMARY block at "
+        "the top of page 1 carries Beginning Balance, Ending Balance, "
+        "and totals by category (Deposits and Additions, Checks Paid, "
+        "ATM & Debit Card Withdrawals, Electronic Withdrawals, Other "
+        "Withdrawals, Fees). Transactions follow in named sections "
+        "(DEPOSITS AND ADDITIONS, CHECKS PAID, ATM & DEBIT CARD "
+        "WITHDRAWALS, ELECTRONIC WITHDRAWALS) each terminated by a "
+        "'Total ...' line. Per-transaction dates are MM/DD only — the "
+        "year is implicit from the statement period. The PDF embeds "
+        "section-delimiter artifacts like '*start*deposits and "
+        "additions' / '*end*deposits and additions' that are NOT "
+        "transactions and MUST be ignored. Bank-identifier banner reads "
+        "'JPMorgan Chase Bank, N.A.' with a customer-service PO Box "
+        "address near the top of page 1."
     ),
     "TD Bank, N.A.": (
-        "Statement period is in the top-right header of page 1, "
-        "formatted MM/DD/YY to MM/DD/YY. Running balance column is "
-        "labeled 'Balance'. Daily transactions listed chronologically. "
-        "Summary totals appear at the bottom of the last page."
+        "Statement period is labeled 'Statement Period:' in the upper "
+        "area of page 1 formatted 'MMM DD YYYY-MMM DD YYYY' (three-"
+        "letter month abbreviation, four-digit year, single hyphen with "
+        "NO surrounding spaces) — e.g. 'Jan 09 2026-Feb 08 2026'. The "
+        "TD Convenience Checking layout does NOT include a per-line "
+        "running-balance column; the ACCOUNT SUMMARY block at the top "
+        "of page 1 carries Beginning Balance, Ending Balance, and "
+        "category totals (Electronic Deposits, Electronic Payments, "
+        "Other Withdrawals, Service Charges, Average Collected Balance, "
+        "Days in Period). DAILY ACCOUNT ACTIVITY splits transactions "
+        "into named subsections (Electronic Deposits, Electronic "
+        "Payments, Other Withdrawals, Service Charges, Checks Paid), "
+        "each terminated by its own 'Subtotal:' line. Per-transaction "
+        "dates are MM/DD only — the year is implicit from the statement "
+        "period. Bank-identifier line at the bottom of page 1 reads "
+        "'Bank Deposits FDIC Insured | TD Bank, N.A. | Equal Housing "
+        "Lender'."
     ),
 }
 
