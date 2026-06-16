@@ -47,12 +47,7 @@
     </p>
     {% if not pipeline_rows %}
       <div class="empty" data-test-id="renewal-pipeline-empty">
-        No merchants are within 14 days of maturity.
-        <span class="copy">
-          The pipeline reads <code>maturity_date</code>; merchants whose
-          column is unset never appear here. The 90-day attestation
-          calendar below shows the regulatory-disclosure horizon.
-        </span>
+        No upcoming renewals. Deals will appear here 14 days before maturity.
       </div>
     {% else %}
       <table class="queue" data-test-id="renewal-pipeline-table">

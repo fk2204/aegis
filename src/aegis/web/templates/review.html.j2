@@ -19,7 +19,7 @@
 <section class="body cols-1">
   <div>
     {% if not cards %}
-      <div class="empty">No documents in manual-review state<span class="copy">Pipeline is clean.</span></div>
+      <div class="empty">Nothing needs review. All statements parsed cleanly.</div>
     {% else %}
       <div class="attention-cards">
         {% for c in cards %}

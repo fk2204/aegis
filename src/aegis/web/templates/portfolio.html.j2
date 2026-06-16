@@ -105,7 +105,7 @@
       <div class="meta">n = {{ metrics.pipeline.total }} merchant{{ '' if metrics.pipeline.total == 1 else 's' }}</div>
     </header>
     {% if metrics.pipeline.total == 0 %}
-      <div class="empty">No deals in this window<span class="copy">Adjust the date range above or <a href="/ui/intake">create a deal</a>.</span></div>
+      <div class="empty">No submissions tracked yet. Submit a deal to a funder to start tracking outcomes.</div>
     {% else %}
       <table class="queue">
         <thead>

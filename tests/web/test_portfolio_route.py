@@ -213,7 +213,7 @@ def test_portfolio_route_renders_empty_state_on_zero_pipeline(
 ) -> None:
     resp = client.get("/ui/portfolio")
     assert resp.status_code == 200, resp.text
-    assert "No deals in this window" in resp.text
+    assert "No submissions tracked yet" in resp.text
 
 
 # ---------------------------------------------------------------------------
@@ -303,13 +303,9 @@ def test_funder_approval_rate_math_is_exact() -> None:
     # 1 countered. Each reply is a funder_replies row dict.
     reply_rows: list[dict[str, object]] = []
     for status in ["approved", "approved", "approved", "declined", "declined"]:
-        reply_rows.append(
-            {"funder_id": str(f1.id), "deal_id": str(uuid4()), "status": status}
-        )
+        reply_rows.append({"funder_id": str(f1.id), "deal_id": str(uuid4()), "status": status})
     for status in ["approved", "declined", "countered"]:
-        reply_rows.append(
-            {"funder_id": str(f2.id), "deal_id": str(uuid4()), "status": status}
-        )
+        reply_rows.append({"funder_id": str(f2.id), "deal_id": str(uuid4()), "status": status})
 
     metrics = compute_portfolio_metrics(
         merchants=merchants,
@@ -319,9 +315,7 @@ def test_funder_approval_rate_math_is_exact() -> None:
         audit_rows=[],
         decision_rows=[],
         submissions=submissions,
-        date_range=DateRange(
-            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
-        ),
+        date_range=DateRange(from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)),
     )
 
     rows_by_funder = {r.funder_id: r for r in metrics.funder_table}
@@ -380,9 +374,7 @@ def test_tier_counts_match_decisions_rows() -> None:
         funder_reply_rows=[],
         audit_rows=[],
         decision_rows=decision_rows,
-        date_range=DateRange(
-            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
-        ),
+        date_range=DateRange(from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)),
     )
 
     assert metrics.tier_counts.A == 2
@@ -425,9 +417,7 @@ def test_recent_activity_orders_most_recent_first() -> None:
         funder_reply_rows=[],
         audit_rows=[],
         decision_rows=decision_rows,
-        date_range=DateRange(
-            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
-        ),
+        date_range=DateRange(from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)),
     )
     assert len(metrics.recent_activity) == 2
     # Most-recent first → tier=B (June 5) precedes tier=A (June 1).
@@ -475,9 +465,7 @@ def test_pipeline_state_counts_submitted_and_funded_via_audit() -> None:
         funder_reply_rows=[],
         audit_rows=audit_rows,
         decision_rows=[],
-        date_range=DateRange(
-            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
-        ),
+        date_range=DateRange(from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)),
     )
     assert metrics.pipeline.approved == 1
     assert metrics.pipeline.funded == 1
@@ -516,9 +504,7 @@ def test_portfolio_route_renders_populated_funder_table() -> None:
         }
     )
     # Funder-table submission count reads the submissions repo (U20).
-    submissions.create(
-        _submission(f1.id, submitted_at=datetime(2026, 6, 1, tzinfo=UTC))
-    )
+    submissions.create(_submission(f1.id, submitted_at=datetime(2026, 6, 1, tzinfo=UTC)))
     # Post-U17 the score signal must come from the decisions table —
     # the audit-log fallback is gone. Drop a row in the snapshot store
     # directly (it's a list-backed in-memory implementation).
@@ -550,9 +536,7 @@ def test_portfolio_route_window_clamp_visible_in_header(
     clamped window so the operator can see the cap."""
     today = date(2026, 6, 9)
     requested_from = (today - timedelta(days=730)).isoformat()
-    resp = client.get(
-        f"/ui/portfolio?from={requested_from}&to={today.isoformat()}"
-    )
+    resp = client.get(f"/ui/portfolio?from={requested_from}&to={today.isoformat()}")
     assert resp.status_code == 200, resp.text
     body = resp.text
     # The clamped from is exactly today - 365.
@@ -592,9 +576,7 @@ def test_fraud_catch_rate_counts_documents_at_or_above_threshold() -> None:
         funder_reply_rows=[],
         audit_rows=[],
         decision_rows=[],
-        date_range=DateRange(
-            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
-        ),
+        date_range=DateRange(from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)),
     )
     assert metrics.fraud_total_scored == 5
     assert metrics.fraud_catch_count == 3
@@ -664,9 +646,7 @@ def test_tier_counts_read_from_decisions_table_when_present() -> None:
         funder_reply_rows=[],
         audit_rows=audit_rows,
         decision_rows=decision_rows,
-        date_range=DateRange(
-            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
-        ),
+        date_range=DateRange(from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)),
     )
 
     # Decisions wins — A=0, B=2, C=1 (NOT A=3 from audit fallback).
@@ -714,9 +694,7 @@ def test_state_counts_read_from_decisions_state_code() -> None:
         funder_reply_rows=[],
         audit_rows=[],
         decision_rows=decision_rows,
-        date_range=DateRange(
-            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
-        ),
+        date_range=DateRange(from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)),
     )
 
     state_map = {row.state: row.count for row in metrics.state_counts}
@@ -758,9 +736,7 @@ def test_audit_log_score_row_alone_is_not_counted_when_decisions_present() -> No
         funder_reply_rows=[],
         audit_rows=audit_rows,
         decision_rows=decision_rows,
-        date_range=DateRange(
-            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
-        ),
+        date_range=DateRange(from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)),
     )
 
     # The ghost audit-only A is invisible — only the F from decisions.
@@ -799,9 +775,7 @@ def test_empty_decisions_yields_empty_tier_and_state_panels() -> None:
         funder_reply_rows=[],
         audit_rows=audit_rows,
         decision_rows=[],
-        date_range=DateRange(
-            from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)
-        ),
+        date_range=DateRange(from_date=date(2026, 5, 1), to_date=date(2026, 6, 9)),
     )
 
     assert metrics.tier_counts.A == 0
@@ -833,9 +807,7 @@ def test_disclosure_render_queue_tile_zero_counts_when_repo_empty() -> None:
     reset_dependency_caches()
     render_repo = InMemoryDisclosureRenderEventRepository()
     app = create_app()
-    app.dependency_overrides[get_disclosure_render_event_repository] = (
-        lambda: render_repo
-    )
+    app.dependency_overrides[get_disclosure_render_event_repository] = lambda: render_repo
     client = TestClient(app)
     try:
         resp = client.get("/ui/portfolio")
@@ -879,9 +851,7 @@ def test_disclosure_render_queue_tile_populated_from_repo() -> None:
     _seed(RENDER_EVENT_STATUS_OK)
 
     app = create_app()
-    app.dependency_overrides[get_disclosure_render_event_repository] = (
-        lambda: render_repo
-    )
+    app.dependency_overrides[get_disclosure_render_event_repository] = lambda: render_repo
     client = TestClient(app)
     try:
         resp = client.get("/ui/portfolio")

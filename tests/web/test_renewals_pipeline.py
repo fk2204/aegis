@@ -230,7 +230,7 @@ def test_renewals_pipeline_renders_empty_state_when_no_qualifying_merchant(
     resp = client.get("/ui/renewals")
     assert resp.status_code == 200, resp.text
     assert 'data-test-id="renewal-pipeline-empty"' in resp.text
-    assert "No merchants are within 14 days of maturity" in resp.text
+    assert "No upcoming renewals" in resp.text
 
 
 def test_renewals_pipeline_does_not_include_merchant_outside_window(

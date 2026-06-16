@@ -41,7 +41,7 @@
     </header>
 
     {% if not funder_rows %}
-      <div class="empty">No funders configured<span class="copy">Add one via <a href="/ui/funders/import">PDF import</a> or <code>POST /funders</code>.</span></div>
+      <div class="empty">No funders yet. Import a funder's guideline PDF to get started.<span class="copy"><a class="btn primary" href="/ui/funders/import">Import</a></span></div>
     {% else %}
       {# === Active-only toggle ===
          Client-side filter on data-active="true|false". The route

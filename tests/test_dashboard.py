@@ -386,7 +386,7 @@ def test_dashboard_review_queue_empty_by_default(client: TestClient) -> None:
     """Fixture document is parse_status='proceed', so review queue is empty."""
     resp = client.get("/ui/review")
     assert resp.status_code == 200
-    assert "No documents in manual-review state" in resp.text
+    assert "Nothing needs review" in resp.text
 
 
 def test_dashboard_review_queue_lists_manual_review_doc(

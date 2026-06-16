@@ -23,7 +23,7 @@
     </header>
 
     {% if not rows %}
-      <div class="empty">No deals yet<span class="copy">Add a merchant via <a href="/ui/intake">Intake</a> and upload their bank statement via <a href="/ui/upload">Upload</a>.</span></div>
+      <div class="empty">No deals yet. Upload a bank statement to get started.<span class="copy"><a class="btn primary" href="/ui/upload">Upload</a></span></div>
     {% else %}
       {# === Search + filter + sort controls ===
          Plain JS. Filter chips: "All" is exclusive; status chips are
