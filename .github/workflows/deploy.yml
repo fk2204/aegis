@@ -1,0 +1,188 @@
+# AEGIS auto-deploy — Sprint 7 Track A.
+#
+# Every push to `main` that passes the `test` workflow (typecheck + lint
+# + corpus tests) automatically deploys to the prod Hetzner box. This is
+# the CI equivalent of `make deploy TARGET=prod` minus the local
+# pre-flight half (CI itself is the pre-flight — `test.yml` is the gate).
+#
+# Trigger model
+# -------------
+# `workflow_run` waits for `test` to complete on the same commit and
+# checks `conclusion == 'success'` before deploying. This is the
+# recommended GitHub pattern for "deploy only after CI passes" — see
+# https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#workflow_run
+#
+# GOTCHA documented for the operator (also in CLAUDE.md): `workflow_run`
+# executes the version of this file from the DEFAULT BRANCH (main), not
+# from the head of the triggering ref. Edits to deploy.yml on a feature
+# branch don't take effect until they're merged into main and the NEXT
+# push to main hits this workflow. To test workflow edits, merge them
+# first and observe the run on the subsequent commit.
+#
+# Migration strategy: option (b) — runner
+# ---------------------------------------
+# `scripts/apply_migrations.py` reads `MIGRATIONS_DB_URL_PROD` from the
+# environment. The prod box does NOT have a prod DB DSN in
+# `/etc/aegis/aegis.env` (the systemd units load that file; see
+# `deploy/aegis-web.service` EnvironmentFile=) and the existing
+# `scripts/deploy.sh` documents this explicitly:
+#
+#     # Locally (because apply_migrations.py reads MIGRATIONS_DB_URL_PROD
+#     # from the workstation's .env.local — the box does not have prod DB
+#     # creds, and we want a single source of truth):
+#     #   - make migrate TARGET=$TARGET
+#
+# CI mirrors that posture: we run migrations on the GitHub runner with
+# `MIGRATIONS_DB_URL_PROD` injected as a repo secret. The box stays
+# DB-creds-free; only the migration runner ever holds the DSN, and only
+# for the duration of one CI job. This also matches the manual deploy
+# path step-for-step.
+#
+# Required secrets (set under Settings → Secrets and variables → Actions):
+#   - AEGIS_DEPLOY_SSH_KEY    private SSH key authorized for aegis@aegis-ssh
+#   - MIGRATIONS_DB_URL_PROD  prod Supabase DSN (session-pooler URL with the
+#                             `tprpbomqcucuxnszeafo` project ref so the
+#                             prod guard in apply_migrations.py accepts it)
+#
+# See CLAUDE.md § "CI auto-deploy — operator one-time setup" for the full
+# operator-side provisioning procedure.
+
+name: deploy
+
+on:
+  workflow_run:
+    workflows: ["test"]
+    branches: [main]
+    types: [completed]
+
+# Serialize prod deploys. cancel-in-progress: false so a queued deploy
+# isn't dropped — two near-simultaneous merges should both go out, in
+# order.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy to prod (Hetzner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only run when the upstream `test` workflow actually succeeded on
+    # main. `workflow_run` fires on every completion (success, failure,
+    # cancelled, skipped); this gate is what makes it deploy-on-green.
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+
+    env:
+      AEGIS_HOST: aegis@aegis-ssh.commerafunding.com
+      AEGIS_HOSTNAME: aegis-ssh.commerafunding.com
+      AEGIS_REMOTE_PATH: /opt/aegis
+      AEGIS_HEALTH_URL: http://127.0.0.1:5555/healthz
+      # Data-residency guard so apply_migrations.py (and anything else
+      # that imports aegis at runtime) won't refuse to start on the
+      # runner. The migration runner doesn't process bank data; the env
+      # var only satisfies the boot guard.
+      AEGIS_DATA_RESIDENCY_CONFIRMED: "true"
+      UV_CACHE_DIR: /tmp/.uv-cache
+
+    steps:
+      - name: Checkout (commit that passed test)
+        uses: actions/checkout@v4
+        with:
+          # workflow_run gives us the SHA that the `test` workflow ran
+          # against. Pin checkout to that exact commit so we deploy the
+          # code that was verified, not whatever main currently points
+          # to (which may have advanced).
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+
+      - name: Cache uv packages
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
+      - name: Install dependencies (frozen)
+        run: uv sync --frozen
+
+      - name: Set up SSH key + known_hosts
+        # Writes the deploy private key to ~/.ssh/id_ed25519 with 0600
+        # and pins the prod host's public key via ssh-keyscan. No
+        # StrictHostKeyChecking=no — that defeats the point of pinning.
+        env:
+          AEGIS_DEPLOY_SSH_KEY: ${{ secrets.AEGIS_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$AEGIS_DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p 22 -T 10 "$AEGIS_HOSTNAME" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: On-box phase A — pull latest
+        # Mirrors scripts/deploy.sh REMOTE_PHASE_A: best-effort chown
+        # (skipped when the `aegis` user doesn't have sudo grant for
+        # chown — the routine deploy path), then ff-only pull.
+        run: |
+          set -euo pipefail
+          ssh "$AEGIS_HOST" 'set -euo pipefail
+          sudo -n /usr/bin/chown -R aegis:aegis /opt/aegis 2>/dev/null || echo "[deploy] chown skipped" >&2
+          cd /opt/aegis
+          git pull --ff-only origin main
+          '
+
+      - name: Apply migrations (runner-side, TARGET=prod)
+        # Migration option (b): runner holds the DSN, applies migrations
+        # before the on-box restart so a failed migration aborts the
+        # deploy BEFORE services bounce. apply_migrations.py enforces:
+        #   * --target prod is required when the DSN resolves to the
+        #     prod project ref (tprpbomqcucuxnszeafo)
+        #   * advisory lock so concurrent runners can't race
+        #   * filename+sha256 drift detection so already-applied SQL is
+        #     never re-run silently
+        env:
+          MIGRATIONS_DB_URL_PROD: ${{ secrets.MIGRATIONS_DB_URL_PROD }}
+        run: |
+          set -euo pipefail
+          uv run python scripts/apply_migrations.py --target prod
+
+      - name: On-box phase B — restart + is-active verify
+        # Mirrors scripts/deploy.sh REMOTE_PHASE_B. The sudo invocation
+        # MUST use the literal NOPASSWD form
+        # `sudo -n /usr/bin/systemctl restart aegis-web aegis-worker`
+        # because the box's sudoers rule matches that exact argv. Any
+        # rewording falls through to a password prompt and hangs
+        # (.claude/rules/deploy.md "Box-side operations gotchas").
+        run: |
+          set -euo pipefail
+          ssh "$AEGIS_HOST" 'set -euo pipefail
+          sudo -n /usr/bin/systemctl restart aegis-web aegis-worker
+          state=$(systemctl is-active aegis-web aegis-worker | tr "\n" " ")
+          echo "[deploy] is-active: $state"
+          echo "$state" | grep -qE "^active active *$"
+          '
+
+      - name: Smoke — /healthz (5x retry, 2s gap)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if ssh "$AEGIS_HOST" "curl --fail --silent --max-time 3 $AEGIS_HEALTH_URL" >/dev/null; then
+              echo "[deploy] healthz ok"
+              exit 0
+            fi
+            echo "[deploy] healthz attempt $attempt failed; retrying"
+            sleep 2
+          done
+          echo "::error::healthz did not return 200 within 10s"
+          exit 1
+
+      - name: Annotate failure
+        if: failure()
+        run: |
+          echo "::error::AEGIS auto-deploy failed for commit ${{ github.event.workflow_run.head_sha }} — check the failed step above and journalctl on the box (journalctl -u aegis-web aegis-worker)"

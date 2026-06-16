@@ -153,6 +153,94 @@ At the end of any multi-step task, stop and summarize before moving to the next 
 
 ---
 
+## CI auto-deploy — operator one-time setup
+
+Sprint 7 Track A added `.github/workflows/deploy.yml`: every push to `main` that passes `test.yml` now auto-deploys to the Hetzner box. No more `make deploy TARGET=prod` for routine merges (the manual path still works for hotfix / out-of-band situations and remains the rollback path).
+
+Below is the one-time setup an operator runs to wire the deploy SSH key + DB DSN into GitHub Actions. Reproducible from scratch — follow top to bottom.
+
+### 1. Generate a dedicated deploy keypair
+
+The CI deploy key must be separate from the personal `aegis_ed25519` key used for interactive ops, so it can be rotated independently and revoked without locking the operator out.
+
+```
+ssh-keygen -t ed25519 -C "aegis-ci-deploy" -f ~/.ssh/aegis_ci_deploy
+```
+
+Leave the passphrase empty (GitHub Actions cannot supply one; the key never leaves the secret store anyway).
+
+### 2. Authorize the public key on the prod box
+
+Append the public key to the `aegis` user's `authorized_keys`. The new key inherits the same scoped access as the existing routine-deploy key: the `aegis` user's sudoers rule on the box only whitelists `sudo -n /usr/bin/systemctl restart aegis-web aegis-worker`, so the CI key cannot run arbitrary root commands.
+
+```
+ssh aegis@aegis-ssh.commerafunding.com 'cat >> ~/.ssh/authorized_keys' < ~/.ssh/aegis_ci_deploy.pub
+```
+
+Verify with one round-trip before moving on:
+
+```
+ssh -i ~/.ssh/aegis_ci_deploy aegis@aegis-ssh.commerafunding.com 'systemctl is-active aegis-web aegis-worker'
+```
+
+Expected output: two lines, both `active`.
+
+### 3. Add the private key as a GitHub Actions secret
+
+GitHub repo → Settings → Secrets and variables → Actions → New repository secret.
+
+- Name: `AEGIS_DEPLOY_SSH_KEY`
+- Value: full contents of `~/.ssh/aegis_ci_deploy` (begins with `-----BEGIN OPENSSH PRIVATE KEY-----`, ends with `-----END OPENSSH PRIVATE KEY-----`, trailing newline included).
+
+```
+cat ~/.ssh/aegis_ci_deploy
+```
+
+(Do not paste this into chat, only into the GitHub UI.)
+
+### 4. Add the prod migrations DSN as a second secret
+
+Sprint 7 chose migration option (b): migrations run on the GitHub runner, not on the box. Rationale: `/etc/aegis/aegis.env` (loaded by the systemd units, see `deploy/aegis-web.service` `EnvironmentFile=`) deliberately does NOT carry the prod DB DSN — the box only needs Supabase REST credentials, not DB-admin DSN access. The existing `scripts/deploy.sh` mirrors this posture by running `make migrate` locally, so CI does the same.
+
+GitHub repo → Settings → Secrets and variables → Actions → New repository secret.
+
+- Name: `MIGRATIONS_DB_URL_PROD`
+- Value: the same DSN that lives in the operator's local `.env.local` under `MIGRATIONS_DB_URL_PROD`. Must contain the prod project ref `tprpbomqcucuxnszeafo` — `apply_migrations.py`'s prod guard rejects a DSN that doesn't match.
+
+### 5. Confirm the auto-deploy fires on the next merge
+
+Merge a no-op commit to `main` (e.g. a CHANGELOG line). Watch GitHub Actions:
+
+1. `test` workflow runs and passes (~6 minutes).
+2. `deploy` workflow fires automatically once `test` reports success.
+3. Deploy job runs: SSH key install → known_hosts pin → on-box `git pull --ff-only` → migrations on the runner → on-box `sudo -n /usr/bin/systemctl restart aegis-web aegis-worker` → `/healthz` smoke (5x retry, 2s gap).
+
+If `/healthz` does not return 200 within ~10s after restart, the job fails with an `::error::` annotation pointing at the failing step. Fall back to `make rollback TARGET=prod` from the workstation if needed.
+
+### Required secrets — full list
+
+| Secret | Purpose |
+|---|---|
+| `AEGIS_DEPLOY_SSH_KEY` | Private SSH key for `aegis@aegis-ssh.commerafunding.com`. Scoped via authorized_keys + sudoers on the box. |
+| `MIGRATIONS_DB_URL_PROD` | Prod Supabase DSN consumed by `scripts/apply_migrations.py --target prod`. Held only by GitHub Actions secret store; never lands on the box. |
+
+### Gotcha: `workflow_run` reads the workflow file from `main`
+
+GitHub `workflow_run` triggers always execute the version of the workflow file that exists on the **default branch** (main), not the version on the head of the triggering ref. Practical effect:
+
+- Edits to `.github/workflows/deploy.yml` on a feature branch DO NOT take effect for that PR's eventual merge — they take effect for the merge AFTER, once the new file is on main.
+- To smoke-test changes to deploy.yml, merge them on a quiet commit and observe the deploy run on the next real commit.
+
+This is a `workflow_run` quirk, not an AEGIS choice. Documented at https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#workflow_run.
+
+### Rotation
+
+The CI deploy key rotates the same way as the routine `aegis_ed25519` key: generate a new pair, append the new public key to `~aegis/.ssh/authorized_keys` BEFORE removing the old line, update the `AEGIS_DEPLOY_SSH_KEY` secret in GitHub, then remove the old `authorized_keys` line. Log the rotation in `deploy/RUNBOOK.md` § "Secrets + key rotation".
+
+`MIGRATIONS_DB_URL_PROD` rotates with the Supabase database password — same procedure as the workstation `.env.local` rotation.
+
+---
+
 ## Where to find the rest
 
 - **Parser architecture (two-pass flow, validation gate, aggregation rules):** `.claude/rules/architecture.md` — auto-loads when editing `src/aegis/parser/**`

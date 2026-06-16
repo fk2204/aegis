@@ -5,6 +5,7 @@
 # breaking the remote invocation.
 scripts/_verify_leg_runner.sh text eol=lf
 scripts/*.sh text eol=lf
+.github/workflows/*.yml text eol=lf
 
 # SQL files MUST keep LF endings. The migration runner
 # (scripts/apply_migrations.py) hashes each file's on-disk bytes and
