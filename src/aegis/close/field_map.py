@@ -392,13 +392,80 @@ def filename_matches_statement_filter(filename: str, filters: tuple[str, ...]) -
     return any(token in lowered for token in filters)
 
 
+# Deny list of filename substrings (lowercased). When ANY of these
+# appears in an attachment's filename, the file is obviously not a bank
+# statement (driver's license, voided check, signed contract, tax
+# return, etc.) and we reject it BEFORE paying for download + Bedrock
+# extraction.
+#
+# Lists like this MUST be defined narrowly — false positives waste real
+# statements. Each term here was added because the
+# ``recover_legacy_docs.py --apply`` pass on 2026-06-16 surfaced it as
+# a concrete non-statement filename in the prod Close attachments.
+# Operator-curated; extending the list is a one-line code change.
+#
+# Consumed by both ``aegis.workers.process_close_attachments`` (the
+# webhook path) and ``scripts/recover_legacy_docs.py`` (the recovery
+# path) so the two surfaces stay in sync. Live in close/field_map.py
+# alongside ``filename_matches_statement_filter`` for the same reason
+# the existing allow-list filter lives here — both are filename-shape
+# decisions about Close-attached files.
+NON_STATEMENT_FILENAME_TERMS: tuple[str, ...] = (
+    "voided",
+    "void check",
+    "driver",
+    "license",
+    "contract",
+    "application",
+    "bylaws",
+    "tax return",
+    "balance sheet",
+    "p&l",
+    "profit",
+    "invoice",
+    "w-2",
+    "1099",
+    "signed",
+    "agreement",
+    "addendum",
+    "amendment",
+)
+
+
+def filename_is_non_statement(filename: str) -> str | None:
+    """Return the matched deny-list term when the filename is obviously
+    NOT a bank statement, or ``None`` when no deny term matches.
+
+    Case-insensitive substring match against ``NON_STATEMENT_FILENAME_TERMS``.
+    A non-None return short-circuits the download + parse paths in the
+    callers; the term itself is surfaced in audit / CSV details so the
+    operator can see WHY a file was rejected without re-running the
+    matcher.
+
+    Used by both the Close webhook orchestration
+    (``workers.process_close_attachments``) and the recovery script
+    (``scripts/recover_legacy_docs.py``). Both call sites apply this
+    AFTER the allow-list check (statement / bank / stmt) so a filename
+    that happens to contain a deny term wedged inside a statement-named
+    file (e.g. ``Bank Statement Plus Voided Check Cover.pdf``) is still
+    correctly rejected — the deny list wins.
+    """
+    lowered = filename.lower()
+    for term in NON_STATEMENT_FILENAME_TERMS:
+        if term in lowered:
+            return term
+    return None
+
+
 __all__ = [
     "CLOSE_ENTITY_TYPE_TO_AEGIS",
     "CLOSE_FIELD_IDS",
     "CLOSE_INDUSTRY_TO_NAICS",
     "CLOSE_OPPORTUNITY_FIELD_IDS",
     "FICO_RANGE_LOWER_BOUND",
+    "NON_STATEMENT_FILENAME_TERMS",
     "FieldMapError",
+    "filename_is_non_statement",
     "filename_matches_statement_filter",
     "get_custom_field",
     "industry_to_naics",

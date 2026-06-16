@@ -49,7 +49,10 @@ from aegis.close.client import (
     CloseClient,
     CloseError,
 )
-from aegis.close.field_map import filename_matches_statement_filter
+from aegis.close.field_map import (
+    filename_is_non_statement,
+    filename_matches_statement_filter,
+)
 from aegis.config import get_settings
 from aegis.crypto import CryptoConfigError, current_key_version, encrypt_pdf
 from aegis.funders.replies import (
@@ -1838,25 +1841,55 @@ async def process_close_attachments(
     # Soft cap accounting — record which attachments survive filename
     # filtering, slice at the cap unless override is set, audit the
     # over-cap names so the rescan-with-override UI can surface them.
+    #
+    # Two-layer filter: the existing ALLOW list
+    # (``filename_matches_statement_filter``) keeps the legacy posture
+    # — only filenames containing ``statement`` / ``stmt`` / ``bank``
+    # / ``estmt`` survive the first pass. THEN the DENY list
+    # (``filename_is_non_statement``) catches the false-positive case
+    # where a filename does match the allow list but ALSO contains a
+    # non-statement term (e.g. ``Bank Statement Plus Voided Check
+    # Cover.pdf``). The 2026-06-16 recovery pass surfaced enough of
+    # these to be worth the per-attachment deny lookup; the deny list
+    # is operator-curated and lives in ``close/field_map.py``.
     statement_candidates: list[CloseAttachment] = []
     for att in attachments:
-        if filename_matches_statement_filter(att.name, filename_filters):
-            statement_candidates.append(att)
+        if not filename_matches_statement_filter(att.name, filename_filters):
+            summary["skipped"] += 1
+            audit.record(
+                actor="worker",
+                actor_email=actor_email,
+                action="close.attachment.skipped",
+                subject_type="merchant",
+                subject_id=merchant.id,
+                details={
+                    "attachment_id": att.id,
+                    "filename": att.name,
+                    "reason": "filename_prefix_mismatch",
+                    "close_lead_id": close_lead_id,
+                },
+            )
             continue
-        summary["skipped"] += 1
-        audit.record(
-            actor="worker",
-            actor_email=actor_email,
-            action="close.attachment.skipped",
-            subject_type="merchant",
-            subject_id=merchant.id,
-            details={
-                "attachment_id": att.id,
-                "filename": att.name,
-                "reason": "filename_prefix_mismatch",
-                "close_lead_id": close_lead_id,
-            },
-        )
+
+        deny_term = filename_is_non_statement(att.name)
+        if deny_term is not None:
+            summary["skipped"] += 1
+            audit.record(
+                actor="worker",
+                actor_email=actor_email,
+                action="close.attachment.skipped_non_statement",
+                subject_type="merchant",
+                subject_id=merchant.id,
+                details={
+                    "attachment_id": att.id,
+                    "filename": att.name,
+                    "matched_deny_term": deny_term,
+                    "close_lead_id": close_lead_id,
+                },
+            )
+            continue
+
+        statement_candidates.append(att)
 
     if len(statement_candidates) >= warn_threshold:
         audit.record(

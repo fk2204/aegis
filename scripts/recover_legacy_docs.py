@@ -101,6 +101,7 @@ from aegis.close.client import (
     CloseClient,
     CloseError,
 )
+from aegis.close.field_map import filename_is_non_statement
 from aegis.config import get_settings
 from aegis.db import get_supabase
 from aegis.logger import get_logger
@@ -199,6 +200,11 @@ class MerchantOutcome:
     attachments_reingested: int
     attachments_backfilled: int
     attachments_skipped: int
+    # Pre-flight filename-filter rejections — counted separately so the
+    # operator's CSV can distinguish "Close had this PDF, we rejected
+    # it as obviously-not-a-statement" from
+    # "Close had this PDF, we already have it (SHA dedup)".
+    attachments_skipped_non_statement: int
     parse_results: str  # compact: "proceed:2,review:1"
     errors: str
     _per_attachment: tuple[AttachmentOutcome, ...] = field(default_factory=tuple, repr=False)
@@ -221,6 +227,7 @@ _CSV_HEADER: Final[tuple[str, ...]] = (
     "attachments_reingested",
     "attachments_backfilled",
     "attachments_skipped",
+    "attachments_skipped_non_statement",
     "parse_results",
     "errors",
 )
@@ -583,13 +590,34 @@ def _process_attachment(
     apply_writes: bool,
     backfill_sha_matches: bool,
 ) -> AttachmentOutcome:
-    """Resolve one attachment: download, dedup, (optionally) ingest.
+    """Resolve one attachment: filter, download, dedup, (optionally) ingest.
 
     Defensive on every external call — Close failures, body-size
     overruns, dedup matches and pipeline crashes each compose a
     distinct ``AttachmentOutcome.action`` so the operator's CSV makes
     sense at a glance.
     """
+    # Pre-flight filename filter — BEFORE download. The 2026-06-16
+    # --apply pass burnt Bedrock tokens trying to parse driver's
+    # licences, voided cheques, signed contracts, etc. that Close
+    # operators routinely attach alongside the actual statements.
+    # ``filename_is_non_statement`` does case-insensitive substring
+    # match against an operator-curated deny list; a hit short-circuits
+    # the download + parse path. Audit is per-merchant via the CSV;
+    # individual deny rows do not write to audit_log to keep the table
+    # focused on real data movements.
+    deny_term = filename_is_non_statement(attachment.name)
+    if deny_term is not None:
+        return AttachmentOutcome(
+            attachment_id=attachment.id,
+            filename=attachment.name,
+            sha256="",
+            action="skip_non_statement",
+            document_id="",
+            parse_status="",
+            detail=(f"skip_reason: non_statement_filename (matched deny term {deny_term!r})"),
+        )
+
     # Download bytes + filename. download_attachment relies on the
     # URL cache populated by the caller's list_lead_attachments call.
     try:
@@ -865,6 +893,7 @@ def process_merchant(
             attachments_reingested=0,
             attachments_backfilled=0,
             attachments_skipped=0,
+            attachments_skipped_non_statement=0,
             parse_results="",
             errors="merchant has no close_lead_id",
         )
@@ -880,6 +909,7 @@ def process_merchant(
             attachments_reingested=0,
             attachments_backfilled=0,
             attachments_skipped=0,
+            attachments_skipped_non_statement=0,
             parse_results="",
             errors=f"close_list: {_format_error_chain(exc)}",
         )
@@ -905,6 +935,7 @@ def process_merchant(
     reingested = sum(1 for o in per_attachment if o.action == "ingest")
     backfilled = sum(1 for o in per_attachment if o.action == "backfill")
     skipped = sum(1 for o in per_attachment if o.action == "skip_duplicate")
+    skipped_non_statement = sum(1 for o in per_attachment if o.action == "skip_non_statement")
     errors = "; ".join(o.detail for o in per_attachment if o.action == "error")
     return MerchantOutcome(
         merchant_id=str(merchant.id),
@@ -914,6 +945,7 @@ def process_merchant(
         attachments_reingested=reingested,
         attachments_backfilled=backfilled,
         attachments_skipped=skipped,
+        attachments_skipped_non_statement=skipped_non_statement,
         parse_results=_compact_parse_status_summary(per_attachment),
         errors=errors,
         _per_attachment=tuple(per_attachment),
@@ -942,6 +974,7 @@ def write_csv(rows: list[MerchantOutcome], stream: object) -> None:
                 r.attachments_reingested,
                 r.attachments_backfilled,
                 r.attachments_skipped,
+                r.attachments_skipped_non_statement,
                 r.parse_results,
                 r.errors,
             )
@@ -1238,12 +1271,14 @@ def main() -> int:
     reingested = sum(r.attachments_reingested for r in rows)
     backfilled = sum(r.attachments_backfilled for r in rows)
     skipped = sum(r.attachments_skipped for r in rows)
+    skipped_non_statement = sum(r.attachments_skipped_non_statement for r in rows)
     issues = sum(1 for r in rows if r.is_issue)
     mode = "APPLY" if args.apply else "DRY-RUN"
     backfill_mode = " +backfill" if args.backfill_sha_matches else ""
     print(
         f"# mode={mode}{backfill_mode} merchants={total} attachments_found={found} "
         f"reingested={reingested} backfilled={backfilled} skipped={skipped} "
+        f"skipped_non_statement={skipped_non_statement} "
         f"issues={issues}",
         file=sys.stderr,
     )

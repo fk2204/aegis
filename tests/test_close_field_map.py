@@ -27,6 +27,7 @@ from aegis.close.field_map import (
     CLOSE_INDUSTRY_TO_NAICS,
     FICO_RANGE_LOWER_BOUND,
     FieldMapError,
+    filename_is_non_statement,
     filename_matches_statement_filter,
     get_custom_field,
     industry_to_naics,
@@ -62,8 +63,7 @@ def test_parse_fico_range_covers_every_table_entry() -> None:
     entry, this test fails."""
     parametrized = {"<550", "550-599", "600-649", "650-699", "700+"}
     assert set(FICO_RANGE_LOWER_BOUND.keys()) == parametrized, (
-        "FICO_RANGE_LOWER_BOUND drifted; add the new band to the "
-        "parametrize list above."
+        "FICO_RANGE_LOWER_BOUND drifted; add the new band to the parametrize list above."
     )
 
 
@@ -312,9 +312,7 @@ def test_parse_money_never_uses_float() -> None:
     # 0.1 + 0.2 == 0.30000000000000004 in float. parse_money must NOT
     # surface that via Decimal(float) — it must stringify first.
     result = parse_money(1.1)
-    assert result == Decimal("1.1"), (
-        f"expected Decimal('1.1') via str() coercion; got {result!r}"
-    )
+    assert result == Decimal("1.1"), f"expected Decimal('1.1') via str() coercion; got {result!r}"
 
 
 def test_parse_money_strips_whitespace() -> None:
@@ -363,9 +361,7 @@ def test_get_custom_field_unknown_aegis_name_raises() -> None:
         ("Option 1", "other"),
     ],
 )
-def test_normalize_entity_type_every_close_choice(
-    close_value: str, expected_aegis: str
-) -> None:
+def test_normalize_entity_type_every_close_choice(close_value: str, expected_aegis: str) -> None:
     assert normalize_entity_type(close_value) == expected_aegis
 
 
@@ -373,8 +369,14 @@ def test_normalize_entity_type_covers_every_table_entry() -> None:
     """If Close adds a new Entity type choice in the dashboard, this
     guard fails until the parametrize list is updated."""
     assert set(CLOSE_ENTITY_TYPE_TO_AEGIS.keys()) == {
-        "LLC", "C-Corp", "S-Corp", "Sole Proprietorship", "Partnership",
-        "Non-Profit", "Other", "Option 1",
+        "LLC",
+        "C-Corp",
+        "S-Corp",
+        "Sole Proprietorship",
+        "Partnership",
+        "Non-Profit",
+        "Other",
+        "Option 1",
     }
 
 
@@ -402,17 +404,15 @@ def test_normalize_entity_type_unknown_raises() -> None:
     "filename, expected",
     [
         ("April_bank_statement.pdf", True),  # 'bank' + 'statement'
-        ("STMT_2025_03.pdf", True),          # case-insensitive 'stmt'
-        ("eStmt_chase_05.pdf", True),        # 'estmt'
+        ("STMT_2025_03.pdf", True),  # case-insensitive 'stmt'
+        ("eStmt_chase_05.pdf", True),  # 'estmt'
         ("driver_license.jpg", False),
         ("voided_check.pdf", False),
-        ("Bank.PDF", True),                  # case-insensitive
-        ("", False),                         # empty filename never matches
+        ("Bank.PDF", True),  # case-insensitive
+        ("", False),  # empty filename never matches
     ],
 )
-def test_filename_matches_statement_filter_defaults(
-    filename: str, expected: bool
-) -> None:
+def test_filename_matches_statement_filter_defaults(filename: str, expected: bool) -> None:
     """Default filter set: statement, estmt, stmt, bank."""
     filters = ("statement", "estmt", "stmt", "bank")
     assert filename_matches_statement_filter(filename, filters) is expected
@@ -422,3 +422,78 @@ def test_filename_matches_statement_filter_empty_filters_returns_false() -> None
     """Operator opt-out via empty env should not silently let everything
     through — explicit zero means zero."""
     assert filename_matches_statement_filter("statement.pdf", ()) is False
+
+
+# ----------------------------------------------------------------------
+# filename_is_non_statement (deny list)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "filename, expected_term",
+    [
+        # The four cases from the 2026-06-16 prod recovery pass spec
+        ("voided check.pdf", "voided"),
+        ("chase_statement_march.pdf", None),
+        ("drivers_license.jpg", "driver"),
+        ("bank_statement_2026.pdf", None),
+        # Each deny term — every entry in NON_STATEMENT_FILENAME_TERMS
+        # must show up here so a future edit of the constant can't
+        # silently lose a test
+        ("voided_check_2026.pdf", "voided"),
+        ("Acme - Void Check - Cover Page.pdf", "void check"),
+        ("Driver License Front.pdf", "driver"),
+        ("operator_license_scan.pdf", "license"),
+        ("signed_contract_aegis_v2.pdf", "contract"),
+        ("Funding Application 2026-06-12.pdf", "application"),
+        ("Wyoming Bylaws Vu Development.pdf", "bylaws"),
+        ("2024 Tax Return Documents.pdf", "tax return"),
+        ("Q1 2026 Balance Sheet.pdf", "balance sheet"),
+        ("Q1 2026 P&L.pdf", "p&l"),
+        ("Profit and Loss Statement.pdf", "profit"),
+        ("invoice_20260315.pdf", "invoice"),
+        ("operator W-2 2024.pdf", "w-2"),
+        ("operator_1099_2024.pdf", "1099"),
+        # "contract" is checked before "signed" in the deny list, so
+        # ``filename_is_non_statement`` returns the first match in
+        # iteration order. Both terms would match this filename; the
+        # audit / CSV cell only needs one to surface the reason.
+        ("Apollo signed contract fully executed.pdf", "contract"),
+        ("merchant_agreement_v3.pdf", "agreement"),
+        ("addendum_2026-03.pdf", "addendum"),
+        ("amendment_to_terms.pdf", "amendment"),
+        # Case-insensitive
+        ("VOIDED CHECK.PDF", "voided"),
+        ("DRIVERS_LICENSE.JPG", "driver"),
+        # Empty filename never matches anything
+        ("", None),
+    ],
+)
+def test_filename_is_non_statement(filename: str, expected_term: str | None) -> None:
+    """The deny-list filter MUST reject every operator-surfaced
+    non-statement filename type and MUST pass clean bank-statement
+    filenames. Both the recovery script and the webhook orchestration
+    short-circuit on a non-None return.
+    """
+    assert filename_is_non_statement(filename) == expected_term
+
+
+def test_filename_is_non_statement_does_not_short_circuit_clean_statements() -> None:
+    """Every known clean filename shape passes the deny filter (returns
+    None). Belt-and-suspenders for ``filename_matches_statement_filter``
+    callers that compose both checks.
+    """
+    clean_names = (
+        "April_bank_statement.pdf",
+        "STMT_2025_03.pdf",
+        "eStmt_chase_05.pdf",
+        "chase_statement_march.pdf",
+        "bank_statement_2026.pdf",
+        "Bank.PDF",
+        "2025-04_KYC_bank_statement.pdf",
+        "acme_stmt_apr.pdf",
+    )
+    for name in clean_names:
+        assert filename_is_non_statement(name) is None, (
+            f"clean filename {name!r} matched a deny term"
+        )
