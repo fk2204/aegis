@@ -171,16 +171,18 @@ Leave the passphrase empty (GitHub Actions cannot supply one; the key never leav
 
 ### 2. Authorize the public key on the prod box
 
-Append the public key to the `aegis` user's `authorized_keys`. The new key inherits the same scoped access as the existing routine-deploy key: the `aegis` user's sudoers rule on the box only whitelists `sudo -n /usr/bin/systemctl restart aegis-web aegis-worker`, so the CI key cannot run arbitrary root commands.
+Append the public key to **`root`'s** `authorized_keys` on the box. CI SSHes as root, NOT as the `aegis` user, because the routine `aegis@aegis-ssh.commerafunding.com` path resolves through Cloudflare Access — which gates the TCP handshake on an SSO session cookie GitHub-hosted runners do not have. CI therefore goes direct to the raw Hetzner public IP (see step 4b for the `AEGIS_SERVER_IP` secret + rationale), and the direct-IP path is keyed off `/root/.ssh/authorized_keys`. The narrow sudoers protection that scopes the operator's `aegis_ed25519` interactive key does NOT apply here — root has full privileges. Revocation isolation comes from rotating this CI key independently of the operator's interactive key (see § Rotation), not from a constrained sudoers rule.
+
+Look up the box IP first (Hetzner Cloud Console, or the value you'll set as the `AEGIS_SERVER_IP` secret in step 4b); call it `BOX_IP` below.
 
 ```
-ssh aegis@aegis-ssh.commerafunding.com 'cat >> ~/.ssh/authorized_keys' < ~/.ssh/aegis_ci_deploy.pub
+ssh root@$BOX_IP 'cat >> ~/.ssh/authorized_keys' < ~/.ssh/aegis_ci_deploy.pub
 ```
 
 Verify with one round-trip before moving on:
 
 ```
-ssh -i ~/.ssh/aegis_ci_deploy aegis@aegis-ssh.commerafunding.com 'systemctl is-active aegis-web aegis-worker'
+ssh -i ~/.ssh/aegis_ci_deploy root@$BOX_IP 'systemctl is-active aegis-web aegis-worker'
 ```
 
 Expected output: two lines, both `active`.
@@ -232,7 +234,7 @@ If `/healthz` does not return 200 within ~10s after restart, the job fails with 
 
 | Secret | Purpose |
 |---|---|
-| `AEGIS_DEPLOY_SSH_KEY` | Private SSH key for the `aegis` user on the box. Scoped via authorized_keys + sudoers (only `systemctl restart aegis-web aegis-worker` runs as root). |
+| `AEGIS_DEPLOY_SSH_KEY` | Private SSH key authorized in `/root/.ssh/authorized_keys` on the box. CI uses root because the routine `aegis@aegis-ssh.commerafunding.com` path needs a Cloudflare Access SSO cookie GitHub-hosted runners don't have; direct-IP SSH to `AEGIS_SERVER_IP` bypasses CF Access entirely. Rotate independently of the operator's interactive `aegis_ed25519` key (see § Rotation). |
 | `AEGIS_SERVER_IP` | Raw Hetzner public IPv4. CI SSHes directly to this IP, bypassing Cloudflare Access (which refuses GitHub Actions runners — no SSO cookie). Interactive deploys keep using the `aegis-ssh.commerafunding.com` hostname through CF Access. |
 | `MIGRATIONS_DB_URL_PROD` | Prod Supabase DSN consumed by `scripts/apply_migrations.py --target prod`. Held only by GitHub Actions secret store; never lands on the box. |
 
@@ -247,7 +249,7 @@ This is a `workflow_run` quirk, not an AEGIS choice. Documented at https://docs.
 
 ### Rotation
 
-The CI deploy key rotates the same way as the routine `aegis_ed25519` key: generate a new pair, append the new public key to `~aegis/.ssh/authorized_keys` BEFORE removing the old line, update the `AEGIS_DEPLOY_SSH_KEY` secret in GitHub, then remove the old `authorized_keys` line. Log the rotation in `deploy/RUNBOOK.md` § "Secrets + key rotation".
+The CI deploy key rotates similarly to the routine `aegis_ed25519` key, but on **root's** authorized_keys, not aegis's: generate a new pair, append the new public key to `/root/.ssh/authorized_keys` BEFORE removing the old line, update the `AEGIS_DEPLOY_SSH_KEY` secret in GitHub, then remove the old `authorized_keys` line. Use the direct-IP path (`ssh root@$BOX_IP …`) for both the append and the cleanup — CF Access on the hostname would refuse a fresh ssh-keyscan from any machine without an SSO cookie. Log the rotation in `deploy/RUNBOOK.md` § "Secrets + key rotation".
 
 `MIGRATIONS_DB_URL_PROD` rotates with the Supabase database password — same procedure as the workstation `.env.local` rotation.
 
