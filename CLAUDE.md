@@ -10,7 +10,7 @@ AEGIS is an internal pre-screening tool for **Commera Capital, a pure ISO broker
 
 - **What it does:** Parse bank statements → score deals → capture operator overrides → ingest funder replies → sync with Close CRM (webhook-driven inbound on `/webhooks/close`; operator-triggered outbound on `/deals/{id}/sync-to-close`; n8n is the planned orchestrator)
 - **Scale:** Solo operator, ~100 deals/month, internal-only
-- **Status:** Live deployment on Hetzner behind Cloudflare Access. To see current state, run `git log --oneline -10` and check `CORPUS_FINDINGS.md` for recent parser fixes.
+- **Status:** Live deployment on Hetzner behind Cloudflare Access. Every push to `main` that passes the `test` workflow auto-deploys via `.github/workflows/deploy.yml` (Sprint 7 Track A; `uv sync --locked` + `uv run --no-sync` units, runner-side migrations, root SSH to the raw Hetzner IP). Manual `make deploy TARGET=prod` is the rollback / out-of-band escape hatch, not the primary path. To see current state, run `git log --oneline -10` and check `CORPUS_FINDINGS.md` for recent parser fixes.
 
 ---
 
@@ -32,6 +32,29 @@ AEGIS is an internal pre-screening tool for **Commera Capital, a pure ISO broker
 | Job queue | `arq` (Redis-backed) |
 | Testing | `pytest` + `pytest-asyncio` + `hypothesis` + `pytest-snapshot` |
 | Package mgmt | `uv` |
+| Deploy | GitHub Actions auto-deploy on push to `main` (primary). Manual `make deploy TARGET=prod` is the rollback / out-of-band fallback. |
+
+### First-class modules under `src/aegis/`
+
+| Module | Responsibility |
+|---|---|
+| `parser/` | Two-pass parse pipeline (metadata → extract → validate → classify → patterns → aggregate). See `.claude/rules/architecture.md`. |
+| `scoring/` | Legacy single-axis scoring engine. Still in production under the `engine="legacy"` selector; the `fraud_score` field here is informational under `engine="track_abc"`. |
+| `scoring_v2/` | Three-track redesign (Track A integrity / Track B business risk / Track C context). Pure additive scaffolding; live decline path under `engine="track_abc"`. Authoritative design: `docs/SCORING_REDESIGN_CONTINUATION.md`. |
+| `counterparty/` | Per-transaction counterparty classifier (processor / own-account / international / end-customer / card-paydown / unknown). Foundation that Tracks B and C both depend on. |
+| `bank_layouts/` | Operator-curated per-bank extraction hints. Pipeline records a layout fingerprint per parse; after a threshold of successful parses the operator can author hints that are injected into the Bedrock extraction prompt. |
+| `submissions/` | Durable per-funder CSV-submission rows (one per matched funder per bundle). Live source of truth for the portfolio funder-approval panel (U20). |
+| `funder_note_submissions/` | One row per "Submit to Funder" click from the dossier. Powers the dossier history block; mutated in place when the funder responds with terms. Distinct from `submissions/`. |
+| `compliance/` | Internal dossier hygiene, audit-log writes, state metadata. Funder-side regulatory enforcement lives outside AEGIS. See `.claude/rules/compliance.md`. |
+| `close/` | Close CRM client + field mapping + inbound webhook handler + outbound write-back. |
+| `funders/` | Funder catalog, criteria storage, matching logic. |
+| `deals/` | Derived merchant × document view. No `deals` table — `deal_id = "{merchant_id}:{document_id}"`. |
+| `merchants/` | Merchant identity + persistence. |
+| `pdf_store/` | In-Postgres AES-GCM ciphertext blob for original PDFs (migration 060). Supersedes the Supabase Storage chunk-B design. |
+| `ops/` | Production observability — alerting, cost accounting, rate-limit verification. Fails open in the alerting direction. |
+| `zoho/` | Legacy Zoho integration (retained for historical sync, not active for new deals). |
+| `web/` | HTMX + Jinja2 operator dashboard mounted at `/ui`. |
+| `api/` | FastAPI app, route registration, webhook entrypoints (`/webhooks/close`). |
 
 ---
 
@@ -48,6 +71,7 @@ These apply to every file. Domain-specific rules (parser internals, compliance, 
 
 ### Auditability
 - **Every aggregate metric stores its source transaction IDs.** A field like `total_deposits` exists alongside `total_deposits_source_ids: list[UUID]`. No exceptions.
+- **Every NEW aggregate metric added going forward MUST carry source IDs at the same time the aggregate ships.** Not a follow-up commit. Not "we'll wire it next sprint." A PR that adds an aggregate without its `_source_ids` companion is incomplete. The pattern is load-bearing for the dossier drill-down ("clicking an aggregate shows the contributing transactions with page/line refs") — every gap breaks that contract.
 - **Every transaction stores `source_page: int` and `source_line: int`** from the original PDF. The extraction prompt MUST request these; the validator MUST verify they're present.
 - **`audit_log` rows are written for every state change.** Audit-write failures FAIL the operation, never silently log-and-continue.
 
@@ -88,9 +112,12 @@ Learned the hard way: the H10 false-positive on VU Development (2026-06-03), the
 
 - **Document integrity and business risk stay separate forever.** They answer different questions ("is the statement real?" vs "can the business support repayment?") and must NOT be blended back into one tunable number. The moment they share a score, "tune the severity to clear a specific deal" becomes the path of least resistance — that's the failure mode H10 demonstrated. Track A (integrity) is a near-binary gate; Track B (business risk) is an explainable band; Track C (concentration/context) is informational and never auto-penalizes. See `docs/SCORING_REDESIGN_CONTINUATION.md` for the three-track design.
 - **No track-tuning to pass a specific merchant.** Changes to severities, thresholds, escalation rules, and decline boundaries are validated against a corpus, not reverse-engineered from one deal. If a change is being proposed because "VU shouldn't decline" or "A&R KM should clear," that change does NOT ship; the rationale belongs in business-risk reasoning (Track B's band), not in the detector. A signal that fires on a merchant you believe is fine is an underwriting judgment (human review), not a reason to soften the signal. Shadow mode + corpus validation come before any decision-boundary edit; same discipline as the tampering rule.
+- **Shadow-first for ALL new scoring rules — not just decision-boundary edits.** Every new detector, threshold, severity, severity-routing rule, or signal weight that COULD change a decline/approve outcome ships in shadow mode first. Shadow = logged via `audit_log` (e.g. `shadow_flags: ["new_detector_would_fire:H-NN"]`) but NOT enforced in `score_deal`. Validate against the corpus AND against a window of live shadow audit rows before flipping to live. The flip itself is a config / env var / DB flag change, not a code deploy. This is the cross-cutting reinforcement of the decision-boundary rule below: corpus-only validation isn't enough — production shadow audit data has to confirm the signal isn't firing on legitimate merchants before it gates anything.
 
 ### Decision-boundary changes — deliberate + shadow-first
-Anything that moves a decline/approve boundary — a new fraud detector, an updated threshold, a re-tuned severity, a parse-routing rule that changes whether a doc reaches `manual_review` vs `proceed` — runs in **shadow mode first**: it logs what it WOULD do via `audit_log`, doesn't actually do it. Validate against BOTH false positives (would it have wrongly declined?) AND true positives (does it catch the cases we built it for?) on the corpus + on live shadow audit rows before flipping to live. The flip itself is a config / env var change, not a code deploy. The tampering rule is the reference pattern.
+Anything that moves a decline/approve boundary — a new Track A integrity detector, an updated threshold, a re-tuned severity, a parse-routing rule that changes whether a doc reaches `manual_review` vs `proceed` — runs in **shadow mode first**: it logs what it WOULD do via `audit_log`, doesn't actually do it. Validate against BOTH false positives (would it have wrongly declined?) AND true positives (does it catch the cases we built it for?) on the corpus + on live shadow audit rows before flipping to live. The flip itself is a config / env var change, not a code deploy. The tampering rule is the reference pattern.
+
+> The retired single-axis `fraud_score` is the canonical example of why this discipline exists. H10 was a false-positive on VU Development driven by blended detectors sharing one tunable number; tuning the severity to clear one deal became the path of least resistance. The three-track redesign (`scoring_v2/`) replaced `fraud_score` with orthogonal integrity / business-risk / context outputs. `fraud_score` is informational only under `engine="track_abc"` and is being retired from the live decline path entirely. Do not propose changes framed against `fraud_score` going forward.
 
 ### Extraction & automation assists, never replaces judgment
 LLM extraction (funder docs, statements, anything Bedrock-driven) is a **pre-fill assistant with human confirmation**, never autonomous creation. Proven necessary 2026-06-05: even after the funder extraction prompt was tightened, residual errors leaked at confidence 72 on Shor's ISO (agent-contract clauses misclassified as merchant-stip requirements). Auto-creating a row from extracted fields without showing the operator the editable result is banned. The pattern: extract → show in editable form with per-field confidence → operator confirms → save via the same upsert path. `/ui/funders/import` and the (planned) "add funder via Claude Code" wrapper both follow this rule; neither calls `repo.upsert()` until the operator has seen the values.
@@ -155,7 +182,7 @@ At the end of any multi-step task, stop and summarize before moving to the next 
 
 ## CI auto-deploy — operator one-time setup
 
-Sprint 7 Track A added `.github/workflows/deploy.yml`: every push to `main` that passes `test.yml` now auto-deploys to the Hetzner box. No more `make deploy TARGET=prod` for routine merges (the manual path still works for hotfix / out-of-band situations and remains the rollback path).
+Sprint 7 Track A shipped `.github/workflows/deploy.yml`: every push to `main` that passes the `test` workflow now auto-deploys to the Hetzner box. This is the primary deploy path. `make deploy TARGET=prod` still works as the hotfix / out-of-band escape hatch and remains the rollback path (`make rollback TARGET=prod`).
 
 Below is the one-time setup an operator runs to wire the deploy SSH key + DB DSN into GitHub Actions. Reproducible from scratch — follow top to bottom.
 
@@ -259,7 +286,7 @@ The CI deploy key rotates similarly to the routine `aegis_ed25519` key, but on *
 
 - **Parser architecture (two-pass flow, validation gate, aggregation rules):** `.claude/rules/architecture.md` — auto-loads when editing `src/aegis/parser/**`
 - **Internal compliance code (dossier discipline, audit-log rules, decision immutability):** `.claude/rules/compliance.md` — auto-loads when editing `src/aegis/compliance/**` or `docs/compliance/**`. Note: state CFDL disclosure / tier-routing framing is obsolete — funders own regulator-facing compliance.
-- **Deployment procedure:** `.claude/rules/deploy.md` — auto-loads when editing `deploy/**` or `scripts/deploy.sh`. Full ops procedures in `deploy/RUNBOOK.md`.
+- **Deployment procedure:** `.claude/rules/deploy.md` — auto-loads when editing `deploy/**` or `scripts/deploy.sh`. Full ops procedures in `deploy/RUNBOOK.md`. Primary deploy path is `.github/workflows/deploy.yml` (push to `main` → auto-deploy after `test` passes); the manual `make deploy TARGET=prod` script is the fallback / hotfix path and the rollback path uses `make rollback TARGET=prod`.
 - **Testing rules:** `.claude/rules/testing.md` — auto-loads when editing `tests/**`
 - **Operating principles (always-on):** `.claude/rules/operating-principles.md`
 - **Compliance quick-reference:** `COMPLIANCE.md` and `docs/compliance/`
@@ -267,6 +294,6 @@ The CI deploy key rotates similarly to the routine `aegis_ed25519` key, but on *
 
 ---
 
-**Last updated:** 2026-06-12 (Track A correctness + worker-UX + test depth wave — added box-side operations gotchas to `.claude/rules/deploy.md` covering sudo NOPASSWD literal form, systemctl-status token leak, install-script token grep, and read-rules-first; extended operating-principles Rule 4 with the funder seeding sub-rule. 2026-06-05 entry below remains in effect.)
+**Last updated:** 2026-06-16 (Track C of the 3-track parallel cleanup sprint — refreshed Tech Stack with deploy posture, added a first-class-modules map under `src/aegis/` (covers `scoring_v2/`, `bank_layouts/`, `funder_note_submissions/`, `submissions/`, `pdf_store/`, `counterparty/` and the rest), promoted GitHub Actions auto-deploy to the primary deploy path with manual `make deploy TARGET=prod` as the fallback, added the "every NEW aggregate carries `_source_ids` at ship time" rule under Auditability, added the "shadow-first for ALL new scoring rules" rule under Scoring discipline, neutralized `fraud_score` framing — explicitly noted it's retired from the live decline path in favor of `scoring_v2/` Track A/B/C and is informational under `engine="track_abc"`.)
 
-**Previous:** 2026-06-05 (Close-automation + extraction night — added external-integration test discipline, decision-boundary shadow-first, extraction-assists-not-replaces, reinforced scoring discipline with A&R KM + VU 7722 evidence)
+**Previous:** 2026-06-12 (Track A correctness + worker-UX + test depth wave — added box-side operations gotchas to `.claude/rules/deploy.md` covering sudo NOPASSWD literal form, systemctl-status token leak, install-script token grep, and read-rules-first; extended operating-principles Rule 4 with the funder seeding sub-rule.) (2026-06-05: Close-automation + extraction night — added external-integration test discipline, decision-boundary shadow-first, extraction-assists-not-replaces, reinforced scoring discipline with A&R KM + VU 7722 evidence.)
