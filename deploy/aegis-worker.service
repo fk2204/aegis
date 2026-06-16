@@ -15,7 +15,15 @@ User=aegis
 Group=aegis
 WorkingDirectory=/opt/aegis
 EnvironmentFile=/etc/aegis/aegis.env
-ExecStart=/usr/local/bin/uv run arq aegis.workers.WorkerSettings
+# --no-sync: do NOT mutate /opt/aegis/.venv at start. ProtectSystem=strict
+# below makes the venv read-only to the running service, so uv's default
+# implicit sync ("ensure editable install pointer is current") fails with
+# `Read-only file system` on every restart and crash-loops the unit. The
+# deploy workflow runs `uv sync --locked` as the aegis user during phase A
+# instead (see .github/workflows/deploy.yml), making the deploy the only
+# moment the venv is mutated. Cost of skipping this flag: full prod outage
+# 2026-06-16 (commit 51a2c1e); see git log for the fix.
+ExecStart=/usr/local/bin/uv run --no-sync arq aegis.workers.WorkerSettings
 Restart=on-failure
 RestartSec=5s
 

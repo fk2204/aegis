@@ -176,6 +176,24 @@ jobs:
           git pull --ff-only origin main
           '
 
+      - name: On-box phase A2 — sync venv as aegis (locked)
+        # ExecStart in aegis-{web,worker}.service uses `uv run --no-sync`
+        # because ProtectSystem=strict makes /opt/aegis/.venv read-only to
+        # the running services — uv's default implicit sync mutates the
+        # editable install pointer at start and crash-loops the unit.
+        # So the deploy is the only moment we mutate the venv, and we do
+        # it here as the `aegis` user (the venv owner) using --locked so
+        # CI fails loud if uv.lock is out of date instead of silently
+        # rewriting it. Cost of NOT doing this on the box: full prod
+        # outage 2026-06-16 (commit 51a2c1e) — `_editable_impl_aegis.pth`
+        # could not be rewritten on /opt/aegis/.venv (Read-only fs).
+        run: |
+          set -euo pipefail
+          ssh "root@${{ secrets.AEGIS_SERVER_IP }}" 'set -euo pipefail
+          cd /opt/aegis
+          sudo -u aegis -H /usr/local/bin/uv sync --locked
+          '
+
       - name: Apply migrations (runner-side, TARGET=prod)
         # Migration option (b): runner holds the DSN, applies migrations
         # before the on-box restart so a failed migration aborts the
