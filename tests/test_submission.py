@@ -16,7 +16,7 @@ from collections.abc import Iterator
 from datetime import date
 from decimal import Decimal
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -128,9 +128,7 @@ def test_build_submission_csv_excludes_pii_audit_columns() -> None:
     # Negative checks — none of these labels should appear.
     lowered = csv_text.lower()
     for forbidden in ("ein", "ssn", "account_holder", "account_last4", "tax_id"):
-        assert forbidden not in lowered, (
-            f"{forbidden!r} leaked into funder-facing CSV"
-        )
+        assert forbidden not in lowered, f"{forbidden!r} leaked into funder-facing CSV"
 
 
 def test_build_submission_csv_contains_aegis_verdict() -> None:
@@ -182,9 +180,7 @@ def merchant_repo(merchant: MerchantRow) -> InMemoryMerchantRepository:
 @pytest.fixture
 def doc_repo(merchant: MerchantRow) -> InMemoryDocumentRepository:
     repo = InMemoryDocumentRepository()
-    row = repo.create_document(
-        file_hash="z" * 64, byte_size=1024, original_filename="x.pdf"
-    )
+    row = repo.create_document(file_hash="z" * 64, byte_size=1024, original_filename="x.pdf")
     row = row.model_copy(update={"merchant_id": merchant.id})
     repo._docs[row.id] = row
     repo.persist_parse_result(row.id, result=_make_pipeline_result(), merchant_id=merchant.id)
@@ -193,9 +189,16 @@ def doc_repo(merchant: MerchantRow) -> InMemoryDocumentRepository:
 
 @pytest.fixture
 def funder_repo() -> InMemoryFunderRepository:
+    # Pin FunderRow IDs to UUIDs whose final hex block ends in letters
+    # so the logger's _BARE_LONG_DIGITS_RE can't mask them when they
+    # land in audit-row details (8acbe22 / aa58761 / 4235352 patched
+    # other variants of this flake). uuid4() picks all-digit final
+    # blocks ~1 in 70 runs; pinning here protects every test that
+    # consumes the fixture without per-test monkeypatching.
     repo = InMemoryFunderRepository()
     repo.upsert(
         FunderRow(
+            id=UUID("11111111-1111-4111-8111-aabbccddeeff"),
             name="Alpha Capital",
             min_monthly_revenue=Decimal("25000"),
             min_credit_score=600,
@@ -204,6 +207,7 @@ def funder_repo() -> InMemoryFunderRepository:
     )
     repo.upsert(
         FunderRow(
+            id=UUID("22222222-2222-4222-8222-aabbccddeeff"),
             name="Beta Capital",
             min_monthly_revenue=Decimal("50000"),
             accepts_stacking=False,
@@ -288,9 +292,7 @@ def test_submit_audit_records_attachment_sha256(
     )
     assert resp.status_code == 200
 
-    submit_rows = [
-        e for e in audit_log.entries if e["action"] == "deal.submit_to_funders"
-    ]
+    submit_rows = [e for e in audit_log.entries if e["action"] == "deal.submit_to_funders"]
     assert len(submit_rows) == 1
     details = submit_rows[0]["details"]
 
@@ -325,18 +327,14 @@ def test_submit_audits_with_funder_ids(
         data={"funder_ids": ids},
     )
     assert resp.status_code == 200
-    submit_rows = [
-        e for e in audit_log.entries if e["action"] == "deal.submit_to_funders"
-    ]
+    submit_rows = [e for e in audit_log.entries if e["action"] == "deal.submit_to_funders"]
     assert len(submit_rows) == 1
     detail = submit_rows[0]["details"]
     assert sorted(detail["funder_ids"]) == sorted(ids)
     assert set(detail["funder_names"]) == {"Alpha Capital", "Beta Capital"}
 
 
-def test_submit_rejects_empty_funder_list(
-    client: TestClient, merchant: MerchantRow
-) -> None:
+def test_submit_rejects_empty_funder_list(client: TestClient, merchant: MerchantRow) -> None:
     resp = client.post(
         f"/ui/merchants/{merchant.id}/submit",
         data={"funder_ids": [""]},
@@ -426,14 +424,13 @@ def test_match_preselect_funder_checks_correct_card(
     )
     funder_repo.upsert(permissive)
 
-    resp = client.get(
-        f"/ui/merchants/{merchant.id}/match?preselect_funder={permissive.id}"
-    )
+    resp = client.get(f"/ui/merchants/{merchant.id}/match?preselect_funder={permissive.id}")
     assert resp.status_code == 200
     text = resp.text
     # Find the Permissive card's checkbox line; assert `checked` present.
     permissive_lines = [
-        line for line in text.splitlines()
+        line
+        for line in text.splitlines()
         if 'type="checkbox"' in line and f'value="{permissive.id}"' in line
     ]
     assert permissive_lines, f"no checkbox row found for {permissive.id}"
@@ -457,9 +454,7 @@ def test_match_preselect_funder_disabled_shows_reason(
     alpha = funder_repo.list_active()[0]
     assert alpha.name == "Alpha Capital"
 
-    resp = client.get(
-        f"/ui/merchants/{merchant.id}/match?preselect_funder={alpha.id}"
-    )
+    resp = client.get(f"/ui/merchants/{merchant.id}/match?preselect_funder={alpha.id}")
     assert resp.status_code == 200
     text = resp.text
     # Banner present, naming the funder + revenue-floor reason.
@@ -481,9 +476,7 @@ def test_match_preselect_funder_unknown_uuid_ignored(
     safely outlive funder deletions."""
     _ = funder_repo
     bogus_id = uuid4()
-    resp = client.get(
-        f"/ui/merchants/{merchant.id}/match?preselect_funder={bogus_id}"
-    )
+    resp = client.get(f"/ui/merchants/{merchant.id}/match?preselect_funder={bogus_id}")
     assert resp.status_code == 200
     assert "Not eligible" not in resp.text
 
@@ -495,9 +488,7 @@ def test_match_preselect_funder_malformed_param_returns_422(
 ) -> None:
     """A non-UUID preselect_funder value is rejected by FastAPI validation."""
     _ = funder_repo
-    resp = client.get(
-        f"/ui/merchants/{merchant.id}/match?preselect_funder=not-a-uuid"
-    )
+    resp = client.get(f"/ui/merchants/{merchant.id}/match?preselect_funder=not-a-uuid")
     assert resp.status_code == 422
 
 
