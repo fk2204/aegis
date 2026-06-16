@@ -967,7 +967,47 @@
 .dossier-page .statusbar .sep { opacity: 0.4; }
 .dossier-page .statusbar .spacer { flex: 1; }
 
-/* ===================== BUTTONS ===================== */
+/* ===================== BUTTONS =====================
+ *
+ * Three-tier visual hierarchy. Tier weight reads at a glance so the
+ * operator's eye lands on the right action without having to parse
+ * surrounding chrome.
+ *
+ *   .btn.primary  — DOMINANT. Filled --ink panel, generous padding
+ *                   (0.7rem 1.4rem), --paper text. The dossier's
+ *                   "Submit / Save / Approve" actions. One per surface
+ *                   under normal conditions. (Wave 3.2 elevation +
+ *                   inset highlights ship from aegis-system.css; this
+ *                   file owns the fill + padding contract.)
+ *
+ *   .btn          — SECONDARY (no modifier). Cream-on-cream chip with
+ *                   the historical 1px ink border + 2px ink underline
+ *                   signature. Wave 3.2 ambient shadow ships from
+ *                   aegis-system.css. Used for "Edit / Cancel / Open".
+ *
+ *   .btn.ghost    — RESTRAINED SECONDARY. Outlined in --ink-2, text in
+ *                   --ink-2, transparent background, smaller padding
+ *                   than .btn. For "Back / Preview / Dismiss" — actions
+ *                   that compete with primary for column space but must
+ *                   visibly lose that competition.
+ *
+ *   .btn.utility  — TERTIARY. Smallest, lowest-weight affordance.
+ *                   1px --rule hairline, sentence-case-ready (no
+ *                   uppercase override beyond the base), --ink-3 text,
+ *                   tight padding. For "Add note / View audit log /
+ *                   Copy ID" — actions whose value is the function
+ *                   they execute, not the visual claim they make on
+ *                   the page.
+ *
+ * Wave 3.2 button polish in aegis-system.css adds shadow + press states
+ * on .btn.primary and the "plain .btn" secondary block. .btn.ghost and
+ * .btn.utility are intentionally excluded from those shadow rules
+ * (system selector lists `.ghost` in its :not() chain; .utility wins
+ * via specificity from this file since aegis-tool.css loads after
+ * aegis-system.css). Hover/focus states for every tier mirror the
+ * base .btn convention: 1px lift on translateY for hover; sage-deep
+ * 2px focus ring for keyboard.
+ */
 
 .dossier-page .btn,
 .dossier-page button.btn {
@@ -984,7 +1024,7 @@
   border: 1px solid var(--ink);
   border-bottom: 2px solid var(--ink);
   cursor: pointer;
-  transition: transform .12s ease, background .12s ease, box-shadow .12s ease;
+  transition: transform .12s ease, background .12s ease, box-shadow .12s ease, color .12s ease, border-color .12s ease;
   text-decoration: none;
   white-space: nowrap;
 }
@@ -999,16 +1039,86 @@
   transform: translateY(-1px);
   color: var(--ink);
 }
+
+/* PRIMARY — dominant filled panel.
+ * Padding 0.7rem 1.4rem (≈11px 22px) gives the primary clear physical
+ * presence next to the 8/14 base. The aegis-system.css Wave 3.2 block
+ * layers shadows + inset highlights on top of this declaration; we own
+ * the fill + text + padding contract here. */
 .dossier-page .btn.primary,
 .dossier-page button.btn.primary,
 .dossier-page .btn.btn-primary {
   background: var(--ink);
   color: var(--paper);
+  padding: 0.7rem 1.4rem;
+  font-weight: 500;
 }
-.dossier-page .btn.primary:hover { background: var(--ink-2); color: var(--paper); }
+.dossier-page .btn.primary:hover,
+.dossier-page button.btn.primary:hover,
+.dossier-page .btn.btn-primary:hover {
+  background: var(--ink-2);
+  color: var(--paper);
+}
+
+/* DANGER — destructive variant. Sits at primary-class weight (operators
+ * need it to register as "this changes prod state") but in the decline
+ * palette so it cannot be mistaken for the affirmative primary. */
 .dossier-page .btn.danger { border-color: var(--decline); color: var(--decline); }
 .dossier-page .btn.danger:hover { background: var(--decline-soft); }
-.dossier-page .btn.ghost { border-color: var(--rule); border-bottom-width: 1px; }
+
+/* GHOST — restrained secondary. Outlined in --ink-2 on a transparent
+ * surface so it reads as "the calmer of two equivalent actions". Less
+ * padding than base .btn keeps it visibly subordinate to primary even
+ * when sibling-stacked in .form-actions / .deck .actions. */
+.dossier-page .btn.ghost,
+.dossier-page button.btn.ghost {
+  background: transparent;
+  color: var(--ink-2);
+  border: 1px solid var(--ink-2);
+  border-bottom: 1px solid var(--ink-2);
+  padding: 6px 12px;
+}
+.dossier-page .btn.ghost:hover,
+.dossier-page button.btn.ghost:hover {
+  background: var(--paper-2);
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+/* UTILITY — tertiary, lowest-weight affordance.
+ * 1px hairline in --rule (the same border tone used on .panel + table
+ * separators) so the button blends with the surrounding chrome. Smaller
+ * font + tight padding signal "this is a verb you can click, not an
+ * action that claims attention". Hover bumps the border + text into
+ * the ink-2 tier so the affordance is unambiguous once the cursor
+ * lands. .utility is intentionally NOT caught by the aegis-system.css
+ * Wave 3.2 secondary-shadow block (the system selector excludes
+ * .ghost but not .utility — this file's specificity wins via load
+ * order + the additional .utility class). */
+.dossier-page .btn.utility,
+.dossier-page button.btn.utility {
+  background: transparent;
+  color: var(--ink-3);
+  border: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  padding: 4px 10px;
+  min-height: 26px;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  box-shadow: none;
+}
+.dossier-page .btn.utility:hover,
+.dossier-page button.btn.utility:hover {
+  background: var(--paper-2);
+  color: var(--ink-2);
+  border-color: var(--ink-3);
+  transform: translateY(-1px);
+}
+.dossier-page .btn.utility:active,
+.dossier-page button.btn.utility:active {
+  transform: translateY(0);
+  box-shadow: inset 0 1px 0 rgba(45, 90, 71, 0.08);
+}
 
 /* ===================== FORMS ===================== */
 
