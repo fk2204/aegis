@@ -502,6 +502,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='merchants' "
         "AND column_name='voided_check_on_file'"
     ),
+    "062_pdf_store_storage_path.sql": (
+        # 062 relocates the pdf_store ciphertext to Supabase Storage and
+        # keeps only the bucket path in the row. The load-bearing artifact
+        # is the new ``storage_path`` column; the ALTER COLUMN DROP NOT
+        # NULL on ciphertext/nonce + the pdf_store_blob_or_path CHECK
+        # constraint land in the same transaction or fail it together.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='pdf_store' "
+        "AND column_name='storage_path'"
+    ),
 }
 
 

@@ -49,10 +49,14 @@ def test_store_round_trips_plaintext_and_populates_row_metadata() -> None:
     assert row.byte_size_plaintext == len(plaintext)
     assert row.sha256_plaintext == hashlib.sha256(plaintext).hexdigest()
     assert row.key_version == 1  # tests/conftest.py pins PDF_ENCRYPTION_KEYS_CURRENT=1
-    assert len(row.nonce) == 12
+    # InMemoryPdfStoreRepository keeps the blob inline as BYTEA — both
+    # ciphertext and nonce must be populated for legacy-mode reads.
+    # mig-062 split the SupabasePdfStoreRepository to Storage-mode
+    # (storage_path), but InMemory stays inline.
+    assert row.nonce is not None and len(row.nonce) == 12
     # ciphertext = nonce(12) || ct || tag(16) — minimum 28 bytes, plus
     # at least one plaintext byte.
-    assert len(row.ciphertext) >= 28 + len(plaintext)
+    assert row.ciphertext is not None and len(row.ciphertext) >= 28 + len(plaintext)
 
 
 def test_fetch_plaintext_returns_original_bytes() -> None:
