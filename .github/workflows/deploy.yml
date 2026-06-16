@@ -38,11 +38,30 @@
 # for the duration of one CI job. This also matches the manual deploy
 # path step-for-step.
 #
-# Required secrets (set under Settings → Secrets and variables → Actions):
-#   - AEGIS_DEPLOY_SSH_KEY    private SSH key authorized for aegis@aegis-ssh
-#   - MIGRATIONS_DB_URL_PROD  prod Supabase DSN (session-pooler URL with the
-#                             `tprpbomqcucuxnszeafo` project ref so the
-#                             prod guard in apply_migrations.py accepts it)
+# SSH routing -- direct Hetzner IP, not the CF hostname
+# ----------------------------------------------------
+# The routine deploy hostname `aegis-ssh.commerafunding.com` resolves
+# through Cloudflare Access, which gates connections on an SSO session
+# cookie. GitHub-hosted runners don't have that cookie and CF Access
+# refuses the TCP handshake -- the workflow would fail at ssh-keyscan
+# with a Connection refused.
+#
+# Solution: SSH to the box's raw Hetzner IP, held in the
+# AEGIS_SERVER_IP repo secret. Path is direct over the public
+# internet (port 22 on the Hetzner ufw must allow GitHub Actions
+# runner IP ranges, or 0.0.0.0/0 for the SSH port -- typical for
+# a single-purpose deploy box behind a key-only authorized_keys
+# policy). CF Access still protects the HTTPS dashboard surface.
+#
+# Required secrets (set under Settings -> Secrets and variables -> Actions):
+#   - AEGIS_DEPLOY_SSH_KEY    private SSH key authorized for the
+#                             aegis user on the box
+#   - AEGIS_SERVER_IP         raw Hetzner IP (no port, no scheme) the
+#                             runner SSHes to. Bypasses CF Access.
+#   - MIGRATIONS_DB_URL_PROD  prod Supabase DSN (session-pooler URL
+#                             with the `tprpbomqcucuxnszeafo` project
+#                             ref so the prod guard in
+#                             apply_migrations.py accepts it)
 #
 # See CLAUDE.md § "CI auto-deploy — operator one-time setup" for the full
 # operator-side provisioning procedure.
@@ -73,8 +92,11 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
 
     env:
-      AEGIS_HOST: aegis@aegis-ssh.commerafunding.com
-      AEGIS_HOSTNAME: aegis-ssh.commerafunding.com
+      # Direct Hetzner IP -- the CF-Access hostname
+      # aegis-ssh.commerafunding.com refuses GitHub Actions runner
+      # connections (no SSO cookie). The secret holds the raw IP.
+      AEGIS_HOST: aegis@${{ secrets.AEGIS_SERVER_IP }}
+      AEGIS_HOSTNAME: ${{ secrets.AEGIS_SERVER_IP }}
       AEGIS_REMOTE_PATH: /opt/aegis
       AEGIS_HEALTH_URL: http://127.0.0.1:5555/healthz
       # Data-residency guard so apply_migrations.py (and anything else
@@ -112,8 +134,14 @@ jobs:
 
       - name: Set up SSH key + known_hosts
         # Writes the deploy private key to ~/.ssh/id_ed25519 with 0600
-        # and pins the prod host's public key via ssh-keyscan. No
-        # StrictHostKeyChecking=no — that defeats the point of pinning.
+        # and pins the prod host's public key via ssh-keyscan against
+        # the raw IP (AEGIS_HOSTNAME resolves to the
+        # secrets.AEGIS_SERVER_IP value -- see env: above). No
+        # StrictHostKeyChecking=no -- that defeats the point of pinning.
+        # The host key fingerprint travels with the IP, so re-running
+        # the deploy job on a Hetzner host migration would surface
+        # the change as a known_hosts mismatch rather than a silent
+        # MITM acceptance.
         env:
           AEGIS_DEPLOY_SSH_KEY: ${{ secrets.AEGIS_DEPLOY_SSH_KEY }}
         run: |

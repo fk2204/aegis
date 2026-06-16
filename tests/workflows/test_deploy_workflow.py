@@ -15,8 +15,11 @@ until they break in production:
   box's sudoers rule matches that exact argv; any rewording falls
   through to a password prompt and hangs (.claude/rules/deploy.md
   "sudo from non-TTY shells needs the literal NOPASSWD form").
-* The SSH host MUST be ``aegis@aegis-ssh.commerafunding.com`` — the
-  routine deploy user; root SSH is the escape hatch, not the CI path.
+* The SSH host MUST template from ``secrets.AEGIS_SERVER_IP`` as the
+  ``aegis`` user -- the CF-Access hostname
+  ``aegis-ssh.commerafunding.com`` refuses GitHub Actions runner
+  connections (no SSO cookie), so CI goes direct to the raw IP.
+  Root SSH is the escape hatch, not the CI path.
 * The smoke endpoint MUST be ``http://127.0.0.1:5555/healthz`` — that's
   what the systemd unit exposes; anything else silently passes against
   the wrong service or doesn't pass at all.
@@ -187,16 +190,40 @@ def test_deploy_job_has_reasonable_timeout() -> None:
 # --- on-box invariants ------------------------------------------------------
 
 
-def test_ssh_host_is_aegis_user_on_aegis_ssh_subdomain() -> None:
+def test_ssh_host_is_aegis_user_via_server_ip_secret() -> None:
+    """SSH lands as the ``aegis`` user via the raw Hetzner IP held in
+    the ``AEGIS_SERVER_IP`` secret -- NOT via the CF-Access-gated
+    hostname ``aegis-ssh.commerafunding.com``.
+
+    Cloudflare Access refuses TCP from GitHub-hosted runners (no SSO
+    cookie), so the workflow goes direct to the box. The hostname is
+    still the routine interactive deploy path -- this assertion only
+    pins the CI-side choice.
+    """
     workflow = _load_workflow()
     job = _deploy_job(workflow)
-    blob = _flatten_run_steps(job)
-    blob += "\n" + str(job.get("env", {}))
-    assert "aegis@aegis-ssh.commerafunding.com" in blob, (
-        "deploy must SSH as aegis@aegis-ssh.commerafunding.com — root SSH is "
-        "the escape hatch, not the CI path; the SSH hostname is "
-        "single-level because Cloudflare Universal SSL only covers "
-        "one-level subdomains (.claude/rules/deploy.md)"
+    env = job.get("env")
+    assert isinstance(env, dict), "deploy job must declare env: with AEGIS_HOST"
+    aegis_host = str(env.get("AEGIS_HOST", ""))
+    # Must be the aegis user (root SSH is the escape hatch, not the CI path).
+    assert aegis_host.startswith("aegis@"), (
+        f"AEGIS_HOST must SSH as the `aegis` user; got {aegis_host!r}"
+    )
+    # Must template from the AEGIS_SERVER_IP secret; the CF-Access
+    # hostname would fail at the TCP handshake from a GH runner.
+    assert "secrets.AEGIS_SERVER_IP" in aegis_host, (
+        "AEGIS_HOST must template from secrets.AEGIS_SERVER_IP (raw "
+        "Hetzner IP) -- the CF-Access hostname "
+        "aegis-ssh.commerafunding.com refuses GitHub Actions runner "
+        "connections without an SSO cookie."
+    )
+    # The known_hosts pin should target the same secret so the host
+    # key fingerprint travels with the IP.
+    aegis_hostname = str(env.get("AEGIS_HOSTNAME", ""))
+    assert "secrets.AEGIS_SERVER_IP" in aegis_hostname, (
+        "AEGIS_HOSTNAME must also template from secrets.AEGIS_SERVER_IP "
+        "so ssh-keyscan pins the host key against the IP that ssh "
+        "actually connects to."
     )
 
 

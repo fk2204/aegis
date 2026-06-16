@@ -207,6 +207,17 @@ GitHub repo → Settings → Secrets and variables → Actions → New repositor
 - Name: `MIGRATIONS_DB_URL_PROD`
 - Value: the same DSN that lives in the operator's local `.env.local` under `MIGRATIONS_DB_URL_PROD`. Must contain the prod project ref `tprpbomqcucuxnszeafo` — `apply_migrations.py`'s prod guard rejects a DSN that doesn't match.
 
+### 4b. Add the raw Hetzner IP as a third secret
+
+The routine deploy hostname `aegis-ssh.commerafunding.com` resolves through Cloudflare Access, which gates connections on an SSO session cookie. GitHub-hosted runners do not have that cookie, so CF Access refuses the TCP handshake and `ssh-keyscan` fails with `Connection refused`. CI therefore goes direct to the Hetzner public IP, bypassing CF Access entirely.
+
+GitHub repo → Settings → Secrets and variables → Actions → New repository secret.
+
+- Name: `AEGIS_SERVER_IP`
+- Value: the raw IPv4 address of the Hetzner box, no port, no scheme (e.g. `5.161.51.105`). Find it with `dig +short aegis-ssh.commerafunding.com @1.1.1.1` from a machine that already has CF Access cleared, or by looking at the Hetzner Cloud Console.
+
+Make sure the Hetzner ufw allows port 22 from the GitHub Actions runner IP ranges (or `0.0.0.0/0` if the box's only inbound exposure is the key-only authorized_keys policy). The HTTPS dashboard surface stays behind CF Access — only SSH bypasses.
+
 ### 5. Confirm the auto-deploy fires on the next merge
 
 Merge a no-op commit to `main` (e.g. a CHANGELOG line). Watch GitHub Actions:
@@ -221,7 +232,8 @@ If `/healthz` does not return 200 within ~10s after restart, the job fails with 
 
 | Secret | Purpose |
 |---|---|
-| `AEGIS_DEPLOY_SSH_KEY` | Private SSH key for `aegis@aegis-ssh.commerafunding.com`. Scoped via authorized_keys + sudoers on the box. |
+| `AEGIS_DEPLOY_SSH_KEY` | Private SSH key for the `aegis` user on the box. Scoped via authorized_keys + sudoers (only `systemctl restart aegis-web aegis-worker` runs as root). |
+| `AEGIS_SERVER_IP` | Raw Hetzner public IPv4. CI SSHes directly to this IP, bypassing Cloudflare Access (which refuses GitHub Actions runners — no SSO cookie). Interactive deploys keep using the `aegis-ssh.commerafunding.com` hostname through CF Access. |
 | `MIGRATIONS_DB_URL_PROD` | Prod Supabase DSN consumed by `scripts/apply_migrations.py --target prod`. Held only by GitHub Actions secret store; never lands on the box. |
 
 ### Gotcha: `workflow_run` reads the workflow file from `main`
