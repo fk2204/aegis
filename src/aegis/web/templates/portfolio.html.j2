@@ -313,6 +313,64 @@
       </div>
     </div>
 
+    {# Monthly submission volume — trailing 6 months, inline-CSS bar
+       chart. Each bar's height scales to ``monthly_peak`` (computed in
+       the route) so the operator reads the same axis across months.
+       No JS, no chart library — divs + inline width-style only. The
+       zero-bar branch renders the friendly empty state instead of six
+       flat zeros so the operator doesn't think the chart is broken. #}
+    <h4 style="margin-top:18px">Monthly submission volume
+      <span class="footnote">last {{ sprint3_metrics.monthly_volume_last_6|length }} calendar months</span>
+    </h4>
+    {% set total_in_chart = sprint3_metrics.monthly_volume_last_6|sum(attribute='count') %}
+    {% if total_in_chart == 0 %}
+      <p class="sub">No submissions in the last {{ sprint3_metrics.monthly_volume_last_6|length }} months. Submit a deal from the merchant dossier to populate this chart.</p>
+    {% else %}
+      <div class="bar-chart" data-test-id="sprint3-monthly-bars"
+           style="display:flex;align-items:flex-end;gap:8px;height:120px;margin:8px 0 4px;padding:4px 0;border-bottom:1px solid var(--ink-3)">
+        {% for bar in sprint3_metrics.monthly_volume_last_6 %}
+          {% set height_pct = (bar.count / monthly_peak * 100) | round | int %}
+          <div style="flex:1 1 0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;min-width:24px"
+               data-month="{{ bar.month_label }}"
+               data-count="{{ bar.count }}"
+               title="{{ bar.month_label }}: {{ bar.count }} submission{{ '' if bar.count == 1 else 's' }}">
+            <div class="mono-cell" style="font-size:11px;color:var(--ink-3);margin-bottom:2px">{{ bar.count }}</div>
+            <div style="width:100%;background:var(--accent, #4a90e2);height:{{ height_pct if bar.count > 0 else 0 }}%;min-height:{{ 2 if bar.count > 0 else 0 }}px;border-radius:2px 2px 0 0"></div>
+          </div>
+        {% endfor %}
+      </div>
+      <div style="display:flex;gap:8px;font-size:11px;color:var(--ink-3);margin-bottom:6px">
+        {% for bar in sprint3_metrics.monthly_volume_last_6 %}
+          <div class="mono-cell" style="flex:1 1 0;text-align:center;min-width:24px">{{ bar.month_label }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {# AEGIS score tier breakdown — current calendar month only. The
+       existing tile (above, in the KPI row) covers the cumulative
+       90-day window; this panel restricts to the month containing
+       ``now`` so the operator sees what just landed. #}
+    <h4 style="margin-top:18px">AEGIS score tier breakdown
+      <span class="footnote">submitted deals this month</span>
+    </h4>
+    {% set total_this_month = sprint3_metrics.tier_breakdown_this_month.values()|sum %}
+    {% if total_this_month == 0 %}
+      <p class="sub">No submissions yet this calendar month.</p>
+    {% else %}
+      <div data-test-id="sprint3-tier-breakdown-this-month"
+           style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 10px">
+        {% for letter in ['A', 'B', 'C', 'D', 'F', 'unknown'] %}
+          {% set count = sprint3_metrics.tier_breakdown_this_month.get(letter, 0) %}
+          {% if count > 0 %}
+            <span class="chip {% if letter == 'A' %}pos{% elif letter == 'B' %}pos{% elif letter == 'C' %}warn{% elif letter == 'F' %}neg{% endif %}"
+                  data-tier="{{ letter }}">
+              {{ letter }} · {{ count }}
+            </span>
+          {% endif %}
+        {% endfor %}
+      </div>
+    {% endif %}
+
     <h4 style="margin-top:14px">Approval rate per funder</h4>
     {% if not sprint3_metrics.approval_rate_per_funder %}
       <p class="sub">No submissions in the last 90 days.</p>
@@ -327,13 +385,16 @@
             <th class="num">Countered</th>
             <th class="num">Pending</th>
             <th class="num">Approval rate</th>
+            <th class="num">Avg response</th>
           </tr>
         </thead>
         <tbody>
           {% for row in sprint3_metrics.approval_rate_per_funder %}
+            {% set funder_key = row.funder_id|string %}
+            {% set funder_name = funder_name_by_id.get(funder_key) %}
             <tr data-funder-id="{{ row.funder_id }}">
-              <td class="mono-cell">
-                <a href="/ui/funders/{{ row.funder_id }}/performance">{{ row.funder_id|string|truncate(8, True, '') }}</a>
+              <td>
+                <a href="/ui/funders/{{ row.funder_id }}/performance">{% if funder_name %}{{ funder_name }}{% else %}{{ funder_key|truncate(8, True, '') }}{% endif %}</a>
               </td>
               <td class="mono-cell" style="text-align:right">{{ row.submitted }}</td>
               <td class="mono-cell" style="text-align:right">{{ row.approved }}</td>
@@ -342,6 +403,11 @@
               <td class="mono-cell" style="text-align:right">{{ row.pending }}</td>
               <td class="mono-cell" style="text-align:right">
                 {% if row.approval_rate_pct is not none %}{{ row.approval_rate_pct }}%{% else %}—{% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right">
+                {% if row.avg_response_hours is not none %}
+                  {% if row.avg_response_hours < 48 %}{{ row.avg_response_hours }}h{% else %}{{ (row.avg_response_hours / 24)|round(1) }}d{% endif %}
+                {% else %}—{% endif %}
               </td>
             </tr>
           {% endfor %}

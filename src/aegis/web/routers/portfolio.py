@@ -358,6 +358,24 @@ async def portfolio_view(
         now=now_dt,
     )
 
+    # Render-time lookup so the funder-approval table can show a real
+    # name instead of a truncated UUID. Built from the same
+    # ``funders_list`` already loaded above — no extra DB hit. Stringify
+    # the UUID key so the Jinja template's ``{{ row.funder_id }}`` (which
+    # renders the UUID as its canonical str form) hits the dict cleanly.
+    funder_name_by_id: dict[str, str] = {str(f.id): f.name for f in funders_list}
+
+    # Peak bar height for the monthly-volume chart — used to scale the
+    # inline-SVG bars to a stable max height. Computed here so the
+    # template stays declarative (no max() in Jinja). Defaults to 1 to
+    # avoid a divide-by-zero when every month has zero submissions.
+    monthly_peak: int = max(
+        (b.count for b in sprint3_metrics.monthly_volume_last_6),
+        default=0,
+    )
+    if monthly_peak == 0:
+        monthly_peak = 1
+
     return cast(
         "HTMLResponse",
         templates.TemplateResponse(
@@ -367,6 +385,8 @@ async def portfolio_view(
                 "active": "Portfolio",
                 "metrics": metrics,
                 "sprint3_metrics": sprint3_metrics,
+                "funder_name_by_id": funder_name_by_id,
+                "monthly_peak": monthly_peak,
                 "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             },
         ),

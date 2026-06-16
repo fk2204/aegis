@@ -20,6 +20,7 @@ from uuid import UUID, uuid4
 
 from aegis.deals.sprint3_portfolio import (
     APPROVAL_LOOKBACK_DAYS,
+    MONTHLY_VOLUME_LOOKBACK_MONTHS,
     STALE_LOOKBACK_DAYS,
     compute_sprint3_metrics,
 )
@@ -44,6 +45,7 @@ def _sub(
     funder_id: UUID,
     status: FunderNoteSubmissionStatus = "pending",
     submitted_at: datetime | None = None,
+    responded_at: datetime | None = None,
 ) -> FunderNoteSubmissionRow:
     when = submitted_at or _NOW
     return FunderNoteSubmissionRow(
@@ -53,6 +55,7 @@ def _sub(
         submitted_by="dashboard",
         status=status,
         funder_note="x",
+        responded_at=responded_at,
         created_at=when,
         updated_at=when,
     )
@@ -415,3 +418,183 @@ def test_stale_threshold_exact_boundary() -> None:
     )
     names = [r.business_name for r in out.stale_merchants]
     assert names == ["Day31 LLC"]
+
+
+# ---------------------------------------------------------------------------
+# Monthly volume — trailing 6 calendar months
+# ---------------------------------------------------------------------------
+
+
+def test_monthly_volume_emits_six_bars_oldest_first() -> None:
+    """Six bars are always returned, in oldest→newest order, even when
+    the in-window submission set covers only a subset of the months.
+    The operator needs a stable axis."""
+    m = _merchant()
+    f1 = uuid4()
+    out = compute_sprint3_metrics(
+        submissions=[
+            _sub(merchant_id=m.id, funder_id=f1, submitted_at=datetime(2026, 6, 5, tzinfo=UTC)),
+        ],
+        merchants=[m],
+        documents=[],
+        latest_decision_tier_by_merchant={},
+        now=_NOW,
+    )
+    bars = out.monthly_volume_last_6
+    assert len(bars) == MONTHLY_VOLUME_LOOKBACK_MONTHS == 6
+    # Oldest → newest, ending in the month containing _NOW (2026-06).
+    assert [b.month_label for b in bars] == [
+        "2026-01",
+        "2026-02",
+        "2026-03",
+        "2026-04",
+        "2026-05",
+        "2026-06",
+    ]
+    # Only the June bar has the submission; others read zero.
+    counts = {b.month_label: b.count for b in bars}
+    assert counts["2026-06"] == 1
+    for label in ("2026-01", "2026-02", "2026-03", "2026-04", "2026-05"):
+        assert counts[label] == 0
+
+
+def test_monthly_volume_source_ids_recorded_per_bar() -> None:
+    """CLAUDE.md auditability — each aggregate stores source ids."""
+    m = _merchant()
+    f1 = uuid4()
+    s1 = _sub(merchant_id=m.id, funder_id=f1, submitted_at=datetime(2026, 6, 3, tzinfo=UTC))
+    s2 = _sub(merchant_id=m.id, funder_id=f1, submitted_at=datetime(2026, 6, 10, tzinfo=UTC))
+    out = compute_sprint3_metrics(
+        submissions=[s1, s2],
+        merchants=[m],
+        documents=[],
+        latest_decision_tier_by_merchant={},
+        now=_NOW,
+    )
+    june_bar = next(b for b in out.monthly_volume_last_6 if b.month_label == "2026-06")
+    assert june_bar.count == 2
+    assert set(june_bar.source_submission_ids) == {s1.id, s2.id}
+
+
+def test_monthly_volume_excludes_out_of_window_submissions() -> None:
+    """A submission older than 6 calendar months does not contribute
+    to any bar — the operator's "last 6 months" framing is honored."""
+    m = _merchant()
+    f1 = uuid4()
+    # _NOW is 2026-06-15. The trailing 6-month window starts 2026-01-01.
+    out = compute_sprint3_metrics(
+        submissions=[
+            _sub(merchant_id=m.id, funder_id=f1, submitted_at=datetime(2025, 12, 28, tzinfo=UTC)),
+        ],
+        merchants=[m],
+        documents=[],
+        latest_decision_tier_by_merchant={},
+        now=_NOW,
+    )
+    assert sum(b.count for b in out.monthly_volume_last_6) == 0
+
+
+# ---------------------------------------------------------------------------
+# Avg response hours (per funder)
+# ---------------------------------------------------------------------------
+
+
+def test_avg_response_hours_means_only_responded_rows() -> None:
+    """Pending rows (no ``responded_at``) are excluded from the mean.
+    Two-of-three responses → avg over those two."""
+    m = _merchant()
+    f1 = uuid4()
+    submitted = _NOW - timedelta(days=2)
+    out = compute_sprint3_metrics(
+        submissions=[
+            _sub(
+                merchant_id=m.id,
+                funder_id=f1,
+                status="approved",
+                submitted_at=submitted,
+                responded_at=submitted + timedelta(hours=4),
+            ),
+            _sub(
+                merchant_id=m.id,
+                funder_id=f1,
+                status="declined",
+                submitted_at=submitted,
+                responded_at=submitted + timedelta(hours=8),
+            ),
+            _sub(
+                merchant_id=m.id,
+                funder_id=f1,
+                status="pending",
+                submitted_at=submitted,
+            ),
+        ],
+        merchants=[m],
+        documents=[],
+        latest_decision_tier_by_merchant={},
+        now=_NOW,
+    )
+    row = next(r for r in out.approval_rate_per_funder if r.funder_id == f1)
+    assert row.avg_response_hours == Decimal("6.0")
+
+
+def test_avg_response_hours_none_when_no_responses() -> None:
+    """All-pending funder → avg_response_hours is None (em-dash UI)."""
+    m = _merchant()
+    f1 = uuid4()
+    out = compute_sprint3_metrics(
+        submissions=[
+            _sub(merchant_id=m.id, funder_id=f1, status="pending"),
+        ],
+        merchants=[m],
+        documents=[],
+        latest_decision_tier_by_merchant={},
+        now=_NOW,
+    )
+    row = next(r for r in out.approval_rate_per_funder if r.funder_id == f1)
+    assert row.avg_response_hours is None
+
+
+def test_funder_row_records_source_submission_ids() -> None:
+    """CLAUDE.md auditability — funder approval row stores ids."""
+    m = _merchant()
+    f1 = uuid4()
+    s1 = _sub(merchant_id=m.id, funder_id=f1, status="approved")
+    s2 = _sub(merchant_id=m.id, funder_id=f1, status="declined")
+    out = compute_sprint3_metrics(
+        submissions=[s1, s2],
+        merchants=[m],
+        documents=[],
+        latest_decision_tier_by_merchant={},
+        now=_NOW,
+    )
+    row = next(r for r in out.approval_rate_per_funder if r.funder_id == f1)
+    assert set(row.source_submission_ids) == {s1.id, s2.id}
+
+
+# ---------------------------------------------------------------------------
+# Tier breakdown — current calendar month only
+# ---------------------------------------------------------------------------
+
+
+def test_tier_breakdown_this_month_restricts_to_current_calendar_month() -> None:
+    """A merchant with submissions in both May and June 2026 counts
+    only the June ones for the this-month breakdown."""
+    m_a = _merchant()
+    m_b = _merchant()
+    f1 = uuid4()
+    subs = [
+        _sub(merchant_id=m_a.id, funder_id=f1, submitted_at=datetime(2026, 6, 5, tzinfo=UTC)),
+        _sub(merchant_id=m_b.id, funder_id=f1, submitted_at=datetime(2026, 6, 9, tzinfo=UTC)),
+        _sub(merchant_id=m_a.id, funder_id=f1, submitted_at=datetime(2026, 5, 20, tzinfo=UTC)),
+    ]
+    out = compute_sprint3_metrics(
+        submissions=subs,
+        merchants=[m_a, m_b],
+        documents=[],
+        latest_decision_tier_by_merchant={m_a.id: "A", m_b.id: "C"},
+        now=_NOW,
+    )
+    # Cumulative: 2 A, 1 C
+    assert out.tier_breakdown == {"A": 2, "C": 1}
+    # This month (June): 1 A (m_a's June sub), 1 C (m_b's June sub).
+    assert out.tier_breakdown_this_month == {"A": 1, "C": 1}

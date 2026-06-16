@@ -53,6 +53,11 @@ from aegis.storage import DocumentRow
 APPROVAL_LOOKBACK_DAYS: Final[int] = 90
 STALE_LOOKBACK_DAYS: Final[int] = 30
 
+# Trailing-window size for the monthly submission-volume bar chart.
+# Six calendar months (the one containing ``now`` and the five prior)
+# is the operator's preferred "last half year" view.
+MONTHLY_VOLUME_LOOKBACK_MONTHS: Final[int] = 6
+
 # Below this submission count an industry's decline-rate is suppressed
 # from the top-3 list. A single declined submission would otherwise
 # pin a one-deal industry at 100% and crowd out the operator's real
@@ -95,6 +100,51 @@ class FunderApprovalRow(BaseModel):
             "``submitted`` is zero — surfaced as em-dash in the UI."
         ),
     )
+    avg_response_hours: Decimal | None = Field(
+        default=None,
+        description=(
+            "Mean hours from ``submitted_at`` to ``responded_at`` for the "
+            "in-window non-pending submissions of this funder, as a 1dp "
+            "Decimal. ``None`` when no funder reply has landed yet — "
+            "surfaced as em-dash in the UI."
+        ),
+    )
+    source_submission_ids: tuple[UUID, ...] = Field(
+        default_factory=tuple,
+        description=(
+            "UUIDs of the funder_note_submissions rows that fed this "
+            "aggregate (CLAUDE.md auditability rule). Order matches the "
+            "in-window iteration order — not stability-sorted."
+        ),
+    )
+
+
+class MonthlyVolumeBar(BaseModel):
+    """One bar in the monthly-submission-volume chart.
+
+    Bars are emitted for the last ``MONTHLY_VOLUME_LOOKBACK_MONTHS``
+    calendar months ending in the month containing ``now``, oldest first
+    (so the template can render left-to-right time progression). A
+    bar's ``count`` is zero when the month has no submissions — the
+    operator sees the absence rather than a hole in the axis.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    month_start: date
+    month_label: str = Field(
+        min_length=1,
+        description="YYYY-MM string for the operator-facing axis label.",
+    )
+    count: int = Field(ge=0)
+    source_submission_ids: tuple[UUID, ...] = Field(
+        default_factory=tuple,
+        description=(
+            "UUIDs of every funder_note_submissions row whose "
+            "``submitted_at`` falls in this month. Audit drill-down "
+            "per CLAUDE.md."
+        ),
+    )
 
 
 class IndustryRow(BaseModel):
@@ -135,9 +185,18 @@ class Sprint3PortfolioMetrics(BaseModel):
     deals_month_delta_pct: Decimal | None
     approval_rate_per_funder: tuple[FunderApprovalRow, ...]
     tier_breakdown: dict[str, int]
+    # Tier breakdown restricted to the submissions in the current
+    # calendar month (vs ``tier_breakdown`` which spans the full
+    # input window). Powers the "average AEGIS score tier
+    # breakdown — submitted deals this month" tile.
+    tier_breakdown_this_month: dict[str, int]
     top_industries_by_volume: tuple[IndustryRow, ...]
     top_industries_by_decline_rate: tuple[IndustryRow, ...]
     stale_merchants: tuple[StaleMerchant, ...]
+    # Last six calendar months of submission counts, oldest first.
+    # Always six bars even when some months are empty — the UI needs
+    # a stable axis the operator can read at a glance.
+    monthly_volume_last_6: tuple[MonthlyVolumeBar, ...]
 
 
 def _month_start(d: date) -> date:
@@ -212,6 +271,46 @@ def _tally(rows: Iterable[FunderNoteSubmissionRow]) -> _StatusCounter:
     )
 
 
+def _avg_response_hours(rows: Iterable[FunderNoteSubmissionRow]) -> Decimal | None:
+    """Mean response latency, in hours, across rows with a stamped
+    ``responded_at``. ``None`` when no row in the bucket has a reply yet
+    (the funder hasn't responded — em-dash in the UI, never a fake 0)."""
+    total_seconds = Decimal("0")
+    counted = 0
+    for r in rows:
+        if r.responded_at is None:
+            continue
+        delta = r.responded_at - r.submitted_at
+        # ``timedelta`` total_seconds is a float, but the conversion to
+        # Decimal via str preserves the exact integer second count
+        # (``responded_at`` is stamped from ``NOW()`` at second
+        # resolution, no fractional precision to round-trip).
+        total_seconds += Decimal(str(delta.total_seconds()))
+        counted += 1
+    if counted == 0:
+        return None
+    hours = total_seconds / Decimal("3600") / Decimal(counted)
+    return hours.quantize(Decimal("0.1"))
+
+
+def _calendar_month_starts(now: datetime, months: int) -> list[date]:
+    """Return the first day of each of the trailing ``months`` calendar
+    months, oldest first. ``months=6`` with ``now=2026-06-15`` →
+    ``[2026-01-01, 2026-02-01, ..., 2026-06-01]``."""
+    today = now.astimezone(UTC).date()
+    cur = _month_start(today)
+    starts: list[date] = []
+    for _ in range(months):
+        starts.append(cur)
+        cur = _prev_month_start(cur)
+    starts.reverse()
+    return starts
+
+
+def _next_month_start(d: date) -> date:
+    return date(d.year + 1, 1, 1) if d.month == 12 else date(d.year, d.month + 1, 1)
+
+
 def compute_sprint3_metrics(
     *,
     submissions: list[FunderNoteSubmissionRow],
@@ -260,6 +359,8 @@ def compute_sprint3_metrics(
                 countered=t.countered,
                 pending=t.total - (t.approved + t.declined + t.countered),
                 approval_rate_pct=_pct(t.approved, t.total),
+                avg_response_hours=_avg_response_hours(rows),
+                source_submission_ids=tuple(r.id for r in rows),
             )
         )
     funder_rows.sort(key=lambda r: (-r.submitted, str(r.funder_id)))
@@ -269,6 +370,49 @@ def compute_sprint3_metrics(
     for s in submissions:
         tier_counter[latest_decision_tier_by_merchant.get(s.merchant_id, "unknown")] += 1
     tier_breakdown = dict(tier_counter)
+
+    # ── Tier breakdown — current calendar month only ──────────────
+    # The "average AEGIS score tier breakdown — submitted deals this
+    # month" tile reads from this restricted counter; the operator
+    # wants to see *this period's* mix, not the cumulative 90-day
+    # window.
+    tier_counter_this_month: Counter[str] = Counter()
+    for s in submissions:
+        s_date = s.submitted_at.astimezone(UTC).date()
+        if this_start <= s_date < this_end:
+            tier_counter_this_month[
+                latest_decision_tier_by_merchant.get(s.merchant_id, "unknown")
+            ] += 1
+    tier_breakdown_this_month = dict(tier_counter_this_month)
+
+    # ── Monthly volume — trailing 6 calendar months ───────────────
+    # One bar per month, oldest first. Empty months emit a zero bar
+    # rather than a missing entry so the operator can read the axis
+    # without guessing which months are missing.
+    month_starts = _calendar_month_starts(now_utc, MONTHLY_VOLUME_LOOKBACK_MONTHS)
+    by_month_ids: dict[date, list[UUID]] = {ms: [] for ms in month_starts}
+    earliest_month = month_starts[0]
+    latest_month_end = _next_month_start(month_starts[-1])
+    for s in submissions:
+        s_date = s.submitted_at.astimezone(UTC).date()
+        if s_date < earliest_month or s_date >= latest_month_end:
+            continue
+        bucket = _month_start(s_date)
+        # Defensive: only add if the bucket is one we asked for. Should
+        # always hold given the earliest/latest guard above.
+        if bucket in by_month_ids:
+            by_month_ids[bucket].append(s.id)
+    monthly_bars: list[MonthlyVolumeBar] = []
+    for ms in month_starts:
+        ids = by_month_ids[ms]
+        monthly_bars.append(
+            MonthlyVolumeBar(
+                month_start=ms,
+                month_label=ms.strftime("%Y-%m"),
+                count=len(ids),
+                source_submission_ids=tuple(ids),
+            )
+        )
 
     # ── Top industries (90-day window) ────────────────────────────
     merchants_by_id = {m.id: m for m in merchants}
@@ -358,17 +502,21 @@ def compute_sprint3_metrics(
         deals_month_delta_pct=deals_delta,
         approval_rate_per_funder=tuple(funder_rows),
         tier_breakdown=tier_breakdown,
+        tier_breakdown_this_month=tier_breakdown_this_month,
         top_industries_by_volume=tuple(industry_volume[:_TOP_N]),
         top_industries_by_decline_rate=tuple(industry_decline[:_TOP_N]),
         stale_merchants=tuple(stale_rows),
+        monthly_volume_last_6=tuple(monthly_bars),
     )
 
 
 __all__ = [
     "APPROVAL_LOOKBACK_DAYS",
+    "MONTHLY_VOLUME_LOOKBACK_MONTHS",
     "STALE_LOOKBACK_DAYS",
     "FunderApprovalRow",
     "IndustryRow",
+    "MonthlyVolumeBar",
     "Sprint3PortfolioMetrics",
     "StaleMerchant",
     "compute_sprint3_metrics",
