@@ -174,24 +174,51 @@ def aggregate_documents(rows: list[dict[str, Any]]) -> list[BankAggregate]:
 
 
 def _fetch_parsed_documents(client: Any) -> list[dict[str, Any]]:  # noqa: ANN401
-    """Pull every ``proceed`` / ``review`` document's
-    ``(bank_name, uploaded_at)``.
+    """Pull every successful parse's ``(bank_name, uploaded_at, parse_status)``.
 
-    Two select() calls with PostgREST's ``in`` operator would be
-    equivalent; the explicit loop here keeps the SQL trivially
-    auditable from the script source.
+    ``bank_name`` lives on ``analyses``, NOT ``documents`` — it's
+    extracted from ``StatementSummary.bank_name`` after a successful
+    pass-1 extraction and persisted on the analyses row (migration 014).
+    ``documents`` only carries ``parse_status`` + ``uploaded_at``. So
+    the query embeds the parent ``documents`` row via PostgREST's
+    automatic FK resolution on ``analyses.document_id`` and reads
+    ``bank_name`` + ``uploaded_at`` + ``parse_status`` out of the
+    joined shape.
+
+    Python-side filter to ``proceed`` / ``review`` is intentional —
+    ``manual_review`` analyses rows DO exist (extraction + validation
+    passed, classification confidence was low) but they're not a
+    "successfully parsed" document per the user-facing definition that
+    drives the seed.
+
+    Returns rows in this normalised shape:
+        {"bank_name": str, "uploaded_at": str, "parse_status": str}
     """
-    rows: list[dict[str, Any]] = []
-    for status in _PARSE_OK_STATUSES:
-        result = (
-            client.table("documents")
-            .select("bank_name, uploaded_at, parse_status")
-            .eq("parse_status", status)
-            .limit(_DOCUMENTS_SCAN_CAP)
-            .execute()
+    result = (
+        client.table("analyses")
+        .select("bank_name, documents(uploaded_at, parse_status)")
+        .not_.is_("bank_name", "null")
+        .limit(_DOCUMENTS_SCAN_CAP)
+        .execute()
+    )
+    raw_rows = cast(list[dict[str, Any]], result.data or [])
+    out: list[dict[str, Any]] = []
+    for row in raw_rows:
+        bank_name = row.get("bank_name")
+        doc = row.get("documents")
+        if not isinstance(bank_name, str) or not isinstance(doc, dict):
+            continue
+        parse_status = doc.get("parse_status")
+        if parse_status not in _PARSE_OK_STATUSES:
+            continue
+        out.append(
+            {
+                "bank_name": bank_name,
+                "uploaded_at": doc.get("uploaded_at"),
+                "parse_status": parse_status,
+            }
         )
-        rows.extend(cast(list[dict[str, Any]], result.data or []))
-    return rows
+    return out
 
 
 def _fetch_existing_layout(
