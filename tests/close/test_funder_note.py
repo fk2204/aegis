@@ -17,10 +17,11 @@ builds Pydantic-strict fixtures and asserts on the returned string.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from aegis.close.funder_note import MAX_NOTE_LENGTH, format_funder_note
+from aegis.close.funder_note import MAX_NOTE_LENGTH, RenewalContext, format_funder_note
 from aegis.merchants.models import MerchantRow
 from aegis.scoring.models import FunderMatch, ScoreResult, TierMatch
 from aegis.scoring_v2.balance_health import BalanceHealthAggregation
@@ -403,3 +404,67 @@ def test_industry_tier_underscore_rendered_as_space() -> None:
     text = format_funder_note(**inputs)  # type: ignore[arg-type]
     assert "industry hard decline class" in text
     assert "hard_decline_class" not in text
+
+
+# ---------------------------------------------------------------------------
+# Sprint 7B — renewal_context branch
+# ---------------------------------------------------------------------------
+
+
+def test_renewal_context_prepends_header_block() -> None:
+    """When ``renewal_context`` is supplied, the note starts with the
+    RENEWAL header (two lines + a ``---`` separator + a blank line)
+    followed by the standard body."""
+    inputs = _full_inputs()
+    inputs["renewal_context"] = RenewalContext(
+        original_funding_date=date(2025, 12, 1),
+        original_amount=Decimal("50000.00"),
+        months_since_funding=6,
+    )
+    text = format_funder_note(**inputs)  # type: ignore[arg-type]
+
+    expected_prefix = (
+        "RENEWAL — Previously funded 2025-12-01 for $50,000\n"
+        "6 months since original funding\n"
+        "\n"
+        "---\n"
+        "\n"
+    )
+    assert text.startswith(expected_prefix)
+    # Standard body follows untouched after the header.
+    assert "Acme Diner LLC" in text
+
+
+def test_renewal_context_none_is_byte_identical_to_legacy() -> None:
+    """``renewal_context=None`` (default) must produce identical output
+    to the pre-Sprint-7 call. Pin the default and explicit-None paths."""
+    inputs = _full_inputs()
+    default_text = format_funder_note(**inputs)  # type: ignore[arg-type]
+    inputs["renewal_context"] = None
+    explicit_none_text = format_funder_note(**inputs)  # type: ignore[arg-type]
+    assert default_text == explicit_none_text
+    assert "RENEWAL —" not in default_text
+
+
+def test_renewal_context_respects_max_length_cap() -> None:
+    """Header + body must still respect the ``MAX_NOTE_LENGTH`` cap.
+    Twenty long-named funder matches plus a header is the stress case;
+    the header survives and trailing body sections drop first."""
+    inputs = _full_inputs()
+    inputs["matched_funders"] = [
+        _funder_match(
+            name=f"Long Funder Name Number {i:02d} LLC of Greater Metropolitan",
+            match_score=90 - i,
+            tier_matches=[_tier_match(f"Tier-{i}", qualifies=True)],
+        )
+        for i in range(20)
+    ]
+    inputs["renewal_context"] = RenewalContext(
+        original_funding_date=date(2025, 12, 1),
+        original_amount=Decimal("50000.00"),
+        months_since_funding=6,
+    )
+    text = format_funder_note(**inputs)  # type: ignore[arg-type]
+    assert len(text) <= MAX_NOTE_LENGTH
+    # Header MUST survive trimming.
+    assert text.startswith("RENEWAL — Previously funded 2025-12-01 for $50,000")

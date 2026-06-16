@@ -62,7 +62,7 @@ from aegis.api.deps import (
 )
 from aegis.audit import AuditLog
 from aegis.close.client import CloseClient, CloseError
-from aegis.close.funder_note import format_funder_note
+from aegis.close.funder_note import RenewalContext, format_funder_note
 from aegis.close.orchestration import enqueue_close_orchestration
 from aegis.compliance.snapshot import (
     DecisionSnapshot,
@@ -1139,6 +1139,279 @@ async def merchant_submit_to_funder(
             '<span class="btn primary is-disabled" '
             'data-submitted-to-funder="true" aria-disabled="true">'
             "Submitted &check;</span>"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Prepare-renewal — Sprint 7 Track B. The operator clicks "Prepare Renewal"
+# in the /ui/renewals pipeline; AEGIS reruns scoring on the latest analyzed
+# statements, sizes a fresh offer, picks the top funder match, then posts
+# a renewal-flagged note to Close. The original-funding header is pulled
+# from the merchant's FIRST approved funder_note_submission (when one
+# exists — when none, the route still completes and just omits the header,
+# but flags the durable submission row as a renewal on the audit row).
+# ---------------------------------------------------------------------------
+
+
+_RENEWAL_DAYS_PER_MONTH: Final[int] = 30
+
+
+@router.post("/merchants/{merchant_id}/prepare-renewal", response_model=None)
+async def merchant_prepare_renewal(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    close_client: Annotated[CloseClient, Depends(get_close_client)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> HTMLResponse:
+    """Re-run scoring + post a renewal-flagged Close Note for the merchant.
+
+    Sequence:
+      1. Load merchant; 404 when missing.
+      2. Look up the FIRST approved ``funder_note_submission`` for this
+         merchant (operator's renewal anchor — first approval is the
+         original funding decision). When none exists, the route still
+         proceeds; the note posts without the RENEWAL header and the
+         audit row's ``original_funding_date`` + ``original_amount``
+         carry ``None``.
+      3. 400 when ``close_lead_id`` is unset — the Close write target
+         is missing and there's nothing to do.
+      4. Rerun the scoring pipeline on the latest analyzed statements —
+         same path as ``merchant_submit_to_funder``: collect items,
+         build the multi-month ScoreInput, compute Track A/B inputs,
+         call ``score_deal``.
+      5. Size a recommended offer via ``compute_offer``.
+      6. Match every active funder; pick the top by ``match_score``.
+      7. Format the funder note with a ``RenewalContext`` when prior-
+         funding data is available; otherwise pass ``None``.
+      8. POST the note to Close.
+      9. Insert one ``funder_note_submissions`` row framed against the
+         top matched funder so the renewal lands in submission history.
+     10. Write ``deal.renewal_prepared`` audit row with all the prior-
+         funding + new-offer + top-funder + close-note details.
+     11. Return an HTMX outerHTML swap targeting
+         ``#renewal-row-{merchant_id}`` carrying a "Renewal package
+         ready" affirmation with the UTC timestamp.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    if not merchant.close_lead_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"merchant {merchant_id} has no close_lead_id; "
+                "prepare-renewal requires a linked Close Lead"
+            ),
+        )
+
+    # Find the FIRST approved submission — that's the original funding
+    # decision. ``list_for_merchant`` returns newest-first; we iterate
+    # the full list (capped at the default limit, fine for any real
+    # merchant) and pick the oldest approved row. No approval row =
+    # graceful skip per spec.
+    history = funder_note_subs.list_for_merchant(merchant.id)
+    approved_rows = [r for r in history if r.status == "approved"]
+    original_submission = (
+        min(approved_rows, key=lambda r: r.submitted_at) if approved_rows else None
+    )
+    original_funding_date: date | None = (
+        original_submission.submitted_at.date() if original_submission is not None else None
+    )
+    original_amount: Decimal | None = (
+        original_submission.offer_amount if original_submission is not None else None
+    )
+
+    items = _collect_analyzed_for_merchant(docs, merchant_id)
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="merchant has no analyzed document — upload + parse first",
+        )
+
+    score_input = _score_input_multi_month(merchant, items)
+    submit_documents = [d for d, _ in items]
+    submit_analyses_by_doc = {d.id: a for d, a in items}
+    track_a_verdict, track_b_band = compute_score_deal_track_inputs(
+        documents=submit_documents,
+        list_transactions=docs.list_transactions,
+        analyses_by_doc=submit_analyses_by_doc,
+        merchant_id=merchant_id,
+        industry_tier=industry_risk_tier(merchant.industry_choice),
+    )
+    try:
+        score_result = score_deal(
+            score_input,
+            ofac=ofac,
+            track_a_verdict=track_a_verdict,
+            track_b_band=track_b_band,
+        )
+    except OFACStaleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"ofac_unavailable: {exc}",
+        ) from exc
+
+    latest_doc, latest_analysis = items[0]
+    latest_transactions = docs.list_transactions(latest_doc.id)
+    mca_stack = aggregate_mca_stack(
+        transactions=latest_transactions,
+        monthly_revenue=latest_analysis.monthly_revenue,
+        period_days=latest_analysis.statement_days,
+    )
+    balance_health = compute_balance_health(
+        transactions=latest_transactions,
+        period_days=latest_analysis.statement_days,
+    )
+    offer = compute_offer(
+        true_revenue_monthly=latest_analysis.monthly_revenue,
+        holdback_capacity_monthly=(latest_analysis.monthly_revenue * Decimal("0.25")),
+        mca_stack=mca_stack,
+    )
+
+    matched: list[FunderMatch] = []
+    for f in funder_repo.list_active():
+        m = match_funder(f, score_input, score_result, merchant=merchant)
+        if m is None:
+            continue
+        matched.append(m)
+    matched.sort(key=lambda fm: fm.match_score, reverse=True)
+
+    # Build the renewal-context header only when both halves are present.
+    # Original_amount can be None even with a prior approved row if the
+    # operator forgot to capture the funded amount on the response form;
+    # in that case the header would be ``$None`` which is worse than no
+    # header at all. Same gate for original_funding_date.
+    renewal_context: RenewalContext | None = None
+    months_since_funding: int | None = None
+    if original_funding_date is not None and original_amount is not None:
+        months_since_funding = (
+            datetime.now(UTC).date() - original_funding_date
+        ).days // _RENEWAL_DAYS_PER_MONTH
+        renewal_context = RenewalContext(
+            original_funding_date=original_funding_date,
+            original_amount=original_amount,
+            months_since_funding=months_since_funding,
+        )
+
+    note_text = format_funder_note(
+        merchant=merchant,
+        score_result=score_result,
+        offer=offer,
+        mca_stack=mca_stack,
+        balance_health=balance_health,
+        industry_tier=industry_risk_tier(merchant.industry_choice),
+        matched_funders=matched,
+        months_of_statements=len(items),
+        true_revenue_monthly=latest_analysis.monthly_revenue,
+        integrity_verdict=_integrity_verdict_word(track_a_verdict),
+        num_nsf=score_input.num_nsf,
+        days_negative=score_input.days_negative,
+        renewal_context=renewal_context,
+    )
+
+    try:
+        close_response = close_client.post_note(
+            merchant.close_lead_id,
+            note_text,
+        )
+    except CloseError as exc:
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="deal.renewal_note_post_failed",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": merchant.close_lead_id,
+                "status_code": exc.status_code,
+                "error": str(exc)[:200],
+                "note_length": len(note_text),
+                "is_renewal": True,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"close note POST failed: {exc}",
+        ) from exc
+
+    # Insert one durable funder_note_submissions row so the renewal
+    # appears in submission history. Framed against the top matched
+    # funder (same convention as ``merchant_submit_to_funder``). When
+    # there are zero matched funders we still want the renewal to be
+    # auditable — the audit row below carries the flag, but no
+    # submissions row is created (there's no funder_id to anchor it).
+    submission_row_id: UUID | None = None
+    top_funder_id: UUID | None = None
+    if matched:
+        top_funder_id = matched[0].funder_id
+        submission_row = funder_note_subs.create(
+            merchant_id=merchant.id,
+            funder_id=top_funder_id,
+            funder_note=note_text,
+            submitted_by=actor_email or "dashboard",
+        )
+        submission_row_id = submission_row.id
+
+    close_note_id = close_response.get("id")
+    audit_details: dict[str, Any] = {
+        "merchant_id": str(merchant.id),
+        "close_lead_id": merchant.close_lead_id,
+        "close_note_id": close_note_id,
+        "is_renewal": True,
+        "original_funding_date": (
+            original_funding_date.isoformat() if original_funding_date is not None else None
+        ),
+        "original_amount": (str(original_amount) if original_amount is not None else None),
+        "months_since_funding": months_since_funding,
+        "new_recommended_amount": (str(offer.recommended_amount) if offer is not None else None),
+        "new_factor": (
+            str(score_result.recommended_factor_rate)
+            if score_result.recommended_factor_rate > 0
+            else None
+        ),
+        "top_funder_id": str(top_funder_id) if top_funder_id is not None else None,
+        "score": score_result.score,
+        "tier": score_result.tier,
+        "matched_funder_count": len(matched),
+        "note_length": len(note_text),
+    }
+    if submission_row_id is not None:
+        audit_details["funder_note_submission_id"] = str(submission_row_id)
+    else:
+        audit_details["submission_skipped_no_matches"] = True
+
+    audit.record(
+        actor="dashboard",
+        actor_email=actor_email,
+        action="deal.renewal_prepared",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details=audit_details,
+    )
+
+    now_stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    return HTMLResponse(
+        content=(
+            f'<tr id="renewal-row-{merchant.id}" '
+            f'data-test-id="renewal-pipeline-row" '
+            f'data-merchant-id="{merchant.id}" '
+            f'data-renewal-prepared="true">'
+            f'<td colspan="6" class="merchant">'
+            f'<span class="chip pos">&check; Renewal package ready</span> '
+            f'<span class="sub">posted to Close at {now_stamp}</span>'
+            f"</td>"
+            f"</tr>"
         ),
     )
 

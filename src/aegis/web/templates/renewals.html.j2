@@ -63,11 +63,14 @@
             <th>Maturity</th>
             <th>Last score tier</th>
             <th class="num">Suggested renewal amount</th>
+            <th>Action</th>
           </tr>
         </thead>
         <tbody>
           {% for p in pipeline_rows %}
-            <tr data-test-id="renewal-pipeline-row" data-merchant-id="{{ p.merchant_id }}">
+            <tr id="renewal-row-{{ p.merchant_id }}"
+                data-test-id="renewal-pipeline-row"
+                data-merchant-id="{{ p.merchant_id }}">
               <td class="merchant">
                 <a href="/ui/merchants/{{ p.merchant_id }}">{{ p.business_name }}</a>
               </td>
@@ -90,6 +93,16 @@
                 {% else %}
                   <span class="sub">—</span>
                 {% endif %}
+              </td>
+              <td>
+                <button type="button"
+                        class="btn primary"
+                        data-test-id="prepare-renewal-button"
+                        hx-post="/ui/merchants/{{ p.merchant_id }}/prepare-renewal"
+                        hx-target="#renewal-row-{{ p.merchant_id }}"
+                        hx-swap="outerHTML">
+                  Prepare Renewal
+                </button>
               </td>
             </tr>
           {% endfor %}

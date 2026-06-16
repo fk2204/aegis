@@ -33,6 +33,8 @@ auto-decline based on note contents and does not parse the note back.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Final
 
@@ -42,6 +44,29 @@ from aegis.scoring_v2.balance_health import BalanceHealthAggregation
 from aegis.scoring_v2.industry import IndustryTier
 from aegis.scoring_v2.mca_stack import MCAStackAggregation
 from aegis.scoring_v2.offer import OfferRecommendation
+
+
+@dataclass(frozen=True)
+class RenewalContext:
+    """Prior-funding context attached when the operator triggers a renewal.
+
+    Populated by the ``POST /ui/merchants/{id}/prepare-renewal`` route
+    from the merchant's most-recent approved
+    ``funder_note_submissions`` row. When the merchant has no prior
+    approved submission, the route passes ``renewal_context=None`` to
+    ``format_funder_note`` so the renewal note still posts but without
+    the prior-funding header — the audit row still carries the
+    ``is_renewal=True`` flag so the operator can grep history.
+
+    All three fields are required when this dataclass is supplied; the
+    route is responsible for deriving ``months_since_funding`` from
+    ``(now - original_funding_date).days // 30`` before constructing it.
+    """
+
+    original_funding_date: date
+    original_amount: Decimal
+    months_since_funding: int
+
 
 MAX_NOTE_LENGTH: Final[int] = 1500
 """Hard cap on the produced string length. Funder-readable rendering
@@ -68,6 +93,7 @@ def format_funder_note(
     integrity_verdict: str | None = None,
     num_nsf: int | None = None,
     days_negative: int | None = None,
+    renewal_context: RenewalContext | None = None,
 ) -> str:
     """Build the plain-text Note body for a funder submission.
 
@@ -137,6 +163,13 @@ def format_funder_note(
         Period negative-balance day count from
         ``ScoreInput.days_negative``. Already month-normalized by the
         multi-month score path. ``None`` drops the neg-days token.
+    renewal_context
+        When supplied, the note is prefixed with a two-line RENEWAL
+        header followed by a ``---`` separator and a blank line.
+        ``None`` (default) makes the output byte-identical to the
+        pre-Sprint-7 layout. The renewal header is the highest-priority
+        section: ``_enforce_length`` keeps it intact and trims from the
+        bottom of the standard sections.
     """
     lines: list[str] = []
 
@@ -225,7 +258,58 @@ def format_funder_note(
             lines.append("Top funders:")
             lines.extend(funder_lines)
 
-    return _enforce_length(lines)
+    body = _enforce_length(lines)
+    if renewal_context is None:
+        return body
+    return _prepend_renewal_header(body, renewal_context)
+
+
+def _prepend_renewal_header(body: str, ctx: RenewalContext) -> str:
+    """Prefix the renewal header to a finalized note body.
+
+    Header shape (one historical-funding line + one months-since line +
+    a ``---`` separator):
+
+        RENEWAL — Previously funded YYYY-MM-DD for $NN,NNN
+        K months since original funding
+
+        ---
+
+        <body>
+
+    The header is the highest-priority section. To preserve the
+    ``MAX_NOTE_LENGTH`` invariant, the body is trimmed line-by-line from
+    the bottom until the combined output fits. The header itself is
+    never truncated because it is short (under 100 characters in
+    practice) — if the header alone exceeded the cap the route's
+    inputs would be pathological.
+    """
+    header = (
+        f"RENEWAL — Previously funded {ctx.original_funding_date.isoformat()} "
+        f"for ${_fmt_int(ctx.original_amount)}\n"
+        f"{ctx.months_since_funding} months since original funding\n"
+        f"\n"
+        f"---\n"
+        f"\n"
+    )
+    combined = header + body
+    if len(combined) <= MAX_NOTE_LENGTH:
+        return combined
+
+    # Trim from the bottom of the body to fit. Body lines are already
+    # length-enforced; we only need to drop trailing lines until the
+    # header + remaining body fits.
+    body_lines = body.split("\n")
+    while body_lines:
+        body_lines.pop()
+        trimmed_body = "\n".join(body_lines)
+        candidate = header + trimmed_body
+        if len(candidate) <= MAX_NOTE_LENGTH:
+            return candidate
+    # Body empty + header > cap is the pathological case; ellipsize.
+    if len(header) <= MAX_NOTE_LENGTH:
+        return header
+    return header[: MAX_NOTE_LENGTH - 1] + _ELLIPSIS
 
 
 def _format_funder_matches(matched_funders: list[FunderMatch]) -> list[str]:
@@ -300,5 +384,6 @@ def _enforce_length(lines: list[str]) -> str:
 
 __all__ = [
     "MAX_NOTE_LENGTH",
+    "RenewalContext",
     "format_funder_note",
 ]
