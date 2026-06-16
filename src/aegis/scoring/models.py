@@ -398,6 +398,19 @@ class FunderMatch(_StrictModel):
     at 100. Surfaced on the dossier so the underwriter can see the
     funder's track record on this deal shape."""
 
+    missing_stips: list[str] = Field(default_factory=list)
+    """Sprint 6 — verbatim funder-conditional-requirement text for
+    every required stipulation the merchant does NOT have on file at
+    match time. Populated only when the caller supplies the
+    ``merchant`` kwarg to ``match_funder``; legacy callers without
+    merchant context get ``[]`` (identical to pre-Sprint-6 behaviour).
+
+    Subset of ``StipsResult.missing`` from
+    ``aegis.scoring_v2.stips.evaluate_stips``. Hard-missing items
+    additionally surface as ``soft_concerns`` entries prefixed
+    ``missing stip:`` so the existing dossier reasoning panel renders
+    them alongside other soft concerns."""
+
 
 class SubmissionPackage(_StrictModel):
     """Everything a funder needs to evaluate the deal."""

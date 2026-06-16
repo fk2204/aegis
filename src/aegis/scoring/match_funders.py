@@ -67,6 +67,7 @@ from aegis.compliance.broker_compensation import (
     validate_broker_compensation_disclosure,
 )
 from aegis.funders.models import FunderRow, FunderTier
+from aegis.merchants.models import MerchantRow
 from aegis.scoring.models import (
     EstimatedTerms,
     FunderMatch,
@@ -75,6 +76,7 @@ from aegis.scoring.models import (
     TierMatch,
 )
 from aegis.scoring.pricing import estimate_tier_pricing
+from aegis.scoring_v2.stips import evaluate_stips
 
 # Tier → position along the funder's pricing range, 0.0 = best end (low
 # factor / low holdback, merchant-favorable), 1.0 = worst end (high
@@ -251,6 +253,7 @@ def match_funder(
     score: ScoreResult,
     *,
     historical_approval_rate: Decimal | None = None,
+    merchant: MerchantRow | None = None,
 ) -> FunderMatch | None:
     """Match a deal against a single funder. None if funder has no criteria configured.
 
@@ -524,15 +527,34 @@ def match_funder(
     # The qualifying tier above drives match_score; the full ``tier_matches``
     # below drives the operator-facing detail panel.
     tier_matches = evaluate_tier_matches(funder, score, deal)
+
+    # Sprint 6 — structured stipulations. When the caller supplies the
+    # merchant, evaluate the funder's ``conditional_requirements`` against
+    # the merchant's on-file flags and surface (a) verbatim missing-stip
+    # text on the match, (b) a soft concern per hard-missing stip. Legacy
+    # callers (no merchant kwarg) get the identical pre-Sprint-6 behaviour:
+    # ``missing_stips=[]`` and no additional soft concerns.
+    missing_stips: list[str] = []
+    stip_soft_concerns: list[str] = []
+    if merchant is not None:
+        stips_result = evaluate_stips(funder, merchant)
+        for missing_item in stips_result.missing:
+            missing_stips.append(missing_item.requirement_text)
+            if missing_item.is_hard:
+                stip_soft_concerns.append(f"missing stip: {missing_item.requirement_text}")
+
     return FunderMatch(
         funder_id=funder.id,
         funder_name=funder.name,
         match_score=likelihood,
         reasons=reasons,
-        soft_concerns=hard + soft,  # union — caller wants the full picture
+        # Union of hard fails + soft concerns + per-merchant stip soft
+        # concerns — caller wants the full picture.
+        soft_concerns=hard + soft + stip_soft_concerns,
         estimated_terms=estimated_terms,
         tier_matches=tier_matches,
         historical_approval_rate=historical_approval_rate,
+        missing_stips=missing_stips,
     )
 
 
