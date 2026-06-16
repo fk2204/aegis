@@ -1,7 +1,7 @@
 {% extends "base.html.j2" %}
 {% set is_edit = merchant is not none %}
 {% set form_data = form if form is defined else {} %}
-{% set active = 'Merchants' %}
+{% set active = 'Deals' %}
 {% block title %}{% if is_edit %}Edit {{ merchant.business_name }}{% else %}New Merchant{% endif %} — AEGIS{% endblock %}
 
 {% block deck %}

@@ -63,25 +63,19 @@ def _resolve_disclosure_events_window(
     from datetime import timedelta as _timedelta
 
     today = datetime.now(UTC).date()
-    parsed_to = (
-        datetime.fromisoformat(to_str.strip()).date() if to_str else today
-    )
+    parsed_to = datetime.fromisoformat(to_str.strip()).date() if to_str else today
     parsed_from = (
         datetime.fromisoformat(from_str.strip()).date()
         if from_str
-        else parsed_to
-        - _timedelta(days=_DISCLOSURE_EVENTS_DEFAULT_WINDOW_DAYS)
+        else parsed_to - _timedelta(days=_DISCLOSURE_EVENTS_DEFAULT_WINDOW_DAYS)
     )
     if parsed_to < parsed_from:
         raise ValueError(
-            f"to_date {parsed_to.isoformat()} is earlier than from_date "
-            f"{parsed_from.isoformat()}"
+            f"to_date {parsed_to.isoformat()} is earlier than from_date {parsed_from.isoformat()}"
         )
     span = (parsed_to - parsed_from).days
     if span > _DISCLOSURE_EVENTS_MAX_WINDOW_DAYS:
-        parsed_from = parsed_to - _timedelta(
-            days=_DISCLOSURE_EVENTS_MAX_WINDOW_DAYS
-        )
+        parsed_from = parsed_to - _timedelta(days=_DISCLOSURE_EVENTS_MAX_WINDOW_DAYS)
     return parsed_from, parsed_to
 
 
@@ -108,9 +102,7 @@ async def disclosure_events_view(
         str | None,
         Query(
             alias="from",
-            description=(
-                "Window start (YYYY-MM-DD). Defaults to today minus 14 days."
-            ),
+            description=("Window start (YYYY-MM-DD). Defaults to today minus 14 days."),
         ),
     ] = None,
     to: Annotated[
@@ -141,10 +133,7 @@ async def disclosure_events_view(
     if status_param not in allowed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"invalid status {status_param!r}; expected one of "
-                f"{sorted(allowed)!r}"
-            ),
+            detail=(f"invalid status {status_param!r}; expected one of {sorted(allowed)!r}"),
         )
     effective_status: str | None = status_param if status_param else None
 
@@ -167,8 +156,7 @@ async def disclosure_events_view(
         rows = []
 
     status_options = [
-        {"value": value, "label": label}
-        for value, label in _DISCLOSURE_EVENTS_STATUS_OPTIONS
+        {"value": value, "label": label} for value, label in _DISCLOSURE_EVENTS_STATUS_OPTIONS
     ]
 
     return cast(
@@ -177,7 +165,7 @@ async def disclosure_events_view(
             request,
             "disclosure_events.html.j2",
             {
-                "active": "DisclosureEvents",
+                "active": "Funders",
                 "rows": rows,
                 "status": status_param,
                 "from_date": from_date,
@@ -230,7 +218,7 @@ async def disclosure_event_detail(
             request,
             "disclosure_event_detail.html.j2",
             {
-                "active": "DisclosureEvents",
+                "active": "Funders",
                 "record": record,
                 "details_json": details_json,
                 "metadata_json": metadata_json,

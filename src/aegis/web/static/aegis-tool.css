@@ -12,6 +12,74 @@
  * not leak into any future non-dossier surface.
  */
 
+/* ===================== TOPSTRIP DROPDOWNS =====================
+ * Consolidated 2026-06-16 from 13 flat links to 6 grouped dropdowns.
+ * CSS-only show/hide via `:focus-within` (keyboard accessible) plus
+ * `:hover` (mouse) — no JS required. The base ".topstrip" chrome
+ * (forest-green bar, mono uppercase typography) is defined in
+ * aegis-dossier.css; this block layers the grouped-dropdown behavior
+ * on top of it.
+ *
+ * Layout: each .nav-group is a relative container holding the parent
+ * <a> (always visible in the strip) plus a .nav-dropdown panel that
+ * is hidden by default and absolutely-positioned beneath the parent
+ * when revealed. The strip already uses display:flex with gap:22px,
+ * so the .nav-group inlines naturally next to standalone <a>
+ * children.
+ */
+.dossier-page .topstrip .links .nav-group {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.dossier-page .topstrip .links .nav-group > a[aria-haspopup="true"]::after {
+  /* Small chevron hint so workers know the link is a group trigger.
+   * Pure CSS — no icon font. Subordinate to the label (lower
+   * opacity + smaller scale) so it reads as affordance, not content. */
+  content: "\25BE"; /* black down-pointing small triangle */
+  margin-left: 4px;
+  font-size: 9px;
+  opacity: 0.6;
+  vertical-align: 1px;
+}
+.dossier-page .topstrip .links .nav-dropdown {
+  position: absolute;
+  top: 100%;
+  left: -10px;
+  min-width: 180px;
+  background: var(--ink);
+  border: 1px solid color-mix(in oklch, var(--ink) 70%, var(--paper));
+  border-top: 0;
+  padding: 6px 0;
+  display: none;
+  flex-direction: column;
+  z-index: 50;
+  /* Slight downshift so the panel visually anchors to the strip's
+   * bottom edge without a gap that would break the hover bridge. */
+  margin-top: 0;
+}
+.dossier-page .topstrip .links .nav-group:hover > .nav-dropdown,
+.dossier-page .topstrip .links .nav-group:focus-within > .nav-dropdown {
+  display: flex;
+}
+.dossier-page .topstrip .links .nav-dropdown a {
+  padding: 8px 18px;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.78);
+  border-bottom: 0;
+  text-decoration: none;
+}
+.dossier-page .topstrip .links .nav-dropdown a:hover,
+.dossier-page .topstrip .links .nav-dropdown a:focus {
+  color: #fff;
+  background: color-mix(in oklch, var(--ink) 80%, var(--paper));
+  outline: none;
+}
+
 /* ===================== DECK (page title bar) ===================== */
 
 .dossier-page .deck {

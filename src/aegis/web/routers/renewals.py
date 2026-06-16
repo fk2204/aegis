@@ -127,7 +127,7 @@ async def upcoming_renewals(
             request,
             "renewals.html.j2",
             {
-                "active": "Renewals",
+                "active": "Portfolio",
                 "rows": rows,
                 "pipeline_rows": pipeline_rows,
                 "window_days": window_days,

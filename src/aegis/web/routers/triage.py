@@ -89,7 +89,7 @@ async def triage_view(
             request,
             "triage.html.j2",
             {
-                "active": "Triage",
+                "active": "Portfolio",
                 "backlog": backlog,
                 "window_days": window.days,
                 "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
@@ -113,8 +113,7 @@ async def shadow_signals_view(
         str | None,
         Query(
             description=(
-                "Optional ``signal_code`` filter. Matches literal-equal. "
-                "Empty / None → all codes."
+                "Optional ``signal_code`` filter. Matches literal-equal. Empty / None → all codes."
             ),
         ),
     ] = None,
@@ -130,9 +129,7 @@ async def shadow_signals_view(
     days: Annotated[
         int | None,
         Query(
-            description=(
-                "Window length in days. Default 30, max 365."
-            ),
+            description=("Window length in days. Default 30, max 365."),
             ge=1,
             le=MAX_TRIAGE_WINDOW_DAYS,
         ),
@@ -203,7 +200,7 @@ async def shadow_signals_view(
             request,
             "shadow_signals.html.j2",
             {
-                "active": "Triage",
+                "active": "Portfolio",
                 "rows": humanized_rows,
                 "from_date": window.from_date,
                 "to_date": window.to_date,

@@ -1,51 +1,78 @@
 {#
-  Shared compact topstrip — Wave 2.4 of the UI redesign (2026-06-03).
+  Shared compact topstrip — consolidated 2026-06-16 from 13 flat links
+  to 6 grouped dropdowns (Today / Deals / Funders / Portfolio / Upload
+  / Admin). CSS-only dropdowns via `:focus-within` (keyboard) +
+  `:hover` (mouse) — no JS, no HTMX dependency.
 
-  Extracted from base.html.j2 so the dossier (which intentionally does
-  NOT extend base) can include the same nav row instead of hand-
-  maintaining its own copy. Before this partial existed the dossier's
-  inline topstrip had diverged from base — missing the Intake link.
+  Extracted from base.html.j2 in Wave 2.4 (2026-06-03) so the dossier
+  (which intentionally does NOT extend base) can include the same nav
+  row instead of hand-maintaining its own copy. Before this partial
+  existed the dossier's inline topstrip had diverged from base —
+  missing the Intake link.
 
-  Same chrome as before: <div class="topstrip"> with seven links on
-  the left and a small view-toggle span on the right. The active link
-  is styled via `class="is-active"` (rule in aegis-system.css); inactive
-  links render unchanged.
+  The active link is styled via `class="is-active"` (rule in
+  aegis-system.css); inactive links render unchanged. With the
+  grouped layout, the parent group gets the `is-active` class when
+  ANY child page is the current page (e.g. /ui/deals/review-queue
+  highlights the Deals group), since routes pass the group name as
+  `active`.
 
   Inputs (all optional):
-    active — one of "Today" | "Deals" | "Merchants" | "Funders"
-             | "Upload" | "Intake" | "Review" | "CloseQueue"
-             | "Portfolio" | "DisclosureEvents" | "Triage"
-             | "BankLayouts" | "Admin";
-             the matching link gets `class="is-active"`. Pages that do
-             not highlight any nav (e.g. the dossier) simply omit
-             `active`. ``Triage`` covers both /ui/triage and
-             /ui/shadow-signals (the shadow signals page is reached via
-             the Triage tile's drill-down). ``Admin`` covers both
-             /ui/admin/applied-migrations and /ui/admin/audit-log (the
-             audit-log page is reached from the migrations page header).
-             U35 (2026-06-10): the Admin link now lands on
-             /ui/admin/health (the "is everything OK?" status page);
-             migrations + audit-log are reachable via the health page's
-             header actions row.
+    active — one of "Today" | "Deals" | "Funders" | "Portfolio"
+             | "Upload" | "Admin"; the matching group gets
+             `class="is-active"`. Pages that do not highlight any nav
+             (e.g. the dossier, the compliance obligations page)
+             simply omit `active` (or pass a value not in the list).
+
+             Child→group mapping the route handlers and templates
+             use:
+               Merchants / Review / CloseQueue        → Deals
+               BankLayouts / DisclosureEvents         → Funders
+               Renewals / Triage                      → Portfolio
+               Intake                                 → Admin
+
     now    — display string for the right-hand view-toggle span. Same
              default convention as base.html.j2 (falls back to '').
 #}
 <div class="topstrip">
   <div class="links">
     {% set _active = active|default('') %}
-    <a href="/ui/"          {% if _active == 'Today'     %}class="is-active"{% endif %}>Today</a>
-    <a href="/ui/deals"     {% if _active == 'Deals'     %}class="is-active"{% endif %}>Deals</a>
-    <a href="/ui/merchants" {% if _active == 'Merchants' %}class="is-active"{% endif %}>Merchants</a>
-    <a href="/ui/funders"   {% if _active == 'Funders'   %}class="is-active"{% endif %}>Funders</a>
-    <a href="/ui/upload"    {% if _active == 'Upload'    %}class="is-active"{% endif %}>Upload</a>
-    <a href="/ui/intake"    {% if _active == 'Intake'    %}class="is-active"{% endif %}>Intake</a>
-    <a href="/ui/review"    {% if _active == 'Review'    %}class="is-active"{% endif %}>Review queue</a>
-    <a href="/ui/close-queue" {% if _active == 'CloseQueue' %}class="is-active"{% endif %}>Close queue</a>
-    <a href="/ui/portfolio" {% if _active == 'Portfolio' %}class="is-active"{% endif %}>Portfolio</a>
-    <a href="/ui/disclosure-events" {% if _active == 'DisclosureEvents' %}class="is-active"{% endif %}>Disclosure events</a>
-    <a href="/ui/triage" {% if _active == 'Triage' %}class="is-active"{% endif %}>Triage</a>
-    <a href="/ui/bank-layouts" {% if _active == 'BankLayouts' %}class="is-active"{% endif %}>Bank layouts</a>
-    <a href="/ui/admin/health" {% if _active == 'Admin' %}class="is-active"{% endif %}>Admin</a>
+    <a href="/ui/" {% if _active == 'Today' %}class="is-active"{% endif %}>Today</a>
+
+    <div class="nav-group">
+      <a href="/ui/deals" {% if _active == 'Deals' %}class="is-active"{% endif %} aria-haspopup="true">Deals</a>
+      <div class="nav-dropdown" role="menu">
+        <a href="/ui/merchants" role="menuitem">Merchants</a>
+        <a href="/ui/review" role="menuitem">Review queue</a>
+        <a href="/ui/close-queue" role="menuitem">Close queue</a>
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <a href="/ui/funders" {% if _active == 'Funders' %}class="is-active"{% endif %} aria-haspopup="true">Funders</a>
+      <div class="nav-dropdown" role="menu">
+        <a href="/ui/bank-layouts" role="menuitem">Bank layouts</a>
+        <a href="/ui/disclosure-events" role="menuitem">Disclosure events</a>
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <a href="/ui/portfolio" {% if _active == 'Portfolio' %}class="is-active"{% endif %} aria-haspopup="true">Portfolio</a>
+      <div class="nav-dropdown" role="menu">
+        <a href="/ui/renewals" role="menuitem">Renewals</a>
+        <a href="/ui/triage" role="menuitem">Triage</a>
+      </div>
+    </div>
+
+    <a href="/ui/upload" {% if _active == 'Upload' %}class="is-active"{% endif %}>Upload</a>
+
+    <div class="nav-group">
+      <a href="/ui/admin/health" {% if _active == 'Admin' %}class="is-active"{% endif %} aria-haspopup="true">Admin</a>
+      <div class="nav-dropdown" role="menu">
+        <a href="/ui/intake" role="menuitem">Intake</a>
+        <a href="/ui/admin/health" role="menuitem">Admin</a>
+      </div>
+    </div>
   </div>
   <div class="view-toggle">
     <span style="color:var(--sage)">aegis · {{ now|default('') }}</span>
