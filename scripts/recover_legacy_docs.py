@@ -18,19 +18,24 @@ Dry-run still HITS Close (lists + downloads, costs network round-trips
 + a small Close-API quota slice) so the operator can preview which
 attachments would be ingested without paying the Bedrock token cost.
 
-Dedup posture (matches the from-close route exactly):
+Dedup posture (two modes — strict default, opt-in backfill):
 
   * Compute ``sha256(plaintext)`` on every Close PDF.
-  * ``repository.find_by_hash(sha)`` → if a row exists, **skip** the
-    attachment. The PDF is already in AEGIS; whatever state its
-    document row is in (manual_review / error / proceed / review) is
-    NOT this script's concern. If the operator wants to re-evaluate
-    legacy docs whose SHA matches a Close attachment, the right tool
-    is ``reparse_corpus.py`` once the same PDF lands here via a fresh
-    ingest with a different SHA, OR a follow-up script that targets
-    ``pdf_store`` backfill specifically. See the trailing comment in
-    `_ingest_attachment` for the alternative semantic if you'd rather
-    have backfill behavior.
+  * ``repository.find_by_hash(sha)`` → if a row exists:
+      - **Default** (no ``--backfill-sha-matches``): skip the
+        attachment. Matches the from-close route's posture exactly.
+        Whatever state the existing row is in (manual_review / error
+        / proceed / review) is NOT touched.
+      - **With ``--backfill-sha-matches`` (alongside ``--apply``)**:
+        check ``pdf_store.fetch_plaintext(existing.id)``. If sealed,
+        skip (truly nothing to do). If NOT sealed (legacy pre-mig-060
+        row), this is the recovery case: seal plaintext into
+        ``pdf_store`` under the existing document_id, clear any prior
+        transactions / analyses rows, and re-run the parse pipeline
+        against the existing row. The doc UUID stays the same; the
+        parse status, fraud_score, transactions, and analyses are
+        rewritten by today's pipeline. Audited as
+        ``document.pdf_store_backfilled``.
   * ``find_by_hash`` miss → **fresh ingest**: create a new
     ``documents`` row, write the PDF to ``aegis_upload_dir`` as a
     temp file, run ``aegis.parser.pipeline.run_pipeline``, persist via
@@ -40,8 +45,8 @@ Dedup posture (matches the from-close route exactly):
 Per-merchant CSV summary (``recover_legacy_docs.csv`` by default):
 
     merchant_id, merchant_name, close_lead_id,
-    attachments_found, attachments_reingested, attachments_skipped,
-    parse_results, errors
+    attachments_found, attachments_reingested, attachments_backfilled,
+    attachments_skipped, parse_results, errors
 
 Exit codes (mirror ``scripts/track_a_historical_lookback.py``):
 
@@ -62,6 +67,9 @@ Usage (on the prod box, with ``/etc/aegis/aegis.env`` sourced)::
 
     # apply: ingest each new attachment end-to-end
     .venv/bin/python scripts/recover_legacy_docs.py --apply
+
+    # apply + backfill: also seal+reparse SHA-matching pre-mig-060 docs
+    .venv/bin/python scripts/recover_legacy_docs.py --apply --backfill-sha-matches
 
     # narrower scan
     .venv/bin/python scripts/recover_legacy_docs.py --limit 5
@@ -93,15 +101,20 @@ from aegis.close.client import (
     CloseError,
 )
 from aegis.config import get_settings
+from aegis.db import get_supabase
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import (
     MerchantNotFoundError,
     SupabaseMerchantRepository,
 )
 from aegis.parser.pipeline import PipelineResult, run_pipeline
-from aegis.pdf_store.repository import SupabasePdfStoreRepository
+from aegis.pdf_store.repository import (
+    PdfStoreNotFoundError,
+    SupabasePdfStoreRepository,
+)
 from aegis.storage import (
     DocumentExistsError,
+    DocumentRow,
     ParseStatus,
     SupabaseDocumentRepository,
 )
@@ -139,9 +152,11 @@ class AttachmentOutcome:
     attachment_id: str
     filename: str
     sha256: str
-    action: str  # "skip_duplicate" | "ingest_dry_run" | "ingest" | "error"
-    document_id: str  # only populated for ingest paths
-    parse_status: str  # only populated for ingest (post-pipeline)
+    # "skip_duplicate" | "ingest_dry_run" | "ingest" |
+    # "backfill_dry_run" | "backfill" | "error"
+    action: str
+    document_id: str  # only populated for ingest / backfill paths
+    parse_status: str  # only populated for ingest / backfill (post-pipeline)
     detail: str
 
 
@@ -154,6 +169,7 @@ class MerchantOutcome:
     close_lead_id: str
     attachments_found: int
     attachments_reingested: int
+    attachments_backfilled: int
     attachments_skipped: int
     parse_results: str  # compact: "proceed:2,review:1"
     errors: str
@@ -175,6 +191,7 @@ _CSV_HEADER: Final[tuple[str, ...]] = (
     "close_lead_id",
     "attachments_found",
     "attachments_reingested",
+    "attachments_backfilled",
     "attachments_skipped",
     "parse_results",
     "errors",
@@ -281,11 +298,18 @@ def _ingest_attachment(
         # Run the pipeline inline. Same call signature the arq worker
         # uses at workers.py:210.
         result: PipelineResult = run_pipeline(tmp.name, llm)  # type: ignore[arg-type]
-        document_repo.persist_parse_result(document.id, result=result, merchant_id=merchant.id)
-        # pdf_store.store mirrors the worker's chunk-B step. Keeps the
-        # plaintext-at-rest rule by sealing into Postgres BEFORE the
-        # finally-block deletes the temp file.
+        # Seal pdf_store BEFORE persist_parse_result. If the seal
+        # raises, the documents row stays at parse_status="pending"
+        # with no transactions / analyses — a clean "not-yet-parsed"
+        # state that future re-runs can retry without producing
+        # duplicate rows. Order reversed from the initial commit
+        # (c531eff) after live --apply on 2026-06-16 hit
+        # PdfStoreWriteError and left docs with parse_status set but
+        # no plaintext seal; those half-states are now reachable via
+        # the --backfill-sha-matches branch, but minimising
+        # half-states at the source is the better fix going forward.
         pdf_store.store(document_id=document.id, plaintext=file_bytes)
+        document_repo.persist_parse_result(document.id, result=result, merchant_id=merchant.id)
         audit.record(
             actor=_ACTOR,
             action="document.recovered",
@@ -304,6 +328,90 @@ def _ingest_attachment(
         Path(tmp.name).unlink(missing_ok=True)
 
 
+def _backfill_pdf_store_and_reparse(
+    *,
+    existing_doc: DocumentRow,
+    file_bytes: bytes,
+    close_lead_id: str,
+    document_repo: SupabaseDocumentRepository,
+    pdf_store: SupabasePdfStoreRepository,
+    audit: AuditLog,
+    llm: object,
+    upload_dir: Path,
+) -> str:
+    """Seal plaintext into ``pdf_store`` under ``existing_doc.id`` and
+    re-run the parse pipeline against that same document_id.
+
+    Used only when ``--backfill-sha-matches --apply`` is set AND the
+    pdf_store row for ``existing_doc.id`` is missing (the pre-mig-060
+    legacy-row recovery case).
+
+    Order matters: pipeline runs first against a temp file, then
+    ``pdf_store.store`` seals the bytes BEFORE the destructive
+    ``persist_parse_result`` step rewrites the documents row. If the
+    seal raises, we abort before mutating any database state, so a
+    follow-up run can retry cleanly. Prior ``transactions`` and
+    ``analyses`` rows for this document_id are deleted before
+    ``persist_parse_result`` to avoid duplicate-row inserts from the
+    pipeline's fresh classification + aggregation; for
+    manual_review / error legacy docs no such rows should exist, but
+    the cleanup is defensive against partial prior runs.
+
+    Returns the new ``parse_status``.
+    """
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".pdf",
+        delete=False,
+        prefix=f"{_ACTOR}-backfill-",
+        dir=str(upload_dir),
+    )
+    try:
+        tmp.write(file_bytes)
+        tmp.close()
+        result: PipelineResult = run_pipeline(tmp.name, llm)  # type: ignore[arg-type]
+
+        # Seal first — idempotent upsert on document_id PK (pdf_store
+        # repo line ~159). If this raises (write error / settings drift),
+        # the documents row is still untouched and a re-run can retry.
+        pdf_store.store(document_id=existing_doc.id, plaintext=file_bytes)
+
+        # Defensive wipe of prior transactions + analyses so the
+        # persist_parse_result inserts below can't conflict. Same
+        # delete order as scripts/_reparse_one.py respects FK
+        # constraints (transactions FK analyses → no, both FK
+        # documents; either order is fine, but matching the sibling
+        # script keeps operator muscle-memory consistent).
+        sb = get_supabase()
+        sb.table("transactions").delete().eq("document_id", str(existing_doc.id)).execute()
+        sb.table("analyses").delete().eq("document_id", str(existing_doc.id)).execute()
+
+        document_repo.persist_parse_result(
+            existing_doc.id,
+            result=result,
+            merchant_id=existing_doc.merchant_id,
+        )
+        audit.record(
+            actor=_ACTOR,
+            action="document.pdf_store_backfilled",
+            subject_type="document",
+            subject_id=existing_doc.id,
+            details={
+                "merchant_id": (
+                    str(existing_doc.merchant_id) if existing_doc.merchant_id else None
+                ),
+                "close_lead_id": close_lead_id,
+                "old_parse_status": existing_doc.parse_status,
+                "new_parse_status": result.parse_status,
+                "old_fraud_score": existing_doc.fraud_score,
+                "new_fraud_score": result.fraud_score,
+            },
+        )
+        return result.parse_status
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+
+
 def _process_attachment(
     *,
     attachment: CloseAttachment,
@@ -316,6 +424,7 @@ def _process_attachment(
     upload_dir: Path,
     max_upload_bytes: int,
     apply_writes: bool,
+    backfill_sha_matches: bool,
 ) -> AttachmentOutcome:
     """Resolve one attachment: download, dedup, (optionally) ingest.
 
@@ -353,24 +462,95 @@ def _process_attachment(
     file_hash = hashlib.sha256(file_bytes).hexdigest()
     existing = document_repo.find_by_hash(file_hash)
     if existing is not None:
-        # SAME-SHA HIT. Strict skip — matches the from-close route's
-        # dedup semantic.  If you later want a pdf_store-backfill
-        # branch (recover the legacy doc's plaintext into pdf_store
-        # when the existing row has no seal), this is the place: read
-        # whether `pdf_store.fetch_plaintext(existing.id)` raises
-        # `PdfStoreNotFoundError`, and on miss call `pdf_store.store`
-        # against `existing.id`. Left out of the default behavior
-        # because it changes the parse_status invariants for the
-        # legacy row and the user-facing spec was explicit about
-        # "skip if already stored."
+        if not backfill_sha_matches:
+            # Strict-default skip — matches the from-close route's
+            # dedup semantic. The existing row (whatever its parse_status
+            # or pdf_store seal state) is not this script's concern.
+            return AttachmentOutcome(
+                attachment_id=attachment.id,
+                filename=filename,
+                sha256=file_hash,
+                action="skip_duplicate",
+                document_id=str(existing.id),
+                parse_status=existing.parse_status,
+                detail=f"sha matches existing document {existing.id} ({existing.parse_status})",
+            )
+
+        # backfill_sha_matches mode: read pdf_store. Sealed → skip
+        # (recovery has nothing to do). Missing → backfill candidate.
+        try:
+            pdf_store.fetch_plaintext(existing.id)
+            return AttachmentOutcome(
+                attachment_id=attachment.id,
+                filename=filename,
+                sha256=file_hash,
+                action="skip_duplicate",
+                document_id=str(existing.id),
+                parse_status=existing.parse_status,
+                detail=(
+                    f"sha matches existing document {existing.id} "
+                    f"({existing.parse_status}) + pdf_store sealed"
+                ),
+            )
+        except PdfStoreNotFoundError:
+            pass  # fall through to backfill branch below
+        except Exception as exc:
+            return AttachmentOutcome(
+                attachment_id=attachment.id,
+                filename=filename,
+                sha256=file_hash,
+                action="error",
+                document_id=str(existing.id),
+                parse_status="",
+                detail=f"backfill_seal_check: {type(exc).__name__}: {exc}",
+            )
+
+        if not apply_writes:
+            return AttachmentOutcome(
+                attachment_id=attachment.id,
+                filename=filename,
+                sha256=file_hash,
+                action="backfill_dry_run",
+                document_id=str(existing.id),
+                parse_status=existing.parse_status,
+                detail=(
+                    f"would backfill pdf_store + re-parse existing "
+                    f"document {existing.id} (currently {existing.parse_status})"
+                ),
+            )
+
+        try:
+            new_status = _backfill_pdf_store_and_reparse(
+                existing_doc=existing,
+                file_bytes=file_bytes,
+                close_lead_id=merchant.close_lead_id or "",
+                document_repo=document_repo,
+                pdf_store=pdf_store,
+                audit=audit,
+                llm=llm,
+                upload_dir=upload_dir,
+            )
+        except Exception as exc:
+            return AttachmentOutcome(
+                attachment_id=attachment.id,
+                filename=filename,
+                sha256=file_hash,
+                action="error",
+                document_id=str(existing.id),
+                parse_status="",
+                detail=f"backfill: {type(exc).__name__}: {exc}",
+            )
+
         return AttachmentOutcome(
             attachment_id=attachment.id,
             filename=filename,
             sha256=file_hash,
-            action="skip_duplicate",
+            action="backfill",
             document_id=str(existing.id),
-            parse_status=existing.parse_status,
-            detail=f"sha matches existing document {existing.id} ({existing.parse_status})",
+            parse_status=new_status,
+            detail=(
+                f"backfilled {existing.id}: parse_status {existing.parse_status} → {new_status}"
+            ),
         )
 
     if not apply_writes:
@@ -446,12 +626,14 @@ def _compact_parse_status_summary(outcomes: list[AttachmentOutcome]) -> str:
     """One-cell summary of post-ingest parse_statuses across one
     merchant's attachments. e.g. ``proceed:2,manual_review:1``.
 
-    Skips attachments that didn't reach the parse step
-    (skip_duplicate, ingest_dry_run, error before pipeline).
+    Counts both fresh ``ingest`` and ``backfill`` actions — both
+    produced a real pipeline run that landed a parse_status. Skips
+    attachments that didn't reach the parse step (skip_duplicate,
+    ingest_dry_run, backfill_dry_run, error before pipeline).
     """
     counts: Counter[str] = Counter()
     for o in outcomes:
-        if o.action == "ingest" and o.parse_status:
+        if o.action in ("ingest", "backfill") and o.parse_status:
             counts[o.parse_status] += 1
     if not counts:
         return ""
@@ -469,6 +651,7 @@ def process_merchant(
     upload_dir: Path,
     max_upload_bytes: int,
     apply_writes: bool,
+    backfill_sha_matches: bool,
 ) -> MerchantOutcome:
     """Resolve one backlog merchant end-to-end.
 
@@ -485,6 +668,7 @@ def process_merchant(
             close_lead_id="",
             attachments_found=0,
             attachments_reingested=0,
+            attachments_backfilled=0,
             attachments_skipped=0,
             parse_results="",
             errors="merchant has no close_lead_id",
@@ -499,6 +683,7 @@ def process_merchant(
             close_lead_id=merchant.close_lead_id,
             attachments_found=0,
             attachments_reingested=0,
+            attachments_backfilled=0,
             attachments_skipped=0,
             parse_results="",
             errors=f"close_list: {type(exc).__name__}: {exc}",
@@ -518,10 +703,12 @@ def process_merchant(
                 upload_dir=upload_dir,
                 max_upload_bytes=max_upload_bytes,
                 apply_writes=apply_writes,
+                backfill_sha_matches=backfill_sha_matches,
             )
         )
 
     reingested = sum(1 for o in per_attachment if o.action == "ingest")
+    backfilled = sum(1 for o in per_attachment if o.action == "backfill")
     skipped = sum(1 for o in per_attachment if o.action == "skip_duplicate")
     errors = "; ".join(o.detail for o in per_attachment if o.action == "error")
     return MerchantOutcome(
@@ -530,6 +717,7 @@ def process_merchant(
         close_lead_id=merchant.close_lead_id,
         attachments_found=len(attachments),
         attachments_reingested=reingested,
+        attachments_backfilled=backfilled,
         attachments_skipped=skipped,
         parse_results=_compact_parse_status_summary(per_attachment),
         errors=errors,
@@ -557,6 +745,7 @@ def write_csv(rows: list[MerchantOutcome], stream: object) -> None:
                 r.close_lead_id,
                 r.attachments_found,
                 r.attachments_reingested,
+                r.attachments_backfilled,
                 r.attachments_skipped,
                 r.parse_results,
                 r.errors,
@@ -586,6 +775,20 @@ def _parse_args() -> argparse.Namespace:
             "persist_parse_result + pdf_store.store; write the matching "
             "audit_log rows. Default is dry-run (list + download + dedup, "
             "no DB writes)."
+        ),
+    )
+    p.add_argument(
+        "--backfill-sha-matches",
+        action="store_true",
+        help=(
+            "Extend the SHA-match branch: when a Close attachment's SHA "
+            "matches an existing AEGIS document AND that document has no "
+            "pdf_store seal (the pre-mig-060 legacy-row case), seal the "
+            "plaintext into pdf_store under the existing document_id and "
+            "re-run the pipeline against that same row. Combine with "
+            "--apply to actually write; alone it shows what WOULD be "
+            "backfilled. Without this flag a SHA match is an unconditional "
+            "skip (the strict from-close-route default)."
         ),
     )
     p.add_argument(
@@ -692,6 +895,7 @@ def main() -> int:
                     upload_dir=upload_dir,
                     max_upload_bytes=max_upload_bytes,
                     apply_writes=args.apply,
+                    backfill_sha_matches=args.backfill_sha_matches,
                 )
             )
     finally:
@@ -709,12 +913,15 @@ def main() -> int:
     total = len(rows)
     found = sum(r.attachments_found for r in rows)
     reingested = sum(r.attachments_reingested for r in rows)
+    backfilled = sum(r.attachments_backfilled for r in rows)
     skipped = sum(r.attachments_skipped for r in rows)
     issues = sum(1 for r in rows if r.is_issue)
     mode = "APPLY" if args.apply else "DRY-RUN"
+    backfill_mode = " +backfill" if args.backfill_sha_matches else ""
     print(
-        f"# mode={mode} merchants={total} attachments_found={found} "
-        f"reingested={reingested} skipped={skipped} issues={issues}",
+        f"# mode={mode}{backfill_mode} merchants={total} attachments_found={found} "
+        f"reingested={reingested} backfilled={backfilled} skipped={skipped} "
+        f"issues={issues}",
         file=sys.stderr,
     )
     return EXIT_ISSUES_FOUND if issues > 0 else EXIT_OK

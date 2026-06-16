@@ -22,7 +22,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -95,15 +95,9 @@ def test_list_in_window_date_filter_is_inclusive() -> None:
     """list_in_window narrows to ``[from_date, to_date]`` inclusive."""
     repo = InMemorySubmissionRepository()
     # Three rows: one before the window, one inside, one after.
-    repo.create(
-        _make_submission(submitted_at=datetime(2026, 4, 25, tzinfo=UTC))
-    )
-    inside = repo.create(
-        _make_submission(submitted_at=datetime(2026, 5, 15, tzinfo=UTC))
-    )
-    repo.create(
-        _make_submission(submitted_at=datetime(2026, 6, 5, tzinfo=UTC))
-    )
+    repo.create(_make_submission(submitted_at=datetime(2026, 4, 25, tzinfo=UTC)))
+    inside = repo.create(_make_submission(submitted_at=datetime(2026, 5, 15, tzinfo=UTC)))
+    repo.create(_make_submission(submitted_at=datetime(2026, 6, 5, tzinfo=UTC)))
 
     rows = repo.list_in_window(
         from_date=date(2026, 5, 1),
@@ -118,12 +112,8 @@ def test_list_in_window_inclusive_on_boundary_dates() -> None:
     hour) is also inside — the supabase impl widens to 23:59:59.
     """
     repo = InMemorySubmissionRepository()
-    repo.create(
-        _make_submission(submitted_at=datetime(2026, 5, 1, tzinfo=UTC))
-    )
-    repo.create(
-        _make_submission(submitted_at=datetime(2026, 5, 31, 23, 59, tzinfo=UTC))
-    )
+    repo.create(_make_submission(submitted_at=datetime(2026, 5, 1, tzinfo=UTC)))
+    repo.create(_make_submission(submitted_at=datetime(2026, 5, 31, 23, 59, tzinfo=UTC)))
     rows = repo.list_in_window(
         from_date=date(2026, 5, 1),
         to_date=date(2026, 5, 31),
@@ -143,18 +133,32 @@ def test_list_in_window_rejects_reversed_range() -> None:
         )
 
 
-def test_record_submission_writes_audit_row_with_submission_id() -> None:
+def test_record_submission_writes_audit_row_with_submission_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """record_submission writes a durable row AND a
     ``deal.submission_persisted`` audit row carrying the submission id.
     The audit row's subject_type is 'merchant' and subject_id is the
     merchant_id (matches the convention used by the existing
     ``deal.submit_to_funders`` row)."""
+    # Pin every UUID this test compares as a string so the logger's
+    # _BARE_LONG_DIGITS_RE (\b\d{9,16}\b) can't mask any of them: the
+    # SubmissionRecord.id default factory runs uuid4() at model construct
+    # time inside record_submission, and on a 1-in-~70 unlucky run the
+    # final hex block is all digits and the masker rewrites the audit
+    # row's submission_id to "...-***" while the persisted.id stays raw
+    # — the assertion blows up. Same flake class as
+    # tests/compliance/test_disclosure_render_events.py
+    # (fixed in commit 8acbe22).
+    fixed_submission_id = UUID("11111111-1111-4111-8111-aabbccddeeff")
+    monkeypatch.setattr("aegis.submissions.models.uuid4", lambda: fixed_submission_id)
+
     repo = InMemorySubmissionRepository()
     audit = InMemoryAuditLog()
 
-    merchant_id = uuid4()
-    document_id = uuid4()
-    funder_id = uuid4()
+    merchant_id = UUID("22222222-2222-4222-8222-aabbccddeeff")
+    document_id = UUID("33333333-3333-4333-8333-aabbccddeeff")
+    funder_id = UUID("44444444-4444-4444-8444-aabbccddeeff")
     csv_bytes = b"funder_csv_payload"
 
     persisted = record_submission(
@@ -202,9 +206,7 @@ def test_record_submission_audit_payload_pii_canary() -> None:
     """
     repo = InMemorySubmissionRepository()
     audit = InMemoryAuditLog()
-    csv_bytes = (
-        b"ACME PAINTING LLC,Jane Doe,1234567890,jane@acme.com,42 Main St"
-    )
+    csv_bytes = b"ACME PAINTING LLC,Jane Doe,1234567890,jane@acme.com,42 Main St"
 
     record_submission(
         repo,
