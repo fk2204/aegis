@@ -95,7 +95,14 @@ jobs:
       # Direct Hetzner IP -- the CF-Access hostname
       # aegis-ssh.commerafunding.com refuses GitHub Actions runner
       # connections (no SSO cookie). The secret holds the raw IP.
-      AEGIS_HOST: aegis@${{ secrets.AEGIS_SERVER_IP }}
+      # SSH lands as root, not the aegis user. Rationale: the deploy
+      # keypair was provisioned into root's authorized_keys, not
+      # ~aegis/.ssh/authorized_keys, so the CI key cannot land as
+      # the aegis user. The on-box commands (git pull, systemctl
+      # restart, chown) all work under root unchanged; sudo -n is a
+      # no-op when already root, which keeps the command strings
+      # byte-identical to the manual ssh-as-aegis path.
+      AEGIS_HOST: root@${{ secrets.AEGIS_SERVER_IP }}
       AEGIS_HOSTNAME: ${{ secrets.AEGIS_SERVER_IP }}
       AEGIS_REMOTE_PATH: /opt/aegis
       AEGIS_HEALTH_URL: http://127.0.0.1:5555/healthz
@@ -148,7 +155,12 @@ jobs:
           set -euo pipefail
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "$AEGIS_DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          # tr -d '\r' strips any CRLF that came along with the secret
+          # value (a Windows-edited paste lands with \r\n line endings,
+          # which OpenSSH's libcrypto rejects with
+          # "error in libcrypto" / "invalid format" -- silent killer
+          # because the key looks fine in the GH UI).
+          printf '%s\n' "$AEGIS_DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p 22 -T 10 "$AEGIS_HOSTNAME" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts

@@ -16,10 +16,17 @@ until they break in production:
   through to a password prompt and hangs (.claude/rules/deploy.md
   "sudo from non-TTY shells needs the literal NOPASSWD form").
 * The SSH host MUST template from ``secrets.AEGIS_SERVER_IP`` as the
-  ``aegis`` user -- the CF-Access hostname
-  ``aegis-ssh.commerafunding.com`` refuses GitHub Actions runner
-  connections (no SSO cookie), so CI goes direct to the raw IP.
-  Root SSH is the escape hatch, not the CI path.
+  ``root`` user. CF-Access hostname ``aegis-ssh.commerafunding.com``
+  refuses GitHub Actions runner connections (no SSO cookie), so CI
+  goes direct to the raw IP. The deploy keypair was provisioned
+  into root's ``authorized_keys`` rather than ``~aegis/.ssh/...``,
+  so the CI key cannot land as the aegis user; running as root
+  makes ``sudo -n`` a no-op so the on-box command strings stay
+  byte-identical to the manual ssh-as-aegis path.
+* The deploy key MUST be stripped of CRLF before writing to
+  ``~/.ssh/id_ed25519`` -- a Windows-edited paste lands in the
+  GitHub secret store with ``\\r\\n`` and OpenSSH's libcrypto
+  rejects the file silently with ``error in libcrypto``.
 * The smoke endpoint MUST be ``http://127.0.0.1:5555/healthz`` — that's
   what the systemd unit exposes; anything else silently passes against
   the wrong service or doesn't pass at all.
@@ -190,25 +197,31 @@ def test_deploy_job_has_reasonable_timeout() -> None:
 # --- on-box invariants ------------------------------------------------------
 
 
-def test_ssh_host_is_aegis_user_via_server_ip_secret() -> None:
-    """SSH lands as the ``aegis`` user via the raw Hetzner IP held in
-    the ``AEGIS_SERVER_IP`` secret -- NOT via the CF-Access-gated
-    hostname ``aegis-ssh.commerafunding.com``.
+def test_ssh_host_is_root_user_via_server_ip_secret() -> None:
+    """SSH lands as ``root`` via the raw Hetzner IP held in the
+    ``AEGIS_SERVER_IP`` secret -- NOT via the CF-Access-gated
+    hostname ``aegis-ssh.commerafunding.com``, and NOT as the
+    ``aegis`` user.
 
-    Cloudflare Access refuses TCP from GitHub-hosted runners (no SSO
-    cookie), so the workflow goes direct to the box. The hostname is
-    still the routine interactive deploy path -- this assertion only
-    pins the CI-side choice.
+    Two routing decisions pinned here:
+
+    1. **IP, not hostname.** Cloudflare Access refuses TCP from
+       GitHub-hosted runners (no SSO cookie), so CI goes direct
+       to the box's raw IP.
+    2. **root, not aegis.** The deploy keypair was provisioned
+       into root's authorized_keys, not ``~aegis/.ssh/authorized_keys``.
+       Running as root makes ``sudo -n`` a no-op so the on-box
+       command strings stay byte-identical to the manual
+       ssh-as-aegis path.
     """
     workflow = _load_workflow()
     job = _deploy_job(workflow)
     env = job.get("env")
     assert isinstance(env, dict), "deploy job must declare env: with AEGIS_HOST"
     aegis_host = str(env.get("AEGIS_HOST", ""))
-    # Must be the aegis user (root SSH is the escape hatch, not the CI path).
-    assert aegis_host.startswith("aegis@"), (
-        f"AEGIS_HOST must SSH as the `aegis` user; got {aegis_host!r}"
-    )
+    # Must be the root user (the CI deploy key is in root's
+    # authorized_keys on the box; ssh-as-aegis would 255 on auth).
+    assert aegis_host.startswith("root@"), f"AEGIS_HOST must SSH as `root`; got {aegis_host!r}"
     # Must template from the AEGIS_SERVER_IP secret; the CF-Access
     # hostname would fail at the TCP handshake from a GH runner.
     assert "secrets.AEGIS_SERVER_IP" in aegis_host, (
@@ -224,6 +237,27 @@ def test_ssh_host_is_aegis_user_via_server_ip_secret() -> None:
         "AEGIS_HOSTNAME must also template from secrets.AEGIS_SERVER_IP "
         "so ssh-keyscan pins the host key against the IP that ssh "
         "actually connects to."
+    )
+
+
+def test_ssh_key_strips_crlf_before_writing() -> None:
+    """The deploy key's ``run:`` block MUST pipe the secret value
+    through ``tr -d '\\r'`` before writing to ``~/.ssh/id_ed25519``.
+
+    A secret value pasted from a Windows-edited buffer lands in the
+    GH secret store with CRLF line endings. OpenSSH's libcrypto
+    rejects such a key with ``error in libcrypto`` / ``invalid
+    format`` even though the key looks fine in the GH UI -- the
+    failure surfaces only on the runner. The CRLF strip is the
+    one-line defense.
+    """
+    workflow = _load_workflow()
+    job = _deploy_job(workflow)
+    blob = _flatten_run_steps(job)
+    assert "tr -d '\\r'" in blob or 'tr -d "\\r"' in blob, (
+        "deploy workflow must pipe AEGIS_DEPLOY_SSH_KEY through `tr -d "
+        "'\\r'` before writing ~/.ssh/id_ed25519. Without it, a CRLF-"
+        "infected secret value crashes ssh with `error in libcrypto`."
     )
 
 
