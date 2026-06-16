@@ -21,8 +21,8 @@ cycle previously required is no longer needed.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
-from typing import Annotated, Any, Final
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any, Final, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
@@ -30,11 +30,13 @@ from fastapi.responses import HTMLResponse
 
 from aegis.api.deps import (
     get_audit,
+    get_funder_note_submission_repository,
     get_merchant_repository,
     get_ofac_client,
     get_repository,
 )
 from aegis.audit import AuditLog
+from aegis.funder_note_submissions import FunderNoteSubmissionRepository
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import (
     MerchantNotFoundError,
@@ -64,6 +66,12 @@ router = APIRouter()
 
 _REVIEW_QUEUE_DISPLAY_CAP: Final[int] = 200
 
+# Submission-count window for the deals-table "Submitted to N funders"
+# column + the "Pending submission" filter chip. 90 days matches the
+# funder-list approval-rate window (funders.py) so the two surfaces
+# agree on "active pipeline".
+_DEALS_LIST_SUBMISSION_WINDOW_DAYS: Final[int] = 90
+
 
 @router.get("/", response_class=HTMLResponse)
 async def index(
@@ -72,6 +80,10 @@ async def index(
     merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
 ) -> HTMLResponse:
     """Today dashboard — live KPIs sourced from Supabase / in-memory repos.
 
@@ -113,23 +125,18 @@ async def index(
     ]
 
     attention_docs = docs.list_documents(parse_status="manual_review", limit=40)
-    attention = _build_attention_groups(
-        attention_docs, merchants_repo, docs, max_groups=8
-    )
+    attention = _build_attention_groups(attention_docs, merchants_repo, docs, max_groups=8)
     # Decorate each card with its deal tier — runs score_deal per
     # merchant. Capped at 8 cards so the cost stays bounded; failures
     # leave tier=None so the queue still renders.
     attention = [
-        _enrich_attention_card_with_tier(card, merchants_repo, docs, ofac)
-        for card in attention
+        _enrich_attention_card_with_tier(card, merchants_repo, docs, ofac) for card in attention
     ]
 
     submitted_count = sum(
         1 for r in recent_activity_rows if r.get("action") == "deal.submit_to_funders"
     )
-    funded_count = sum(
-        1 for r in recent_activity_rows if r.get("action") == "deal.funded"
-    )
+    funded_count = sum(1 for r in recent_activity_rows if r.get("action") == "deal.funded")
 
     funnel_rows = _build_funnel_rows(
         intake_count=merchant_total,
@@ -141,11 +148,50 @@ async def index(
         declined=manual_review + error,
     )
 
+    # Three-column Today dashboard (2026-06-16) — additional aggregates.
+    # Per CLAUDE.md "every aggregate exposes its source IDs": each new
+    # count below is paired with a *_source_ids list so the dossier
+    # drill-down contract holds.
+    now_utc = datetime.now(UTC)
+    (
+        stale_deals_count,
+        stale_deals_source_merchant_ids,
+        stale_attention_cards,
+    ) = _compute_stale_deals(docs, merchants_repo, now=now_utc)
+    (
+        pending_funder_count,
+        pending_funder_source_submission_ids,
+        pending_funder_cards,
+    ) = _compute_pending_funder_responses(funder_note_subs, merchants_repo, now=now_utc)
+    today_pipeline = _compute_today_pipeline(docs, funder_note_subs, now=now_utc)
+    today_recent_activity = _build_today_recent_activity(recent_activity_rows)
+
+    # Quick-action buttons are static — declared here so the template
+    # iterates a list rather than hardcoding three blocks. Labels are
+    # operator-facing; URLs go to existing routes (no new routes added).
+    quick_actions = [
+        {
+            "label": "Upload statement",
+            "href": "/ui/upload",
+            "test_id": "today-action-upload",
+        },
+        {
+            "label": "Add funder",
+            "href": "/ui/funders/import",
+            "test_id": "today-action-add-funder",
+        },
+        {
+            "label": "New intake",
+            "href": "/ui/intake",
+            "test_id": "today-action-new-intake",
+        },
+    ]
+
     return templates.TemplateResponse(
         request,
         "index.html.j2",
         {
-            "now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+            "now": now_utc.strftime("%Y-%m-%d %H:%M UTC"),
             "merchant_total": merchant_total,
             "in_pipeline": in_pipeline,
             "manual_review_count": manual_review,
@@ -157,6 +203,16 @@ async def index(
             "attention": attention,
             "category_labels": CATEGORY_LABELS,
             "recent_activity": recent_activity,
+            # NEW — Today three-column dashboard context.
+            "stale_deals_count": stale_deals_count,
+            "stale_deals_source_merchant_ids": stale_deals_source_merchant_ids,
+            "stale_deals_cards": stale_attention_cards,
+            "pending_funder_count": pending_funder_count,
+            "pending_funder_source_submission_ids": (pending_funder_source_submission_ids),
+            "pending_funder_cards": pending_funder_cards,
+            "today_pipeline": today_pipeline,
+            "today_recent_activity": today_recent_activity,
+            "quick_actions": quick_actions,
         },
     )
 
@@ -191,6 +247,253 @@ def _build_funnel_rows(
         {"label": "Funded", "count": funded, "width": _w(funded), "cls": "pos"},
         {"label": "Declined", "count": declined, "width": _w(declined), "cls": "neg"},
     ]
+
+
+_STALE_DOC_THRESHOLD: Final[timedelta] = timedelta(days=7)
+_PENDING_RESPONSE_THRESHOLD: Final[timedelta] = timedelta(days=5)
+# Soft cap on the attention-queue secondary lists — keeps the card
+# render bounded when an operator has a long-tail backlog.
+_TODAY_LIST_CAP: Final[int] = 8
+
+
+def _start_of_today_utc(now: datetime) -> datetime:
+    """Truncate ``now`` to midnight UTC. Pure helper for the today windows."""
+    return datetime(now.year, now.month, now.day, tzinfo=UTC)
+
+
+def _compute_stale_deals(
+    docs: DocumentRepository,
+    merchants_repo: MerchantRepository,
+    *,
+    now: datetime,
+) -> tuple[int, list[str], list[dict[str, Any]]]:
+    """Surface merchants whose most-recent document is 7+ days stale.
+
+    Returns ``(count, source_merchant_ids, cards)``. ``cards`` are
+    template-ready dicts the right-rail attention queue iterates; the
+    ``source_merchant_ids`` list is the audit trail that pairs with the
+    aggregate count per CLAUDE.md auditability rule.
+
+    Repository returns documents most-recent-first; we walk the list and
+    keep the first occurrence per merchant — that's the latest upload.
+    Merchants with no documents at all are NOT surfaced here (no upload
+    activity to be stale against; they belong on the intake queue).
+    """
+    cutoff = now - _STALE_DOC_THRESHOLD
+    # 500 covers ~5 months of upload backlog at ~100 deals/month — well
+    # above the realistic working window for "is this deal stalled?".
+    all_docs = docs.list_documents(limit=500)
+    latest_by_merchant: dict[UUID, DocumentRow] = {}
+    for d in all_docs:
+        if d.merchant_id is None or d.merchant_id in latest_by_merchant:
+            continue
+        latest_by_merchant[d.merchant_id] = d
+
+    stale_pairs: list[tuple[UUID, DocumentRow]] = [
+        (mid, d) for mid, d in latest_by_merchant.items() if d.uploaded_at < cutoff
+    ]
+    # Oldest-stalest first so the worker sees the most urgent items at the top.
+    stale_pairs.sort(key=lambda pair: pair[1].uploaded_at)
+
+    source_ids: list[str] = [str(mid) for mid, _ in stale_pairs]
+    cards: list[dict[str, Any]] = []
+    for mid, d in stale_pairs[:_TODAY_LIST_CAP]:
+        label = f"merchant {str(mid)[:8]}"
+        try:
+            merchant = merchants_repo.get(mid)
+            label = merchant.business_name
+        except MerchantNotFoundError:
+            pass
+        days_stale = max(0, (now - d.uploaded_at).days)
+        cards.append(
+            {
+                "merchant_id": str(mid),
+                "merchant_label": label,
+                "needs": (
+                    f"No new document in {days_stale} days — chase the merchant"
+                    if days_stale > 0
+                    else "Latest document is stale — review or re-request"
+                ),
+                "href": f"/ui/merchants/{mid}",
+                "test_id": "today-attn-stale",
+            }
+        )
+    return len(stale_pairs), source_ids, cards
+
+
+def _compute_pending_funder_responses(
+    funder_note_subs: FunderNoteSubmissionRepository,
+    merchants_repo: MerchantRepository,
+    *,
+    now: datetime,
+) -> tuple[int, list[str], list[dict[str, Any]]]:
+    """Surface ``pending`` funder-note submissions older than 5 days.
+
+    ``list_in_window`` is the cheapest read on the repository — pull a
+    wide window (90 days back), then filter to ``status == "pending"``
+    AND ``submitted_at < now - 5d``. Returns ``(count, source_ids, cards)``
+    paired per CLAUDE.md auditability.
+    """
+    cutoff = now - _PENDING_RESPONSE_THRESHOLD
+    window_start = now - timedelta(days=90)
+    submissions = funder_note_subs.list_in_window(from_dt=window_start, to_dt=now)
+    stale_pending = [s for s in submissions if s.status == "pending" and s.submitted_at < cutoff]
+    # Oldest first — same urgency convention as stale deals.
+    stale_pending.sort(key=lambda s: s.submitted_at)
+
+    source_ids: list[str] = [str(s.id) for s in stale_pending]
+    cards: list[dict[str, Any]] = []
+    for s in stale_pending[:_TODAY_LIST_CAP]:
+        label = f"merchant {str(s.merchant_id)[:8]}"
+        try:
+            merchant = merchants_repo.get(s.merchant_id)
+            label = merchant.business_name
+        except MerchantNotFoundError:
+            pass
+        days_pending = max(0, (now - s.submitted_at).days)
+        cards.append(
+            {
+                "merchant_id": str(s.merchant_id),
+                "submission_id": str(s.id),
+                "merchant_label": label,
+                "needs": (f"Funder silent {days_pending} days — follow up or reroute"),
+                "href": f"/ui/merchants/{s.merchant_id}",
+                "test_id": "today-attn-pending-funder",
+            }
+        )
+    return len(stale_pending), source_ids, cards
+
+
+def _score_to_tier_letter(score: float | int | None) -> str:
+    """Five-band tier derivation: A>=90, B>=75, C>=60, D>=40, F<40.
+
+    Fallback when the row doesn't carry an explicit tier letter — the
+    ``decisions`` table only persists the integer score, so the Today
+    tier-breakdown pills derive the letter here. Matches the convention
+    documented in the task brief; the per-deal scorer (`score_deal`)
+    remains the authoritative source for individual cards.
+    """
+    if score is None:
+        return "F"
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return "F"
+    if s >= 90:
+        return "A"
+    if s >= 75:
+        return "B"
+    if s >= 60:
+        return "C"
+    if s >= 40:
+        return "D"
+    return "F"
+
+
+def _compute_today_pipeline(
+    docs: DocumentRepository,
+    funder_note_subs: FunderNoteSubmissionRepository,
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    """Pipeline KPIs scoped to today (UTC).
+
+    Returns ``{deals_scored, tiers: {letter -> count}, funnel_stages,
+    deals_scored_source_decision_ids}``. The five funnel stages map to
+    Uploaded / Parsed / Scored / Submitted / Decision.
+
+    Decisions + funnel counts read from Supabase directly on the
+    Supabase backend; the in-memory backend falls back to zeros for
+    decisions (no in-memory snapshot is wired into this surface and a
+    fresh-zero is safer than a stale value).
+    """
+    start = _start_of_today_utc(now)
+
+    # --- documents-today: uploaded + parsed --------------------------
+    todays_docs = [d for d in docs.list_documents(limit=500) if d.uploaded_at >= start]
+    uploaded_today = len(todays_docs)
+    parsed_today = sum(1 for d in todays_docs if d.parsed_at is not None)
+
+    # --- decisions-today: count + tier breakdown ----------------------
+    deals_scored = 0
+    decision_ids: list[str] = []
+    tiers: dict[str, int] = {"A": 0, "B": 0, "C": 0, "D": 0, "F": 0}
+    try:
+        from aegis.db import get_supabase
+
+        result = (
+            get_supabase()
+            .table("decisions")
+            .select("id,decided_at,score")
+            .gte("decided_at", start.isoformat())
+            .order("decided_at", desc=True)
+            .limit(1000)
+            .execute()
+        )
+        rows = cast(list[dict[str, Any]], result.data or [])
+        deals_scored = len(rows)
+        for r in rows:
+            rid = r.get("id")
+            if rid is not None:
+                decision_ids.append(str(rid))
+            letter = _score_to_tier_letter(r.get("score"))
+            tiers[letter] = tiers.get(letter, 0) + 1
+    except Exception:
+        # In-memory backend / supabase outage — surface zero, never 500
+        # the Today page. The structured log captures the failure.
+        from aegis.logger import get_logger
+
+        get_logger(__name__).warning("today.decisions_fetch_failed")
+
+    # --- submissions-today / responses-today --------------------------
+    todays_submissions = funder_note_subs.list_in_window(from_dt=start, to_dt=now)
+    submitted_today = len(todays_submissions)
+    decision_today = sum(
+        1
+        for s in todays_submissions
+        if s.status in ("approved", "declined")
+        and s.responded_at is not None
+        and s.responded_at >= start
+    )
+
+    funnel_stages = [
+        {"label": "Uploaded", "count": uploaded_today},
+        {"label": "Parsed", "count": parsed_today},
+        {"label": "Scored", "count": deals_scored},
+        {"label": "Submitted", "count": submitted_today},
+        {"label": "Decision", "count": decision_today},
+    ]
+
+    return {
+        "deals_scored": deals_scored,
+        "deals_scored_source_decision_ids": decision_ids,
+        "tiers": tiers,
+        "funnel_stages": funnel_stages,
+    }
+
+
+def _build_today_recent_activity(
+    rows: list[dict[str, Any]], limit: int = 5
+) -> list[dict[str, Any]]:
+    """Last ``limit`` audit_log rows trimmed to single-line summaries.
+
+    ``rows`` is the same ``audit.list_recent`` payload the legacy "Day's
+    log" panel consumes; here we take the first ``limit`` (already
+    newest-first), humanize the action, and drop the actor / subject
+    columns so the right-rail row stays a single line of text.
+    """
+    out: list[dict[str, Any]] = []
+    for r in rows[:limit]:
+        out.append(
+            {
+                "action": humanize_audit_action(
+                    r.get("action") or "—",
+                    r.get("details") if isinstance(r.get("details"), dict) else None,
+                ),
+                "time_short": _format_activity_time(r.get("created_at")),
+            }
+        )
+    return out
 
 
 def _build_attention_groups(
@@ -288,11 +591,7 @@ def _build_attention_groups(
 
     out: list[AttentionCard] = []
     for key, g in groups.items():
-        scores = [
-            doc["fraud_score"]
-            for doc in g["documents"]
-            if doc["fraud_score"] is not None
-        ]
+        scores = [doc["fraud_score"] for doc in g["documents"] if doc["fraud_score"] is not None]
         worst = max(scores) if scores else None
         pattern_index = _build_merchant_pattern_index(
             group_docs[key], analyses_by_doc, transactions_by_doc, docs
@@ -309,9 +608,7 @@ def _build_attention_groups(
                 tier=None,
                 doc_count=len(g["documents"]),
                 documents=g["documents"],
-                flags=categorize_flags(
-                    g["_seen_flags"], pattern_index=pattern_index
-                ),
+                flags=categorize_flags(g["_seen_flags"], pattern_index=pattern_index),
                 merchant_status=g["merchant_status"],
             )
         )
@@ -493,9 +790,7 @@ def _build_review_queue_cards(
                 merchant_label = f"merchant {str(d.merchant_id)[:8]} (deleted)"
             if merchant is not None:
                 if d.merchant_id not in tier_cache:
-                    tier_cache[d.merchant_id] = _compute_merchant_tier(
-                        merchant, docs, ofac
-                    )
+                    tier_cache[d.merchant_id] = _compute_merchant_tier(merchant, docs, ofac)
                 tier = tier_cache[d.merchant_id]
 
         analysis = analyses_by_doc.get(d.id)
@@ -564,9 +859,7 @@ async def review_queue(
     is hit the template surfaces a banner so the operator knows the
     queue is deeper than what they see — no silent truncation.
     """
-    review_docs = docs.list_documents(
-        parse_status="manual_review", limit=_REVIEW_QUEUE_DISPLAY_CAP
-    )
+    review_docs = docs.list_documents(parse_status="manual_review", limit=_REVIEW_QUEUE_DISPLAY_CAP)
     cards = _build_review_queue_cards(review_docs, merchants, docs, ofac)
     return templates.TemplateResponse(
         request,
@@ -584,6 +877,10 @@ async def list_deals(
     request: Request,
     docs: Annotated[DocumentRepository, Depends(get_repository)],
     merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
 ) -> HTMLResponse:
     """Deal lifecycle table.
 
@@ -592,6 +889,14 @@ async def list_deals(
     enumerates merchants and shows their most recent document's parse status
     and analysis tier proxy. Merchants without any document show as
     ``Awaiting upload``.
+
+    Each row also exposes ``submitted_funder_count`` (distinct funders the
+    merchant has been submitted to in the last 90 days) and
+    ``submitted_funder_ids`` (the supporting funder_id list per the
+    CLAUDE.md auditability rule, so the deals-page "Pending submission"
+    filter chip and "Submitted to N funders" column can drill back to the
+    contributing submissions). One batched
+    ``list_in_window`` query feeds every merchant — never one per row.
     """
     merchants = list(merchants_repo.list_all())
 
@@ -607,16 +912,23 @@ async def list_deals(
             continue
         latest_by_merchant[d.merchant_id] = d
 
-    analyses_by_doc = docs.get_analyses_by_document_ids(
-        [d.id for d in latest_by_merchant.values()]
-    )
+    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in latest_by_merchant.values()])
+
+    # Per-merchant submission tally, 90-day window — matches the funder-
+    # list approval-rate window so the two surfaces agree on "active
+    # pipeline". One query, then bucket in Python.
+    now = datetime.now(UTC)
+    window_start = now - timedelta(days=_DEALS_LIST_SUBMISSION_WINDOW_DAYS)
+    submissions = funder_note_subs.list_in_window(from_dt=window_start, to_dt=now)
+    distinct_funders_by_merchant: dict[UUID, set[UUID]] = {}
+    for s in submissions:
+        distinct_funders_by_merchant.setdefault(s.merchant_id, set()).add(s.funder_id)
 
     rows: list[dict[str, Any]] = []
     for m in merchants:
         latest_doc = latest_by_merchant.get(m.id)
-        latest_analysis = (
-            analyses_by_doc.get(latest_doc.id) if latest_doc is not None else None
-        )
+        latest_analysis = analyses_by_doc.get(latest_doc.id) if latest_doc is not None else None
+        funder_ids = sorted(distinct_funders_by_merchant.get(m.id, set()))
         rows.append(
             {
                 "merchant_id": str(m.id),
@@ -629,9 +941,7 @@ async def list_deals(
                 # the existing parse_status chip macro can consume it
                 # without any model-class round-trip.
                 "status": m.status,
-                "uploaded_at": (
-                    latest_doc.uploaded_at.strftime("%Y-%m-%d") if latest_doc else "—"
-                ),
+                "uploaded_at": (latest_doc.uploaded_at.strftime("%Y-%m-%d") if latest_doc else "—"),
                 "parse_status": latest_doc.parse_status if latest_doc else "no_upload",
                 "fraud_score": (
                     latest_doc.fraud_score
@@ -640,6 +950,8 @@ async def list_deals(
                 ),
                 "tier_proxy": _tier_proxy(latest_analysis),
                 "document_id": str(latest_doc.id) if latest_doc else None,
+                "submitted_funder_count": len(funder_ids),
+                "submitted_funder_ids": [str(fid) for fid in funder_ids],
             }
         )
     rows.sort(key=lambda r: r["uploaded_at"], reverse=True)

@@ -5,7 +5,7 @@
 {% block deck %}
 {% set title = "Deals" %}
 {% set subtitle = "· pipeline" %}
-{% set meta = (rows|length ~ " deal" ~ ("" if rows|length == 1 else "s") ~ "  ·  merchant × latest doc") %}
+{% set meta = (rows|length ~ " deal" ~ ("" if rows|length == 1 else "s") ~ "  ·  merchant × latest doc") %}
 {% set actions = [
   {"label": "Upload PDF", "href": "/ui/upload"},
   {"label": "+ New deal", "href": "/ui/intake", "variant": "primary"}
@@ -25,7 +25,58 @@
     {% if not rows %}
       <div class="empty">No deals yet<span class="copy">Add a merchant via <a href="/ui/intake">Intake</a> and upload their bank statement via <a href="/ui/upload">Upload</a>.</span></div>
     {% else %}
-      <table class="queue">
+      {# === Search + filter + sort controls ===
+         Plain JS. Filter chips: "All" is exclusive; status chips are
+         multi-select OR (selecting "Needs review" + "Declined" shows
+         rows that match either). Selecting any status chip
+         auto-deselects "All". Selecting "All" clears the others.
+         Sort is client-side on the visible rows only. #}
+      <div class="deals-controls" data-test-id="deals-controls"
+           style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:14px 0 16px 0">
+        <input type="search"
+               id="deals-search"
+               data-test-id="deals-search"
+               placeholder="Search merchant…"
+               autocomplete="off"
+               style="flex:1 1 220px;min-width:180px;max-width:320px;padding:6px 10px;font:inherit;border:1px solid var(--rule,#2a2a2a);background:transparent;color:inherit;border-radius:4px">
+
+        <div class="deals-filter-chips" data-test-id="deals-filter-chips"
+             style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+          <button type="button"
+                  class="chip deals-chip is-active"
+                  data-filter="all"
+                  data-test-id="deals-filter-all">All</button>
+          <button type="button"
+                  class="chip deals-chip"
+                  data-filter="needs-review"
+                  data-test-id="deals-filter-needs-review">Needs review</button>
+          <button type="button"
+                  class="chip deals-chip"
+                  data-filter="clean"
+                  data-test-id="deals-filter-clean">Clean</button>
+          <button type="button"
+                  class="chip deals-chip"
+                  data-filter="declined"
+                  data-test-id="deals-filter-declined">Declined</button>
+          <button type="button"
+                  class="chip deals-chip"
+                  data-filter="pending-submission"
+                  data-test-id="deals-filter-pending-submission">Pending submission</button>
+        </div>
+
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;opacity:0.8">
+          Sort
+          <select id="deals-sort"
+                  data-test-id="deals-sort"
+                  style="padding:5px 8px;font:inherit;border:1px solid var(--rule,#2a2a2a);background:transparent;color:inherit;border-radius:4px">
+            <option value="latest-upload">Latest upload</option>
+            <option value="score-tier">Score tier</option>
+            <option value="business-name">Business name</option>
+          </select>
+        </label>
+      </div>
+
+      <table class="queue" data-test-id="deals-table">
         <thead>
           <tr>
             <th>Status</th>
@@ -35,12 +86,54 @@
             <th>Parse</th>
             <th class="num">Fraud</th>
             <th>Tier</th>
+            <th>Submissions</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="deals-tbody">
           {% for r in rows %}
+            {#
+              Derive data-status from existing row fields. Multiple
+              statuses can apply (e.g. parse=review AND tier_proxy=F).
+              Stored as a space-separated string on data-status so the JS
+              chip filter does a token-contains check.
+
+              Mapping rules (route handler does NOT yet expose explicit
+              status/submission fields — see Change 3 note in commit body):
+                - parse_status in {review, manual_review, pending} -> needs-review
+                - parse_status == 'proceed'                       -> clean
+                - tier_proxy starts with 'F'                      -> declined
+                - submitted_funder_count == 0                     -> pending-submission
+              The "pending-submission" classification relies on the
+              route handler exposing r.submitted_funder_count (not yet
+              wired — currently treated as "unknown" and not tagged).
+            #}
+            {% set _statuses = [] %}
+            {% if r.parse_status in ['review', 'manual_review', 'pending'] %}
+              {% set _statuses = _statuses + ['needs-review'] %}
+            {% endif %}
+            {% if r.parse_status == 'proceed' %}
+              {% set _statuses = _statuses + ['clean'] %}
+            {% endif %}
+            {% if r.tier_proxy and r.tier_proxy.startswith('F') %}
+              {% set _statuses = _statuses + ['declined'] %}
+            {% endif %}
+            {% if r.submitted_funder_count is defined and r.submitted_funder_count == 0 %}
+              {% set _statuses = _statuses + ['pending-submission'] %}
+            {% endif %}
+
+            {# Sort keys for client-side sort. Tier rank: A=1, B=2, C=3,
+               D=4, F=5, unknown(—)=9. Uploaded_at sorts as ISO date
+               lexicographically (YYYY-MM-DD). #}
+            {% set _tier_first = (r.tier_proxy or '—')[0]|upper %}
+            {% set _tier_rank = {'A':1,'B':2,'C':3,'D':4,'F':5}.get(_tier_first, 9) %}
             {# tag-{{ status }} kept on a hidden span for back-compat with tests #}
-            <tr onclick="window.location.href='/ui/merchants/{{ r.merchant_id }}'">
+            <tr data-test-id="deals-row"
+                data-merchant-name="{{ r.business_name|lower }}"
+                data-status="{{ _statuses|join(' ') }}"
+                data-sort-uploaded="{{ r.uploaded_at }}"
+                data-sort-tier="{{ _tier_rank }}"
+                data-sort-name="{{ r.business_name|lower }}"
+                onclick="window.location.href='/ui/merchants/{{ r.merchant_id }}'">
               <td>
                 {# Merchant status chip: r.merchant.status not threaded through
                    list_deals route yet (router.py:1041) — see Wave 2.2 report
@@ -74,12 +167,30 @@
                 {% if r.fraud_score is number %}{{ r.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
               </td>
               <td>
+                {# AEGIS score tier pill. Uses the existing _tier_badge
+                   partial so styling matches every other surface that
+                   renders a tier (dossier, match panel, etc.). #}
                 {% if r.tier_proxy %}
                   {% with tier = r.tier_proxy %}
                     {% include "_tier_badge.html.j2" %}
                   {% endwith %}
                 {% else %}
                   <span class="mono-cell">—</span>
+                {% endif %}
+              </td>
+              <td class="mono-cell" data-test-id="deals-submission-count">
+                {# "Submitted to N funders" count.
+                   Requires the route handler to populate
+                   r.submitted_funder_count (and r.submitted_funder_ids
+                   for the auditability drill-down). NOT yet wired —
+                   dashboard.py is being edited by a parallel agent so
+                   this PR cannot extend the route. Renders an em-dash
+                   placeholder; chip filter "Pending submission" is
+                   skipped on rows where the field is undefined. #}
+                {% if r.submitted_funder_count is defined %}
+                  {{ r.submitted_funder_count }}
+                {% else %}
+                  —
                 {% endif %}
               </td>
             </tr>
@@ -89,4 +200,133 @@
     {% endif %}
   </div>
 </section>
+
+{% if rows %}
+<script>
+// Deals page client-side search + filter + sort.
+// Pure DOM walk over #deals-tbody rows. No external deps.
+(function () {
+  const tbody = document.getElementById("deals-tbody");
+  if (!tbody) return;
+
+  const searchInput = document.getElementById("deals-search");
+  const sortSelect = document.getElementById("deals-sort");
+  const chipBar = document.querySelector(".deals-filter-chips");
+  if (!chipBar) return;
+
+  const rows = Array.from(tbody.querySelectorAll('tr[data-test-id="deals-row"]'));
+  const chips = Array.from(chipBar.querySelectorAll(".deals-chip"));
+
+  // Active filter set. "all" means no filter; otherwise a Set of
+  // status tokens. Selecting any status auto-deselects "all";
+  // selecting "all" clears the others.
+  let activeFilters = new Set(["all"]);
+
+  function getSearchTerm() {
+    return (searchInput?.value || "").trim().toLowerCase();
+  }
+
+  function rowMatches(row) {
+    // Search: substring on data-merchant-name (already lowercased).
+    const term = getSearchTerm();
+    if (term) {
+      const name = row.getAttribute("data-merchant-name") || "";
+      if (name.indexOf(term) === -1) return false;
+    }
+    // Filter chips: "all" passes everything. Otherwise the row's
+    // data-status must contain at least one of the active filter
+    // tokens (OR semantics across selected chips).
+    if (!activeFilters.has("all")) {
+      const statusTokens = (row.getAttribute("data-status") || "")
+        .split(/\s+/)
+        .filter(Boolean);
+      let match = false;
+      for (const tok of statusTokens) {
+        if (activeFilters.has(tok)) {
+          match = true;
+          break;
+        }
+      }
+      if (!match) return false;
+    }
+    return true;
+  }
+
+  function applyFilters() {
+    for (const row of rows) {
+      row.style.display = rowMatches(row) ? "" : "none";
+    }
+  }
+
+  function applySort() {
+    const mode = sortSelect?.value || "latest-upload";
+    const visible = rows.slice();
+    visible.sort((a, b) => {
+      if (mode === "business-name") {
+        const an = a.getAttribute("data-sort-name") || "";
+        const bn = b.getAttribute("data-sort-name") || "";
+        return an.localeCompare(bn);
+      }
+      if (mode === "score-tier") {
+        const ar = parseInt(a.getAttribute("data-sort-tier") || "9", 10);
+        const br = parseInt(b.getAttribute("data-sort-tier") || "9", 10);
+        if (ar !== br) return ar - br;
+        // Tiebreaker: newer upload first.
+        const au = a.getAttribute("data-sort-uploaded") || "";
+        const bu = b.getAttribute("data-sort-uploaded") || "";
+        return bu.localeCompare(au);
+      }
+      // latest-upload (default): newest first. ISO date sorts
+      // lexicographically. "—" sorts last.
+      const au = a.getAttribute("data-sort-uploaded") || "";
+      const bu = b.getAttribute("data-sort-uploaded") || "";
+      if (au === "—" && bu !== "—") return 1;
+      if (bu === "—" && au !== "—") return -1;
+      return bu.localeCompare(au);
+    });
+    for (const row of visible) tbody.appendChild(row);
+  }
+
+  function updateChipUi() {
+    for (const chip of chips) {
+      const f = chip.getAttribute("data-filter") || "";
+      chip.classList.toggle("is-active", activeFilters.has(f));
+    }
+  }
+
+  // Wire events.
+  searchInput?.addEventListener("input", applyFilters);
+  sortSelect?.addEventListener("change", applySort);
+
+  chipBar.addEventListener("click", (ev) => {
+    const target = ev.target;
+    if (!(target instanceof HTMLElement)) return;
+    const chip = target.closest(".deals-chip");
+    if (!chip) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const f = chip.getAttribute("data-filter") || "";
+    if (!f) return;
+    if (f === "all") {
+      activeFilters = new Set(["all"]);
+    } else {
+      activeFilters.delete("all");
+      if (activeFilters.has(f)) {
+        activeFilters.delete(f);
+        if (activeFilters.size === 0) activeFilters.add("all");
+      } else {
+        activeFilters.add(f);
+      }
+    }
+    updateChipUi();
+    applyFilters();
+  });
+
+  // Initial pass.
+  updateChipUi();
+  applySort();
+  applyFilters();
+})();
+</script>
+{% endif %}
 {% endblock %}

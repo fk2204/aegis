@@ -45,9 +45,7 @@ def merchant_repo(merchant: MerchantRow) -> InMemoryMerchantRepository:
 @pytest.fixture
 def doc_repo(merchant: MerchantRow) -> InMemoryDocumentRepository:
     repo = InMemoryDocumentRepository()
-    row = repo.create_document(
-        file_hash="z" * 64, byte_size=1024, original_filename="x.pdf"
-    )
+    row = repo.create_document(file_hash="z" * 64, byte_size=1024, original_filename="x.pdf")
     # Tie the document to the merchant + persist a parsed result.
     row = row.model_copy(update={"merchant_id": merchant.id})
     repo._docs[row.id] = row
@@ -148,8 +146,12 @@ def test_index_renders_live_kpis(
     assert "Merchants" in resp.text
     assert "In pipeline" in resp.text
     assert "Cleared" in resp.text
-    # Funnel rows now live (have non-zero counts somewhere).
-    assert "Pipeline funnel" in resp.text
+    # Funnel rows now live (have non-zero counts somewhere). After the
+    # 2026-06-16 three-column Today redesign the legacy "Pipeline funnel"
+    # heading text moved below the fold; assert on the stable test-id
+    # exposed by the new pipeline column instead — that's the durable
+    # contract a test should bind to.
+    assert 'data-test-id="today-pipeline-funnel"' in resp.text
 
 
 def test_index_manual_review_doc_surfaces_in_attention_panel(
@@ -338,9 +340,7 @@ def test_dashboard_lists_merchants(client: TestClient, merchant: MerchantRow) ->
     assert merchant.business_name in resp.text
 
 
-def test_merchant_detail_shows_aggregate_tiles(
-    client: TestClient, merchant: MerchantRow
-) -> None:
+def test_merchant_detail_shows_aggregate_tiles(client: TestClient, merchant: MerchantRow) -> None:
     resp = client.get(f"/ui/merchants/{merchant.id}")
     assert resp.status_code == 200
     assert "True Revenue" in resp.text
@@ -464,9 +464,7 @@ def test_merchant_new_submit_rejects_unserved_state(client: TestClient) -> None:
     assert "TX" in resp.text or "not served" in resp.text.lower()
 
 
-def test_merchant_edit_form_pre_fills(
-    client: TestClient, merchant: MerchantRow
-) -> None:
+def test_merchant_edit_form_pre_fills(client: TestClient, merchant: MerchantRow) -> None:
     resp = client.get(f"/ui/merchants/{merchant.id}/edit")
     assert resp.status_code == 200
     assert merchant.business_name in resp.text
@@ -512,9 +510,7 @@ def test_funders_page_shows_active_funders(
 def test_funder_detail_renders_full_row(
     client: TestClient, funder_repo_seeded: InMemoryFunderRepository
 ) -> None:
-    detail_funder = next(
-        f for f in funder_repo_seeded.list_active() if f.name == "Detail Capital"
-    )
+    detail_funder = next(f for f in funder_repo_seeded.list_active() if f.name == "Detail Capital")
     resp = client.get(f"/ui/funders/{detail_funder.id}")
     assert resp.status_code == 200
     assert "Detail Capital" in resp.text
@@ -544,9 +540,7 @@ def stub_llm_extraction() -> object:
     """
 
     class _Stub:
-        def extract_raw_json(
-            self, pdf_bytes: bytes, prompt: str
-        ) -> tuple[dict[str, object], bool]:
+        def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> tuple[dict[str, object], bool]:
             _ = (pdf_bytes, prompt)
             return (
                 {
@@ -665,9 +659,7 @@ def test_funder_import_save_persists_step_c_fields(
             "contact_phone": "555-123-4567",
             "contact_email": "james@stepc.com",
             "submission_email": "iso@stepc.com",
-            "auto_decline_conditions": (
-                "Active tax liens > $25K\nOpen bankruptcy"
-            ),
+            "auto_decline_conditions": ("Active tax liens > $25K\nOpen bankruptcy"),
             "conditional_requirements": "Trucking: 2 yr MVR clean",
             "notes_residual": "Renewals: case-by-case after 50% paid down.",
             "tiers_json": tiers_payload,
@@ -808,9 +800,7 @@ def stub_llm_image_extraction() -> object:
     """
 
     class _ImgStub:
-        def extract_raw_json(
-            self, pdf_bytes: bytes, prompt: str
-        ) -> tuple[dict[str, object], bool]:
+        def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> tuple[dict[str, object], bool]:
             raise NotImplementedError("vision-only stub")
 
         def extract_raw_json_from_images(
@@ -857,9 +847,7 @@ def test_funder_import_review_accepts_single_image(
     """A single PNG routes through the vision path and renders review."""
     from aegis.api.deps import get_llm
 
-    cast(FastAPI, client.app).dependency_overrides[get_llm] = (
-        lambda: stub_llm_image_extraction
-    )
+    cast(FastAPI, client.app).dependency_overrides[get_llm] = lambda: stub_llm_image_extraction
 
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
     resp = client.post(
@@ -878,9 +866,7 @@ def test_funder_import_review_merges_pdf_and_image(
     from aegis.api.deps import get_llm
 
     class _DualStub:
-        def extract_raw_json(
-            self, pdf_bytes: bytes, prompt: str
-        ) -> tuple[dict[str, object], bool]:
+        def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> tuple[dict[str, object], bool]:
             _ = (pdf_bytes, prompt)
             return (
                 {
@@ -1107,9 +1093,7 @@ def test_merchant_detail_dossier_renders_without_error(
     assert "dossier-page" in resp.text
 
 
-def test_view_v2_query_param_still_responds(
-    client: TestClient, merchant: MerchantRow
-) -> None:
+def test_view_v2_query_param_still_responds(client: TestClient, merchant: MerchantRow) -> None:
     """The legacy ?view=v2 link was retired when the app unified on the
     dossier. Any bookmarked v2 URL must still 200 — the query param is
     silently ignored and the dossier render is returned."""
@@ -1157,9 +1141,7 @@ def test_applicants_known_merchant_with_docs_redirects_to_detail(
 ) -> None:
     # Seed merchant with email; reuse the already-attached document from the
     # doc_repo fixture by pointing it at this merchant.
-    m = MerchantRow(
-        business_name="Doc Co", owner_name="Jane Doe", state="CA", email="ops@doc.co"
-    )
+    m = MerchantRow(business_name="Doc Co", owner_name="Jane Doe", state="CA", email="ops@doc.co")
     m = merchant_repo.upsert(m)
     for row in list(doc_repo._docs.values()):
         doc_repo._docs[row.id] = row.model_copy(update={"merchant_id": m.id})

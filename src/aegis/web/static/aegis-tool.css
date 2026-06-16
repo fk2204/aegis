@@ -1700,3 +1700,245 @@
   color: var(--ink);
 }
 
+/* ===================== TODAY DASHBOARD ===================== */
+/* Three-column Today layout (2026-06-16). Left 40% = attention queue
+ * (manual review + stale deals + pending funder follow-ups); center
+ * 35% = today's pipeline (scored count, tier pills, 5-stage funnel);
+ * right 25% = quick-action buttons + recent audit activity. Mobile
+ * (<=768px) stacks: attention → pipeline → actions. */
+
+.dossier-page .today-cols {
+  display: grid;
+  grid-template-columns: 40fr 35fr 25fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.dossier-page .today-col {
+  min-width: 0; /* allow grid children to shrink instead of overflowing */
+}
+
+/* Attention queue sub-sections — manual review keeps the existing
+ * .attention-card chrome; stale deals + pending funder use compact
+ * one-line .attn-card rows. */
+.dossier-page .attn-section {
+  margin-top: 18px;
+}
+.dossier-page .attn-section:first-child {
+  margin-top: 8px;
+}
+.dossier-page .attn-section-head {
+  font: 11px/1 var(--sans, "Inter", system-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 10px;
+}
+
+.dossier-page .attn-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dossier-page .attn-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--review);
+  border-radius: var(--r-sm, 4px);
+}
+.dossier-page .attn-card-title {
+  font: 600 13px/1.3 var(--serif, "Fraunces", Georgia);
+  color: var(--ink);
+  text-decoration: none;
+}
+.dossier-page .attn-card-title:hover {
+  text-decoration: underline;
+}
+.dossier-page .attn-card-needs {
+  font: 12px/1.4 var(--sans, "Inter", system-ui);
+  color: var(--ink-3);
+}
+.dossier-page .attn-more {
+  margin-top: 6px;
+  font: 11px/1.2 var(--sans, "Inter", system-ui);
+  color: var(--ink-3);
+  text-align: right;
+}
+.dossier-page .empty-mini {
+  padding: 8px 0;
+  font: 12px/1.4 var(--sans, "Inter", system-ui);
+  color: var(--ink-3);
+}
+
+/* Pipeline today — center column. */
+.dossier-page .today-scored {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 0 14px;
+  border-bottom: 1px solid var(--rule);
+}
+.dossier-page .today-scored-n {
+  font: 700 36px/1 var(--serif, "Fraunces", Georgia);
+  color: var(--ink);
+}
+.dossier-page .today-scored-label {
+  font: 12px/1.3 var(--sans, "Inter", system-ui);
+  color: var(--ink-3);
+}
+
+.dossier-page .tier-pills {
+  display: flex;
+  gap: 8px;
+  margin: 14px 0 18px;
+  flex-wrap: wrap;
+}
+.dossier-page .tier-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  font: 12px/1 var(--sans, "Inter", system-ui);
+  color: var(--paper);
+}
+.dossier-page .tier-pill-letter {
+  font: 700 13px/1 var(--sans, "Inter", system-ui);
+  letter-spacing: 0.04em;
+}
+.dossier-page .tier-pill-count {
+  font: 600 12px/1 var(--mono, "JetBrains Mono", monospace);
+}
+/* Per the brief: A=approve, B=ink, C=review, D=between review/decline,
+ * F=decline. D shades to a warmer amber via color-mix so it reads as
+ * one notch hotter than C without crossing into full decline red. */
+.dossier-page .tier-pill-A { background: var(--approve); }
+.dossier-page .tier-pill-B { background: var(--ink); }
+.dossier-page .tier-pill-C { background: var(--review); color: var(--ink); }
+.dossier-page .tier-pill-D {
+  background: color-mix(in oklch, var(--review) 45%, var(--decline) 55%);
+}
+.dossier-page .tier-pill-F { background: var(--decline); }
+
+/* Five-stage horizontal funnel — Uploaded → Parsed → Scored →
+ * Submitted → Decision. Each stage is a column with a big count above
+ * its label; arrows render via ::after on each li except the last. */
+.dossier-page .today-funnel {
+  margin-top: 14px;
+}
+.dossier-page .funnel-stages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+}
+.dossier-page .funnel-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 4px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm, 4px);
+}
+.dossier-page .funnel-stage-count {
+  font: 700 20px/1 var(--serif, "Fraunces", Georgia);
+  color: var(--ink);
+}
+.dossier-page .funnel-stage-label {
+  margin-top: 4px;
+  font: 10px/1 var(--sans, "Inter", system-ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.dossier-page .funnel-stage + .funnel-stage::before {
+  content: "→";
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font: 12px/1 var(--sans, "Inter", system-ui);
+  color: var(--ink-3);
+}
+
+.dossier-page .today-legacy-funnel {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+}
+
+/* Right column — quick-action buttons + recent activity. */
+.dossier-page .qa-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+.dossier-page .qa-btn {
+  display: block;
+  width: 100%;
+  text-align: center;
+  font: 600 14px/1.2 var(--sans, "Inter", system-ui);
+  padding: 14px 20px;
+  text-decoration: none;
+}
+
+.dossier-page .today-activity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dossier-page .today-activity-row {
+  display: flex;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px dotted var(--rule);
+  font: 12px/1.4 var(--sans, "Inter", system-ui);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dossier-page .today-activity-row:last-child {
+  border-bottom: none;
+}
+.dossier-page .today-activity-time {
+  flex-shrink: 0;
+  font-family: var(--mono, "JetBrains Mono", monospace);
+  color: var(--ink-3);
+  width: 48px;
+}
+.dossier-page .today-activity-action {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+
+/* Mobile — stack the three columns. Attention queue first, pipeline
+ * second, quick actions third (matches operator priority on small
+ * screens: clear the queue, see today, then act). */
+@media (max-width: 768px) {
+  .dossier-page .today-cols {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .dossier-page .funnel-stages {
+    grid-template-columns: repeat(5, minmax(48px, 1fr));
+  }
+}
+
