@@ -91,7 +91,7 @@ import traceback
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 from uuid import UUID
 
 from aegis.audit import AuditLog, SupabaseAuditLog
@@ -987,6 +987,23 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--cleanup-orphans",
+        action="store_true",
+        help=(
+            "Separate maintenance mode: skip the Close traversal entirely "
+            "and sweep ``documents`` rows where ``uploaded_by = "
+            f"'{_ACTOR}'`` AND ``parsed_at IS NULL``. These are "
+            "documents created by a prior --apply run whose pipeline "
+            "failed downstream (pdf_store write, extraction, etc.) and "
+            "left the row at parse_status='pending' with no children. "
+            "Dry-run by default — prints the orphan list; add --apply to "
+            "delete each row and write a ``document.orphan_cleanup`` "
+            "audit row per delete. The CASCADE on transactions / "
+            "analyses / pdf_store cleans up any half-state child rows "
+            "in the same transaction."
+        ),
+    )
+    p.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -1044,6 +1061,100 @@ def _open_output_stream(path: str) -> object:
     return Path(path).open("w", encoding="utf-8", newline="")
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Orphan cleanup mode (--cleanup-orphans)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _cleanup_orphans(*, audit: AuditLog, apply_writes: bool) -> tuple[int, int]:
+    """Sweep documents rows this script created that never reached a
+    parsed state.
+
+    Selector: ``uploaded_by = _ACTOR`` AND ``parsed_at IS NULL``. These
+    are the half-state rows the 2026-06-16 --apply pass left behind
+    when ``pdf_store.store`` raised on the BYTEA-write path (Fix 1's
+    seal-before-persist reorder prevents new ones, but the existing
+    pile needs an explicit cleanup), plus any new failure during a
+    future --apply pass that errored before persist_parse_result
+    landed.
+
+    Dry-run prints the orphan list; --apply deletes each row and writes
+    a ``document.orphan_cleanup`` audit row. The documents → transactions
+    / analyses / pdf_store CASCADE drops any half-state child rows in
+    the same DB transaction, so a single ``documents.delete`` per row
+    is enough.
+
+    Returns ``(found, deleted)``. In dry-run mode ``deleted`` is always 0.
+    """
+    sb = get_supabase()
+    result = (
+        sb.table("documents")
+        .select("id, file_hash, original_filename, uploaded_at, merchant_id")
+        .eq("uploaded_by", _ACTOR)
+        .is_("parsed_at", "null")
+        .execute()
+    )
+    rows = cast(list[dict[str, Any]], result.data or [])
+    print(
+        f"# orphan-cleanup: found {len(rows)} orphan(s) "
+        f"(uploaded_by={_ACTOR!r}, parsed_at IS NULL)",
+        file=sys.stderr,
+    )
+    for r in rows:
+        print(
+            f"#   id={r.get('id')}  uploaded_at={r.get('uploaded_at')}  "
+            f"merchant_id={r.get('merchant_id')!s:36}  "
+            f"filename={(r.get('original_filename') or '?')!r}",
+            file=sys.stderr,
+        )
+
+    if not apply_writes:
+        print(
+            "# DRY-RUN: pass --apply to actually delete these rows + write "
+            "document.orphan_cleanup audit rows",
+            file=sys.stderr,
+        )
+        return (len(rows), 0)
+
+    deleted = 0
+    for r in rows:
+        try:
+            doc_id = UUID(str(r["id"]))
+        except (ValueError, KeyError) as exc:
+            print(
+                f"ERROR: skipping malformed row {r!r}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            sb.table("documents").delete().eq("id", str(doc_id)).execute()
+            audit.record(
+                actor=_ACTOR,
+                action="document.orphan_cleanup",
+                subject_type="document",
+                subject_id=doc_id,
+                details={
+                    "file_hash": r.get("file_hash"),
+                    "original_filename": r.get("original_filename"),
+                    "uploaded_at": r.get("uploaded_at"),
+                    "merchant_id": r.get("merchant_id"),
+                    "reason": "orphan_pending_no_pipeline_completion",
+                },
+            )
+            deleted += 1
+        except Exception as exc:
+            print(
+                f"ERROR: delete failed for {doc_id}: {_format_error_chain(exc)}",
+                file=sys.stderr,
+            )
+
+    print(
+        f"# orphan-cleanup: deleted {deleted}/{len(rows)}",
+        file=sys.stderr,
+    )
+    return (len(rows), deleted)
+
+
 def main() -> int:
     args = _parse_args()
 
@@ -1065,6 +1176,23 @@ def main() -> int:
         )
         traceback.print_exc(file=sys.stderr)
         return EXIT_RUNTIME_ERROR
+
+    # Cleanup mode is a separate code path — skip Close traversal, skip
+    # ingest, just sweep the orphan documents rows. Returns immediately
+    # after the sweep. CloseClient was still constructed by
+    # _load_dependencies (cheap, no auth-handshake); explicit close
+    # below for symmetry with the main path.
+    if args.cleanup_orphans:
+        try:
+            found, deleted = _cleanup_orphans(audit=audit, apply_writes=args.apply)
+        finally:
+            close_client.close()
+        mode = "APPLY" if args.apply else "DRY-RUN"
+        print(
+            f"# mode={mode} +cleanup-orphans found={found} deleted={deleted}",
+            file=sys.stderr,
+        )
+        return EXIT_ISSUES_FOUND if found > 0 and not args.apply else EXIT_OK
 
     try:
         backlog = collect_backlog_merchants(document_repo, merchants_repo)
