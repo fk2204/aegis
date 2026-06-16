@@ -91,10 +91,11 @@ import traceback
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 from aegis.audit import AuditLog, SupabaseAuditLog
+from aegis.bank_layouts.models import BankLayoutRow
 from aegis.close.client import (
     CloseAttachment,
     CloseClient,
@@ -102,11 +103,13 @@ from aegis.close.client import (
 )
 from aegis.config import get_settings
 from aegis.db import get_supabase
+from aegis.logger import get_logger
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import (
     MerchantNotFoundError,
     SupabaseMerchantRepository,
 )
+from aegis.parser.extract import ExtractionError
 from aegis.parser.pipeline import PipelineResult, run_pipeline
 from aegis.pdf_store.repository import (
     PdfStoreNotFoundError,
@@ -136,8 +139,32 @@ _BACKLOG_STATUSES: Final[tuple[ParseStatus, ...]] = ("manual_review", "error")
 # covers >5 years at current ingest velocity.
 _BACKLOG_LIMIT: Final[int] = 500
 
+_log = get_logger(__name__)
+
 # Actor stamp used on audit rows + create_document.uploaded_by.
 _ACTOR: Final[str] = "recover_legacy_docs_script"
+
+# Hint string appended to the extraction prompt on the SECOND-pass retry
+# when the first pass returned a partial ExtractedStatement (period_start
+# / period_end / deposit_total came back null). Empirically Bedrock
+# sometimes drops the summary block when the statement period is in a
+# non-standard header location (multi-column layouts, the top of page 2,
+# etc.); a one-sentence reminder usually recovers it. The prompt
+# pipeline already wraps any hint with the "Layout hints from prior
+# successful parses of this bank:" prefix, so this string slots into
+# that frame.
+_PERIOD_RETRY_HINT: Final[str] = (
+    "RETRY GUIDANCE: the previous extraction returned a null statement "
+    "period. The statement period dates are usually printed near a "
+    "heading like 'Statement Period', 'For the Period', or 'Account "
+    "Activity From … To …', on either the first page or the top of "
+    "page 2. Find them, and populate `summary.period_start` + "
+    "`summary.period_end` in ISO YYYY-MM-DD form. Populate "
+    "`summary.deposit_total` + `summary.withdrawal_total` from the "
+    "summary block printed near the period (typically a small table "
+    "of `Total Deposits / Total Withdrawals / Ending Balance` rows). "
+    "Use 0 when a category truly does not appear on this statement."
+)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -236,6 +263,124 @@ def collect_backlog_merchants(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Pipeline retry — partial-extraction recovery
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _RetryHintBankLayouts:
+    """Minimal ``BankLayoutRepository`` stub that injects a single fixed
+    hint string for every ``get_hints`` call.
+
+    Used by ``_run_pipeline_with_retry`` to coax a second extraction
+    pass: when the first run raises ``ExtractionError`` (typically a
+    Pydantic ``ValidationError`` on null summary fields) the retry
+    threads this stub into ``run_pipeline``'s ``bank_layouts`` argument
+    along with ``known_bank_name="aegis_retry_pass"``. The pipeline's
+    ``_build_extraction_prompt_suffix`` then sees a non-None hint and
+    appends it to the base extraction prompt, prefixed with the
+    canonical "Layout hints from prior successful parses of this bank:".
+
+    Writes (``upsert_success``, ``set_hints``) are deliberate no-ops —
+    the retry is ephemeral and must not contaminate the production
+    ``bank_layouts`` table with a bogus row for the synthetic
+    "aegis_retry_pass" bank.
+    """
+
+    def __init__(self, hint: str) -> None:
+        self._hint = hint
+
+    def get_hints(self, bank_name: str) -> str | None:
+        return self._hint
+
+    def upsert_success(self, *, bank_name: str, fingerprint: dict[str, Any]) -> BankLayoutRow:
+        # No-op: the synthetic row never leaves this object. We still
+        # return a BankLayoutRow so the protocol shape matches.
+        return BankLayoutRow(
+            bank_name=bank_name,
+            layout_fingerprint=dict(fingerprint),
+            successful_parses=0,
+        )
+
+    def find_by_bank_name(self, bank_name: str) -> BankLayoutRow | None:
+        return None
+
+    def set_hints(self, *, bank_name: str, hints: str) -> BankLayoutRow:
+        raise NotImplementedError("_RetryHintBankLayouts is read-only by design")
+
+    def list_all(self) -> list[BankLayoutRow]:
+        return []
+
+
+def _format_error_chain(exc: BaseException, max_depth: int = 3) -> str:
+    """Render ``exc`` AND its ``__cause__`` chain as a one-cell CSV string.
+
+    Default error formatting (``f"{type(exc).__name__}: {exc}"``) drops
+    the underlying exception when the script's typed wrappers
+    ``raise … from exc`` — leaving the operator with
+    ``PdfStoreWriteError: failed to write pdf_store row …`` and no
+    diagnostic for the real cause underneath. Walking ``__cause__`` for
+    up to ``max_depth`` levels surfaces the original error inline.
+
+    Format: ``OuterType: outer message  ←  CauseType: cause message``.
+    """
+    chain: list[str] = []
+    current: BaseException | None = exc
+    depth = 0
+    seen: set[int] = set()
+    while current is not None and depth < max_depth and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__
+        depth += 1
+    return "  ←  ".join(chain)
+
+
+def _run_pipeline_with_retry(
+    pdf_path: str,
+    llm: object,
+    *,
+    log_context: str,
+) -> PipelineResult:
+    """Run ``run_pipeline`` once; on ``ExtractionError`` retry once with
+    a "find the statement period" hint.
+
+    Two-call cap by design: ``.claude/rules/architecture.md`` bans
+    LLM retries after a successful validation gate, but extraction
+    failure is BEFORE the gate — a single guided second pass on the
+    same PDF when the first returned null summary fields is the
+    intended use case for the bank_layouts hint surface (operator-
+    curated hints exist for exactly this kind of bank-specific
+    extraction friction). ``log_context`` lands in the structured
+    warning the retry emits so the operator can correlate retries to
+    the doc / merchant they belong to.
+    """
+    try:
+        return run_pipeline(pdf_path, llm)  # type: ignore[arg-type]
+    except ExtractionError as first:
+        _log.warning(
+            "recover_legacy_docs.extraction_retry context=%s first_error=%s",
+            log_context,
+            _format_error_chain(first),
+        )
+        retry_layouts = _RetryHintBankLayouts(_PERIOD_RETRY_HINT)
+        try:
+            return run_pipeline(
+                pdf_path,
+                llm,  # type: ignore[arg-type]
+                bank_layouts=retry_layouts,
+                known_bank_name="aegis_retry_pass",
+            )
+        except ExtractionError as second:
+            # Re-raise the SECOND failure with the FIRST attached as
+            # cause so the CSV's error column shows both passes lost.
+            # Without the chain link the operator sees only the retry's
+            # error and may waste time investigating retry-specific
+            # extraction noise rather than the underlying first-pass
+            # gap.
+            raise second from first
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Per-attachment ingest
 # ─────────────────────────────────────────────────────────────────────
 
@@ -295,9 +440,16 @@ def _ingest_attachment(
     try:
         tmp.write(file_bytes)
         tmp.close()
-        # Run the pipeline inline. Same call signature the arq worker
-        # uses at workers.py:210.
-        result: PipelineResult = run_pipeline(tmp.name, llm)  # type: ignore[arg-type]
+        # Run the pipeline inline. ``_run_pipeline_with_retry`` is the
+        # wrapper that gives partial-extraction failures a second pass
+        # with the "find statement period" hint (see Fix 2 in the
+        # follow-up batch on 2026-06-16). On a fully-clean PDF this is
+        # identical to a single run_pipeline call.
+        result: PipelineResult = _run_pipeline_with_retry(
+            tmp.name,
+            llm,
+            log_context=f"ingest doc={document.id} att={attachment.id}",
+        )
         # Seal pdf_store BEFORE persist_parse_result. If the seal
         # raises, the documents row stays at parse_status="pending"
         # with no transactions / analyses — a clean "not-yet-parsed"
@@ -369,7 +521,11 @@ def _backfill_pdf_store_and_reparse(
     try:
         tmp.write(file_bytes)
         tmp.close()
-        result: PipelineResult = run_pipeline(tmp.name, llm)  # type: ignore[arg-type]
+        result: PipelineResult = _run_pipeline_with_retry(
+            tmp.name,
+            llm,
+            log_context=f"backfill doc={existing_doc.id}",
+        )
 
         # Seal first — idempotent upsert on document_id PK (pdf_store
         # repo line ~159). If this raises (write error / settings drift),
@@ -445,7 +601,7 @@ def _process_attachment(
             action="error",
             document_id="",
             parse_status="",
-            detail=f"close_download: {type(exc).__name__}: {exc}",
+            detail=f"close_download: {_format_error_chain(exc)}",
         )
 
     if len(file_bytes) > max_upload_bytes:
@@ -502,7 +658,7 @@ def _process_attachment(
                 action="error",
                 document_id=str(existing.id),
                 parse_status="",
-                detail=f"backfill_seal_check: {type(exc).__name__}: {exc}",
+                detail=f"backfill_seal_check: {_format_error_chain(exc)}",
             )
 
         if not apply_writes:
@@ -538,7 +694,7 @@ def _process_attachment(
                 action="error",
                 document_id=str(existing.id),
                 parse_status="",
-                detail=f"backfill: {type(exc).__name__}: {exc}",
+                detail=f"backfill: {_format_error_chain(exc)}",
             )
 
         return AttachmentOutcome(
@@ -603,7 +759,7 @@ def _process_attachment(
             action="error",
             document_id="",
             parse_status="",
-            detail=f"ingest: {type(exc).__name__}: {exc}",
+            detail=f"ingest: {_format_error_chain(exc)}",
         )
 
     return AttachmentOutcome(
@@ -686,7 +842,7 @@ def process_merchant(
             attachments_backfilled=0,
             attachments_skipped=0,
             parse_results="",
-            errors=f"close_list: {type(exc).__name__}: {exc}",
+            errors=f"close_list: {_format_error_chain(exc)}",
         )
 
     per_attachment: list[AttachmentOutcome] = []
