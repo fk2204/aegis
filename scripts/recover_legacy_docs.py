@@ -110,6 +110,7 @@ from aegis.merchants.repository import (
     SupabaseMerchantRepository,
 )
 from aegis.parser.extract import ExtractionError
+from aegis.parser.metadata import PdfEncryptedError
 from aegis.parser.pipeline import PipelineResult, run_pipeline
 from aegis.pdf_store.repository import (
     PdfStoreNotFoundError,
@@ -686,6 +687,22 @@ def _process_attachment(
                 llm=llm,
                 upload_dir=upload_dir,
             )
+        except PdfEncryptedError as exc:
+            # Password-protected PDF. Surface a clear, grep-friendly
+            # label rather than the raw exception so the operator
+            # filtering the CSV with ``grep password_protected`` finds
+            # every such row in one pass. Matches the convention the
+            # upload route's analyse-metadata step uses for the same
+            # condition (operator-facing error code, no script crash).
+            return AttachmentOutcome(
+                attachment_id=attachment.id,
+                filename=filename,
+                sha256=file_hash,
+                action="error",
+                document_id=str(existing.id),
+                parse_status="",
+                detail=f"backfill: password_protected: {exc}",
+            )
         except Exception as exc:
             return AttachmentOutcome(
                 attachment_id=attachment.id,
@@ -750,6 +767,28 @@ def _process_attachment(
             document_id="",
             parse_status="",
             detail=f"race: {exc}",
+        )
+    except PdfEncryptedError as exc:
+        # Password-protected PDF. ``analyze_metadata`` (the first call
+        # inside ``run_pipeline``) raises this before any LLM cost is
+        # incurred — pikepdf can't open the file, so we never paid for
+        # the parse. The CSV column is grep-friendly: a single
+        # ``grep password_protected recover_legacy_docs.csv`` returns
+        # every Close attachment the operator needs to re-export from
+        # the originating bank with the password stripped. The
+        # ``documents`` row created above by ``create_document`` stays
+        # at parse_status="pending" with no transactions / analyses —
+        # the same half-state Fix 1's seal-before-persist ordering
+        # leaves behind for any pipeline failure, and the same one
+        # ``--cleanup-orphans`` will sweep.
+        return AttachmentOutcome(
+            attachment_id=attachment.id,
+            filename=filename,
+            sha256=file_hash,
+            action="error",
+            document_id="",
+            parse_status="",
+            detail=f"ingest: password_protected: {exc}",
         )
     except Exception as exc:
         return AttachmentOutcome(
