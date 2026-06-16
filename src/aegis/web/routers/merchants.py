@@ -77,10 +77,6 @@ from aegis.funders.repository import (
     FunderNotFoundError,
     FunderRepository,
 )
-from aegis.merchants.document_completeness import (
-    DocumentCompletenessWarning,
-    check_completeness,
-)
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import (
     MerchantConflictError,
@@ -131,6 +127,7 @@ from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
 from aegis.scoring_v2.score_for_sync import (
     recommended_factor_rate_from as _recommended_factor_rate_from,
 )
+from aegis.scoring_v2.stips import StipsResult, evaluate_stips
 from aegis.scoring_v2.track_a import IntegrityVerdict
 from aegis.scoring_v2.trends import compute_revenue_trends
 from aegis.storage import (
@@ -595,6 +592,7 @@ async def merchant_match(
             score_input,
             score_result,
             historical_approval_rate=historical_rate,
+            merchant=merchant,
         )
         if m is None:
             continue
@@ -743,7 +741,7 @@ async def merchant_submit_to_funders(
     for f in funder_repo.list_active():
         if f.id not in requested_set:
             continue
-        m = match_funder(f, score_input, score_result)
+        m = match_funder(f, score_input, score_result, merchant=merchant)
         if m is None:
             continue
         matched.append(m)
@@ -1019,31 +1017,40 @@ async def merchant_submit_to_funder(
 
     matched: list[FunderMatch] = []
     for f in funder_repo.list_active():
-        m = match_funder(f, score_input, score_result)
+        m = match_funder(f, score_input, score_result, merchant=merchant)
         if m is None:
             continue
         matched.append(m)
     matched.sort(key=lambda fm: fm.match_score, reverse=True)
 
-    # Document-completeness gate (Feature 2 — 2026-06-15 operator
-    # directive). Before posting the Close Note, check the top matched
-    # funder's ``conditional_requirements`` against the merchant's
-    # document-on-file flags (migration 061). Refuse with 400 +
-    # warning detail when anything required is missing — the operator
-    # toggles the flag on /ui/merchants/{id}/edit and retries. Empty
-    # ``matched`` short-circuits the check (the no-match branch
-    # downstream already records ``submission_skipped_no_matches``).
+    # Stipulations gate (Sprint 6 Track A — supersedes the legacy
+    # document-completeness check; the legacy adapter still exists for
+    # backwards compatibility but the gate now consumes the full
+    # ``StipsResult`` bucket). Before posting the Close Note, evaluate
+    # the top matched funder's ``conditional_requirements`` against the
+    # merchant's on-file flags and refuse with 400 when:
+    #   * any STRUCTURED missing stip (voided check / driver's license /
+    #     N-months statements) is unmet, OR
+    #   * any UNKNOWN missing stip is hard ("must provide ...",
+    #     "required ..."). Soft-worded unknowns ("nice-to-have ACH proof")
+    #     do NOT gate — operator owns judgement on those via dossier
+    #     review. Documented here so the next session understands the
+    #     policy: known unknowns we can verify (structured kinds) always
+    #     gate; unknown unknowns gate only when the funder used hard
+    #     language. Empty ``matched`` short-circuits (the no-match
+    #     branch downstream records ``submission_skipped_no_matches``).
     if matched:
         top_funder = funder_repo.get(matched[0].funder_id)
-        completeness_warnings = check_completeness(merchant=merchant, funder=top_funder)
-        if completeness_warnings:
+        top_stips_result = evaluate_stips(top_funder, merchant)
+        gating_missing = [item for item in top_stips_result.missing if item.is_hard]
+        if gating_missing:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
-                    "error": "document_completeness_failed",
+                    "error": "stipulations_unmet",
                     "top_funder_id": str(top_funder.id),
                     "top_funder_name": top_funder.name,
-                    "warnings": [w.model_dump() for w in completeness_warnings],
+                    "missing": [item.model_dump() for item in gating_missing],
                 },
             )
 
@@ -1440,6 +1447,8 @@ def _maybe_render_dossier_pdf(
     merchant: MerchantRow,
     docs: DocumentRepository,
     ofac: OFACClient | None,
+    funder_repo: FunderRepository | None = None,
+    funder_note_subs: FunderNoteSubmissionRepository | None = None,
 ) -> tuple[bytes | None, str | None]:
     """Render the merchant's PDF dossier (operator review + audit), or fail soft.
 
@@ -1447,11 +1456,24 @@ def _maybe_render_dossier_pdf(
     Hetzner box / WSL2 native libs are unavailable. The submission flow
     must not fail just because a PDF can't be produced — the CSV ZIP
     download and the audit row are the authoritative record.
+
+    ``funder_repo`` + ``funder_note_subs`` are optional. When supplied the
+    PDF gains the top-funder-matches and submission-history sections —
+    both web-dossier features. Legacy callers (e.g. the submit-to-funders
+    flow which historically built without these repos) keep working with
+    the new sections omitted; they still get the verdict + cashflow +
+    pattern + state + statements package.
     """
     try:
         import weasyprint
 
-        context = _build_pdf_dossier_context(merchant, docs, ofac)
+        context = _build_pdf_dossier_context(
+            merchant,
+            docs,
+            ofac,
+            funder_repo=funder_repo,
+            funder_note_subs=funder_note_subs,
+        )
         html = templates.get_template("merchant_detail_dossier_pdf.html.j2").render(context)
         pdf_bytes = cast(bytes, weasyprint.HTML(string=html).write_pdf())
         filename = f"{slugify(merchant.business_name)}_dossier.pdf"
@@ -2080,25 +2102,25 @@ async def merchant_detail(
     # the empty-state copy).
     funder_note_submissions = funder_note_subs.list_for_merchant(merchant_id=merchant_id, limit=50)
 
-    # Document-completeness checklist (Feature 2 — 2026-06-15). Compute
-    # warnings against the top matched funder so the operator sees what
-    # the submit-to-funder gate will require before clicking. Skipped
-    # when the merchant isn't yet scoreable (no score_result) — the
-    # button is hidden / disabled in that branch anyway. Also skipped
-    # when no funder matches — the submit-to-funder POST also short-
-    # circuits the check in the same branch.
+    # Stipulations checklist (Sprint 6 Track A — supersedes the legacy
+    # completeness_warnings path; the dossier now renders the full
+    # bucketed view as red/green/yellow chips). Skipped when the
+    # merchant isn't yet scoreable (no score_result) — the button is
+    # hidden / disabled in that branch anyway. Also skipped when no
+    # funder matches; the submit-to-funder POST short-circuits in the
+    # same branch.
     top_matched_funder: FunderRow | None = None
-    completeness_warnings: list[DocumentCompletenessWarning] = []
+    stips_result: StipsResult | None = None
     if score_result is not None and score_input is not None:
         _matched: list[FunderMatch] = []
         for _f in funder_repo.list_active():
-            _m = match_funder(_f, score_input, score_result)
+            _m = match_funder(_f, score_input, score_result, merchant=merchant)
             if _m is not None:
                 _matched.append(_m)
         if _matched:
             _matched.sort(key=lambda fm: fm.match_score, reverse=True)
             top_matched_funder = funder_repo.get(_matched[0].funder_id)
-            completeness_warnings = check_completeness(merchant=merchant, funder=top_matched_funder)
+            stips_result = evaluate_stips(top_matched_funder, merchant)
 
     return templates.TemplateResponse(
         request,
@@ -2140,7 +2162,7 @@ async def merchant_detail(
                 "drivers_license_on_file": merchant.drivers_license_on_file,
                 "bank_statements_months": merchant.bank_statements_months,
             },
-            "completeness_warnings": [w.model_dump() for w in completeness_warnings],
+            "stips_result": (stips_result.model_dump() if stips_result else None),
             "top_matched_funder_name": (top_matched_funder.name if top_matched_funder else None),
         },
     )
@@ -2152,6 +2174,11 @@ async def merchant_dossier_pdf(
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     docs: Annotated[DocumentRepository, Depends(get_repository)],
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
 ) -> Response:
     """Downloadable PDF dossier of the merchant.
 
@@ -2160,13 +2187,23 @@ async def merchant_dossier_pdf(
     system fonts. Always renders the *default* bundle (most-populated
     bank/last4 pair); operators switching bundles on the dashboard get
     the on-screen view, not a separate PDF per bundle.
+
+    ``funder_repo`` + ``funder_note_subs`` feed the top-funder-matches
+    section + the submission-history section so the funder-facing PDF
+    carries the same chips the on-screen dossier shows the operator.
     """
     try:
         merchant = merchants.get(merchant_id)
     except MerchantNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-    context = _build_pdf_dossier_context(merchant, docs, ofac)
+    context = _build_pdf_dossier_context(
+        merchant,
+        docs,
+        ofac,
+        funder_repo=funder_repo,
+        funder_note_subs=funder_note_subs,
+    )
     template = templates.get_template("merchant_detail_dossier_pdf.html.j2")
     html = template.render(context)
 
@@ -2201,13 +2238,23 @@ def _build_pdf_dossier_context(
     merchant: MerchantRow,
     docs: DocumentRepository,
     ofac: OFACClient | None,
+    *,
+    funder_repo: FunderRepository | None = None,
+    funder_note_subs: FunderNoteSubmissionRepository | None = None,
 ) -> dict[str, Any]:
-    """Build the print-template context (subset of merchant_detail's context).
+    """Build the print-template context (parity with merchant_detail's context).
 
-    The print template only needs the fields it actually renders. This
-    helper keeps the PDF route concise and the data sourcing identical
-    to the HTML dossier (same scoring, same bundle pick, same pattern
-    cards, same OFAC ribbon).
+    The print template needs the same data set the on-screen dossier
+    renders so the funder-facing PDF carries the same industry-tier,
+    trend, stacking, balance-health, offer, top-funder-matches, and
+    submission-history chips the operator already trusts seeing on
+    screen.
+
+    ``funder_repo`` + ``funder_note_subs`` are optional. When None the
+    top-funder-matches and submission-history sections render as empty
+    states (template handles graceful omission) — relevant for the
+    submit-to-funders flow which historically built the PDF without
+    these repos.
     """
     all_docs = docs.list_documents(merchant_id=merchant.id, limit=50)
     analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in all_docs])
@@ -2219,12 +2266,14 @@ def _build_pdf_dossier_context(
     latest_analysis = analyses_by_doc.get(latest_doc.id) if latest_doc else None
 
     score_result = None
+    score_input: ScoreInput | None = None
     score_window = None
     statement_coverage: dict[str, Any] | None = None
     stacking = None
     mca_stack = None
     balance_health = None
     offer = None
+    revenue_trends = None
     pattern_cards: list[Any] = []
     pattern_analysis_for_view: Any = None
 
@@ -2270,6 +2319,10 @@ def _build_pdf_dossier_context(
             score_input = _score_input_multi_month(
                 merchant, items, pattern_analysis=pattern_analysis
             )
+            # Shadow-only revenue / ADB / NSF trend chips — same source
+            # as the on-screen dossier. Single-month inputs collapse to
+            # all-flat per the function's contract.
+            revenue_trends = compute_revenue_trends(score_input.monthly_breakdown)
             # U33 — same Track A/B feed as the HTML dossier branch above.
             track_a_verdict, track_b_band = compute_score_deal_track_inputs(
                 documents=all_docs,
@@ -2349,6 +2402,54 @@ def _build_pdf_dossier_context(
     else:
         ofac_dossier_status = "pending"
 
+    # Unified A+B+C view — drives the industry-tier chip on the PDF.
+    # Same source as the on-screen dossier (``build_unified_tracks_view``).
+    from aegis.scoring_v2.dossier_panel import build_unified_tracks_view
+
+    unified_tracks = build_unified_tracks_view(
+        documents=all_docs,
+        list_transactions=docs.list_transactions,
+        analyses_by_doc=analyses_by_doc,
+        industry_tier=industry_risk_tier(merchant.industry_choice),
+    )
+
+    # Top 3 funder matches. Only computed when a finalized merchant has a
+    # score_result AND the caller threaded a funder repo. Sort by
+    # ``match_score`` descending and slice — mirrors the on-screen
+    # matched-funders panel. The first ``TierMatch`` with ``qualifies=True``
+    # (if any) labels the qualifying tier on the dossier line.
+    top_matched_funders: list[dict[str, Any]] = []
+    if funder_repo is not None and score_input is not None and score_result is not None:
+        _matched: list[FunderMatch] = []
+        for _f in funder_repo.list_active():
+            _m = match_funder(_f, score_input, score_result)
+            if _m is not None:
+                _matched.append(_m)
+        _matched.sort(key=lambda fm: fm.match_score, reverse=True)
+        for fm in _matched[:3]:
+            qualifying_tier_name: str | None = None
+            for tm in fm.tier_matches:
+                if tm.qualifies:
+                    qualifying_tier_name = tm.tier_name
+                    break
+            top_matched_funders.append(
+                {
+                    "funder_id": fm.funder_id,
+                    "funder_name": fm.funder_name,
+                    "match_score": fm.match_score,
+                    "qualifying_tier": qualifying_tier_name,
+                }
+            )
+
+    # Last 3 funder-note submissions (newest first). Empty list when no
+    # funder_note_subs repo wired or no submissions yet — template
+    # renders the empty-state line gracefully.
+    funder_note_submissions: list[Any] = []
+    if funder_note_subs is not None:
+        funder_note_submissions = funder_note_subs.list_for_merchant(
+            merchant_id=merchant.id, limit=3
+        )
+
     return {
         "merchant": merchant,
         "document": latest_doc,
@@ -2366,6 +2467,10 @@ def _build_pdf_dossier_context(
         "state_tier": state_tier_dossier,
         "ofac_status": ofac_dossier_status,
         "ofac_match": ofac_match,
+        "unified_tracks": unified_tracks,
+        "revenue_trends": revenue_trends,
+        "top_matched_funders": top_matched_funders,
+        "funder_note_submissions": funder_note_submissions,
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
     }
 

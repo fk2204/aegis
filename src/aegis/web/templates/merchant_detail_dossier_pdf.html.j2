@@ -55,6 +55,14 @@
   table.ledger td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .footer-note { color: #777; font-size: 8.5pt; margin-top: 12pt; }
   .pagebreak { page-break-before: always; }
+  .trend-grid { width: 100%; border-collapse: collapse; margin-top: 4pt; }
+  .trend-grid td { padding: 3pt 6pt; border-bottom: 1pt solid #ddd; vertical-align: top; }
+  .trend-grid td.k { width: 30%; color: #444; }
+  .trend-grid td.v { width: 25%; font-weight: bold; }
+  .trend-grid td.q { color: #666; font-size: 9pt; }
+  .trend-grid .declining { color: #800; }
+  .trend-grid .growing { color: #155724; }
+  .empty-note { color: #777; font-size: 9.5pt; font-style: italic; }
 </style>
 </head>
 <body>
@@ -283,6 +291,132 @@
         <td class="num">{{ row.analysis.true_revenue | whole_money if row.analysis else '—' }}</td>
         <td class="num">{{ row.analysis.avg_daily_balance | whole_money if row.analysis else '—' }}</td>
         <td>{{ row.document.parse_status }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{# ============== § 6 INDUSTRY CLASSIFICATION ============== #}
+{% if unified_tracks and unified_tracks.industry_tier %}
+<section class="section">
+  <h2>§ 6 &nbsp; Industry classification</h2>
+  <p>
+    <span class="tier">{{ unified_tracks.industry_tier|replace('_', ' ') }}</span>
+    {% if unified_tracks.industry_tier_reason %}
+      &nbsp; {{ unified_tracks.industry_tier_reason }}
+    {% endif %}
+  </p>
+</section>
+{% endif %}
+
+{# ============== § 7 REVENUE TRENDS ============== #}
+{% if revenue_trends and revenue_trends.months_compared >= 2 %}
+<section class="section">
+  <h2>§ 7 &nbsp; Revenue trends</h2>
+  <p class="meta">latest month vs prior month · {{ revenue_trends.months_compared }} months compared · &plusmn;10% threshold</p>
+  <table class="trend-grid">
+    <tr>
+      <td class="k">Revenue</td>
+      <td class="v {{ revenue_trends.revenue_trend }}">{{ revenue_trends.revenue_trend }}</td>
+      <td class="q">deposits month-over-month</td>
+    </tr>
+    <tr>
+      <td class="k">Average daily balance</td>
+      <td class="v {{ revenue_trends.adb_trend }}">{{ revenue_trends.adb_trend }}</td>
+      <td class="q">avg_balance month-over-month</td>
+    </tr>
+    <tr>
+      <td class="k">NSF count</td>
+      <td class="v {{ revenue_trends.nsf_trend }}">{{ revenue_trends.nsf_trend }}</td>
+      <td class="q">NSF-fee transaction count month-over-month</td>
+    </tr>
+  </table>
+</section>
+{% endif %}
+
+{# ============== § 8 OFFER SIZING ============== #}
+{% if offer %}
+<section class="section">
+  <h2>§ 8 &nbsp; Offer sizing</h2>
+  <table class="scoreboard">
+    <tr>
+      <td class="k">Recommended advance</td>
+      <td class="v">{{ offer.recommended_amount | whole_money }}</td>
+      <td class="q">cautious — 1.0&times; monthly revenue, capped + rounded</td>
+    </tr>
+    <tr>
+      <td class="k">Maximum advance</td>
+      <td class="v">{{ offer.max_amount | whole_money }}</td>
+      <td class="q">aggressive ceiling — 1.5&times; monthly revenue, capped</td>
+    </tr>
+    <tr>
+      <td class="k">Assumed holdback</td>
+      <td class="v">{{ offer.holdback_pct }}</td>
+      <td class="q">monthly-payment-to-advance ratio used to size the offer</td>
+    </tr>
+    <tr>
+      <td class="k">Rationale</td>
+      <td class="v" style="font-weight:normal">{{ offer.rationale }}</td>
+      <td class="q">limiting factor</td>
+    </tr>
+  </table>
+</section>
+{% endif %}
+
+{# ============== § 9 TOP FUNDER MATCHES ============== #}
+{% if top_matched_funders is defined %}
+<section class="section">
+  <h2>§ 9 &nbsp; Top funder matches</h2>
+  {% if top_matched_funders %}
+    <table class="ledger">
+      <thead>
+        <tr>
+          <th>Funder</th>
+          <th>Qualifying tier</th>
+          <th class="num">Match score</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for m in top_matched_funders %}
+        <tr>
+          <td>{{ m.funder_name }}</td>
+          <td>{% if m.qualifying_tier %}{{ m.qualifying_tier }}{% else %}&mdash;{% endif %}</td>
+          <td class="num">{{ m.match_score }}/100</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty-note">No matches found. The active funder roster has no row whose published criteria the merchant clears today.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ============== § 10 SUBMISSION HISTORY ============== #}
+{% if funder_note_submissions is defined and funder_note_submissions %}
+<section class="section">
+  <h2>§ 10 &nbsp; Submission history</h2>
+  <p class="meta">last {{ funder_note_submissions|length }} submission{{ '' if funder_note_submissions|length == 1 else 's' }} · newest first</p>
+  <table class="ledger">
+    <thead>
+      <tr>
+        <th>Submitted</th>
+        <th>Status</th>
+        <th class="num">Offer amount</th>
+        <th>Factor</th>
+        <th>Responded</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for s in funder_note_submissions %}
+      <tr>
+        <td>{{ s.submitted_at|string|truncate(19, True, '') }}</td>
+        <td>{{ s.status }}</td>
+        <td class="num">{{ s.offer_amount | whole_money }}</td>
+        <td>{% if s.offer_factor is not none %}{{ s.offer_factor }}{% else %}&mdash;{% endif %}</td>
+        <td>{% if s.responded_at %}{{ s.responded_at|string|truncate(19, True, '') }}{% else %}&mdash;{% endif %}</td>
       </tr>
     {% endfor %}
     </tbody>

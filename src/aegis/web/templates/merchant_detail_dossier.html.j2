@@ -321,19 +321,48 @@
                 </span>
                 <a href="/ui/merchants/{{ merchant.id }}/edit" style="font-size:11px;color:var(--accent);border-bottom:0;text-transform:uppercase;letter-spacing:0.1em">edit ↗</a>
               </div>
-              {% if completeness_warnings %}
-                <div class="doc-checklist-warnings" data-test-id="doc-checklist-warnings"
-                     style="margin-top:10px;padding:10px 12px;border-left:3px solid var(--decline, #b94a2a);background:rgba(185,74,42,0.06);font-size:12px">
-                  <strong>Missing for top matched funder{% if top_matched_funder_name %} ({{ top_matched_funder_name }}){% endif %}:</strong>
-                  <ul style="margin:6px 0 0 18px;padding:0">
-                    {% for w in completeness_warnings %}
-                      <li data-token="{{ w.requirement_kind }}">{{ w.requirement_text }}</li>
+              {# Sprint 6 Track A — bucketed stipulations rendered as
+                 red/green/yellow chips. ``stips_result`` is None when
+                 the merchant isn't yet scoreable or no funder matches;
+                 the legacy completeness_warnings list is gone. Green
+                 chips: required + on-file. Red chips: required + not
+                 on-file (structured kinds only — operator toggles the
+                 flag to clear). Yellow chips: unknown bullets — operator
+                 confirms visually. Hard-unknown items also gate
+                 Submit-to-Funder (see merchants router). #}
+              {% if stips_result and (stips_result.on_file or stips_result.missing or stips_result.unknown) %}
+                <div class="stipulations" data-test-id="stipulations"
+                     style="margin-top:10px;padding:10px 12px;border-left:3px solid var(--rule, #d8d8d4);background:var(--ink-bg, #fafaf7);font-size:12px">
+                  <strong>Stipulations{% if top_matched_funder_name %} ({{ top_matched_funder_name }}){% endif %}:</strong>
+                  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
+                    {% for s in stips_result.on_file %}
+                      <span class="chip pos"
+                            data-stip-kind="{{ s.kind }}"
+                            data-stip-bucket="on_file"
+                            title="On file">&check; {{ s.requirement_text }}</span>
                     {% endfor %}
-                  </ul>
-                  <div style="margin-top:6px;color:var(--ink-3);font-size:11px">
-                    Submit-to-Funder will refuse until each of these is on file. Toggle on
-                    <a href="/ui/merchants/{{ merchant.id }}/edit" style="color:var(--accent);border-bottom:0">edit</a>.
+                    {% for s in stips_result.missing %}
+                      {% if s.kind != 'unknown' %}
+                        <span class="chip bad"
+                              data-stip-kind="{{ s.kind }}"
+                              data-stip-bucket="missing"
+                              title="Missing — toggle on edit">&times; {{ s.requirement_text }}</span>
+                      {% endif %}
+                    {% endfor %}
+                    {% for s in stips_result.unknown %}
+                      <span class="chip warn"
+                            data-stip-kind="unknown"
+                            data-stip-bucket="unknown"
+                            data-stip-hard="{{ 'true' if s.is_hard else 'false' }}"
+                            title="Operator review">&#9888; {{ s.requirement_text }} (operator review)</span>
+                    {% endfor %}
                   </div>
+                  {% if stips_result.missing %}
+                    <div style="margin-top:6px;color:var(--ink-3);font-size:11px">
+                      Submit-to-Funder will refuse until each red stipulation is on file. Toggle on
+                      <a href="/ui/merchants/{{ merchant.id }}/edit" style="color:var(--accent);border-bottom:0">edit</a>.
+                    </div>
+                  {% endif %}
                 </div>
               {% endif %}
             </div>

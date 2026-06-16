@@ -280,11 +280,12 @@ def test_submit_to_funder_400_when_top_funder_requires_missing_documents(
     funder_note_subs: InMemoryFunderNoteSubmissionRepository,
     close_post_calls: list[dict[str, Any]],
 ) -> None:
-    """Document-completeness gate (Feature 2 — 2026-06-15). The top
+    """Stipulations gate (Sprint 6 Track A — supersedes the legacy
+    document-completeness gate; same intent, richer payload). The top
     matched funder requires a voided check + 6 months of bank
     statements. The seeded merchant has neither flag set. Submit-to-
-    Funder must refuse 400 with a detail dict listing the warnings,
-    and must NOT call Close.
+    Funder must refuse 400 with a detail dict listing the missing
+    stips, and must NOT call Close.
     """
     merchant = _seed_analyzed_merchant(merchants, docs)
     funder = FunderRow(
@@ -302,10 +303,10 @@ def test_submit_to_funder_400_when_top_funder_requires_missing_documents(
     resp = client.post(f"/ui/merchants/{merchant.id}/submit-to-funder")
     assert resp.status_code == 400
     body = resp.json()
-    assert body["detail"]["error"] == "document_completeness_failed"
+    assert body["detail"]["error"] == "stipulations_unmet"
     assert body["detail"]["top_funder_name"] == "Strict Capital"
-    tokens = {w["requirement_kind"] for w in body["detail"]["warnings"]}
-    assert tokens == {"voided_check", "bank_statements_months"}
+    kinds = {item["kind"] for item in body["detail"]["missing"]}
+    assert kinds == {"voided_check", "bank_statements_months"}
 
     # Close was NOT called and no durable submission row was created.
     assert close_post_calls == []
