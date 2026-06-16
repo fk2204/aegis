@@ -32,6 +32,7 @@ workflow-only contract test.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -58,10 +59,11 @@ def _load_workflow() -> dict[str, object]:
 
 
 def _trigger_block(workflow: dict[str, object]) -> dict[str, object]:
-    # PyYAML quirk: ``on`` → True. Accept either.
+    # PyYAML quirk: ``on`` → True. Accept either. Cast through ``Any``
+    # because dict[str, object].get(True) trips mypy --strict.
     trigger = workflow.get("on")
     if trigger is None:
-        trigger = workflow.get(True)
+        trigger = cast(dict[Any, object], workflow).get(True)
     assert isinstance(trigger, dict), (
         "deploy.yml must declare an `on:` block with a workflow_run trigger"
     )
