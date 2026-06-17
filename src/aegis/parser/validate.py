@@ -88,8 +88,19 @@ _TXN_ID_TOKEN_PATTERN = re.compile(
 # false-positive on rows like "DEPOSIT REVERSAL" / "NSF FEE - LATE
 # DEPOSIT" which legitimately carry a negative amount.
 _DEPOSIT_WORD = re.compile(r"\bdeposit\b", re.IGNORECASE)
-_DEPOSIT_NEG_EXCLUSIONS = frozenset(
-    {"reversal", "return", "nsf", "fee", "withdrawal"}
+_DEPOSIT_NEG_EXCLUSIONS = frozenset({"reversal", "return", "nsf", "fee", "withdrawal"})
+
+# Shadow-mode TD coercion (CORPUS_FINDINGS 2026-06-17). TD Convenience
+# Checking's ACCOUNT SUMMARY prints Electronic Payments and Service
+# Charges as SEPARATE line items with no consolidated "Total
+# Withdrawals" row. Bedrock extracts Electronic Payments into
+# `summary.withdrawal_total`, but the transaction stream contains the
+# MSF service-charge row too — so `listed_wd = printed_wd + msf`. Shadow
+# check logs what a per-bank coercion WOULD do; routing is unchanged
+# until the flip is approved per CLAUDE.md decision-boundary discipline.
+_TD_SERVICE_CHARGE_PATTERN = re.compile(
+    r"\b(?:service\s+charge|maintenance\s+fee|monthly\s+maintenance)\b",
+    re.IGNORECASE,
 )
 
 
@@ -143,6 +154,7 @@ def validate_extraction(
     # routing flag via config.
     _shadow_check_daily_balance_continuity(statement, ctx)
     _shadow_check_transaction_id_sequence_gaps(statement, ctx)
+    _shadow_check_td_withdrawal_coercion(statement, ctx)
     if truncated:
         ctx.failures.append("extraction_truncated_retry_required")
 
@@ -156,9 +168,7 @@ def validate_extraction(
 # -- individual checks --------------------------------------------------------
 
 
-def _check_period(
-    statement: ExtractedStatement, today: date, ctx: _ValidationContext
-) -> None:
+def _check_period(statement: ExtractedStatement, today: date, ctx: _ValidationContext) -> None:
     s, e = statement.summary.period_start, statement.summary.period_end
     if e < s:
         ctx.failures.append("invalid_period: end before start")
@@ -170,34 +180,23 @@ def _check_period(
         ctx.failures.append(f"future_dated: period_end={e} today={today}")
 
 
-def _check_period_reconciliation(
-    statement: ExtractedStatement, ctx: _ValidationContext
-) -> None:
+def _check_period_reconciliation(statement: ExtractedStatement, ctx: _ValidationContext) -> None:
     """begin + sum(positive) - abs(sum(negative)) = ending, within $1."""
     summary = statement.summary
     deposits = sum((t.amount for t in statement.transactions if t.amount > 0), Decimal("0"))
-    withdrawals_neg = sum(
-        (t.amount for t in statement.transactions if t.amount < 0), Decimal("0")
-    )
+    withdrawals_neg = sum((t.amount for t in statement.transactions if t.amount < 0), Decimal("0"))
     expected = summary.beginning_balance + deposits + withdrawals_neg
     if not money_eq(expected, summary.ending_balance, tol=_TOL):
         ctx.failures.append(
-            f"reconciliation_failed_period: expected {expected} "
-            f"got {summary.ending_balance}"
+            f"reconciliation_failed_period: expected {expected} got {summary.ending_balance}"
         )
 
 
-def _check_listed_vs_summary(
-    statement: ExtractedStatement, ctx: _ValidationContext
-) -> None:
+def _check_listed_vs_summary(statement: ExtractedStatement, ctx: _ValidationContext) -> None:
     """Sum of extracted deposits/withdrawals must match the printed totals."""
     summary = statement.summary
-    listed_dep = sum(
-        (t.amount for t in statement.transactions if t.amount > 0), Decimal("0")
-    )
-    listed_wd = sum(
-        (-t.amount for t in statement.transactions if t.amount < 0), Decimal("0")
-    )
+    listed_dep = sum((t.amount for t in statement.transactions if t.amount > 0), Decimal("0"))
+    listed_wd = sum((-t.amount for t in statement.transactions if t.amount < 0), Decimal("0"))
     if not money_eq(listed_dep, summary.deposit_total, tol=_TOL):
         ctx.failures.append(
             f"reconciliation_failed_deposit_total: listed {listed_dep} "
@@ -227,9 +226,7 @@ def _check_listed_vs_summary(
             )
 
 
-def _check_negative_deposits(
-    statement: ExtractedStatement, ctx: _ValidationContext
-) -> None:
+def _check_negative_deposits(statement: ExtractedStatement, ctx: _ValidationContext) -> None:
     """Sanity: rows printed as deposits should not be negative.
 
     Heuristic — emitted as a warning, not a failure. We want to flag the
@@ -247,14 +244,10 @@ def _check_negative_deposits(
         desc_lower = desc.lower()
         if any(token in desc_lower for token in _DEPOSIT_NEG_EXCLUSIONS):
             continue
-        ctx.warnings.append(
-            f"negative_deposit_signal: row '{desc[:40]}' has amount={txn.amount}"
-        )
+        ctx.warnings.append(f"negative_deposit_signal: row '{desc[:40]}' has amount={txn.amount}")
 
 
-def _check_source_attribution(
-    statement: ExtractedStatement, ctx: _ValidationContext
-) -> None:
+def _check_source_attribution(statement: ExtractedStatement, ctx: _ValidationContext) -> None:
     """Verify every transaction carries page+line attribution.
 
     Pydantic enforces ge=1 (presence). This routine adds a soft check
@@ -279,9 +272,7 @@ def _check_source_attribution(
             )
 
 
-def _check_daily_running_balance(
-    statement: ExtractedStatement, ctx: _ValidationContext
-) -> None:
+def _check_daily_running_balance(statement: ExtractedStatement, ctx: _ValidationContext) -> None:
     """For every day with transactions: end-of-day = previous + sum(today).
 
     Skipped if running_balance is missing on any row of the day. We report a
@@ -333,9 +324,7 @@ def _check_daily_running_balance(
             )
 
 
-def _check_intraday_running_balance(
-    statement: ExtractedStatement, ctx: _ValidationContext
-) -> None:
+def _check_intraday_running_balance(statement: ExtractedStatement, ctx: _ValidationContext) -> None:
     """Verify running_balance is monotonic within a single day.
 
     The day-end check (_check_daily_running_balance) only sees the last
@@ -375,9 +364,7 @@ def _check_intraday_running_balance(
 
     if intraday_mismatches:
         sample = intraday_mismatches[:3]
-        ctx.failures.append(
-            "reconciliation_failed_intraday: " + "; ".join(sample)
-        )
+        ctx.failures.append("reconciliation_failed_intraday: " + "; ".join(sample))
         if len(intraday_mismatches) > 3:
             ctx.warnings.append(
                 f"reconciliation_failed_intraday_count: {len(intraday_mismatches)} rows"
@@ -434,9 +421,7 @@ def validate_daily_balance_continuity(
     if not transactions:
         return []
 
-    in_window = [
-        txn for txn in transactions if period_start <= txn.posted_date <= period_end
-    ]
+    in_window = [txn for txn in transactions if period_start <= txn.posted_date <= period_end]
     if not in_window:
         return []
 
@@ -601,12 +586,101 @@ def _shadow_check_transaction_id_sequence_gaps(
         )
 
 
+# -- TD withdrawal-total coercion (shadow) ---------------------------------
+
+
+def _is_td_bank(bank_name: str | None) -> bool:
+    """True when the statement's bank_name looks like TD Bank.
+
+    Case-insensitive substring on ``td bank`` covers the variants the
+    Bedrock extractor returns across TD Convenience Checking, TD
+    Business Convenience, and TD Bank N.A. headers. Restrictive enough
+    that ``Wells Fargo Plus`` or ``BTD Brokerage`` won't false-match —
+    neither contains ``td bank`` as a substring.
+    """
+    if not bank_name:
+        return False
+    return "td bank" in bank_name.lower()
+
+
+def td_service_charge_total(transactions: list[Transaction]) -> Decimal:
+    """Sum of withdrawals (positive magnitude) whose description matches
+    the TD service-charge / maintenance-fee pattern. Withdrawals only —
+    a positive-amount row that happens to mention "maintenance fee"
+    (e.g. an inbound refund of a prior MSF) is not what we're accounting
+    for here.
+    """
+    return sum(
+        (
+            -t.amount
+            for t in transactions
+            if t.amount < 0 and _TD_SERVICE_CHARGE_PATTERN.search(t.description)
+        ),
+        Decimal("0"),
+    )
+
+
+def _shadow_check_td_withdrawal_coercion(
+    statement: ExtractedStatement, ctx: _ValidationContext
+) -> None:
+    """Log what a TD-specific withdrawal-total coercion WOULD do.
+
+    Routing unchanged. When the bank looks like TD AND
+    ``listed_wd > printed_wd`` by more than the standard $1 tolerance,
+    compute the residual after subtracting matched service-charge rows.
+    Two distinct warnings so a corpus / live-shadow window can
+    distinguish the explainable cases from drift the rule wouldn't
+    cover:
+
+      * ``shadow_td_withdrawal_coercion_would_clear:...`` — drift ≈
+        service-charge subtotal within $1. The proposed per-bank
+        coercion (``printed_wd += service_charges``) would pass this
+        document under the existing $1 reconciliation tolerance.
+      * ``shadow_td_withdrawal_drift_unattributed:...`` — drift NOT
+        explained by service-charge rows. Coercion would NOT clear this
+        document; another mechanism is in play.
+
+    Only fires on the ``listed > printed`` direction (the TD
+    summary-split direction documented in CORPUS_FINDINGS 2026-06-17).
+    The reverse direction (printed > listed) would imply Bedrock
+    dropped withdrawal rows, a different bug class and not what
+    coercion would address.
+    """
+    summary = statement.summary
+    if not _is_td_bank(summary.bank_name):
+        return
+
+    listed_wd = sum(
+        (-t.amount for t in statement.transactions if t.amount < 0),
+        Decimal("0"),
+    )
+    drift = listed_wd - summary.withdrawal_total
+    if drift <= _TOL:
+        return
+
+    service_charges = td_service_charge_total(statement.transactions)
+    residual = drift - service_charges
+    if abs(residual) <= _TOL:
+        ctx.warnings.append(
+            f"shadow_td_withdrawal_coercion_would_clear:"
+            f"listed_{listed_wd}_printed_{summary.withdrawal_total}"
+            f"_service_charges_{service_charges}_residual_{residual}"
+        )
+    else:
+        ctx.warnings.append(
+            f"shadow_td_withdrawal_drift_unattributed:"
+            f"listed_{listed_wd}_printed_{summary.withdrawal_total}"
+            f"_service_charges_{service_charges}_residual_{residual}"
+        )
+
+
 __all__ = [
     "MAX_STATEMENT_DAYS",
     "MIN_STATEMENT_DAYS",
     "DailyContinuityBreak",
     "GapEvidence",
     "detect_transaction_id_sequence_gaps",
+    "td_service_charge_total",
     "validate_daily_balance_continuity",
     "validate_extraction",
 ]
