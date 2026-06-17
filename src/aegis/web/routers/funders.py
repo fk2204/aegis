@@ -24,7 +24,7 @@ from __future__ import annotations
 import urllib.parse
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, cast
 from uuid import UUID
 
 from fastapi import (
@@ -63,7 +63,11 @@ from aegis.funders.extract import (
     extract_funder_guidelines_from_image,
     merge_extractions,
 )
-from aegis.funders.models import FunderRow, FunderTier
+from aegis.funders.models import (
+    FunderOperatorStatus,
+    FunderRow,
+    FunderTier,
+)
 from aegis.funders.repository import (
     FunderNotFoundError,
     FunderRepository,
@@ -80,6 +84,10 @@ from aegis.web._templates import templates
 
 router = APIRouter()
 
+
+_VALID_OPERATOR_STATUSES: Final[frozenset[str]] = frozenset(
+    {"active", "paused", "first_position_only", "selective"}
+)
 
 _MAX_FUNDER_IMPORT_BYTES = 25 * 1024 * 1024
 
@@ -1152,5 +1160,66 @@ async def funder_operator_notes_save(
     return templates.TemplateResponse(
         request,
         "_operator_notes_block.html.j2",
+        {"funder": funder, "just_saved": just_saved},
+    )
+
+
+@router.post(
+    "/funders/{funder_id}/operator-status",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+async def funder_operator_status_save(
+    request: Request,
+    funder_id: UUID,
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    operator_status: Annotated[str, Form()],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> HTMLResponse:
+    """Update one funder's operator_status. HTMX swap target.
+
+    The select uses ``onchange="this.form.requestSubmit()"`` so one
+    interaction = one save. We re-validate the value against the
+    Literal set here because Form() parameters arrive as raw strings;
+    Pydantic's Literal validation isn't applied automatically.
+    """
+    normalized = operator_status.strip().lower()
+    if normalized not in _VALID_OPERATOR_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"operator_status must be one of {sorted(_VALID_OPERATOR_STATUSES)}",
+        )
+    typed_status = cast(FunderOperatorStatus, normalized)
+
+    try:
+        existing = funder_repo.get(funder_id)
+    except FunderNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    old_status = existing.operator_status
+    if typed_status == old_status:
+        # No-op save — don't write an audit row for an unchanged value.
+        funder = existing
+        just_saved = True
+    else:
+        funder = funder_repo.set_operator_status(funder_id, typed_status)
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="funder.operator_status_updated",
+            subject_type="funder",
+            subject_id=existing.id,
+            details={
+                "funder_name": existing.name,
+                "before": old_status,
+                "after": typed_status,
+            },
+        )
+        just_saved = True
+
+    return templates.TemplateResponse(
+        request,
+        "_funder_operator_status.html.j2",
         {"funder": funder, "just_saved": just_saved},
     )

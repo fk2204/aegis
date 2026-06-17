@@ -58,6 +58,17 @@
                  checked>
           Active only
         </label>
+        {# "Hide paused" filters out rows whose operator_status="paused".
+           Default ON — paused funders are not in this week's match flow
+           and adding them to the rolling-window approval-rate scan adds
+           noise. Toggle off to manage the paused list. #}
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;opacity:0.9">
+          <input type="checkbox"
+                 id="funders-hide-paused"
+                 data-test-id="funders-hide-paused"
+                 checked>
+          Hide paused
+        </label>
       </div>
 
       {#
@@ -73,10 +84,24 @@
       {% set _rated_sorted = _rated|sort(attribute='approval_rate', reverse=true) %}
       {% set _sorted_rows = _rated_sorted + _unrated %}
 
+      {% set _op_status_labels = {
+        "active": "Active",
+        "paused": "Paused",
+        "first_position_only": "First-pos only",
+        "selective": "Selective",
+      } %}
+      {% set _op_status_tones = {
+        "active": "pos",
+        "paused": "bad",
+        "first_position_only": "warn",
+        "selective": "info",
+      } %}
+
       <table class="queue" data-test-id="funders-table">
         <thead>
           <tr>
             <th>Funder</th>
+            <th>Status</th>
             <th class="num">Approval rate</th>
             <th>Last submission</th>
             <th class="num">Min revenue</th>
@@ -93,10 +118,21 @@
             {% set f = row.funder %}
             <tr data-test-id="funders-row"
                 data-active="{{ 'true' if f.active else 'false' }}"
+                data-op-status="{{ f.operator_status }}"
                 onclick="window.location.href='/ui/funders/{{ f.id }}'">
               <td class="merchant">
                 <a href="/ui/funders/{{ f.id }}">{{ f.name }}</a>
                 <span class="sub">{{ f.id|string|truncate(8, True, '') }}</span>
+              </td>
+
+              {# === Operator status chip ===
+                 4-state appetite chip — paused/first-position-only/selective
+                 are the operator-facing reasons that matter at-a-glance. #}
+              <td data-test-id="funders-op-status">
+                <span class="chip {{ _op_status_tones[f.operator_status] }}"
+                      data-test-id="funders-op-status-chip">
+                  {{ _op_status_labels[f.operator_status] }}
+                </span>
               </td>
 
               {# === Approval rate ===
@@ -170,24 +206,31 @@
 
 {% if funder_rows %}
 <script>
-// Funder list: "Active only" toggle. Pure JS, no deps.
-// data-active="true|false" on each row; when toggle is on, hide
-// data-active="false" rows; when off, show all.
+// Funder list filters: "Active only" + "Hide paused". Pure JS, no deps.
+// Each row carries data-active="true|false" and data-op-status="<state>".
+// Active-only hides inactive rows; Hide-paused hides operator_status="paused"
+// rows. Filters compose with AND.
 (function () {
-  const toggle = document.getElementById("funders-active-only");
-  if (!toggle) return;
+  const activeOnlyToggle = document.getElementById("funders-active-only");
+  const hidePausedToggle = document.getElementById("funders-hide-paused");
+  if (!activeOnlyToggle && !hidePausedToggle) return;
   const rows = Array.from(
     document.querySelectorAll('tr[data-test-id="funders-row"]')
   );
-  function applyToggle() {
-    const activeOnly = toggle.checked;
+  function applyToggles() {
+    const activeOnly = activeOnlyToggle ? activeOnlyToggle.checked : false;
+    const hidePaused = hidePausedToggle ? hidePausedToggle.checked : false;
     for (const row of rows) {
       const isActive = row.getAttribute("data-active") === "true";
-      row.style.display = activeOnly && !isActive ? "none" : "";
+      const isPaused = row.getAttribute("data-op-status") === "paused";
+      const hideForActive = activeOnly && !isActive;
+      const hideForPaused = hidePaused && isPaused;
+      row.style.display = (hideForActive || hideForPaused) ? "none" : "";
     }
   }
-  toggle.addEventListener("change", applyToggle);
-  applyToggle();
+  if (activeOnlyToggle) activeOnlyToggle.addEventListener("change", applyToggles);
+  if (hidePausedToggle) hidePausedToggle.addEventListener("change", applyToggles);
+  applyToggles();
 })();
 </script>
 {% endif %}

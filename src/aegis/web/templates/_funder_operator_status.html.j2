@@ -1,0 +1,72 @@
+{#
+  Funder operator-status chip + inline dropdown. Rendered inline on
+  funder_detail.html.j2 AND returned by POST
+  /ui/funders/{funder_id}/operator-status for the HTMX swap.
+
+  The form's <select onchange="this.form.requestSubmit()"> auto-posts
+  the moment the operator picks a new status — no separate Save click,
+  one motion to update. Selectors:
+
+    * #funder-operator-status      — outer container; hx-target.
+    * [data-test-id=op-status-chip] — current state chip.
+    * [data-test-id=op-status-select] — the dropdown.
+
+  Tone mapping intentionally distinct so the four states are visually
+  separable at a glance:
+    active              -> good   (green)
+    paused              -> bad    (red)
+    first_position_only -> warn   (yellow)
+    selective           -> info   (blue)
+#}
+{%- set _status_labels = {
+  "active": "Active",
+  "paused": "Paused",
+  "first_position_only": "First-position only",
+  "selective": "Selective",
+} -%}
+{%- set _tone_map = {
+  "active": "good",
+  "paused": "bad",
+  "first_position_only": "warn",
+  "selective": "info",
+} -%}
+
+<div id="funder-operator-status"
+     class="funder-op-status"
+     data-test-id="funder-operator-status"
+     style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+            margin:0 0 16px 0;padding:10px 12px;border:1px solid var(--rule);
+            border-radius:6px;background:var(--paper-2)">
+  <span style="font-size:12px;font-weight:600;opacity:0.8">Operator status</span>
+
+  {% with tone=_tone_map[funder.operator_status],
+          label=_status_labels[funder.operator_status] %}
+    {% include "_status_chip.html.j2" %}
+  {% endwith %}
+
+  <form hx-post="/ui/funders/{{ funder.id }}/operator-status"
+        hx-target="#funder-operator-status"
+        hx-swap="outerHTML"
+        style="display:flex;align-items:center;gap:6px;margin-left:auto">
+    <label for="op-status-select-{{ funder.id }}"
+           style="font-size:11px;opacity:0.7">Change</label>
+    <select id="op-status-select-{{ funder.id }}"
+            name="operator_status"
+            data-test-id="op-status-select"
+            onchange="this.form.requestSubmit()"
+            style="font-size:12px;padding:3px 6px">
+      {% for value, label in _status_labels.items() %}
+        <option value="{{ value }}"
+                {% if value == funder.operator_status %}selected{% endif %}>
+          {{ label }}
+        </option>
+      {% endfor %}
+    </select>
+    <noscript><button class="btn" type="submit">Update</button></noscript>
+  </form>
+
+  {% if just_saved %}
+    <span class="op-status-saved" role="status"
+          style="font-size:11px;color:var(--approve)">✓ Updated</span>
+  {% endif %}
+</div>

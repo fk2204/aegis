@@ -43,6 +43,11 @@
 <section class="body cols-1">
   <div>
 
+    {# Operator-status chip + inline dropdown. First thing on the
+       detail page so an operator can see (and flip) the funder's
+       live appetite without scrolling. #}
+    {% include "_funder_operator_status.html.j2" %}
+
     {# Flash banners — set by the re-extract redirect via query params. #}
     {% if reextract_flash %}
       <div class="flash flash-success" role="status">
