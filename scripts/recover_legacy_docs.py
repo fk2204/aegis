@@ -1048,6 +1048,23 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--fix-phantom-storage",
+        action="store_true",
+        help=(
+            "Separate maintenance mode: scan ``documents`` rows where "
+            "``storage_path IS NOT NULL`` and probe each with "
+            "``pdf_store.fetch_plaintext``. Any row that raises "
+            "``PdfStoreNotFoundError`` has a phantom storage_path — the "
+            "column claims a seal exists but pdf_store has no blob, "
+            "which blocks the regular --backfill-sha-matches Close re-"
+            "fetch path. With --apply, NULLs each phantom value and "
+            "writes a ``document.storage_path_nulled`` audit row so the "
+            "doc falls back into the Close re-fetch loop on a later "
+            "recovery run. Dry-run lists the candidates without "
+            "mutating. Skips the Close traversal entirely."
+        ),
+    )
+    p.add_argument(
         "--vision-retry",
         action="store_true",
         help=(
@@ -1219,6 +1236,123 @@ def _cleanup_orphans(*, audit: AuditLog, apply_writes: bool) -> tuple[int, int]:
         file=sys.stderr,
     )
     return (len(rows), deleted)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Phantom-storage repair mode (--fix-phantom-storage)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _fix_phantom_storage(
+    *,
+    pdf_store: SupabasePdfStoreRepository,
+    audit: AuditLog,
+    apply_writes: bool,
+) -> tuple[int, int]:
+    """NULL ``documents.storage_path`` for rows that point at a missing
+    ``pdf_store`` blob.
+
+    Surfaced by the 2026-06-17 ``--vision-retry`` run: four Lili
+    documents (``c06000b6``, ``503f3a9d``, ``c2c95368``, ``fffe63a3``)
+    carried a populated ``storage_path`` on the documents row but
+    ``pdf_store.fetch_plaintext`` raised ``PdfStoreNotFoundError`` for
+    each — the documents column was lying about the seal state and
+    blocked those rows from falling into the ``--backfill-sha-matches``
+    Close re-fetch path. The selector here is generic: any documents
+    row with ``storage_path IS NOT NULL`` whose ``fetch_plaintext`` 404s.
+    The fix is operator-safe — NULLing a phantom value only restores
+    the right side of the contract (the column claims a seal exists IFF
+    pdf_store has the row).
+
+    Dry-run by default; ``--apply`` performs the UPDATE and writes a
+    ``document.storage_path_nulled`` audit row per repair. Returns
+    ``(found_phantom_count, nulled_count)``; ``nulled_count`` is 0 in
+    dry-run mode.
+    """
+    sb = get_supabase()
+    docs_q = (
+        sb.table("documents")
+        .select("id, original_filename, parse_status, storage_path, merchant_id")
+        .not_.is_("storage_path", "null")
+        .execute()
+    )
+    phantoms: list[dict[str, Any]] = []
+    probed = 0
+    for d in cast(list[dict[str, Any]], docs_q.data or []):
+        try:
+            doc_id = UUID(d["id"])
+        except (ValueError, KeyError) as exc:
+            print(
+                f"  malformed row {d!r}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        probed += 1
+        try:
+            pdf_store.fetch_plaintext(doc_id)
+        except PdfStoreNotFoundError:
+            phantoms.append(d)
+        except Exception as exc:
+            # Don't mistake a transient fetch failure for a phantom —
+            # only PdfStoreNotFoundError signals the column is lying.
+            print(
+                f"  {d['id'][:8]} pdf_store probe failed: {_format_error_chain(exc)}",
+                file=sys.stderr,
+            )
+
+    print(
+        f"# fix-phantom-storage: probed {probed} doc(s) with storage_path; "
+        f"{len(phantoms)} phantom(s) found",
+        file=sys.stderr,
+    )
+    for p in phantoms:
+        print(
+            f"#   {p['id'][:8]}  status={p['parse_status']:14s}  "
+            f"file={p['original_filename']!r}  storage={p['storage_path']!r}",
+            file=sys.stderr,
+        )
+
+    if not apply_writes:
+        print(
+            "# DRY-RUN: pass --apply to NULL storage_path + write "
+            "document.storage_path_nulled audit rows",
+            file=sys.stderr,
+        )
+        return (len(phantoms), 0)
+
+    nulled = 0
+    for p in phantoms:
+        try:
+            doc_id = UUID(p["id"])
+        except (ValueError, KeyError):
+            continue
+        try:
+            sb.table("documents").update({"storage_path": None}).eq("id", str(doc_id)).execute()
+            audit.record(
+                actor=_ACTOR,
+                action="document.storage_path_nulled",
+                subject_type="document",
+                subject_id=doc_id,
+                details={
+                    "merchant_id": p.get("merchant_id"),
+                    "old_storage_path": p.get("storage_path"),
+                    "original_filename": p.get("original_filename"),
+                    "parse_status": p.get("parse_status"),
+                    "reason": "pdf_store_fetch_returned_not_found",
+                },
+            )
+            nulled += 1
+        except Exception as exc:
+            print(
+                f"  ERROR NULLing {p['id'][:8]}: {_format_error_chain(exc)}",
+                file=sys.stderr,
+            )
+
+    print(
+        f"# fix-phantom-storage: nulled {nulled}/{len(phantoms)}",
+        file=sys.stderr,
+    )
+    return (len(phantoms), nulled)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1439,6 +1573,26 @@ def main() -> int:
         mode = "APPLY" if args.apply else "DRY-RUN"
         print(
             f"# mode={mode} +cleanup-orphans found={found} deleted={deleted}",
+            file=sys.stderr,
+        )
+        return EXIT_ISSUES_FOUND if found > 0 and not args.apply else EXIT_OK
+
+    # Phantom-storage repair is a separate code path that bypasses
+    # Close entirely — probes every documents row with a non-NULL
+    # storage_path and NULLs the column when pdf_store has no matching
+    # blob. Returns after the sweep.
+    if args.fix_phantom_storage:
+        try:
+            found, nulled = _fix_phantom_storage(
+                pdf_store=pdf_store,
+                audit=audit,
+                apply_writes=args.apply,
+            )
+        finally:
+            close_client.close()
+        mode = "APPLY" if args.apply else "DRY-RUN"
+        print(
+            f"# mode={mode} +fix-phantom-storage found={found} nulled={nulled}",
             file=sys.stderr,
         )
         return EXIT_ISSUES_FOUND if found > 0 and not args.apply else EXIT_OK
