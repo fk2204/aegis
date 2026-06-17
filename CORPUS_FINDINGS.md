@@ -145,6 +145,166 @@ one fixture per layout. If any layout produces `bank_name=None` or a
 generic string, file as a follow-up and tune the extraction prompt — do
 NOT relax the test.
 
+## 2026-06-17 — Legacy doc recovery campaign (LOAD LIFT + TMF)
+
+Multi-day cleanup of the manual_review / pending backlog left by the
+pre-mig-060 ingest era. Driven by two specific merchants the operator
+flagged: LOAD LIFT ENTERPRISE LLC (4 TD Bank statements) and TMF
+TRANSPORT INC (3 Chase + 4 misclassified attachments). The campaign
+yielded one prod-shipping pipeline feature (vision third-pass
+fallback), four script flags, and the five findings below. The
+parser-tooling commits are in the `main` log between `33825d0` and
+`963f63e`.
+
+### Finding — Bedrock drops the page-1 period block on text input for Chase + TD layouts
+
+- **Surface:** every TD Bank Convenience Checking statement (LOAD LIFT
+  TD January/April/May, 3 of 3) AND every Chase Business Complete
+  Checking statement (TMF 20260227, 20260529, list (16), list (17), 4
+  of 4) submitted through `extract_statement` returned
+  `summary.period_start=None` / `period_end=None`, raising a Pydantic
+  `ValidationError` chained into `ExtractionError`. The period text IS
+  in the PDF — `pymupdf.get_text("text")` reads it correctly — but the
+  text the LLM ingests via the Bedrock document block does not surface
+  it.
+- **Symptom:** `_run_pipeline_with_retry`'s text-with-hint second pass
+  returned a byte-identical null-period response. Hint tuning (commit
+  `33825d0` initial seed, commit `a3a1f1e` corrected layouts, commit
+  `b272a7f` prompt worked-examples + non-bail rule) recovered the TD
+  statements but not the Chase ones — Chase docs kept landing in
+  manual_review with the same error.
+- **Root cause:** Bedrock's text channel on these specific PDFs drops
+  the period block silently. The PDFs use CID-encoded fonts (Chase
+  emits its own font subset; TD's iLovePDF re-saves re-embed too) — the
+  text Bedrock receives is correct character-wise but spatially the
+  period block sits between a logo, a customer-service box, and a
+  blank `Account Number:` row and the model fails to bind it.
+- **Fix:** ship a vision third-pass fallback in `run_pipeline`
+  (commit `19e4776`). New kwarg `vision_fallback_on_extraction_error`
+  catches `ExtractionError` from `extract_statement` and re-runs the
+  same PDF through `extract_statement_via_vision` (existing function;
+  rasterizes via pymupdf at 200 DPI). Wired into
+  `scripts/recover_legacy_docs.py`'s
+  `_run_pipeline_with_retry` so the cascade is now text → text+hint →
+  vision. Vision is opt-in (off by default) because tokens are
+  ~5-8× text and capped by `MAX_OCR_PAGES=20`; the webhook + worker
+  callers stay on text-only.
+
+### Finding — Funding-application form uploads name-collide with bank statements via merchant-slug filenames
+
+- **Surface:** LOAD LIFT had 4 copies of
+  `load-lift-enterprise-llc_2026-06-08.pdf` on the Close lead, all in
+  `parse_status='pending'`. Initial inspection assumed bank statements;
+  they were the Commera Funding Application PDF form filled by the
+  borrower.
+- **Symptom:** the regular ingest path tried to parse them as
+  statements, generating spurious `summary.period_start=None`
+  extraction errors that polluted the recovery CSV and burned Bedrock
+  tokens. The existing `application` deny-list term did NOT catch the
+  filenames — Close's form pipeline emits files named
+  `<merchant-slug>_<YYYY-MM-DD>.pdf`, no "application" substring.
+- **Root cause:** the merchant-slug filename convention bypasses every
+  generic non-statement deny term (driver / license / contract /
+  application / voided / etc.).
+- **Fix:** added `load-lift-enterprise-llc` as a deny-list substring
+  in `src/aegis/close/field_map.py::NON_STATEMENT_FILENAME_TERMS`
+  (commit `71247f4`). Narrow per the deny-list rule ("each term
+  surfaces a concrete non-statement filename"). Future merchant
+  Funding Application uploads will need the same treatment until the
+  Close form pipeline starts emitting a content-type-aware filename
+  or AEGIS gains a content-shape pre-filter (out of scope for this
+  campaign).
+
+### Finding — TD Convenience Checking prints `Electronic Payments` and `Service Charges` as separate ACCOUNT SUMMARY rows; Bedrock extracts only the former as `withdrawal_total`
+
+- **Surface:** LOAD LIFT's 3 TD Bank docs that DID clear extraction
+  via the new vision fallback (or that the corrected hints recovered
+  on text) landed in manual_review with
+  `[MATH] reconciliation_failed_withdrawal_total: listed N vs printed
+  N-15.00` — off by exactly $15.00 every month. Confirmed on
+  `8a8fa92a` (Jan: listed 3164.04 / printed 3149.04), `3630bbab`
+  (Apr: 1813.65 / 1797.65, off by $16 because April carried a $1
+  duplicate), `e0ee9129` (May: 4164.04 / 4149.04, off by $15).
+- **Symptom:** `validate_extraction` fails the reconciliation gate;
+  doc routed to `manual_review` AFTER extraction, not before.
+- **Root cause:** TD's first-page ACCOUNT SUMMARY block lists FIVE
+  category lines: `Beginning Balance`, `Electronic Deposits`,
+  `Electronic Payments`, `Service Charges` ($15 / month flat MSF),
+  `Ending Balance`. There is no consolidated "Total Withdrawals" row.
+  Bedrock extracts the `Electronic Payments` figure into
+  `summary.withdrawal_total` because that's the closest-named single
+  field, but the transaction stream includes BOTH the Electronic
+  Payments rows AND the $15 Service Charge row. Sum of extracted
+  withdrawals = Electronic Payments + Service Charges = printed
+  withdrawal_total + $15.
+- **Fix:** NOT IN THIS CAMPAIGN. The fix is a per-bank summary-coercion
+  rule that knows TD's withdrawal_total = Electronic Payments +
+  Service Charges, OR a prompt addition that instructs Bedrock to sum
+  TD's split categories into the JSON `withdrawal_total`. Both are
+  decision-boundary-adjacent (could change which TD docs land
+  `proceed` vs `manual_review`) and need shadow-mode validation per
+  CLAUDE.md's scoring-discipline rule. Filed for follow-up; the 3 TD
+  docs stay in manual_review until then.
+
+### Finding — Chase Business Complete Checking row-count over-extraction
+
+- **Surface:** TMF's `463ba348` (20260227 Chase statement) cleared
+  extraction with non-null period dates but failed with
+  `[MATH] extraction_row_count_mismatch: listed 81 vs printed 64
+  (tolerance 3)`.
+- **Symptom:** Bedrock extracted 17 MORE transaction rows than the
+  printed transaction count from the CHECKING SUMMARY block.
+- **Root cause:** Chase Business Complete Checking statements embed
+  `*start*deposits and additions` / `*end*deposits and additions`
+  section-delimiter strings in the rendered text. The corrected
+  prompt (`b272a7f`) tells the LLM to ignore these, but Bedrock is
+  still treating some of them as transactions — OR the CHECKS PAID
+  subsection (which prints rows in a `CHECK NO. / DATE / AMOUNT`
+  shape distinct from the main `DATE / DESCRIPTION / AMOUNT` table)
+  is being double-counted because its rows look transaction-shaped
+  AND are referenced from the summary block.
+- **Fix:** NOT IN THIS CAMPAIGN. Needs a CORPUS_REAL_LLM=1 reproducer
+  against a sanitized fixture of this Chase layout to isolate which
+  rows Bedrock is over-counting, then either tighten the prompt's
+  `Checks Paid` discrimination or post-process the transaction list
+  in `extract.py` to drop delimiter-shaped synthetics. Filed for
+  follow-up; `463ba348` stays in manual_review until then.
+
+### Finding — Lili Bank docs carry a phantom `storage_path` with no matching `pdf_store` blob
+
+- **Surface:** the 2026-06-17 `--vision-retry` run encountered four
+  Lili Monthly Statement docs (`c06000b6`, `503f3a9d`, `c2c95368`,
+  `fffe63a3`) whose `documents.storage_path` was populated but
+  `pdf_store.fetch_plaintext(doc_id)` raised
+  `PdfStoreNotFoundError`. The selector treated them as
+  vision-retryable (they pass the storage-path predicate), but the
+  fetch immediately 404s.
+- **Symptom:** the `--vision-retry` candidate list inflates with docs
+  that can't actually be retried, AND the regular
+  `--backfill-sha-matches` Close-fetch path skips them on a phantom
+  "already-sealed" check (`pdf_store.fetch_plaintext` raising
+  NotFound is the script's signal for "needs backfill"; but the
+  populated `storage_path` column on the documents row blocks them
+  from the unsealed-doc branches of other tooling).
+- **Root cause:** unknown — pre-mig-060 legacy ingest path appears to
+  have set `documents.storage_path` independently of the pdf_store
+  seal in some cases (one hypothesis: an early arq worker wrote
+  `storage_path` to the Supabase Storage object path BEFORE the
+  chunk-B AES-GCM seal landed, then the Storage path was wiped during
+  the chunk-A → chunk-B migration without clearing the column). The
+  contract — `storage_path NOT NULL` IFF pdf_store has the row — was
+  violated by whatever wrote that column historically. Forward path
+  prevents recurrence; this finding is about cleaning the historical
+  pile.
+- **Fix:** added `--fix-phantom-storage` to
+  `scripts/recover_legacy_docs.py` (commit `ae9c853`). Scans every
+  `documents.storage_path NOT NULL`, probes `pdf_store.fetch_plaintext`,
+  NULLs the column on any 404, and writes a
+  `document.storage_path_nulled` audit row per repair. After this
+  sweep, the affected docs naturally fall back into the
+  `--backfill-sha-matches` Close re-fetch path on a later recovery
+  run. Dry-run by default; bypasses Close traversal.
+
 ## Conventions for future entries
 
 Each new finding gets a heading + the four-line shape above (Surface /
