@@ -73,6 +73,7 @@ from aegis.logger import configure_logging, get_logger
 from aegis.merchants.cross_statement_pipeline import (
     run_cross_statement_detection,
 )
+from aegis.merchants.renewal_reminder import run_renewal_reminder_cron
 from aegis.merchants.repository import MerchantRepository
 from aegis.merchants.shadow_signals import (
     MerchantShadowSignalRepository,
@@ -2027,9 +2028,15 @@ class WorkerSettings:
     """arq config. Reads concurrency + timeout from env via Settings."""
 
     functions = (parse_document, process_funder_reply, process_close_attachments)
-    # Nightly at 02:00 UTC — low-traffic window. Per master plan §17,
-    # the archive cron runs daily and is the only cron registered here.
-    cron_jobs = (cron(run_archive_cron, hour=2, minute=0, run_at_startup=False),)
+    # Crons:
+    #   * 02:00 UTC — audit retention archiver (master plan §17).
+    #   * 09:00 UTC — renewal reminder: one Close task per renewing
+    #     merchant per calendar month. Operator's daily start; the
+    #     task lands in the morning queue.
+    cron_jobs = (
+        cron(run_archive_cron, hour=2, minute=0, run_at_startup=False),
+        cron(run_renewal_reminder_cron, hour=9, minute=0, run_at_startup=False),
+    )
     on_startup = _on_startup
     on_shutdown = _on_shutdown
 

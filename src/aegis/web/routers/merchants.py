@@ -1363,6 +1363,51 @@ async def merchant_prepare_renewal(
         )
         submission_row_id = submission_row.id
 
+    # Operator task in Close prompting the next renewal step. Best-effort:
+    # a Close API error on the task POST audits but does NOT roll back the
+    # post_note or submission row — the operator-visible note + AEGIS-side
+    # submission row are the load-bearing parts of the renewal workflow.
+    renewal_task_text = (
+        f"Request updated bank statements from {merchant.business_name}"
+        + (
+            f" — renewal eligible {merchant.maturity_date.isoformat()}."
+            if merchant.maturity_date is not None
+            else " — renewal package prepared."
+        )
+        + " Re-score before submitting for renewal."
+    )
+    try:
+        close_client.create_task(
+            lead_id=merchant.close_lead_id,
+            text=renewal_task_text,
+            due_date=date.today(),
+        )
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="close.task.renewal_prepared",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": merchant.close_lead_id,
+                "task_text": renewal_task_text,
+                "due_date": date.today().isoformat(),
+            },
+        )
+    except CloseError as exc:
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="close.task.renewal_prepared_failed",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": merchant.close_lead_id,
+                "status_code": exc.status_code,
+                "error": str(exc)[:200],
+            },
+        )
+
     close_note_id = close_response.get("id")
     audit_details: dict[str, Any] = {
         "merchant_id": str(merchant.id),

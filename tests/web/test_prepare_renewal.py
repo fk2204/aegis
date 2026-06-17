@@ -101,9 +101,15 @@ def close_post_calls() -> list[dict[str, Any]]:
 
 
 @pytest.fixture
+def close_task_post_calls() -> list[dict[str, Any]]:
+    return []
+
+
+@pytest.fixture
 def close_client(
     monkeypatch: pytest.MonkeyPatch,
     close_post_calls: list[dict[str, Any]],
+    close_task_post_calls: list[dict[str, Any]],
 ) -> CloseClient:
     _set_close_env(monkeypatch)
     monkeypatch.setattr("aegis.close.client.time.sleep", lambda _s: None)
@@ -120,6 +126,14 @@ def close_client(
                 200,
                 json={"id": _CLOSE_NOTE_ID, "_type": "Note"},
             )
+        if request.method == "POST" and request.url.path.endswith("/task/"):
+            close_task_post_calls.append(
+                {
+                    "url": str(request.url),
+                    "body": request.content.decode("utf-8"),
+                }
+            )
+            return httpx.Response(201, json={"id": "task_xyz", "_type": "lead"})
         return httpx.Response(405)
 
     return CloseClient(http_client=httpx.Client(transport=httpx.MockTransport(transport)))
@@ -451,3 +465,75 @@ def test_prepare_renewal_months_since_funding_uses_30_day_divisor(
     assert prepared[0]["details"]["months_since_funding"] == 6
     body = close_post_calls[0]["body"]
     assert "6 months since original funding" in body
+
+
+def test_prepare_renewal_creates_close_task_with_audit_row(
+    client: TestClient,
+    merchants: InMemoryMerchantRepository,
+    docs: InMemoryDocumentRepository,
+    funder_repo: InMemoryFunderRepository,
+    audit: InMemoryAuditLog,
+    close_task_post_calls: list[dict[str, Any]],
+) -> None:
+    """After the successful Close note POST, the route also POSTs a Close
+    task prompting the operator to request fresh statements. T5."""
+    merchant = _seed_analyzed_merchant(merchants, docs)
+    _seed_matching_funder(funder_repo)
+
+    resp = client.post(f"/ui/merchants/{merchant.id}/prepare-renewal")
+    assert resp.status_code == 200, resp.text
+
+    assert len(close_task_post_calls) == 1
+    import json as _json
+
+    payload = _json.loads(close_task_post_calls[0]["body"])
+    assert payload["lead_id"] == merchant.close_lead_id
+    assert "Request updated bank statements" in payload["text"]
+    assert merchant.business_name in payload["text"]
+    assert "Re-score" in payload["text"]
+
+    task_rows = [e for e in audit.entries if e["action"] == "close.task.renewal_prepared"]
+    assert len(task_rows) == 1
+    assert task_rows[0]["details"]["close_lead_id"] == merchant.close_lead_id
+    assert task_rows[0]["subject_id"] == str(merchant.id)
+
+
+def test_prepare_renewal_close_task_failure_audits_but_succeeds(
+    client: TestClient,
+    merchants: InMemoryMerchantRepository,
+    docs: InMemoryDocumentRepository,
+    funder_repo: InMemoryFunderRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Close 4xx/5xx on the task POST must NOT roll back the renewal
+    note or the submission row — task creation is best-effort."""
+    from aegis.close.client import CloseClient, CloseError
+
+    merchant = _seed_analyzed_merchant(merchants, docs)
+    _seed_matching_funder(funder_repo)
+
+    real_create_task = CloseClient.create_task
+
+    def failing_create_task(self: CloseClient, *args: Any, **kwargs: Any) -> Any:
+        raise CloseError("simulated 500", status_code=500)
+
+    monkeypatch.setattr(CloseClient, "create_task", failing_create_task)
+    try:
+        resp = client.post(f"/ui/merchants/{merchant.id}/prepare-renewal")
+        assert resp.status_code == 200, resp.text
+    finally:
+        monkeypatch.setattr(CloseClient, "create_task", real_create_task)
+
+    # Note + submission paths still succeed — deal.renewal_prepared audit
+    # row is present.
+    prepared = [e for e in audit.entries if e["action"] == "deal.renewal_prepared"]
+    assert len(prepared) == 1
+
+    # Task failure was audited.
+    failures = [e for e in audit.entries if e["action"] == "close.task.renewal_prepared_failed"]
+    assert len(failures) == 1
+    assert failures[0]["details"]["status_code"] == 500
+
+    # And no success row.
+    assert not any(e["action"] == "close.task.renewal_prepared" for e in audit.entries)
