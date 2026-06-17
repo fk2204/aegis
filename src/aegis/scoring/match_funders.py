@@ -300,6 +300,27 @@ def match_funder(
     criteria_count = 0
     has_tiers = bool(funder.tiers)
 
+    # operator_status gates (migration 063). ``active`` is the no-op
+    # default. The three non-default states fire BEFORE we evaluate
+    # underwriting criteria so the reason surfaces at the top of the
+    # match panel and the operator doesn't read a long hard-fail list
+    # to discover that the funder isn't open for business this week.
+    if funder.operator_status == "paused":
+        criteria_count += 1
+        hard.append("funder_paused: operator marked funder paused — no submissions")
+    elif funder.operator_status == "first_position_only" and deal.mca_positions >= 1:
+        criteria_count += 1
+        hard.append(
+            f"funder_first_position_only: deal has {deal.mca_positions} existing "
+            f"MCA position(s); funder writes only first-position deals"
+        )
+    elif funder.operator_status == "selective":
+        criteria_count += 1
+        soft.append(
+            "funder_selective_appetite: operator marked funder selective — "
+            "confirm appetite before submitting"
+        )
+
     # Revenue / credit / TIB are tier-driven when a matrix is published.
     # Skip the funder-level minimum to avoid double-gating against the
     # same axis. The per-tier evaluation below covers them.
