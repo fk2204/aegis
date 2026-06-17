@@ -119,6 +119,7 @@ from aegis.pdf_store.repository import (
 )
 from aegis.storage import (
     DocumentExistsError,
+    DocumentNotFoundError,
     DocumentRow,
     ParseStatus,
     SupabaseDocumentRepository,
@@ -1047,6 +1048,28 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--vision-retry",
+        action="store_true",
+        help=(
+            "Separate maintenance mode: skip the Close traversal entirely "
+            "and re-run the pipeline (with the vision third-pass fallback "
+            "enabled) on every ``manual_review`` document that has a "
+            "pdf_store-sealed plaintext AND no analyses row — i.e. the "
+            "doc that landed in ``manual_review`` because extraction "
+            "raised before validation, not because validation failed. "
+            "Dry-run by default: lists the candidate docs without re-"
+            "running. Combine with --apply to actually re-extract via "
+            "Bedrock vision, persist the new analyses + transactions "
+            "rows, update parse_status, and write a "
+            "``document.vision_retried`` audit row per attempt. Bypasses "
+            "the standard merchant→Close-attachment loop entirely; the "
+            "PDF source is ``pdf_store.fetch_plaintext`` and the "
+            "selector ignores docs lacking ``storage_path`` (those need "
+            "the regular --backfill-sha-matches path via a Close re-"
+            "fetch)."
+        ),
+    )
+    p.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -1198,6 +1221,189 @@ def _cleanup_orphans(*, audit: AuditLog, apply_writes: bool) -> tuple[int, int]:
     return (len(rows), deleted)
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Vision-retry mode (--vision-retry)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _select_vision_retry_candidates() -> list[dict[str, Any]]:
+    """Identify ``manual_review`` docs whose extraction never completed.
+
+    Selector encodes "stuck at extraction" without requiring an
+    ``error_detail`` column we don't currently populate on the failed
+    backfill path:
+
+      * ``parse_status = 'manual_review'`` — only the stuck-doc bucket.
+      * No row in ``analyses`` for ``document_id`` — a successful
+        extraction always produces an analysis row (even when validation
+        later routes the doc to ``manual_review``); the absence of the
+        row is the persistence-level signal that extraction itself
+        failed before the validation gate ran.
+      * ``storage_path IS NOT NULL`` AND ``sha256_original IS NOT NULL``
+        — the plaintext is fetchable from ``pdf_store``. Docs whose
+        prior pipeline died before the seal step are reachable only
+        via a Close-attachment re-fetch (separate code path) and are
+        skipped here.
+
+    Empirically matches the 2026-06-17 LOAD LIFT + TMF backlog: 5 of
+    the 7 stuck docs satisfy all three predicates; the 2 ``list (16)``
+    / ``list (17)`` TMF docs lack both ``storage_path`` and SHA and are
+    intentionally out of scope for this mode.
+    """
+    sb = get_supabase()
+    docs_q = (
+        sb.table("documents")
+        .select("id, original_filename, parse_status, storage_path, sha256_original, merchant_id")
+        .eq("parse_status", "manual_review")
+        .execute()
+    )
+    candidates: list[dict[str, Any]] = []
+    for d in cast(list[dict[str, Any]], docs_q.data or []):
+        if not d.get("storage_path") or not d.get("sha256_original"):
+            continue
+        ana = sb.table("analyses").select("id").eq("document_id", d["id"]).limit(1).execute()
+        if ana.data:
+            continue
+        candidates.append(d)
+    return candidates
+
+
+def _vision_retry(
+    *,
+    document_repo: SupabaseDocumentRepository,
+    pdf_store: SupabasePdfStoreRepository,
+    audit: AuditLog,
+    llm: object,
+    upload_dir: Path,
+    apply_writes: bool,
+) -> tuple[int, int, int]:
+    """Re-run the pipeline on stuck manual_review docs with the vision
+    fallback enabled.
+
+    For each candidate selected by ``_select_vision_retry_candidates``:
+      1. Fetch the plaintext from ``pdf_store``.
+      2. Write to a temp file (pipeline takes a path, not bytes).
+      3. Run ``run_pipeline`` with
+         ``vision_fallback_on_extraction_error=True`` so the text pass
+         is attempted (cheap; non-deterministic Bedrock might succeed
+         this time) and on failure the same PDF is rasterized to PNG
+         and re-extracted via Claude vision.
+      4. Wipe any half-state ``transactions`` / ``analyses`` rows
+         (none expected per selector, but defensive) and persist the
+         new pipeline result via ``persist_parse_result``.
+      5. Emit a ``document.vision_retried`` audit row capturing the
+         old vs new ``parse_status`` so the operator can grep for the
+         intervention.
+
+    Returns ``(candidate_count, succeeded_to_proceed_or_review, errored)``.
+    """
+    candidates = _select_vision_retry_candidates()
+    print(
+        f"# vision-retry: {len(candidates)} candidate(s)",
+        file=sys.stderr,
+    )
+    for c in candidates:
+        print(
+            f"#   {c['id'][:8]}  {c['original_filename']}",
+            file=sys.stderr,
+        )
+
+    if not apply_writes:
+        print(
+            "# DRY-RUN: pass --apply to actually re-run vision + persist",
+            file=sys.stderr,
+        )
+        return (len(candidates), 0, 0)
+
+    sb = get_supabase()
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    succeeded = 0
+    errored = 0
+    for c in candidates:
+        try:
+            doc_id = UUID(c["id"])
+        except (ValueError, KeyError) as exc:
+            print(f"  malformed row {c!r}: {exc}", file=sys.stderr)
+            errored += 1
+            continue
+        try:
+            existing = document_repo.get_document(doc_id)
+        except DocumentNotFoundError as exc:
+            print(f"  {str(doc_id)[:8]} not found: {exc}", file=sys.stderr)
+            errored += 1
+            continue
+        try:
+            plaintext = pdf_store.fetch_plaintext(doc_id)
+        except Exception as exc:
+            print(
+                f"  {str(doc_id)[:8]} pdf_store fetch failed: {_format_error_chain(exc)}",
+                file=sys.stderr,
+            )
+            errored += 1
+            continue
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".pdf",
+            delete=False,
+            prefix=f"{_ACTOR}-vision-",
+            dir=str(upload_dir),
+        )
+        try:
+            tmp.write(plaintext)
+            tmp.close()
+            try:
+                result: PipelineResult = run_pipeline(
+                    tmp.name,
+                    llm,  # type: ignore[arg-type]
+                    vision_fallback_on_extraction_error=True,
+                )
+            except Exception as exc:
+                print(
+                    f"  {str(doc_id)[:8]} pipeline error: {_format_error_chain(exc)}",
+                    file=sys.stderr,
+                )
+                errored += 1
+                continue
+
+            # Defensive wipe — the selector requires zero analyses rows
+            # but a race against a parallel reparse could land one in
+            # between selection and now. transactions FK documents (not
+            # analyses) so either order is safe; matches the order
+            # ``_backfill_pdf_store_and_reparse`` uses for muscle memory.
+            sb.table("transactions").delete().eq("document_id", str(doc_id)).execute()
+            sb.table("analyses").delete().eq("document_id", str(doc_id)).execute()
+            document_repo.persist_parse_result(
+                doc_id,
+                result=result,
+                merchant_id=existing.merchant_id,
+            )
+            audit.record(
+                actor=_ACTOR,
+                action="document.vision_retried",
+                subject_type="document",
+                subject_id=doc_id,
+                details={
+                    "merchant_id": (str(existing.merchant_id) if existing.merchant_id else None),
+                    "old_parse_status": existing.parse_status,
+                    "new_parse_status": result.parse_status,
+                    "old_fraud_score": existing.fraud_score,
+                    "new_fraud_score": result.fraud_score,
+                    "ocr_fallback_used": "[META] ocr_fallback_used" in result.all_flags,
+                },
+            )
+            print(
+                f"  {str(doc_id)[:8]} {c['original_filename']!r} "
+                f"-> {result.parse_status} "
+                f"(ocr={'yes' if '[META] ocr_fallback_used' in result.all_flags else 'no'})",
+                file=sys.stderr,
+            )
+            if result.parse_status in ("proceed", "review"):
+                succeeded += 1
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+    return (len(candidates), succeeded, errored)
+
+
 def main() -> int:
     args = _parse_args()
 
@@ -1236,6 +1442,29 @@ def main() -> int:
             file=sys.stderr,
         )
         return EXIT_ISSUES_FOUND if found > 0 and not args.apply else EXIT_OK
+
+    # Vision-retry is a separate code path that bypasses Close entirely —
+    # pulls plaintext from pdf_store and re-runs the pipeline with the
+    # text->text+hint->vision fallback enabled. Returns after the sweep.
+    if args.vision_retry:
+        try:
+            found, succeeded, errored = _vision_retry(
+                document_repo=document_repo,
+                pdf_store=pdf_store,
+                audit=audit,
+                llm=llm,
+                upload_dir=upload_dir,
+                apply_writes=args.apply,
+            )
+        finally:
+            close_client.close()
+        mode = "APPLY" if args.apply else "DRY-RUN"
+        print(
+            f"# mode={mode} +vision-retry candidates={found} "
+            f"recovered={succeeded} errored={errored}",
+            file=sys.stderr,
+        )
+        return EXIT_ISSUES_FOUND if errored > 0 else EXIT_OK
 
     try:
         backlog = collect_backlog_merchants(document_repo, merchants_repo)
