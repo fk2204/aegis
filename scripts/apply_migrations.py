@@ -512,6 +512,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='pdf_store' "
         "AND column_name='storage_path'"
     ),
+    "063_funders_operator_status.sql": (
+        # 063 adds funders.operator_status — 4-state TEXT column with a
+        # NOT NULL default of 'active' and a CHECK constraint pinning
+        # the allowed value set. The load-bearing artifact is the
+        # column itself; the CHECK constraint and the default land in
+        # the same statement and fail it together.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='funders' "
+        "AND column_name='operator_status'"
+    ),
 }
 
 
