@@ -1087,6 +1087,26 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--merchant",
+        default=None,
+        help=(
+            "Scope the run to a single merchant by UUID, close_lead_id "
+            "(``lead_…``), or case-insensitive substring of "
+            "``business_name``. Bypasses the backlog enumeration and "
+            "walks only the named merchant's Close attachments. "
+            "Targeted recovery on a known-stuck lead — e.g. "
+            "``--merchant lead_dw5NdId…`` to re-fetch TMF's ``list "
+            "(16)`` / ``list (17)`` Chase statements after their "
+            "documents row's lack of ``storage_path`` excluded them "
+            "from --vision-retry. Combine with --apply + "
+            "--backfill-sha-matches to let the third-pass vision "
+            "fallback (wired into ``_run_pipeline_with_retry``) fire if "
+            "text extraction still fails. Ambiguous business_name "
+            "substrings raise — pass a UUID or close_lead_id to "
+            "disambiguate."
+        ),
+    )
+    p.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -1236,6 +1256,69 @@ def _cleanup_orphans(*, audit: AuditLog, apply_writes: bool) -> tuple[int, int]:
         file=sys.stderr,
     )
     return (len(rows), deleted)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Single-merchant filter (--merchant)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _resolve_merchant_filter(
+    arg: str,
+    merchants_repo: SupabaseMerchantRepository,
+) -> MerchantRow:
+    """Resolve the ``--merchant`` CLI value to one :class:`MerchantRow`.
+
+    Lookup order:
+
+      1. Parse as ``UUID`` and call ``merchants_repo.get`` — exact id
+         match. Wins on the unambiguous-prod-id case.
+      2. ``"lead_"`` prefix (Close lead-id convention) → call
+         ``find_by_close_lead_id``. Exact match required.
+      3. Otherwise treat as a case-insensitive substring of
+         ``business_name`` and walk ``list_all()``. Single match wins;
+         zero matches → ``ValueError``; multiple matches → ``ValueError``
+         carrying the first few names so the operator can re-run with a
+         narrower string.
+
+    Raises :class:`ValueError` with a human-readable message on any
+    resolution failure — surfaced by ``main`` as a runtime-error exit so
+    the operator's CSV stays untouched.
+    """
+    candidate = arg.strip()
+    if not candidate:
+        raise ValueError("--merchant value is empty")
+
+    try:
+        merchant_id = UUID(candidate)
+    except ValueError:
+        merchant_id = None
+    if merchant_id is not None:
+        try:
+            return merchants_repo.get(merchant_id)
+        except MerchantNotFoundError as exc:
+            raise ValueError(
+                f"--merchant {candidate!r} is a valid UUID but no merchant row matches"
+            ) from exc
+
+    if candidate.startswith("lead_"):
+        merchant = merchants_repo.find_by_close_lead_id(candidate)
+        if merchant is None:
+            raise ValueError(f"--merchant {candidate!r} has no matching close_lead_id")
+        return merchant
+
+    lowered = candidate.lower()
+    matches = [m for m in merchants_repo.list_all() if lowered in m.business_name.lower()]
+    if not matches:
+        raise ValueError(f"--merchant {candidate!r} did not match any business_name substring")
+    if len(matches) > 1:
+        preview = ", ".join(m.business_name for m in matches[:5])
+        raise ValueError(
+            f"--merchant {candidate!r} matched {len(matches)} merchants ambiguously "
+            f"({preview}{'…' if len(matches) > 5 else ''}); pass a UUID or close_lead_id "
+            "instead"
+        )
+    return matches[0]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1620,12 +1703,32 @@ def main() -> int:
         )
         return EXIT_ISSUES_FOUND if errored > 0 else EXIT_OK
 
-    try:
-        backlog = collect_backlog_merchants(document_repo, merchants_repo)
-    except Exception as exc:
-        print(f"ERROR: backlog enumeration failed: {exc}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        return EXIT_RUNTIME_ERROR
+    if args.merchant is not None:
+        # Single-merchant mode: bypass the backlog enumeration entirely
+        # and process just the resolved merchant. The operator owns the
+        # "is this merchant actually stuck?" call when --merchant is
+        # used — we don't gate on backlog membership so a merchant
+        # whose docs are in `pending` (never parsed) is still reachable.
+        try:
+            target = _resolve_merchant_filter(args.merchant, merchants_repo)
+        except ValueError as exc:
+            print(f"ERROR: --merchant resolve failed: {exc}", file=sys.stderr)
+            close_client.close()
+            return EXIT_RUNTIME_ERROR
+        backlog = [target]
+        print(
+            f"# --merchant: scoped run to {target.business_name!r} "
+            f"(id={target.id}, close_lead_id={target.close_lead_id})",
+            file=sys.stderr,
+        )
+    else:
+        try:
+            backlog = collect_backlog_merchants(document_repo, merchants_repo)
+        except Exception as exc:
+            print(f"ERROR: backlog enumeration failed: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            close_client.close()
+            return EXIT_RUNTIME_ERROR
 
     if args.limit is not None:
         backlog = backlog[: args.limit]
