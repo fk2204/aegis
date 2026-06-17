@@ -37,8 +37,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from datetime import UTC, datetime
-from typing import Annotated, Any
+import re
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -47,6 +49,7 @@ from aegis.api.deps import (
     get_audit,
     get_close_client,
     get_funder_note_submission_repository,
+    get_funder_repository,
     get_merchant_repository,
 )
 from aegis.audit import AuditLog
@@ -67,6 +70,7 @@ from aegis.funder_note_submissions import (
     FunderNoteSubmissionRepository,
     FunderNoteSubmissionStatus,
 )
+from aegis.funders.repository import FunderNotFoundError, FunderRepository
 from aegis.logger import get_logger
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import MerchantRepository
@@ -88,6 +92,7 @@ async def close_webhook(
         FunderNoteSubmissionRepository,
         Depends(get_funder_note_submission_repository),
     ],
+    funders: Annotated[FunderRepository, Depends(get_funder_repository)],
 ) -> None:
     raw_body = await request.body()
 
@@ -147,6 +152,19 @@ async def close_webhook(
         settings=settings,
         merchants=merchants,
         funder_note_subs=funder_note_subs,
+        audit=audit,
+    )
+
+    # Note-created auto-status. Independent of the Pre-UW trigger and
+    # of opportunity lifecycle. Quietly no-ops unless the Close
+    # subscription is configured to emit activity.note events AND the
+    # note body contains a recognized decision phrase.
+    _handle_note_created(
+        event=event,
+        merchants=merchants,
+        funder_note_subs=funder_note_subs,
+        funders=funders,
+        close_client=close_client,
         audit=audit,
     )
 
@@ -672,6 +690,290 @@ def _str_or_none(value: Any) -> str | None:  # noqa: ANN401 — Close custom-fie
         return None
     text = str(value).strip()
     return text or None
+
+
+# ----------------------------------------------------------------------
+# Note-driven auto-status (Sprint 7, 2026-06-17)
+# ----------------------------------------------------------------------
+#
+# Operators record funder responses in Close as plain Notes:
+#
+#   "Kapitus approved for $45k at 1.35"
+#   "DECLINED by Velocity — too many positions"
+#   "Counter offer 50k"
+#
+# This handler watches the activity.note stream and flips the matching
+# pending submission row to the right status. Requires the Close
+# webhook subscription to include ``activity.note`` events — until the
+# operator extends the subscription this code is dormant.
+#
+# Safety properties:
+#   * Idempotent per Close activity id (audit details.activity_id).
+#   * Skips silently when there are zero pending submissions.
+#   * Skips with `submission.auto_status_ambiguous` audit row when
+#     there is more than one pending submission — the matcher is not
+#     authoritative about which funder a free-text note refers to.
+#   * Pattern matches use word boundaries — "Their CPA approved the
+#     financials" requires a more specific phrase to fire.
+#   * On approved transitions, posts a "Fund the deal" Close task.
+
+
+_NoteDecisionStatus = Literal["approved", "declined", "countered"]
+
+# Order matters: declined / countered checked BEFORE approved so that
+# negation phrases like "not approved" reach the declined pattern first.
+# Re-IGNORECASE makes "APPROVED" and "approved" equivalent at the regex
+# level, so a bare positional match on the approved pattern would
+# otherwise swallow "not approved" before we reach the declined one.
+_NOTE_STATUS_PATTERNS: dict[_NoteDecisionStatus, re.Pattern[str]] = {
+    "declined": re.compile(
+        r"\b(?:DECLINED|declined\s+by|not\s+approved|decline[d]?\b\s+(?:by|—|-))\b",
+        re.IGNORECASE,
+    ),
+    "countered": re.compile(
+        r"\b(?:COUNTERED|counter\s+offer|counter\s+at|counter\s+of)\b",
+        re.IGNORECASE,
+    ),
+    "approved": re.compile(
+        r"\b(?:APPROVED|approved\s+for|they\s+approved|approved\s+by|approved\s+at)\b",
+        re.IGNORECASE,
+    ),
+}
+
+# Money pattern. Matches `$45,000`, `45000.00`, `$45k`, `45k`, `1.5M`.
+# Capture: (digits-with-optional-commas-and-decimal)(optional-suffix).
+_NOTE_AMOUNT_PATTERN = re.compile(r"\$?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?\s*(k|K|m|M)?\b")
+
+
+def _extract_decision_from_note_text(text: str) -> _NoteDecisionStatus | None:
+    """Return the matched decision literal, or None if no pattern fires."""
+    for status_literal, pattern in _NOTE_STATUS_PATTERNS.items():
+        if pattern.search(text):
+            return status_literal
+    return None
+
+
+def _extract_offer_amount_from_note_text(text: str) -> Decimal | None:
+    """Best-effort dollar-amount extraction. ``45k`` -> 45000; ``1.5M`` ->
+    1500000; ``$45,000`` -> 45000; ``1.35`` (a bare factor rate) returns
+    None because the pattern requires either a thousands separator, a
+    suffix, or 4+ digits to be interpreted as money. This is
+    intentionally conservative — factor rates like ``1.35`` are common
+    in funder notes and must not be misread as $1.
+    """
+    for match in _NOTE_AMOUNT_PATTERN.finditer(text):
+        digits, decimals, suffix = match.group(1), match.group(2), match.group(3)
+        try:
+            base = Decimal(digits.replace(",", ""))
+        except InvalidOperation:
+            continue
+        if decimals:
+            base = base + Decimal(f"0.{decimals}")
+
+        if suffix and suffix.lower() == "k":
+            return base * Decimal("1000")
+        if suffix and suffix.lower() == "m":
+            return base * Decimal("1000000")
+
+        # No suffix: only accept the value as money if it has a
+        # thousands separator OR if it's an integer of 4+ digits.
+        # Avoids reading factor rates like "1.35" as a dollar amount.
+        if "," in digits:
+            return base
+        if decimals is None and len(digits) >= 4:
+            return base
+        # Bare 2-3 digit integers and decimals without suffix don't read
+        # as money under this rule. Fall through and try the next match.
+        continue
+    return None
+
+
+def _handle_note_created(
+    *,
+    event: dict[str, Any],
+    merchants: MerchantRepository,
+    funder_note_subs: FunderNoteSubmissionRepository,
+    funders: FunderRepository,
+    close_client: CloseClient,
+    audit: AuditLog,
+) -> None:
+    """Auto-update a pending funder_note_submission from a Close Note.
+
+    Quiet no-op when:
+      * Event isn't an ``activity.note`` ``created``.
+      * Lead doesn't map to a known merchant.
+      * Merchant has zero pending submissions.
+      * Note body contains no recognized decision phrase.
+      * The same activity_id has been processed before (idempotency).
+
+    Audits ``submission.auto_status_ambiguous`` and skips when the
+    merchant has >1 pending submission — without a deterministic way to
+    pin the note to a specific funder, the operator must update manually.
+    """
+    if event.get("action") != "created":
+        return
+    if event.get("object_type") != "activity.note":
+        return
+
+    activity_id_raw = event.get("object_id")
+    if not isinstance(activity_id_raw, str) or not activity_id_raw:
+        return
+
+    data = event.get("data") or {}
+    note_text_raw = data.get("note")
+    if not isinstance(note_text_raw, str) or not note_text_raw.strip():
+        return
+
+    lead_id_raw = event.get("lead_id")
+    if not isinstance(lead_id_raw, str) or not lead_id_raw:
+        return
+
+    merchant = merchants.find_by_close_lead_id(lead_id_raw)
+    if merchant is None:
+        return
+
+    matched_status = _extract_decision_from_note_text(note_text_raw)
+    if matched_status is None:
+        return
+
+    # Idempotency: skip if we've already auto-updated for this activity.
+    prior_runs = audit.list_for_subject(
+        subject_type="merchant",
+        subject_id=merchant.id,
+        action="submission.auto_status_from_close_note",
+        limit=500,
+    )
+    if any(r.get("details", {}).get("activity_id") == activity_id_raw for r in prior_runs):
+        return
+
+    try:
+        all_rows = funder_note_subs.list_for_merchant(merchant.id, limit=200)
+    except Exception:
+        _log.warning(
+            "close_webhook.note_submissions_fetch_failed lead_id=%s",
+            lead_id_raw,
+            exc_info=True,
+        )
+        return
+    pending = [r for r in all_rows if r.status == "pending"]
+    if not pending:
+        return
+
+    if len(pending) > 1:
+        audit.record(
+            actor="close_webhook",
+            action="submission.auto_status_ambiguous",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "activity_id": activity_id_raw,
+                "close_lead_id": lead_id_raw,
+                "matched_status": matched_status,
+                "pending_submission_ids": [str(r.id) for r in pending],
+                "note_preview": note_text_raw[:200],
+            },
+        )
+        return
+
+    submission = pending[0]
+    extracted_amount = _extract_offer_amount_from_note_text(note_text_raw)
+
+    try:
+        funder_note_subs.update_status(
+            submission.id,
+            status=matched_status,
+            offer_amount=extracted_amount,
+            notes=f"auto-status from Close note {activity_id_raw}",
+        )
+    except FunderNoteSubmissionNotFoundError:
+        _log.warning(
+            "close_webhook.note_submission_missing submission_id=%s",
+            submission.id,
+        )
+        return
+
+    audit.record(
+        actor="close_webhook",
+        action="submission.auto_status_from_close_note",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={
+            "activity_id": activity_id_raw,
+            "close_lead_id": lead_id_raw,
+            "submission_id": str(submission.id),
+            "funder_id": str(submission.funder_id),
+            "matched_status": matched_status,
+            "offer_amount": str(extracted_amount) if extracted_amount is not None else None,
+            "note_preview": note_text_raw[:200],
+        },
+    )
+
+    if matched_status == "approved":
+        _post_fund_the_deal_task(
+            merchant=merchant,
+            funder_id=submission.funder_id,
+            funders=funders,
+            close_client=close_client,
+            close_lead_id=lead_id_raw,
+            offer_amount=extracted_amount,
+            audit=audit,
+        )
+
+
+def _post_fund_the_deal_task(
+    *,
+    merchant: MerchantRow,
+    funder_id: UUID,
+    funders: FunderRepository,
+    close_client: CloseClient,
+    close_lead_id: str,
+    offer_amount: Decimal | None,
+    audit: AuditLog,
+) -> None:
+    """Create a Close task prompting the operator to fund the approved deal."""
+    try:
+        funder_row = funders.get(funder_id)
+        funder_name = funder_row.name
+    except FunderNotFoundError:
+        # Funder row vanished between submission and approval — surface
+        # the gap but don't block the auto-status update.
+        funder_name = "(funder lookup failed)"
+
+    amount_phrase = f" for ${offer_amount:,.2f}" if offer_amount is not None else ""
+    text = f"Fund the deal — {merchant.business_name} approved by {funder_name}{amount_phrase}"
+    try:
+        close_client.create_task(
+            lead_id=close_lead_id,
+            text=text,
+            due_date=date.today(),
+        )
+    except CloseError as exc:
+        audit.record(
+            actor="close_webhook",
+            action="close.task.fund_the_deal_failed",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": close_lead_id,
+                "funder_id": str(funder_id),
+                "status_code": exc.status_code,
+                "error": str(exc)[:200],
+            },
+        )
+        return
+
+    audit.record(
+        actor="close_webhook",
+        action="close.task.fund_the_deal_created",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={
+            "close_lead_id": close_lead_id,
+            "funder_id": str(funder_id),
+            "funder_name": funder_name,
+            "task_text": text,
+        },
+    )
 
 
 __all__ = ["router"]
