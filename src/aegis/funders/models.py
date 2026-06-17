@@ -13,12 +13,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aegis.money import Money
+
+FunderOperatorStatus = Literal["active", "paused", "first_position_only", "selective"]
 
 
 class _StrictModel(BaseModel):
@@ -78,6 +80,24 @@ class FunderRow(_StrictModel):
     id: UUID = Field(default_factory=uuid4)
     name: str = Field(min_length=1)
     active: bool = True
+
+    # Live appetite (migration 063). Distinct from ``active`` — captures
+    # short-cycle changes operators make without removing a funder from
+    # the catalog.
+    #
+    #   * ``paused``               — temporary capital / holiday pause.
+    #                                Matcher hard-fails with
+    #                                ``funder_paused``.
+    #   * ``first_position_only``  — funder only takes deals with no
+    #                                existing MCA positions. Matcher
+    #                                hard-fails when
+    #                                ``deal.mca_positions >= 1`` with
+    #                                ``funder_first_position_only``.
+    #   * ``selective``            — open but cherry-picking. Matcher
+    #                                emits soft concern
+    #                                ``funder_selective_appetite``.
+    #   * ``active``               — default; no matcher impact.
+    operator_status: FunderOperatorStatus = "active"
 
     # Hard gates
     min_monthly_revenue: Money | None = None
@@ -244,4 +264,9 @@ class FunderGuidelineExtraction(_StrictModel):
         return _FIELD_CONFIDENCE_KEYS
 
 
-__all__ = ["FunderGuidelineExtraction", "FunderRow", "FunderTier"]
+__all__ = [
+    "FunderGuidelineExtraction",
+    "FunderOperatorStatus",
+    "FunderRow",
+    "FunderTier",
+]

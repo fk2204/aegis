@@ -18,7 +18,7 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from aegis.db import get_supabase
-from aegis.funders.models import FunderRow, FunderTier
+from aegis.funders.models import FunderOperatorStatus, FunderRow, FunderTier
 
 
 class FunderNotFoundError(KeyError):
@@ -36,6 +36,10 @@ class FunderRepository(Protocol):
 
     def upsert(self, funder: FunderRow) -> FunderRow:
         """Insert or replace by id; uniqueness on name is enforced."""
+
+    def set_operator_status(self, funder_id: UUID, status: FunderOperatorStatus) -> FunderRow:
+        """Update only ``operator_status`` on one funder. Raises
+        ``FunderNotFoundError`` when the id is unknown."""
 
     def delete(self, funder_id: UUID) -> None:
         """Remove the funder. No-op if not present."""
@@ -69,6 +73,15 @@ class InMemoryFunderRepository:
         self._by_id[funder.id] = funder
         return funder
 
+    def set_operator_status(self, funder_id: UUID, status: FunderOperatorStatus) -> FunderRow:
+        try:
+            current = self._by_id[funder_id]
+        except KeyError as exc:
+            raise FunderNotFoundError(str(funder_id)) from exc
+        updated = current.model_copy(update={"operator_status": status})
+        self._by_id[funder_id] = updated
+        return updated
+
     def delete(self, funder_id: UUID) -> None:
         self._by_id.pop(funder_id, None)
 
@@ -101,6 +114,19 @@ class SupabaseFunderRepository:
             raise RuntimeError("supabase.upsert returned no row")
         return _row_to_funder(cast(dict[str, Any], result.data[0]))
 
+    def set_operator_status(self, funder_id: UUID, status: FunderOperatorStatus) -> FunderRow:
+        result = (
+            get_supabase()
+            .table("funders")
+            .update({"operator_status": status, "updated_at": datetime.now(UTC).isoformat()})
+            .eq("id", str(funder_id))
+            .execute()
+        )
+        rows = cast(list[dict[str, Any]], result.data or [])
+        if not rows:
+            raise FunderNotFoundError(str(funder_id))
+        return _row_to_funder(rows[0])
+
     def delete(self, funder_id: UUID) -> None:
         get_supabase().table("funders").delete().eq("id", str(funder_id)).execute()
 
@@ -122,6 +148,7 @@ def _row_to_funder(row: dict[str, Any]) -> FunderRow:
         id=UUID(row["id"]),
         name=row["name"],
         active=row.get("active", True),
+        operator_status=row.get("operator_status") or "active",
         min_monthly_revenue=_money("min_monthly_revenue"),
         min_avg_daily_balance=_money("min_avg_daily_balance"),
         min_credit_score=row.get("min_credit_score"),
@@ -166,6 +193,7 @@ def _funder_to_payload(f: FunderRow) -> dict[str, Any]:
         "id": str(f.id),
         "name": f.name,
         "active": f.active,
+        "operator_status": f.operator_status,
         "min_monthly_revenue": _str_or_none(f.min_monthly_revenue),
         "min_avg_daily_balance": _str_or_none(f.min_avg_daily_balance),
         "min_credit_score": f.min_credit_score,

@@ -157,6 +157,7 @@ def test_funder_row_model_fields_match_known_set() -> None:
         "id",
         "name",
         "active",
+        "operator_status",
         "min_monthly_revenue",
         "min_avg_daily_balance",
         "min_credit_score",

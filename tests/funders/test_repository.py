@@ -103,9 +103,11 @@ def test_default_empty_contact_and_tiers() -> None:
 
 def test_operator_notes_round_trip() -> None:
     repo = InMemoryFunderRepository()
-    f = _funder().model_copy(update={
-        "operator_notes": "Rep prefers WhatsApp; ping before sending stacked deals.",
-    })
+    f = _funder().model_copy(
+        update={
+            "operator_notes": "Rep prefers WhatsApp; ping before sending stacked deals.",
+        }
+    )
     repo.upsert(f)
     got = repo.get(f.id)
     assert got.operator_notes == "Rep prefers WhatsApp; ping before sending stacked deals."
@@ -113,10 +115,12 @@ def test_operator_notes_round_trip() -> None:
 
 def test_notes_and_notes_residual_round_trip_independently() -> None:
     repo = InMemoryFunderRepository()
-    f = _funder().model_copy(update={
-        "notes": "Operator: called Jim, prioritising trucking next month.",
-        "notes_residual": "Renewals: case-by-case after 50% paid down.",
-    })
+    f = _funder().model_copy(
+        update={
+            "notes": "Operator: called Jim, prioritising trucking next month.",
+            "notes_residual": "Renewals: case-by-case after 50% paid down.",
+        }
+    )
     repo.upsert(f)
     got = repo.get(f.id)
     assert got.notes == "Operator: called Jim, prioritising trucking next month."
@@ -125,12 +129,14 @@ def test_notes_and_notes_residual_round_trip_independently() -> None:
 
 def test_contact_fields_round_trip() -> None:
     repo = InMemoryFunderRepository()
-    f = _funder().model_copy(update={
-        "contact_name":     "James Doe",
-        "contact_phone":    "555-123-4567",
-        "contact_email":    "james@logicadvance.com",
-        "submission_email": "iso@logicadvance.com",
-    })
+    f = _funder().model_copy(
+        update={
+            "contact_name": "James Doe",
+            "contact_phone": "555-123-4567",
+            "contact_email": "james@logicadvance.com",
+            "submission_email": "iso@logicadvance.com",
+        }
+    )
     repo.upsert(f)
     got = repo.get(f.id)
     assert got.contact_name == "James Doe"
@@ -163,16 +169,18 @@ def test_tiers_round_trip_preserves_decimal_precision() -> None:
 
 def test_auto_decline_and_conditional_lists_round_trip() -> None:
     repo = InMemoryFunderRepository()
-    f = _funder().model_copy(update={
-        "auto_decline_conditions": (
-            "Restaurants with <12 mo TIB",
-            "Active tax liens > $25K",
-        ),
-        "conditional_requirements": (
-            "Trucking: 2 yr MVR clean",
-            "Construction: WC certificate",
-        ),
-    })
+    f = _funder().model_copy(
+        update={
+            "auto_decline_conditions": (
+                "Restaurants with <12 mo TIB",
+                "Active tax liens > $25K",
+            ),
+            "conditional_requirements": (
+                "Trucking: 2 yr MVR clean",
+                "Construction: WC certificate",
+            ),
+        }
+    )
     repo.upsert(f)
     got = repo.get(f.id)
     assert got.auto_decline_conditions == (
@@ -183,6 +191,40 @@ def test_auto_decline_and_conditional_lists_round_trip() -> None:
         "Trucking: 2 yr MVR clean",
         "Construction: WC certificate",
     )
+
+
+def test_operator_status_defaults_to_active() -> None:
+    assert _funder().operator_status == "active"
+
+
+def test_set_operator_status_updates_only_that_field() -> None:
+    repo = InMemoryFunderRepository()
+    f = _funder().model_copy(update={"min_credit_score": 620})
+    repo.upsert(f)
+
+    updated = repo.set_operator_status(f.id, "paused")
+
+    assert updated.operator_status == "paused"
+    # Other fields untouched.
+    assert updated.min_credit_score == 620
+    assert updated.name == f.name
+    # Repo store is also updated, not just the returned row.
+    assert repo.get(f.id).operator_status == "paused"
+
+
+def test_set_operator_status_missing_funder_raises() -> None:
+    repo = InMemoryFunderRepository()
+    with pytest.raises(FunderNotFoundError):
+        repo.set_operator_status(uuid4(), "paused")
+
+
+def test_set_operator_status_round_trips_all_four_states() -> None:
+    repo = InMemoryFunderRepository()
+    f = _funder()
+    repo.upsert(f)
+    for status in ("paused", "first_position_only", "selective", "active"):
+        repo.set_operator_status(f.id, status)
+        assert repo.get(f.id).operator_status == status
 
 
 def test_funder_tier_rejects_inverted_buy_rate() -> None:
@@ -205,5 +247,5 @@ def test_funder_tier_accepts_equal_buy_rates() -> None:
 
 def test_funder_tier_accepts_either_bound_missing() -> None:
     # Only one of (low, high) set — validator skips, no error.
-    FunderTier(name="OnlyLow",  buy_rate_low=Decimal("1.25"))
+    FunderTier(name="OnlyLow", buy_rate_low=Decimal("1.25"))
     FunderTier(name="OnlyHigh", buy_rate_high=Decimal("1.30"))
