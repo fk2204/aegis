@@ -372,11 +372,21 @@ def _run_pipeline_with_retry(
         )
         retry_layouts = _RetryHintBankLayouts(_PERIOD_RETRY_HINT)
         try:
+            # vision_fallback_on_extraction_error=True activates the
+            # third-pass escape hatch in run_pipeline: if this text+hint
+            # retry ALSO raises ExtractionError, the pipeline reruns the
+            # same PDF through extract_statement_via_vision before
+            # surfacing the failure. Without the flag the retry stops at
+            # the second text-layer pass — which is exactly where the
+            # 2026-06-17 LOAD LIFT + TMF backlog kept landing (Bedrock
+            # repeatedly dropped the page-1 period block on identical
+            # text input even with the hint appended).
             return run_pipeline(
                 pdf_path,
                 llm,  # type: ignore[arg-type]
                 bank_layouts=retry_layouts,
                 known_bank_name="aegis_retry_pass",
+                vision_fallback_on_extraction_error=True,
             )
         except ExtractionError as second:
             # Re-raise the SECOND failure with the FIRST attached as

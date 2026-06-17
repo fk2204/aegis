@@ -52,6 +52,7 @@ from aegis.parser.classify import (
     per_category_confidence,
 )
 from aegis.parser.extract import (
+    ExtractionError,
     ExtractionPass1Result,
     extract_statement,
     extract_statement_per_page,
@@ -175,6 +176,7 @@ def run_pipeline(
     today: date | None = None,
     bank_layouts: BankLayoutRepository | None = None,
     known_bank_name: str | None = None,
+    vision_fallback_on_extraction_error: bool = False,
 ) -> PipelineResult:
     """Run the full parser pipeline.
 
@@ -196,6 +198,26 @@ def run_pipeline(
     parse for a bank (no prior analyses) has no hint; that's expected
     behavior — there's nothing to learn from yet. Tests that don't
     care about layout learning leave both kwargs at their defaults.
+
+    ``vision_fallback_on_extraction_error`` is the third-pass escape
+    hatch wired by ``scripts/recover_legacy_docs.py``'s
+    ``_run_pipeline_with_retry``. When True AND the text-layer pass
+    raises ``ExtractionError`` (most commonly a pydantic
+    ``ValidationError`` chained from ``summary.period_start=None`` /
+    ``period_end=None`` — Bedrock seeing the page-1 period block as
+    layout chrome and dropping it), the pipeline catches the error and
+    re-runs through ``extract_statement_via_vision`` with the same
+    prompt suffix. Vision sees the page as an image instead of text,
+    which sidesteps the text-layer dropouts that defeat the second-pass
+    text-with-hint retry. The fallback is opt-in because vision tokens
+    are ~5-8x text tokens (see ``MAX_OCR_PAGES``) — callers pay for it
+    only when the text path has already cost a round-trip. The
+    image-only path (``not metadata.has_text_layer``) is unaffected:
+    that branch already routes straight to vision and there is no
+    text-extraction call to wrap. ``used_ocr_fallback`` is set to True
+    when the fallback fires so the ``[META] ocr_fallback_used`` flag
+    surfaces on the merchant detail page and the operator can see WHY
+    the doc went through vision.
     """
     metadata = analyze_metadata(pdf_path)
 
@@ -272,7 +294,27 @@ def run_pipeline(
         )
         used_ocr_fallback = True
     else:
-        extraction = extract_statement(pdf_bytes, llm, prompt_suffix=extraction_prompt_suffix)
+        try:
+            extraction = extract_statement(pdf_bytes, llm, prompt_suffix=extraction_prompt_suffix)
+        except ExtractionError as text_err:
+            if not vision_fallback_on_extraction_error:
+                raise
+            if metadata.page_count > MAX_OCR_PAGES:
+                # The vision fallback's per-page token cost would blow
+                # the budget on a huge doc — let the original text-pass
+                # failure surface unchanged so the operator sees the
+                # underlying error rather than a misleading "vision also
+                # failed". Same cap the dedicated image-only branch
+                # enforces above.
+                raise
+            _log.warning(
+                "parser.pipeline.vision_fallback_on_text_failure error=%s",
+                text_err,
+            )
+            extraction = extract_statement_via_vision(
+                pdf_bytes, llm, prompt_suffix=extraction_prompt_suffix
+            )
+            used_ocr_fallback = True
 
     validation = validate_extraction(
         extraction.statement,
