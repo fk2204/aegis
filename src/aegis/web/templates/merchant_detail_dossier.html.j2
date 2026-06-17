@@ -148,6 +148,24 @@
     <div><span class="label">Credit</span><span class="value">{{ merchant.credit_score or '—' }}{% if merchant.credit_score %} <em>FICO</em>{% endif %}</span></div>
     <div><span class="label">Intake</span><span class="value">{{ merchant.intake_date or '—' }}</span></div>
   </div>
+
+  {# Credit-score missing warning. Funder matching uses min_credit_score
+     as a hard gate on most funders; without it, matches that should
+     hard-fail will silently surface as soft-concern-only. Chip nudges
+     the operator to pull credit and re-run. A one-shot Close task is
+     also created (idempotent on merchant_id) by push_decision_to_close
+     so the prompt lands in the operator's normal Close queue. #}
+  {% if merchant.credit_score is none %}
+    <div class="dossier-credit-missing"
+         data-test-id="dossier-credit-missing-chip"
+         role="status"
+         style="margin:10px 0 0 0;padding:8px 12px;border-left:3px solid var(--review);
+                background:rgba(255,196,0,0.08);font-size:12px;line-height:1.5">
+      <strong>⚠ Credit score not on file</strong> — funder matching may be
+      incomplete for funders with minimum FICO requirements. A Close task
+      to pull credit has been queued for the operator.
+    </div>
+  {% endif %}
 </header>
 
 {# Operator notes — append-only timestamped free-form notes about the

@@ -195,9 +195,7 @@ class CallbackSyncResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _resolve_or_404(
-    close_lead_id: str, merchants_repo: MerchantRepository
-) -> MerchantRow:
+def _resolve_or_404(close_lead_id: str, merchants_repo: MerchantRepository) -> MerchantRow:
     """Look up a merchant by Close lead id; 404 if no such mapping.
 
     Mirrors the resolution used by ``/webhooks/close``. Generic 404
@@ -251,9 +249,7 @@ def _audit_callback(
 async def callback_read_merchant(
     close_lead_id: str,
     request: Request,
-    merchants_repo: Annotated[
-        MerchantRepository, Depends(get_merchant_repository)
-    ],
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
 ) -> CallbackMerchantResponse:
     """Pure read of merchant fields the Close-side workflow needs.
@@ -286,9 +282,7 @@ async def callback_read_merchant(
 async def callback_read_deal(
     close_lead_id: str,
     request: Request,
-    merchants_repo: Annotated[
-        MerchantRepository, Depends(get_merchant_repository)
-    ],
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     docs: Annotated[DocumentRepository, Depends(get_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
 ) -> CallbackDealResponse:
@@ -338,9 +332,7 @@ async def callback_read_deal(
 async def callback_trigger_upload(
     close_lead_id: str,
     request: Request,
-    merchants_repo: Annotated[
-        MerchantRepository, Depends(get_merchant_repository)
-    ],
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
 ) -> CallbackUploadResponse:
     """Enqueue the existing Close-attachment orchestration for this lead.
@@ -366,9 +358,7 @@ async def callback_trigger_upload(
     _audit_callback(
         audit,
         action=(
-            "close_callback.upload.enqueued"
-            if enqueued
-            else "close_callback.upload.enqueue_failed"
+            "close_callback.upload.enqueued" if enqueued else "close_callback.upload.enqueue_failed"
         ),
         request=request,
         close_lead_id=close_lead_id,
@@ -393,9 +383,7 @@ async def callback_trigger_upload(
 async def callback_trigger_sync(
     close_lead_id: str,
     request: Request,
-    merchants_repo: Annotated[
-        MerchantRepository, Depends(get_merchant_repository)
-    ],
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     docs: Annotated[DocumentRepository, Depends(get_repository)],
     snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
     audit: Annotated[AuditLog, Depends(get_audit)],
@@ -432,9 +420,7 @@ async def callback_trigger_sync(
         )
 
     deal_ids = [doc.id for doc in docs.list_documents(merchant_id=merchant.id)]
-    decision = snapshot.find_latest_for_merchant(
-        merchant.id, deal_ids=deal_ids
-    )
+    decision = snapshot.find_latest_for_merchant(merchant.id, deal_ids=deal_ids)
     if decision is None:
         _audit_callback(
             audit,
@@ -483,6 +469,7 @@ async def callback_trigger_sync(
             client=close_client,
             audit=audit,
             now=datetime.now(tz=UTC),
+            merchant=merchant,
         )
     except CloseAuthError as exc:
         raise HTTPException(

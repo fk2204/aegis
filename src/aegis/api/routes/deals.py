@@ -511,6 +511,7 @@ def sync_to_close(
             ofac_status=ofac_status,
             client=close_client,
             audit=audit,
+            merchant=merchant,
         )
     except CloseAuthError as exc:
         raise HTTPException(

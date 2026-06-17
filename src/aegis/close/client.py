@@ -49,6 +49,7 @@ import hashlib
 import logging
 import ssl
 import time
+from datetime import date
 from email.message import Message
 from typing import TYPE_CHECKING, Any, Self
 
@@ -398,6 +399,46 @@ class CloseClient:
         idempotency guarantee the Lead sync uses.
         """
         return self.request("PUT", f"/api/v1/opportunity/{opportunity_id}/", json=fields)
+
+    def create_task(
+        self,
+        lead_id: str,
+        text: str,
+        due_date: date | None = None,
+        assigned_to: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /api/v1/task/ — create a Lead Task in Close.
+
+        Body shape per Close docs:
+          { "_type": "lead", "lead_id": "<lead_id>", "text": "<task text>",
+            "date": "<YYYY-MM-DD or omitted>", "assigned_to": "<user_id or omitted>" }
+
+        Use this for operator-action prompts (e.g. "Pull credit score
+        for X", "Fund the deal — funder approved Y for $Z"). The task
+        becomes a Close-side checklist item the operator clears
+        manually; AEGIS does NOT poll for completion.
+
+        Caller responsibilities:
+          * Idempotency. Close does not de-dupe; same payload twice
+            creates two tasks. The standard guard is an ``audit_log``
+            check via ``AuditLog.list_for_subject`` before calling.
+          * Text composition. No length validation here — Close enforces
+            its own server-side cap.
+
+        Same auth + retry semantics as :meth:`request` — 401 fails fast,
+        429 sleeps the ``RateLimit`` reset value then retries within the
+        tenacity budget, 5xx retries, other 4xx propagates.
+        """
+        payload: dict[str, Any] = {
+            "_type": "lead",
+            "lead_id": lead_id,
+            "text": text,
+        }
+        if due_date is not None:
+            payload["date"] = due_date.isoformat()
+        if assigned_to is not None:
+            payload["assigned_to"] = assigned_to
+        return self.request("POST", "/api/v1/task/", json=payload)
 
     def post_note(self, lead_id: str, note_text: str) -> dict[str, Any]:
         """POST /api/v1/activity/note/ — append a plain-text Note to a Lead.

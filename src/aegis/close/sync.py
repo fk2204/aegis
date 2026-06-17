@@ -33,7 +33,7 @@ Audit contract:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
@@ -44,6 +44,7 @@ from aegis.logger import get_logger
 
 if TYPE_CHECKING:
     from aegis.audit import AuditLog
+    from aegis.merchants.models import MerchantRow
 
 _log = get_logger(__name__)
 
@@ -126,6 +127,7 @@ def push_decision_to_close(
     client: CloseClient,
     audit: AuditLog,
     now: datetime | None = None,
+    merchant: MerchantRow | None = None,
 ) -> SyncResult:
     """PATCH the 4 Aegis-* custom fields onto a Close Lead, idempotently.
 
@@ -246,7 +248,77 @@ def push_decision_to_close(
             "synced_at": now.isoformat(),
         },
     )
+
+    # Operator-action task: when the merchant has no credit score on
+    # file, prompt the operator via a one-shot Close task. Guarded by
+    # an audit-log dedupe so a sync that re-runs doesn't pile up
+    # duplicate tasks in Close. Best-effort: a Close 4xx/5xx on the
+    # task POST is logged via the audit row but does NOT raise — the
+    # core sync already succeeded.
+    if merchant is not None and merchant.credit_score is None:
+        _maybe_create_credit_score_task(
+            merchant=merchant,
+            close_lead_id=close_lead_id,
+            client=client,
+            audit=audit,
+            now=now,
+        )
+
     return SyncResult(patched=True, fields_diffed=fields_diffed_sorted, reason="patched")
+
+
+def _maybe_create_credit_score_task(
+    *,
+    merchant: MerchantRow,
+    close_lead_id: str,
+    client: CloseClient,
+    audit: AuditLog,
+    now: datetime,
+) -> None:
+    """Create a one-shot Close task asking the operator to pull credit.
+
+    Dedupe key is the audit row ``close.task.credit_score_requested``
+    on this merchant. The first time a sync runs with credit_score
+    missing, we write the task and stamp the audit row; subsequent
+    syncs see the audit row and skip.
+    """
+    prior = audit.list_for_subject(
+        subject_type="merchant",
+        subject_id=merchant.id,
+        action="close.task.credit_score_requested",
+    )
+    if prior:
+        return
+
+    due = (now or datetime.now(tz=UTC)).date() + timedelta(days=1)
+    text = f"Pull credit score for {merchant.business_name}"
+    try:
+        client.create_task(lead_id=close_lead_id, text=text, due_date=due)
+    except CloseError as exc:
+        audit.record(
+            actor="close_sync",
+            action="close.task.credit_score_request_failed",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": close_lead_id,
+                "status_code": exc.status_code,
+                "error": str(exc)[:200],
+            },
+        )
+        return
+
+    audit.record(
+        actor="close_sync",
+        action="close.task.credit_score_requested",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={
+            "close_lead_id": close_lead_id,
+            "task_text": text,
+            "due_date": due.isoformat(),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

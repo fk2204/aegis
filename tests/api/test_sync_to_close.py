@@ -197,9 +197,7 @@ def close_client(
             return httpx.Response(close_put_status["code"], text="put-boom")
         return httpx.Response(405)
 
-    return CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
-    )
+    return CloseClient(http_client=httpx.Client(transport=httpx.MockTransport(transport)))
 
 
 @pytest.fixture
@@ -243,7 +241,13 @@ def test_happy_path_patches_and_returns_synced(
     audit: InMemoryAuditLog,
     close_transport_requests: list[httpx.Request],
 ) -> None:
+    # Seed with a credit_score so push_decision_to_close doesn't also
+    # spawn the credit-score Close task — that path has its own focused
+    # tests in tests/test_close_sync_credit_score_task.py and would
+    # introduce a third POST to the request log this test pins down.
     merchant = _seed_merchant(merchants)
+    merchants.upsert(merchant.model_copy(update={"credit_score": 720}))
+    merchant = merchants.get(merchant.id)
     doc_id = _seed_document(docs, merchant.id)
     decision_id = _seed_decision(
         snapshot,
@@ -406,9 +410,7 @@ def test_audit_close_deal_sync_triggered_written_before_push(
     assert resp.status_code == 200
 
     triggers = [e for e in audit.entries if e["action"] == "close.deal.sync_triggered"]
-    attempts = [
-        e for e in audit.entries if e["action"] == "close.lead.sync_attempted"
-    ]
+    attempts = [e for e in audit.entries if e["action"] == "close.lead.sync_attempted"]
     assert len(triggers) == 1
     assert len(attempts) == 1
 
