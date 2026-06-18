@@ -40,9 +40,7 @@ class _StubLLM:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
 
-    def extract_raw_json(
-        self, pdf_bytes: bytes, prompt: str
-    ) -> tuple[dict[str, Any], bool]:
+    def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> tuple[dict[str, Any], bool]:
         _ = (pdf_bytes, prompt)
         return self._payload, False
 
@@ -109,9 +107,7 @@ def stub_llm(stub_payload: dict[str, Any]) -> Iterator[_StubLLM]:
 
 
 @pytest.fixture
-def stub_extraction(
-    small_pdf_bytes: bytes, stub_llm: _StubLLM
-) -> FunderGuidelineExtraction:
+def stub_extraction(small_pdf_bytes: bytes, stub_llm: _StubLLM) -> FunderGuidelineExtraction:
     """Exercise the real extract path against the stub LLM so the
     Pydantic-validated FunderGuidelineExtraction in tests matches the
     same shape the CLI emits at runtime."""
@@ -327,9 +323,7 @@ def test_run_extract_with_output_path_writes_file(
     assert payload["draft"]["name"] == "Acme Capital Funding"
 
 
-def test_run_extract_unknown_media_returns_error(
-    stub_llm: _StubLLM, tmp_path: Path
-) -> None:
+def test_run_extract_unknown_media_returns_error(stub_llm: _StubLLM, tmp_path: Path) -> None:
     bad_path = tmp_path / "guidelines.docx"
     bad_path.write_bytes(b"not-a-pdf")
     args = argparse.Namespace(command="extract", files=[bad_path], output=None)
@@ -476,9 +470,7 @@ def test_run_save_emits_audit_row(
     Mirrors the route-side audit emit; CLAUDE.md requires audit rows
     for every state change."""
     preview_path = tmp_path / "preview.json"
-    preview_path.write_text(
-        add_funder.preview_to_json(stub_extraction), encoding="utf-8"
-    )
+    preview_path.write_text(add_funder.preview_to_json(stub_extraction), encoding="utf-8")
     args = argparse.Namespace(command="save", from_path=preview_path, dry_run=False)
     repo = InMemoryFunderRepository()
     audit = InMemoryAuditLog()
@@ -511,9 +503,7 @@ def test_run_save_audit_failure_fails_the_command(
     ``EXIT_RUNTIME_ERROR`` with a clear stderr message even though the
     upsert itself succeeded."""
     preview_path = tmp_path / "preview.json"
-    preview_path.write_text(
-        add_funder.preview_to_json(stub_extraction), encoding="utf-8"
-    )
+    preview_path.write_text(add_funder.preview_to_json(stub_extraction), encoding="utf-8")
     args = argparse.Namespace(command="save", from_path=preview_path, dry_run=False)
     repo = InMemoryFunderRepository()
     out_buf, err_buf = io.StringIO(), io.StringIO()
@@ -567,9 +557,7 @@ def test_main_extract_dispatches_to_run_extract(
     assert called["command"] == "extract"
 
 
-def test_main_save_dispatches_to_run_save(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_main_save_dispatches_to_run_save(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     called: dict[str, object] = {}
 
     def _fake_run(args: argparse.Namespace) -> int:
@@ -580,3 +568,184 @@ def test_main_save_dispatches_to_run_save(
     rc = add_funder.main(["save", "--from", str(tmp_path / "x.json")])
     assert rc == 0
     assert called["command"] == "save"
+
+
+# ----------------------------------------------------------------------
+# merge subcommand
+# ----------------------------------------------------------------------
+
+
+def _existing_row(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "name": "Acme Capital",
+        "active": True,
+        "operator_status": "active",
+        "min_monthly_revenue": 40000,
+        "min_credit_score": None,
+        "min_months_in_business": None,
+        "max_positions": None,
+        "accepts_stacking": True,  # existing said True
+        "min_advance": None,
+        "max_advance": None,
+        "typical_factor_low": None,
+        "typical_factor_high": None,
+        "excluded_industries": [],
+        "excluded_states": [],
+        "deal_types_accepted": [],
+        "contact_name": "",
+        "contact_phone": "646-OLD-LINE",  # existing populated
+        "contact_email": "",
+        "submission_email": "",
+        "tiers": [],
+        "auto_decline_conditions": [],
+        "conditional_requirements": [],
+        "notes": "",
+        "notes_residual": "",
+        "operator_notes": "",
+        "guidelines_extracted_at": "2026-06-10T00:00:00+00:00",
+        "guidelines_source_pdf_hash": "old",
+        "created_at": "2026-06-10T00:00:00+00:00",
+        "updated_at": "2026-06-10T00:00:00+00:00",
+    }
+    base.update(overrides)
+    return base
+
+
+def _preview_blob(**draft_overrides: Any) -> dict[str, Any]:
+    draft: dict[str, Any] = {
+        "id": "99999999-9999-9999-9999-999999999999",
+        "name": "ACME LLC",
+        "active": True,
+        "operator_status": "active",
+        "min_monthly_revenue": 25000,
+        "min_credit_score": 500,
+        "min_months_in_business": 12,
+        "max_positions": None,
+        "accepts_stacking": False,  # would have overwritten existing True
+        "min_advance": "5000",
+        "max_advance": "250000",
+        "typical_factor_low": "1.3",
+        "typical_factor_high": "1.5",
+        "excluded_industries": [],
+        "excluded_states": [],
+        "deal_types_accepted": ["mca"],
+        "contact_name": "",
+        "contact_phone": "855-NEW-LINE",  # would have overwritten existing
+        "contact_email": "",
+        "submission_email": "",
+        "tiers": [],
+        "auto_decline_conditions": [],
+        "conditional_requirements": ["application", "bank statements"],
+        "notes": "",
+        "notes_residual": "fresh extract",
+        "operator_notes": "",
+        "guidelines_extracted_at": "2026-06-18T12:00:00+00:00",
+        "guidelines_source_pdf_hash": "new",
+    }
+    draft.update(draft_overrides)
+    return {
+        "draft": draft,
+        "confidence_by_field": {},
+        "unparseable_fragments": [],
+        "overall_confidence": 80,
+    }
+
+
+def test_run_merge_preserves_operator_curated_fields(tmp_path: Path) -> None:
+    """Headline contract: PRESERVE_IF_POPULATED fields keep existing values."""
+    preview_path = tmp_path / "preview.json"
+    preview_path.write_text(json.dumps(_preview_blob()), encoding="utf-8")
+
+    existing = _existing_row()
+
+    def fake_loader(by: str, key: str) -> dict[str, Any]:
+        assert by == "name"
+        assert key == "ACME LLC"
+        return existing
+
+    args = argparse.Namespace(preview_path=preview_path, by="name")
+    rc = add_funder.run_merge(args, existing_loader=fake_loader)
+    assert rc == 0
+
+    merged = json.loads(preview_path.read_text(encoding="utf-8"))
+    draft = merged["draft"]
+    # id / name swapped back to existing
+    assert draft["id"] == "11111111-1111-1111-1111-111111111111"
+    assert draft["name"] == "Acme Capital"
+    # PRESERVE_IF_POPULATED held the line
+    assert draft["accepts_stacking"] is True  # not False
+    assert draft["contact_phone"] == "646-OLD-LINE"  # not 855-NEW-LINE
+    # Default merge took new values for non-preserved fields
+    assert draft["min_monthly_revenue"] == 25000
+    assert draft["typical_factor_low"] == "1.3"
+
+
+def test_run_merge_missing_existing_returns_error(tmp_path: Path) -> None:
+    preview_path = tmp_path / "preview.json"
+    preview_path.write_text(json.dumps(_preview_blob()), encoding="utf-8")
+
+    def fake_loader(by: str, key: str) -> dict[str, Any]:
+        raise ValueError(f"no funder with {by}={key!r}")
+
+    args = argparse.Namespace(preview_path=preview_path, by="name")
+    rc = add_funder.run_merge(args, existing_loader=fake_loader, stderr=io.StringIO())
+    assert rc == add_funder.EXIT_RUNTIME_ERROR
+
+
+def test_run_merge_malformed_preview_returns_error(tmp_path: Path) -> None:
+    preview_path = tmp_path / "preview.json"
+    preview_path.write_text("{ not valid json", encoding="utf-8")
+
+    def fake_loader(by: str, key: str) -> dict[str, Any]:  # pragma: no cover
+        raise AssertionError("loader must not be called when preview is malformed")
+
+    args = argparse.Namespace(preview_path=preview_path, by="name")
+    rc = add_funder.run_merge(args, existing_loader=fake_loader, stderr=io.StringIO())
+    assert rc == add_funder.EXIT_RUNTIME_ERROR
+
+
+def test_run_merge_missing_lookup_key_returns_error(tmp_path: Path) -> None:
+    """preview.draft.name empty + by=name → error before any DB call."""
+    blob = _preview_blob()
+    blob["draft"]["name"] = ""
+    preview_path = tmp_path / "preview.json"
+    preview_path.write_text(json.dumps(blob), encoding="utf-8")
+
+    def fake_loader(by: str, key: str) -> dict[str, Any]:  # pragma: no cover
+        raise AssertionError("loader must not be called when lookup key is missing")
+
+    args = argparse.Namespace(preview_path=preview_path, by="name")
+    rc = add_funder.run_merge(args, existing_loader=fake_loader, stderr=io.StringIO())
+    assert rc == add_funder.EXIT_RUNTIME_ERROR
+
+
+def test_run_merge_by_id_uses_existing_id_field(tmp_path: Path) -> None:
+    """by=id should look up via preview.draft.id, not name."""
+    preview_path = tmp_path / "preview.json"
+    preview_path.write_text(json.dumps(_preview_blob()), encoding="utf-8")
+    existing = _existing_row()
+
+    def fake_loader(by: str, key: str) -> dict[str, Any]:
+        assert by == "id"
+        assert key == "99999999-9999-9999-9999-999999999999"
+        return existing
+
+    args = argparse.Namespace(preview_path=preview_path, by="id")
+    rc = add_funder.run_merge(args, existing_loader=fake_loader)
+    assert rc == 0
+
+
+def test_main_merge_dispatches_to_run_merge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    called: dict[str, object] = {}
+
+    def _fake_run(args: argparse.Namespace) -> int:
+        called["command"] = args.command
+        return 0
+
+    monkeypatch.setattr(add_funder, "run_merge", _fake_run)
+    rc = add_funder.main(["merge", "--preview", str(tmp_path / "p.json"), "--by", "name"])
+    assert rc == 0
+    assert called["command"] == "merge"

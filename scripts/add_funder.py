@@ -15,12 +15,20 @@ shape makes the human-in-the-loop step the natural sequence.
 Subcommands::
 
     python scripts/add_funder.py extract <file>... [--output PATH]
+    python scripts/add_funder.py merge --preview PATH [--by name|id]
     python scripts/add_funder.py save --from PATH [--dry-run]
 
 The ``extract`` step writes a JSON preview to stdout (or ``--output``)
 and a human-readable summary with low-confidence (<60) fields flagged
 to stderr. The preview JSON is the operator's handle: edit it (or have
 Claude Code edit it) before invoking ``save --from`` against it.
+
+The ``merge`` step folds the preview onto the existing AEGIS funder
+row in place — use it between ``extract`` and ``save`` whenever the
+target funder already exists. Without it, ``save`` would replace
+operator-curated content (contact info, conditional_requirements,
+accepts_stacking, etc.). See ``aegis.funders.merge_existing`` for the
+``PRESERVE_IF_POPULATED`` set that codifies the policy.
 
 Reuses everything that already exists; no new write path, no new prompt.
 The save call goes through the same ``FunderRepository.upsert`` the
@@ -42,7 +50,7 @@ import sys
 import traceback
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Final, Protocol, TextIO
+from typing import Any, Final, Protocol, TextIO, cast
 
 from pydantic import ValidationError
 
@@ -52,6 +60,10 @@ from aegis.funders.extract import (
     extract_funder_guidelines,
     extract_funder_guidelines_from_image,
     merge_extractions,
+)
+from aegis.funders.merge_existing import (
+    PRESERVE_IF_POPULATED,
+    merge_preview_with_existing,
 )
 from aegis.funders.models import FunderGuidelineExtraction, FunderRow
 from aegis.llm import LLMClient
@@ -120,8 +132,7 @@ def summary_lines(
     lines = [
         f"funder: {draft.name}",
         f"overall_confidence: {extraction.overall_confidence}",
-        f"low_confidence_fields (<{threshold}): "
-        + (", ".join(low) if low else "none"),
+        f"low_confidence_fields (<{threshold}): " + (", ".join(low) if low else "none"),
     ]
     if extraction.unparseable_fragments:
         lines.append("unparseable_fragments:")
@@ -246,6 +257,31 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    p_merge = sub.add_parser(
+        "merge",
+        help=(
+            "Fold an extracted preview onto the existing AEGIS funder row. "
+            "Run between extract and save when re-extracting a funder that "
+            "already exists in AEGIS."
+        ),
+    )
+    p_merge.add_argument(
+        "--preview",
+        dest="preview_path",
+        type=Path,
+        required=True,
+        help="Path to preview JSON produced by `extract --output` (rewritten in place).",
+    )
+    p_merge.add_argument(
+        "--by",
+        choices=("name", "id"),
+        default="name",
+        help=(
+            "How to look up the existing AEGIS row. 'name' (default) matches "
+            "preview.draft.name; 'id' matches preview.draft.id."
+        ),
+    )
+
     p_save = sub.add_parser(
         "save",
         help="Upsert a previously-extracted (and operator-confirmed) preview.",
@@ -291,6 +327,26 @@ def _load_audit() -> AuditLog:
     return SupabaseAuditLog()
 
 
+def _load_existing_funder(by: str, key: str) -> dict[str, Any]:
+    """Fetch one funder row by ``name`` or ``id`` for the merge step.
+
+    Returns the raw Supabase dict (with all columns including
+    ``created_at`` / ``updated_at``) — the merge function expects raw
+    shape, not a Pydantic-coerced FunderRow. Lazy-imports so unit tests
+    can inject a stub without Supabase creds present.
+    """
+    from aegis.db import get_supabase
+
+    column = "id" if by == "id" else "name"
+    result = get_supabase().table("funders").select("*").eq(column, key).execute()
+    rows = cast(list[dict[str, Any]], result.data or [])
+    if not rows:
+        raise ValueError(f"no funder with {column}={key!r} in AEGIS")
+    if len(rows) > 1:
+        raise ValueError(f"multiple funders with {column}={key!r} — should be unique")
+    return rows[0]
+
+
 def _read_file_bytes(path: Path) -> tuple[bytes, str]:
     """Read ``path`` and return ``(bytes, kind)`` where kind is "pdf"/"image".
 
@@ -301,8 +357,7 @@ def _read_file_bytes(path: Path) -> tuple[bytes, str]:
     kind = classify_media(path)
     if kind == "":
         raise ValueError(
-            f"unsupported media for {path.name!r}: "
-            "expected .pdf / .png / .jpg / .jpeg"
+            f"unsupported media for {path.name!r}: expected .pdf / .png / .jpg / .jpeg"
         )
     return path.read_bytes(), kind
 
@@ -352,6 +407,127 @@ def run_extract(
     for line in summary_lines(extraction):
         print(line, file=stderr)
     return EXIT_OK
+
+
+def run_merge(
+    args: argparse.Namespace,
+    *,
+    existing_loader: Callable[[str, str], dict[str, Any]] = _load_existing_funder,
+    text_reader: Callable[[Path], str] = _default_text_reader,
+    stdout: TextIO = sys.stdout,
+    stderr: TextIO = sys.stderr,
+) -> int:
+    """Merge subcommand body. Folds preview onto existing AEGIS row in place.
+
+    Reads the preview JSON, looks up the matching DB row (by name or
+    id), applies the ``PRESERVE_IF_POPULATED`` policy in
+    ``aegis.funders.merge_existing``, and rewrites the preview file.
+    Prints a per-field action summary to stderr so the operator sees
+    what shifted before invoking ``save``.
+
+    IO factories are injected so the unit tests can stub the DB lookup
+    without Supabase creds present.
+    """
+    import json
+
+    preview_path: Path = args.preview_path
+    try:
+        blob = text_reader(preview_path)
+    except OSError as exc:
+        print(f"ERROR: could not read preview: {exc}", file=stderr)
+        return EXIT_RUNTIME_ERROR
+
+    try:
+        preview = cast(dict[str, Any], json.loads(blob))
+    except ValueError as exc:
+        print(f"ERROR: preview JSON malformed: {exc}", file=stderr)
+        return EXIT_RUNTIME_ERROR
+
+    draft = preview.get("draft")
+    if not isinstance(draft, dict):
+        print("ERROR: preview JSON missing 'draft' object", file=stderr)
+        return EXIT_RUNTIME_ERROR
+
+    by: str = args.by
+    key_field = "id" if by == "id" else "name"
+    key = draft.get(key_field)
+    if not isinstance(key, str) or not key:
+        print(
+            f"ERROR: preview.draft.{key_field} missing or empty — can't look up existing funder",
+            file=stderr,
+        )
+        return EXIT_RUNTIME_ERROR
+
+    try:
+        existing = existing_loader(by, key)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=stderr)
+        return EXIT_RUNTIME_ERROR
+    except Exception as exc:
+        print(f"ERROR: existing-funder lookup failed: {exc}", file=stderr)
+        traceback.print_exc(file=stderr)
+        return EXIT_RUNTIME_ERROR
+
+    merged = merge_preview_with_existing(existing, preview)
+    merged_draft = merged["draft"]
+
+    # Render a tight per-field action summary.
+    actions = _summarise_merge_actions(existing, draft, merged_draft)
+    print(f"merged {existing['name']!r} (id={existing['id']})", file=stderr)
+    print(f"  preserved-by-policy: {len(actions['preserved_policy'])}", file=stderr)
+    print(f"  preserved-fallback:  {len(actions['preserved_fallback'])}", file=stderr)
+    print(f"  filled-from-new:     {len(actions['filled'])}", file=stderr)
+    print(f"  taken-from-new:      {len(actions['changed'])}", file=stderr)
+    for field in actions["preserved_policy"]:
+        print(f"    [policy] {field}: kept existing", file=stderr)
+    for field, ev, nv in actions["changed"]:
+        print(f"    [updated] {field}: {ev!r} -> {nv!r}", file=stderr)
+
+    out_blob = json.dumps(merged, indent=2, default=str)
+    preview_path.write_text(out_blob, encoding="utf-8")
+    print(f"wrote {preview_path}", file=stdout)
+    return EXIT_OK
+
+
+def _summarise_merge_actions(
+    existing: dict[str, Any],
+    new_draft: dict[str, Any],
+    merged_draft: dict[str, Any],
+) -> dict[str, Any]:
+    """Classify each field in the merged draft for the stderr summary."""
+    preserved_policy: list[str] = []
+    preserved_fallback: list[str] = []
+    filled: list[str] = []
+    changed: list[tuple[str, Any, Any]] = []
+    for field in merged_draft:
+        if field in {
+            "id",
+            "name",
+            "guidelines_extracted_at",
+            "guidelines_source_pdf_hash",
+            "notes_residual",
+            "created_at",
+            "updated_at",
+        }:
+            continue
+        ev = existing.get(field)
+        nv = new_draft.get(field)
+        mv = merged_draft.get(field)
+        if mv == ev and mv != nv:
+            if field in PRESERVE_IF_POPULATED:
+                preserved_policy.append(field)
+            else:
+                preserved_fallback.append(field)
+        elif mv == nv and mv != ev and (ev is None or ev == "" or ev == []):
+            filled.append(field)
+        elif mv == nv and mv != ev:
+            changed.append((field, ev, nv))
+    return {
+        "preserved_policy": preserved_policy,
+        "preserved_fallback": preserved_fallback,
+        "filled": filled,
+        "changed": changed,
+    }
 
 
 def run_save(
@@ -434,6 +610,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.command == "extract":
         return run_extract(args)
+    if args.command == "merge":
+        return run_merge(args)
     if args.command == "save":
         return run_save(args)
     # argparse's required=True covers this; defensive return for mypy.

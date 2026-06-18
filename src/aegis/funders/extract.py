@@ -35,6 +35,17 @@ from aegis.llm import LLMClient
 _MAX_PDF_BYTES: Final[int] = 25 * 1024 * 1024
 _MAX_IMAGE_BYTES: Final[int] = 25 * 1024 * 1024
 
+# Bedrock's per-image hard limit is 5 MB after base64 encoding. Base64
+# inflates bytes by ~4/3, so any raw image over ~3.75 MB hits the limit.
+# Cap raw input at 4.5 MB; downsample iteratively until under it. 70%
+# linear (~0.49 area) per pass with LANCZOS keeps text legible at the
+# scales we hit in practice (Logic Advance's 6.5 MB PNG resolved in one
+# pass — 2026-06-18). Five passes (0.7**5 ~ 0.17) is the safety cap;
+# beyond that text would be too small for the LLM to read anyway.
+_BEDROCK_IMAGE_BYTES_SOFT_CAP: Final[int] = 4_500_000
+_DOWNSAMPLE_SCALE: Final[float] = 0.7
+_DOWNSAMPLE_MAX_PASSES: Final[int] = 5
+
 
 class FunderExtractionError(RuntimeError):
     """Raised when the LLM response cannot be parsed into FunderGuidelineExtraction."""
@@ -79,6 +90,8 @@ def extract_funder_guidelines_from_image(
             f"image buffer too large: {len(image_bytes)} bytes (max {_MAX_IMAGE_BYTES})"
         )
 
+    image_bytes = _downsample_if_oversized(image_bytes)
+
     try:
         raw, truncated = llm.extract_raw_json_from_images(
             [image_bytes], FUNDER_GUIDELINE_EXTRACTION_PROMPT
@@ -87,6 +100,58 @@ def extract_funder_guidelines_from_image(
         raise FunderExtractionError(f"LLM returned malformed JSON: {exc}") from exc
 
     return _build_extraction(raw, truncated, source_bytes=image_bytes)
+
+
+def _downsample_if_oversized(image_bytes: bytes) -> bytes:
+    """Shrink the image until it fits Bedrock's 5 MB base64 ceiling.
+
+    No-op when the input is already under the soft cap. Otherwise opens
+    via Pillow, resizes ``_DOWNSAMPLE_SCALE`` linear per pass with
+    ``LANCZOS`` resampling, re-encodes in the original format
+    (defaulting to PNG when Pillow can't infer one), and returns the
+    smallest pass that lands under the cap. Returns the last pass after
+    ``_DOWNSAMPLE_MAX_PASSES`` even if it still exceeds the cap — the
+    Bedrock call will then surface the size error so the operator
+    knows the source is unusable rather than this routine silently
+    eating the input.
+
+    Pillow ships as a transitive dependency of ``weasyprint`` /
+    ``reportlab`` and is always present in the install. The import is
+    deferred so the module-level import graph stays unchanged for the
+    PDF path that never needs it.
+    """
+    if len(image_bytes) <= _BEDROCK_IMAGE_BYTES_SOFT_CAP:
+        return image_bytes
+
+    import io
+
+    from PIL import Image
+
+    # ``Image.open`` returns ``ImageFile.ImageFile``; the resize loop below
+    # reassigns to a plain ``Image.Image``. Annotate the binding once so
+    # the assignment type-checks under ``mypy --strict``.
+    image: Image.Image = Image.open(io.BytesIO(image_bytes))
+    # Force a read so format detection finalises before we resize.
+    image.load()
+    fmt = image.format or "PNG"
+    save_kwargs: dict[str, Any] = {"optimize": True}
+    if fmt == "JPEG":
+        save_kwargs["quality"] = 90
+
+    result = image_bytes
+    for _ in range(_DOWNSAMPLE_MAX_PASSES):
+        new_size = (
+            max(1, int(image.width * _DOWNSAMPLE_SCALE)),
+            max(1, int(image.height * _DOWNSAMPLE_SCALE)),
+        )
+        image = image.resize(new_size, Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        image.save(buf, format=fmt, **save_kwargs)
+        result = buf.getvalue()
+        if len(result) <= _BEDROCK_IMAGE_BYTES_SOFT_CAP:
+            return result
+
+    return result
 
 
 def _build_extraction(
