@@ -1025,6 +1025,12 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         close_lead_description=row.get("close_lead_description"),
         close_notes_summary=row.get("close_notes_summary"),
         close_call_transcripts=row.get("close_call_transcripts"),
+        # Migration 067 — web-presence reputation scan. Pre-067 reads
+        # collapse to None / [] which is the "needs first scan" signal
+        # the scorer checks before invoking the scanner.
+        web_presence_summary=row.get("web_presence_summary"),
+        web_presence_flags=list(row.get("web_presence_flags") or []),
+        web_presence_scanned_at=_parse_dt(row.get("web_presence_scanned_at")),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
         # Migration 065. None for every pre-065 row + every live row;
@@ -1099,6 +1105,13 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "close_lead_description": m.close_lead_description,
         "close_notes_summary": m.close_notes_summary,
         "close_call_transcripts": m.close_call_transcripts,
+        "web_presence_summary": m.web_presence_summary,
+        # supabase-py serialises a Python list to a PostgREST array; the
+        # column is text[] so empty list maps to {} which Supabase
+        # stores as an empty array (not NULL) — which is what we want
+        # for "scanned but no flags" so the scorer doesn't re-fire.
+        "web_presence_flags": list(m.web_presence_flags),
+        "web_presence_scanned_at": m.web_presence_scanned_at,
     }
     return payload
 

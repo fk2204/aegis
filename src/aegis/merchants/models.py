@@ -167,6 +167,19 @@ class MerchantRow(_StrictModel):
     close_notes_summary: str | None = None
     close_call_transcripts: str | None = None
 
+    # ------------------------------------------------------------------
+    # Web-presence reputation scan (migration 067). Populated by
+    # ``aegis.web_presence.scanner.scan_web_presence`` on first score,
+    # or refreshed by the operator via the dossier "Refresh" button.
+    # Soft signal only — risk_flags surface as
+    # ``FunderMatch.soft_concerns`` entries; never gate a match.
+    # ``web_presence_scanned_at is None`` is the "needs first scan"
+    # signal the scorer checks before invoking the scanner.
+    # ------------------------------------------------------------------
+    web_presence_summary: str | None = None
+    web_presence_flags: list[str] = Field(default_factory=list)
+    web_presence_scanned_at: datetime | None = None
+
     # Phase 7B funder-submission tracking (Pydantic-only — no Supabase
     # column yet, so these reset on a Supabase round-trip; audit_log is
     # the durable record. Persistence moves to a real submissions table

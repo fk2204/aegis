@@ -65,9 +65,7 @@ class LLMClient(Protocol):
     Tests provide stubs implementing this Protocol.
     """
 
-    def extract_raw_json(
-        self, pdf_bytes: bytes, prompt: str
-    ) -> tuple[dict[str, Any], bool]:
+    def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> tuple[dict[str, Any], bool]:
         """Run the extraction pass: PDF in, raw JSON + truncation flag out.
 
         The bool is True iff Bedrock cut output at `max_tokens`. The
@@ -112,9 +110,7 @@ class BedrockClient:
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
-    def extract_raw_json(
-        self, pdf_bytes: bytes, prompt: str
-    ) -> tuple[dict[str, Any], bool]:
+    def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> tuple[dict[str, Any], bool]:
         """Send a PDF document block + extraction prompt; parse the first JSON object out.
 
         Uses streaming because real bank statements can produce >16K tokens of
@@ -204,6 +200,36 @@ class BedrockClient:
         )
         return _first_json_object(_text_blocks(response))
 
+    def invoke_with_web_search(self, prompt: str, *, max_uses: int = 5) -> str:
+        """Send the prompt with the ``web_search_20250305`` server tool enabled.
+
+        Returns the model's final text response as one concatenated string —
+        ``_text_blocks`` skips tool-use / tool-result blocks so the caller
+        gets only the natural-language answer.
+
+        Used by ``aegis.web_presence.scanner`` for reputation lookups. The
+        scanner catches every exception and returns an empty result, so
+        this method intentionally does NOT retry: the retry budget belongs
+        to the operator's explicit refresh, not to the failure path.
+
+        ``max_uses`` caps how many web-search round-trips Anthropic can
+        run server-side per invocation. Five is enough for a reputation
+        sketch without burning unbounded search credits.
+        """
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=2048,
+            tools=[
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": max_uses,
+                }
+            ],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return _text_blocks(response)
+
 
 def _text_blocks(response: object) -> str:
     """Concatenate all text blocks from an Anthropic Messages response."""
@@ -237,7 +263,7 @@ def _first_json_object(text: str) -> dict[str, Any]:
         raise ValueError(
             "LLM returned a top-level JSON array; expected an object. "
             "Fix the prompt in `aegis/parser/prompts.py` to require an "
-            "object wrapper (e.g. {\"classifications\": [...]})."
+            'object wrapper (e.g. {"classifications": [...]}).'
         )
     if start == -1:
         raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")

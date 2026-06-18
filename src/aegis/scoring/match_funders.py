@@ -564,14 +564,23 @@ def match_funder(
             if missing_item.is_hard:
                 stip_soft_concerns.append(f"missing stip: {missing_item.requirement_text}")
 
+    # Web-presence reputation flags (migration 067). Each flag from the
+    # most-recent ``scan_web_presence`` call surfaces as one soft
+    # concern, prefixed so the dossier renderer can distinguish them
+    # from underwriting concerns. Empty list = no flags = no concern.
+    web_presence_soft_concerns: list[str] = []
+    if merchant is not None and merchant.web_presence_flags:
+        for flag in merchant.web_presence_flags:
+            web_presence_soft_concerns.append(f"web presence: {flag}")
+
     return FunderMatch(
         funder_id=funder.id,
         funder_name=funder.name,
         match_score=likelihood,
         reasons=reasons,
         # Union of hard fails + soft concerns + per-merchant stip soft
-        # concerns — caller wants the full picture.
-        soft_concerns=hard + soft + stip_soft_concerns,
+        # concerns + web-presence flags — caller wants the full picture.
+        soft_concerns=hard + soft + stip_soft_concerns + web_presence_soft_concerns,
         estimated_terms=estimated_terms,
         tier_matches=tier_matches,
         historical_approval_rate=historical_approval_rate,

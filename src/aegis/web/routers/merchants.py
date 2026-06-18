@@ -1751,6 +1751,39 @@ async def merchant_refresh_close_context(
     )
 
 
+@router.post("/merchants/{merchant_id}/refresh-web-presence", response_model=None)
+async def merchant_refresh_web_presence(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+) -> RedirectResponse:
+    """Force-run the reputation scan for this merchant.
+
+    Always runs (no idempotency check on ``web_presence_scanned_at``).
+    Failure modes are absorbed inside ``scan_web_presence`` — Bedrock
+    unavailable / web_search tool unsupported / malformed response all
+    collapse to an empty result, which the orchestrator still persists
+    so the dossier shows the empty state instead of "never scanned".
+    The audit row carries ``bedrock_succeeded`` so the operator can
+    distinguish "scanned and found nothing" from "scan failed".
+    """
+    from aegis.web_presence.refresh import refresh_web_presence_for_merchant
+
+    try:
+        refresh_web_presence_for_merchant(
+            merchant_id,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return RedirectResponse(
+        url=f"/ui/merchants/{merchant_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 _FUNDER_RESPONSE_STATUSES = frozenset({"approved", "declined", "countered", "pending"})
 
 

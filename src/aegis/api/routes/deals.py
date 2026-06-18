@@ -254,6 +254,7 @@ def score(
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
     docs: Annotated[DocumentRepository, Depends(get_repository)],
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     document_id: Annotated[
         UUID,
         Query(
@@ -274,6 +275,27 @@ def score(
     received a score with no snapshot; the call now 422s instead. Every
     production caller (dashboard, Close sync) already supplies it.
     """
+    # Web-presence reputation scan (migration 067). The scan is a soft
+    # signal — risk_flags surface as ``FunderMatch.soft_concerns`` via
+    # ``match_funder``. Run lazily on the first score where the merchant
+    # has no prior scan; subsequent scores reuse the persisted result so
+    # the Bedrock + web_search round-trip cost is paid once per merchant
+    # (refresh via the dossier button to re-scan on demand). Bedrock
+    # failures persist an empty result so a transient outage doesn't
+    # re-fire on every subsequent score.
+    try:
+        merchant_row = merchants.get(deal.merchant_id)
+    except MerchantNotFoundError:
+        merchant_row = None
+    if merchant_row is not None:
+        from aegis.web_presence.refresh import ensure_web_presence_scan
+
+        ensure_web_presence_scan(
+            merchant_row,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+
     # U33 — feed Track A/B verdicts. The route operates on an operator-
     # provided ScoreInput payload but the merchant's docs are available
     # via ``deal.merchant_id`` so the active-engine flip has live inputs.

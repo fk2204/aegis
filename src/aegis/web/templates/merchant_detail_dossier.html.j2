@@ -483,6 +483,55 @@
               </div>
             </section>
 
+            {# ============== Web presence panel (migration 067) ============== #}
+            {# Reputation scan via Bedrock + web_search. ``risk_flags``
+               surface as ``FunderMatch.soft_concerns`` via
+               ``match_funder`` so the underwriter sees them next to the
+               other concerns; this panel just gives them the human-
+               readable summary and a Refresh button. #}
+            <section class="dossier-web-presence-panel"
+                     data-test-id="dossier-web-presence-panel"
+                     style="margin:14px 0;padding:12px 14px;border:1px solid var(--ink-4, #d8d8d4);border-radius:6px;background:var(--ink-bg, #fafaf7)">
+              <header style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+                <strong style="text-transform:uppercase;letter-spacing:0.08em;font-size:11px;color:var(--ink-3)">Web presence</strong>
+                <form method="post"
+                      action="/ui/merchants/{{ merchant.id }}/refresh-web-presence"
+                      style="margin:0">
+                  <button type="submit"
+                          data-test-id="refresh-web-presence"
+                          style="font-size:11px">↻ Refresh</button>
+                </form>
+              </header>
+
+              {% if merchant.web_presence_scanned_at %}
+                <div style="font-size:11px;color:var(--ink-3);margin-bottom:6px">
+                  scanned {{ merchant.web_presence_scanned_at.strftime('%Y-%m-%d %H:%M UTC') }}
+                </div>
+                {% if merchant.web_presence_summary %}
+                  <p data-test-id="web-presence-summary"
+                     style="margin:0 0 8px 0;font-size:12px;line-height:1.4">{{ merchant.web_presence_summary }}</p>
+                {% else %}
+                  <p style="margin:0 0 8px 0;font-size:11px;color:var(--ink-3);font-style:italic">— no summary returned —</p>
+                {% endif %}
+                {% if merchant.web_presence_flags %}
+                  <div data-test-id="web-presence-flags" style="display:flex;flex-wrap:wrap;gap:4px">
+                    {% for flag in merchant.web_presence_flags %}
+                      <span class="chip chip-warn"
+                            style="display:inline-block;padding:2px 8px;border-radius:10px;background:#fde7d4;color:#7a3b00;font-size:11px;font-family:var(--mono, monospace)">{{ flag }}</span>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <span style="font-size:11px;color:var(--ink-3);font-style:italic">no risk flags</span>
+                {% endif %}
+              {% else %}
+                <p data-test-id="web-presence-empty"
+                   style="margin:0;font-size:11px;color:var(--ink-3);font-style:italic">
+                  Not yet scanned. The next score will trigger an automatic scan;
+                  click Refresh to scan now.
+                </p>
+              {% endif %}
+            </section>
+
             <div class="actions">
               {% if _actions_locked %}
                 <span class="btn primary is-disabled" title="{{ _locked_title }}" aria-disabled="true">Match funders</span>

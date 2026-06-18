@@ -547,6 +547,14 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='merchant_notes'"
     ),
+    "067_merchant_web_presence.sql": (
+        # 067 adds web_presence_{summary,flags,scanned_at} to merchants.
+        # The three columns land in the same ADD COLUMN block; probing
+        # the first (web_presence_summary) suffices.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='web_presence_summary'"
+    ),
 }
 
 
