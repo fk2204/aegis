@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 _log = get_logger(__name__)
 
-_VALID_TRIGGERS: frozenset[str] = frozenset({"webhook", "rescan"})
+_VALID_TRIGGERS: frozenset[str] = frozenset({"webhook", "rescan", "webhook_lead_updated"})
 
 
 async def enqueue_close_orchestration(
@@ -52,11 +52,9 @@ async def enqueue_close_orchestration(
     a user-visible message; the webhook route ignores it.
     """
     if trigger not in _VALID_TRIGGERS:
-        raise ValueError(
-            f"trigger must be one of {sorted(_VALID_TRIGGERS)}; got {trigger!r}"
-        )
+        raise ValueError(f"trigger must be one of {sorted(_VALID_TRIGGERS)}; got {trigger!r}")
 
-    actor = "close_webhook" if trigger == "webhook" else "dashboard"
+    actor = "close_webhook" if trigger.startswith("webhook") else "dashboard"
     pool: Any | None = getattr(request.app.state, "arq_pool", None)
     try:
         if pool is not None:
@@ -68,18 +66,18 @@ async def enqueue_close_orchestration(
                 override_cap=override_cap,
             )
         else:
-            pending = getattr(
-                request.app.state, "pending_close_orchestration_jobs", None
-            )
+            pending = getattr(request.app.state, "pending_close_orchestration_jobs", None)
             if pending is None:
                 pending = []
                 request.app.state.pending_close_orchestration_jobs = pending
-            pending.append({
-                "close_lead_id": close_lead_id,
-                "trigger": trigger,
-                "actor_email": actor_email,
-                "override_cap": override_cap,
-            })
+            pending.append(
+                {
+                    "close_lead_id": close_lead_id,
+                    "trigger": trigger,
+                    "actor_email": actor_email,
+                    "override_cap": override_cap,
+                }
+            )
     except Exception as exc:
         audit.record(
             actor=actor,

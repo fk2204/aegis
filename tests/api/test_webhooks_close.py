@@ -54,9 +54,7 @@ _OTHER_STATUS_ID = "stat_otherSalesStageDoesNotTrigger"
 def _sign(timestamp: str, body: bytes, secret_hex: str = _TEST_SECRET_HEX) -> str:
     """Compute the close-sig-hash value Close would send."""
     secret = bytes.fromhex(secret_hex)
-    return hmac.new(
-        secret, timestamp.encode("utf-8") + body, hashlib.sha256
-    ).hexdigest()
+    return hmac.new(secret, timestamp.encode("utf-8") + body, hashlib.sha256).hexdigest()
 
 
 def _lead_payload(close_lead_id: str = "lead_abc") -> dict[str, Any]:
@@ -142,9 +140,7 @@ def stub_close_client(
         # it here because the test composes the event.
         return httpx.Response(200, json=_lead_payload())
 
-    return CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
-    )
+    return CloseClient(http_client=httpx.Client(transport=httpx.MockTransport(transport)))
 
 
 @pytest.fixture()
@@ -425,9 +421,7 @@ def test_changed_lead_payload_produces_update_with_diff_keys(
         body = first_payload if call_count["n"] == 1 else second_payload
         return httpx.Response(200, json=body)
 
-    close_client = CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
-    )
+    close_client = CloseClient(http_client=httpx.Client(transport=httpx.MockTransport(transport)))
 
     reset_dependency_caches()
     app = create_app()
@@ -497,21 +491,22 @@ def test_webhook_enqueues_orchestration_after_merchant_upsert(
     assert resp.status_code == 204, resp.text
 
     pending = getattr(
-        client.app.state, "pending_close_orchestration_jobs", []  # type: ignore[attr-defined]
+        client.app.state,
+        "pending_close_orchestration_jobs",
+        [],  # type: ignore[attr-defined]
     )
-    assert pending == [{
-        "close_lead_id": "lead_xyz",
-        "trigger": "webhook",
-        "actor_email": None,
-        "override_cap": False,
-    }]
+    assert pending == [
+        {
+            "close_lead_id": "lead_xyz",
+            "trigger": "webhook",
+            "actor_email": None,
+            "override_cap": False,
+        }
+    ]
 
     actions = [e["action"] for e in audit.entries]
     assert "close.orchestration.enqueued" in actions
-    enq = next(
-        e for e in audit.entries
-        if e["action"] == "close.orchestration.enqueued"
-    )
+    enq = next(e for e in audit.entries if e["action"] == "close.orchestration.enqueued")
     assert enq["details"]["close_lead_id"] == "lead_xyz"
     assert enq["details"]["trigger"] == "webhook"
     # subject_id must be the merchant uuid that was just upserted
@@ -541,10 +536,7 @@ def test_webhook_enqueue_failure_does_not_5xx(
     actions = [e["action"] for e in audit.entries]
     assert "close.orchestration.enqueue_failed" in actions
     assert "close.orchestration.enqueued" not in actions
-    fail = next(
-        e for e in audit.entries
-        if e["action"] == "close.orchestration.enqueue_failed"
-    )
+    fail = next(e for e in audit.entries if e["action"] == "close.orchestration.enqueue_failed")
     assert fail["details"]["error"] == "RuntimeError"
     assert fail["details"]["close_lead_id"] == "lead_xyz"
 
@@ -562,9 +554,166 @@ def test_webhook_filtered_event_does_not_enqueue(
     assert resp.status_code == 204
 
     pending = getattr(
-        client.app.state, "pending_close_orchestration_jobs", []  # type: ignore[attr-defined]
+        client.app.state,
+        "pending_close_orchestration_jobs",
+        [],  # type: ignore[attr-defined]
     )
     assert pending == []
     actions = [e["action"] for e in audit.entries]
     assert "close.orchestration.enqueued" not in actions
     assert "close.orchestration.enqueue_failed" not in actions
+
+
+# ----------------------------------------------------------------------
+# lead.updated path — added 2026-06-18 after the Close subscription
+# change registered lead.updated events so attachments uploaded BEFORE
+# the opportunity reaches Pre-UW still get pulled in.
+# ----------------------------------------------------------------------
+
+
+def _lead_updated_event(*, lead_id: str = "lead_abc") -> dict[str, Any]:
+    """Build a Close webhook event payload mimicking lead.updated."""
+    return {
+        "event": {
+            "id": "ev_lead_001",
+            "date_created": "2026-06-18T10:00:00+00:00",
+            "action": "updated",
+            "object_type": "lead",
+            "object_id": lead_id,
+            "lead_id": lead_id,
+            "organization_id": "orga_abc",
+            "user_id": "user_op",
+            "changed_fields": ["display_name"],
+            "previous_data": {"display_name": "Old Name"},
+            "data": {"display_name": "New Name"},
+            "meta": {},
+            "request_id": "req_lead_001",
+        },
+        "subscription_id": "whsub_test_001",
+    }
+
+
+def test_lead_updated_with_existing_merchant_refreshes_and_enqueues(
+    client: TestClient,
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+) -> None:
+    """lead.updated for a merchant that already exists in AEGIS:
+    no new merchant row, context refreshed best-effort, attachment
+    orchestration enqueued with the lead.updated trigger label."""
+    from uuid import uuid4
+
+    from aegis.merchants.models import MerchantRow
+
+    existing = MerchantRow(
+        id=uuid4(),
+        close_lead_id="lead_already_known",
+        business_name="Existing Co",
+    )
+    repo.upsert(existing)
+
+    resp = _post_signed(client, _lead_updated_event(lead_id="lead_already_known"))
+    assert resp.status_code == 204, resp.text
+
+    # Merchant count is unchanged — no second row created.
+    merchants_in_repo = [
+        row for row in repo._by_id.values() if row.close_lead_id == "lead_already_known"
+    ]
+    assert len(merchants_in_repo) == 1
+    assert merchants_in_repo[0].id == existing.id
+
+    # The attachment orchestration was enqueued with the lead-updated trigger.
+    pending = getattr(
+        client.app.state,
+        "pending_close_orchestration_jobs",
+        [],  # type: ignore[attr-defined]
+    )
+    assert pending == [
+        {
+            "close_lead_id": "lead_already_known",
+            "trigger": "webhook_lead_updated",
+            "actor_email": None,
+            "override_cap": False,
+        }
+    ]
+
+    actions = [e["action"] for e in audit.entries]
+    assert "close.webhook.received" in actions
+    assert "close.orchestration.enqueued" in actions
+    # No new merchant — created/updated audit rows should not fire on a
+    # lead.updated whose payload didn't change anything we map.
+    assert "close.merchant.created" not in actions
+
+
+def test_lead_updated_with_no_merchant_creates_one(
+    client: TestClient,
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+) -> None:
+    """lead.updated for a lead AEGIS has never seen: a merchant gets
+    created from the lead payload — same flow as the Pre-UW trigger
+    builds a merchant from a Lead it hadn't yet seen."""
+    lead_id = "lead_brand_new_for_aegis"
+
+    assert repo.find_by_close_lead_id(lead_id) is None
+
+    resp = _post_signed(client, _lead_updated_event(lead_id=lead_id))
+    assert resp.status_code == 204, resp.text
+
+    created = repo.find_by_close_lead_id(lead_id)
+    assert created is not None
+    # close_opportunity_id MUST stay None — lead.updated events don't
+    # carry an opportunity. The Pre-UW trigger fills it later.
+    assert created.close_opportunity_id is None
+
+    actions = [e["action"] for e in audit.entries]
+    assert "close.merchant.created" in actions
+    pending = getattr(
+        client.app.state,
+        "pending_close_orchestration_jobs",
+        [],  # type: ignore[attr-defined]
+    )
+    assert len(pending) == 1
+    assert pending[0]["trigger"] == "webhook_lead_updated"
+
+
+def test_lead_updated_idempotent_redelivery_dedups_attachment_path(
+    client: TestClient,
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+) -> None:
+    """Close redelivers the SAME lead.updated event: enqueue still fires
+    (idempotency is enforced downstream by ``process_close_attachments``
+    via ``documents.file_hash`` SHA-256 dedup). The receipt audit row
+    lands twice (one per delivery), but no duplicate merchant row is
+    created."""
+    from uuid import uuid4
+
+    from aegis.merchants.models import MerchantRow
+
+    existing = MerchantRow(
+        id=uuid4(),
+        close_lead_id="lead_redelivered",
+        business_name="Redelivered Inc",
+    )
+    repo.upsert(existing)
+
+    event = _lead_updated_event(lead_id="lead_redelivered")
+    resp1 = _post_signed(client, event)
+    resp2 = _post_signed(client, event)
+    assert resp1.status_code == 204
+    assert resp2.status_code == 204
+
+    pending = getattr(
+        client.app.state,
+        "pending_close_orchestration_jobs",
+        [],  # type: ignore[attr-defined]
+    )
+    # Two enqueues — the SHA-256 dedup inside process_close_attachments
+    # is what makes this safe, not the route itself.
+    assert len(pending) == 2
+    assert all(p["trigger"] == "webhook_lead_updated" for p in pending)
+
+    # Only one merchant row keyed on this lead_id.
+    matched = [r for r in repo._by_id.values() if r.close_lead_id == "lead_redelivered"]
+    assert len(matched) == 1

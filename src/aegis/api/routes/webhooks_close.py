@@ -183,7 +183,20 @@ async def close_webhook(
     )
 
     if not matches:
-        # Filtered out. The audit row stands; nothing else to do.
+        # Not the Pre-UW opportunity trigger. lead.updated events get a
+        # parallel path so statements uploaded to a lead BEFORE the
+        # opportunity reaches Pre-UW still get pulled in. SHA256 dedup
+        # in process_close_attachments ensures already-processed
+        # attachments are skipped, so firing this on every lead update
+        # is idempotent by design.
+        if _is_lead_updated(event):
+            await _handle_lead_updated(
+                event=event,
+                request=request,
+                close_client=close_client,
+                merchants=merchants,
+                audit=audit,
+            )
         return None
 
     # Stage 4 — pull the Lead and upsert the merchant (idempotent).
@@ -354,6 +367,17 @@ def _matches_trigger(event: dict[str, Any], trigger_status_id: str) -> bool:
     if data.get("status_id") != trigger_status_id:
         return False
     return True
+
+
+def _is_lead_updated(event: dict[str, Any]) -> bool:
+    """True iff this event is a Close lead.updated.
+
+    Added 2026-06-18 alongside the Close webhook subscription change
+    that registered ``lead.updated`` events. Lets AEGIS pull attachments
+    + refresh context for leads BEFORE the opportunity transitions to
+    the Pre-UW status that ``_matches_trigger`` watches.
+    """
+    return event.get("action") == "updated" and event.get("object_type") == "lead"
 
 
 def _build_receipt_details(
@@ -573,6 +597,79 @@ def _sync_pending_submissions(
 # ----------------------------------------------------------------------
 # Merchant upsert
 # ----------------------------------------------------------------------
+
+
+async def _handle_lead_updated(
+    *,
+    event: dict[str, Any],
+    request: Request,
+    close_client: CloseClient,
+    merchants: MerchantRepository,
+    audit: AuditLog,
+) -> None:
+    """Process a ``lead.updated`` Close webhook event.
+
+    Reuses the same merchant-upsert + context-refresh + attachment-
+    orchestration helpers the Pre-UW opportunity trigger runs. The
+    purpose is to catch statements uploaded to a lead BEFORE the
+    opportunity moves to Pre-UW; once subscribed, every lead change
+    enqueues an attachment scan whose ``process_close_attachments``
+    job dedups against the existing ``documents.file_hash`` so already-
+    parsed PDFs are skipped at near-zero cost.
+
+    Failure modes match the Pre-UW path: Close ``get_lead`` failure
+    becomes 503 (Close retries), ``_lead_to_merchant_fields`` parse
+    error becomes 400 (operator must fix the Lead), context refresh is
+    best-effort, orchestration enqueue is best-effort.
+    """
+    lead_id = event.get("object_id")
+    if not isinstance(lead_id, str) or not lead_id:
+        # Malformed event — the receipt audit row already landed in
+        # ``close.webhook.received``; nothing else to do.
+        return
+
+    try:
+        lead = close_client.get_lead(lead_id)
+    except CloseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"close_get_lead_failed: {exc}",
+        ) from exc
+
+    _upsert_merchant_from_lead(
+        lead=lead,
+        close_lead_id=lead_id,
+        # lead.updated events carry no opportunity reference. The Pre-UW
+        # trigger fills ``close_opportunity_id`` later when the deal
+        # actually advances.
+        close_opportunity_id=None,
+        merchants=merchants,
+        audit=audit,
+    )
+
+    merchant = merchants.find_by_close_lead_id(lead_id)
+    if merchant is None:
+        # ``_upsert_merchant_from_lead`` either created the merchant or
+        # raised 400 on a field-parse error. A None return here means
+        # field-map raised — already surfaced as HTTPException above.
+        return
+
+    _refresh_close_context_best_effort(
+        merchant_id=merchant.id,
+        lead_id=lead_id,
+        lead_payload=lead,
+        close_client=close_client,
+        merchants=merchants,
+        audit=audit,
+    )
+
+    await enqueue_close_orchestration(
+        request=request,
+        close_lead_id=lead_id,
+        merchant_id=merchant.id,
+        audit=audit,
+        trigger="webhook_lead_updated",
+    )
 
 
 def _upsert_merchant_from_lead(
