@@ -27,9 +27,9 @@
              Child→group mapping the route handlers and templates
              use:
                Merchants / Review / CloseQueue        → Deals
-               BankLayouts / DisclosureEvents         → Funders
+               DisclosureEvents                       → Funders
                Renewals / Triage                      → Portfolio
-               Intake                                 → Admin
+               Intake / BankLayouts / Compliance      → Admin
 
     now    — display string for the right-hand view-toggle span. Same
              default convention as base.html.j2 (falls back to '').
@@ -51,7 +51,6 @@
     <div class="nav-group">
       <a href="/ui/funders" {% if _active == 'Funders' %}class="is-active"{% endif %} aria-haspopup="true">Funders</a>
       <div class="nav-dropdown" role="menu">
-        <a href="/ui/bank-layouts" role="menuitem">Bank layouts</a>
         <a href="/ui/disclosure-events" role="menuitem">Disclosure events</a>
       </div>
     </div>
@@ -71,6 +70,7 @@
       <div class="nav-dropdown" role="menu">
         <a href="/ui/intake" role="menuitem">Intake</a>
         <a href="/ui/admin/health" role="menuitem">Admin</a>
+        <a href="/ui/bank-layouts" role="menuitem">Bank layouts</a>
         <a href="/ui/compliance" role="menuitem">Compliance</a>
       </div>
     </div>

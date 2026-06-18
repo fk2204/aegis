@@ -141,6 +141,32 @@ class MerchantRow(_StrictModel):
     # edits). Migration 058.
     notes: str | None = None
 
+    # Feature D — merchant context fields (migration 064). Four free-text
+    # columns injected into the Bedrock extraction prompt as the
+    # "MERCHANT CONTEXT" block so the LLM can disambiguate ambiguous
+    # statement layouts with what we already know about the deal.
+    #
+    #   * ``deal_context``           — operator-written. Editable
+    #     textarea on the dossier Context panel. Posted via
+    #     ``POST /ui/merchants/{id}/deal-context``.
+    #   * ``close_lead_description`` — Close Lead ``description`` field,
+    #     auto-refreshed on every Close webhook for this lead AND on
+    #     operator "Refresh Close fields" click.
+    #   * ``close_notes_summary``    — concatenated bodies of the most
+    #     recent 5 Close Note activities for the lead. Auto-refreshed.
+    #   * ``close_call_transcripts`` — concatenated note text of the
+    #     most recent 3 Close Call activities. Auto-refreshed.
+    #
+    # The three Close-derived fields are PII-bearing (note bodies and
+    # call transcripts often quote transaction descriptions, name
+    # owners, etc.). Acceptable in the database per CLAUDE.md — never
+    # logged (logger masks the column names) and never echoed into
+    # audit-row ``details`` (refresh audits store counts only).
+    deal_context: str | None = None
+    close_lead_description: str | None = None
+    close_notes_summary: str | None = None
+    close_call_transcripts: str | None = None
+
     # Phase 7B funder-submission tracking (Pydantic-only — no Supabase
     # column yet, so these reset on a Supabase round-trip; audit_log is
     # the durable record. Persistence moves to a real submissions table
@@ -171,6 +197,17 @@ class MerchantRow(_StrictModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
+    # Migration 065 — operator-initiated soft-delete. NULL = active
+    # (the only state every existing pre-065 row carries). NOT NULL =
+    # the operator clicked Delete on the dossier; row is hidden from
+    # every operator-visible read (``MerchantRepository.get`` /
+    # ``list_all`` / ``find_by_*`` / ``count_total``) but underlying
+    # documents / transactions / analyses / decisions / audit rows are
+    # preserved forever. Set only by
+    # ``MerchantRepository.soft_delete``; never edited via the
+    # generic edit form.
+    deleted_at: datetime | None = None
+
     @property
     def is_provisional(self) -> bool:
         return self.status == "provisional"
@@ -184,4 +221,43 @@ class MerchantRow(_StrictModel):
         return self.status == "finalized"
 
 
-__all__ = ["EntityType", "IndustryRiskTier", "MerchantRow", "MerchantStatus"]
+# ---------------------------------------------------------------------------
+# Merchant operator notes — migration 066.
+#
+# Feature C — operator notes panel redesign (2026-06-18). Replaces the
+# single-text-column append-only ``merchants.notes`` (migration 058) with a
+# normalized one-row-per-note table. Each row is a single timestamped note
+# card on the dossier; the panel renders newest-first.
+#
+# PII: ``body`` is operator-curated free text. Loggers MUST mask the field;
+# the paired audit row carries only the length, never the body bytes.
+# ---------------------------------------------------------------------------
+
+
+MERCHANT_NOTE_MAX_CHARS: int = 4000
+
+
+class MerchantNoteRow(_StrictModel):
+    """One operator note about a merchant.
+
+    Append-only via the dossier route — the UI cannot edit a row's
+    ``body`` after insert. Display contract: ``list_notes`` returns
+    newest-first; the dossier template renders each row as a card with
+    the ``created_at`` timestamp + ``actor`` label.
+    """
+
+    id: UUID = Field(default_factory=uuid4)
+    merchant_id: UUID
+    body: str = Field(min_length=1, max_length=MERCHANT_NOTE_MAX_CHARS)
+    actor: str = Field(min_length=1)
+    created_at: datetime | None = None
+
+
+__all__ = [
+    "MERCHANT_NOTE_MAX_CHARS",
+    "EntityType",
+    "IndustryRiskTier",
+    "MerchantNoteRow",
+    "MerchantRow",
+    "MerchantStatus",
+]

@@ -1,0 +1,29 @@
+{
+  "data": [
+    {
+      "_type": "Call",
+      "id": "acti_sanitized_CaLL01aBcd",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "user_id": "user_test",
+      "date_created": "2026-06-15T17:30:00.000000+00:00",
+      "duration": 442,
+      "direction": "outbound",
+      "disposition": "answered",
+      "note": "Confirmed merchant has 2 active MCAs. Asked about seasonality — replied yes, summer trough July-Aug. Sending statements EOD Friday."
+    },
+    {
+      "_type": "Call",
+      "id": "acti_sanitized_CaLL02wxyz",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "user_id": "user_test",
+      "date_created": "2026-06-13T10:15:00.000000+00:00",
+      "duration": 318,
+      "direction": "outbound",
+      "disposition": "answered",
+      "note": "Discovery call. Inventory expansion use of funds. Owner mentioned looking at 3 lenders; we need to move fast on stips."
+    }
+  ],
+  "has_more": false
+}

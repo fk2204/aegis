@@ -1942,3 +1942,195 @@
   }
 }
 
+/* ===================== OPERATOR NOTES PANEL =====================
+ * Feature C (2026-06-18). Full-width block positioned between the
+ * merchant name (in the masthead above) and the chips section / sheet
+ * (below). Renders the 6-row textarea editor, character counter,
+ * Save button, and the newest-first list of timestamped note cards.
+ * Tokens reused from aegis-system.css — no new palette additions.
+ *
+ * Distinct sage-tint left border + lighter background mirrors the
+ * pattern the older ``.operator-notes-form`` block established for
+ * editable surfaces on the dossier (see :1546 above).
+ */
+.dossier-page .merchant-notes-panel {
+  max-width: 1200px;
+  margin: 18px auto 28px;
+  padding: 18px 22px 22px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--sage-deep);
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+.dossier-page .merchant-notes-panel__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.dossier-page .merchant-notes-panel__title {
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  margin: 0;
+}
+.dossier-page .merchant-notes-panel__footnote {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.dossier-page .merchant-notes-panel__form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dossier-page .merchant-notes-panel__label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.dossier-page .merchant-notes-panel__textarea {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 10px 12px;
+  resize: vertical;
+  min-height: 132px; /* ~6 rows at line-height 1.55 */
+  box-sizing: border-box;
+}
+.dossier-page .merchant-notes-panel__textarea:focus {
+  outline: none;
+  border-color: var(--ink-3);
+  background: var(--paper);
+}
+.dossier-page .merchant-notes-panel__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dossier-page .merchant-notes-panel__counter {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.dossier-page .merchant-notes-panel__counter.is-warn {
+  /* Approaching cap — warn but still allowed. */
+  color: var(--review);
+  font-weight: 600;
+}
+.dossier-page .merchant-notes-panel__counter.is-over {
+  /* At cap — the maxlength attribute prevents further input but the
+   * style change reinforces that the limit was hit. */
+  color: var(--decline, var(--review));
+  font-weight: 700;
+}
+.dossier-page .merchant-notes-panel__save {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 3px;
+  padding: 8px 18px;
+  cursor: pointer;
+}
+.dossier-page .merchant-notes-panel__save:hover,
+.dossier-page .merchant-notes-panel__save:focus-visible {
+  background: var(--accent);
+  border-color: var(--accent);
+  outline: none;
+}
+.dossier-page .merchant-notes-panel__empty {
+  margin: 18px 0 0;
+  padding: 12px 14px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--ink-3);
+  background: var(--paper-2);
+  border-left: 2px solid var(--rule);
+  border-radius: 3px;
+}
+.dossier-page .merchant-notes-panel__cards {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dossier-page .merchant-notes-card {
+  padding: 12px 14px;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+.dossier-page .merchant-notes-card__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.dossier-page .merchant-notes-card__when {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.dossier-page .merchant-notes-card__actor {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.dossier-page .merchant-notes-card__body {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-wrap; /* preserve operator linebreaks */
+  word-break: break-word;
+}
+
+@media (max-width: 768px) {
+  .dossier-page .merchant-notes-panel {
+    margin: 12px auto 20px;
+    padding: 14px 16px 16px;
+  }
+  .dossier-page .merchant-notes-panel__header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .dossier-page .merchant-notes-panel__meta {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .dossier-page .merchant-notes-panel__save {
+    width: 100%;
+  }
+}
+

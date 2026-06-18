@@ -126,6 +126,51 @@ ADB_COVERAGE_THIN_RATIO_THRESHOLD: Final[Decimal] = Decimal("0.10")
 ParseStatus = Literal["proceed", "review", "manual_review"]
 
 
+@dataclass(frozen=True)
+class MerchantContext:
+    """Free-text deal context injected into the Bedrock extraction prompt.
+
+    Feature D (migration 064). The four fields mirror the merchants-row
+    columns:
+
+      * ``deal_context``           — operator-written notes about the
+        deal.
+      * ``close_lead_description`` — Close Lead ``description`` field.
+      * ``close_notes_summary``    — concatenated bodies of the most
+        recent Close notes.
+      * ``close_call_transcripts`` — concatenated post-call note text
+        from the most recent Close calls.
+
+    All four are ``None`` by default; the prompt builder omits lines
+    whose value is empty. An instance whose every field is ``None`` /
+    empty is treated as "no context" by
+    ``_build_extraction_prompt_suffix`` — equivalent to passing
+    ``merchant_context=None``.
+
+    Frozen + slot-less so existing pipeline machinery (the
+    ``asyncio.to_thread`` boundary in the worker) can pass it across
+    threads without copy concerns and tests can compare instances via
+    ``==``.
+    """
+
+    deal_context: str | None = None
+    close_lead_description: str | None = None
+    close_notes_summary: str | None = None
+    close_call_transcripts: str | None = None
+
+    def is_empty(self) -> bool:
+        """True when no field has any non-whitespace content."""
+        for value in (
+            self.deal_context,
+            self.close_lead_description,
+            self.close_notes_summary,
+            self.close_call_transcripts,
+        ):
+            if value and value.strip():
+                return False
+        return True
+
+
 @dataclass
 class PipelineResult:
     parse_status: ParseStatus
@@ -177,6 +222,7 @@ def run_pipeline(
     bank_layouts: BankLayoutRepository | None = None,
     known_bank_name: str | None = None,
     vision_fallback_on_extraction_error: bool = False,
+    merchant_context: MerchantContext | None = None,
 ) -> PipelineResult:
     """Run the full parser pipeline.
 
@@ -252,9 +298,14 @@ def run_pipeline(
     # hints-available threshold with non-empty operator text. Otherwise
     # extraction_prompt_suffix stays ``None`` and the base prompt runs
     # unchanged.
+    #
+    # Feature D (migration 064) — the same builder also folds in the
+    # caller-supplied merchant context block when provided. When both
+    # are present the two suffixes concatenate with a blank line between.
     extraction_prompt_suffix = _build_extraction_prompt_suffix(
         bank_layouts=bank_layouts,
         known_bank_name=known_bank_name,
+        merchant_context=merchant_context,
     )
 
     used_ocr_fallback = False
@@ -468,24 +519,80 @@ def _build_extraction_prompt_suffix(
     *,
     bank_layouts: BankLayoutRepository | None,
     known_bank_name: str | None,
+    merchant_context: MerchantContext | None = None,
 ) -> str | None:
-    """Return the prompt-suffix text for operator-curated layout hints.
+    """Return the prompt-suffix text for the extraction call.
 
-    ``None`` when:
-      * No repository was wired in (test / offline path), OR
-      * No caller-supplied bank-name hint (first-ever parse path), OR
-      * The bank exists but has no usable hints (under threshold or
-        empty text — ``BankLayoutRepository.get_hints`` returns None
-        in either case).
+    Composed of two optional blocks:
 
-    Otherwise returns a single block of the form::
+      * MERCHANT CONTEXT block (Feature D). When ``merchant_context`` is
+        non-None AND has at least one non-empty field, prepends a block
+        of the form::
 
-        Layout hints from prior successful parses of this bank:
-        <verbatim hints text>
+            MERCHANT CONTEXT (use this to better understand the deal):
+            Operator notes: <deal_context>
+            Close lead description: <close_lead_description>
+            Recent Close notes: <close_notes_summary>
+            Recent call summaries: <close_call_transcripts>
 
-    that the extract helpers append after the base extraction prompt.
-    The hints are operator-curated free-form text; this helper treats
-    them as a verbatim string append with no templating.
+        Lines whose value is empty / None are omitted entirely.
+
+      * Layout-hints block. When ``bank_layouts`` is wired AND
+        ``known_bank_name`` is set AND the repository returns non-None
+        hints for that bank, appends::
+
+            Layout hints from prior successful parses of this bank:
+            <verbatim hints text>
+
+    When BOTH blocks exist they are concatenated with a single blank
+    line between (merchant-context first, layout-hints second). When
+    NEITHER exists this returns ``None`` and the base extraction prompt
+    runs unchanged.
+    """
+    merchant_block = _build_merchant_context_block(merchant_context)
+    layout_block = _build_layout_hints_block(
+        bank_layouts=bank_layouts, known_bank_name=known_bank_name
+    )
+
+    if merchant_block is not None and layout_block is not None:
+        return f"{merchant_block}\n\n{layout_block}"
+    if merchant_block is not None:
+        return merchant_block
+    if layout_block is not None:
+        return layout_block
+    return None
+
+
+def _build_merchant_context_block(
+    merchant_context: MerchantContext | None,
+) -> str | None:
+    """Format the MERCHANT CONTEXT block, omitting empty lines.
+
+    Returns ``None`` when the context is None or every field is empty —
+    that's the "no merchant context" case and the suffix should not
+    include the heading.
+    """
+    if merchant_context is None or merchant_context.is_empty():
+        return None
+    lines: list[str] = ["MERCHANT CONTEXT (use this to better understand the deal):"]
+    for label, value in (
+        ("Operator notes", merchant_context.deal_context),
+        ("Close lead description", merchant_context.close_lead_description),
+        ("Recent Close notes", merchant_context.close_notes_summary),
+        ("Recent call summaries", merchant_context.close_call_transcripts),
+    ):
+        if value and value.strip():
+            lines.append(f"{label}: {value.strip()}")
+    return "\n".join(lines)
+
+
+def _build_layout_hints_block(
+    *,
+    bank_layouts: BankLayoutRepository | None,
+    known_bank_name: str | None,
+) -> str | None:
+    """Format the layout-hints block. Returns ``None`` when no usable
+    hints are available.
     """
     if bank_layouts is None or not known_bank_name:
         return None
@@ -768,6 +875,7 @@ __all__ = [
     "MAX_OCR_PAGES",
     "METADATA_HARD_DECLINE",
     "REVIEW_THRESHOLD",
+    "MerchantContext",
     "PipelineResult",
     "run_pipeline",
 ]

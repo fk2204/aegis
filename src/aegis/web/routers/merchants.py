@@ -77,7 +77,7 @@ from aegis.funders.repository import (
     FunderNotFoundError,
     FunderRepository,
 )
-from aegis.merchants.models import MerchantRow
+from aegis.merchants.models import MERCHANT_NOTE_MAX_CHARS, MerchantRow
 from aegis.merchants.repository import (
     MerchantConflictError,
     MerchantNotFoundError,
@@ -1462,31 +1462,20 @@ async def merchant_prepare_renewal(
 
 
 # ---------------------------------------------------------------------------
-# Merchant notes — append-only timestamped free-form notes on the dossier.
+# Merchant notes — Feature C operator-notes panel (migration 066).
+#
+# Replaces the legacy single-text-column append-only ``merchants.notes``
+# (migration 058) with a normalized one-row-per-note table. Each save is a
+# distinct row with stable id + actor + created_at; the dossier renders
+# them newest-first as timestamped cards.
 # ---------------------------------------------------------------------------
 
 
-_NOTE_TIMESTAMP_FORMAT: Final[str] = "%Y-%m-%d %H:%M UTC"
-
-
-def _prepend_timestamped_note(
-    *,
-    existing: str | None,
-    new_text: str,
-    now: datetime,
-    author: str,
-) -> str:
-    """Prepend a single timestamped line of new_text to existing notes.
-
-    Format: ``[YYYY-MM-DD HH:MM UTC] <author> — <text>`` followed by a
-    blank line then the prior contents. Append-only display: subsequent
-    saves stack newest-first. Pure function — testable without the DB.
-    """
-    stamp = now.strftime(_NOTE_TIMESTAMP_FORMAT)
-    line = f"[{stamp}] {author} — {new_text.strip()}"
-    if existing is None or not existing.strip():
-        return line
-    return f"{line}\n\n{existing.lstrip()}"
+# Application-layer cap on a single note body. Mirrors the DB CHECK
+# constraint on ``merchant_notes.body`` (migration 066) so a request that
+# would fail the DB check is rejected at the route boundary with a
+# clean 400 instead of bubbling up a SQL error.
+MERCHANT_NOTE_BODY_MAX_CHARS: Final[int] = MERCHANT_NOTE_MAX_CHARS
 
 
 @router.post("/merchants/{merchant_id}/notes", response_model=None)
@@ -1494,66 +1483,272 @@ async def merchant_save_note(
     merchant_id: UUID,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     audit: Annotated[AuditLog, Depends(get_audit)],
-    note_text: Annotated[str, Form()],
+    body: Annotated[str, Form()],
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
-) -> HTMLResponse:
-    """Prepend a timestamped operator note to merchants.notes.
+) -> RedirectResponse:
+    """Persist one operator note row and redirect to the dossier.
 
-    Append-only by convention: the textarea POSTs a single new entry,
-    the route prepends it with a timestamp + author line and writes
-    back. Operator can never overwrite history through the UI; the
-    column allows SQL-direct edits for cases where a real edit is
-    required (typo correction, PII redaction).
+    Validation (in order — first failure short-circuits with a 4xx):
 
-    Returns the rendered notes block as HTMX outerHTML so the dossier
-    swaps in-place without a full reload.
+      * Merchant must exist (``MerchantRepository.get`` → 404 on miss).
+      * ``body.strip()`` must be non-empty (400) — an empty textarea
+        submission is operator error, not a no-op.
+      * ``len(body.strip())`` must be ≤
+        ``MERCHANT_NOTE_BODY_MAX_CHARS`` (400) — mirrors the DB CHECK.
+
+    Audit (per CLAUDE.md auditability rule): one ``merchant.note.added``
+    row per successful save. ``details`` carries the length ONLY, never
+    the body bytes — note bodies are operator-curated free text that may
+    quote merchant names / broker context.
+
+    Returns 303 See Other to ``/ui/merchants/{merchant_id}`` so a browser
+    POST→reload cycle lands on the dossier with the new card in place.
     """
     try:
         merchant = merchants.get(merchant_id)
     except MerchantNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-    stripped = note_text.strip()
+    stripped = body.strip()
     if not stripped:
-        # Empty submission is a no-op — return the existing block
-        # unchanged so the HTMX swap doesn't wipe what's on screen.
-        return _render_notes_block(merchant)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="note body is empty",
+        )
+    if len(stripped) > MERCHANT_NOTE_BODY_MAX_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"note body exceeds {MERCHANT_NOTE_BODY_MAX_CHARS}-char limit",
+        )
 
-    now = datetime.now(UTC)
-    author = actor_email or "dashboard"
-    updated_notes = _prepend_timestamped_note(
-        existing=merchant.notes,
-        new_text=stripped,
-        now=now,
-        author=author,
-    )
-
-    updated_merchant = merchant.model_copy(update={"notes": updated_notes})
-    merchants.upsert(updated_merchant)
+    actor = actor_email or "dashboard"
+    merchants.add_note(merchant_id=merchant.id, body=stripped, actor=actor)
 
     audit.record(
-        actor="dashboard",
+        actor="operator",
         actor_email=actor_email,
-        action="merchant.note_added",
+        action="merchant.note.added",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={"length": len(stripped)},
+    )
+
+    # 303 (See Other) is the canonical POST→GET pattern. RedirectResponse
+    # default is 307 (Temporary Redirect) which preserves the verb — wrong
+    # for a form submission. Explicit 303 makes the GET / dossier-render
+    # path explicit.
+    return RedirectResponse(
+        url=f"/ui/merchants/{merchant.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Migration 065 — operator-initiated soft-delete from the dossier.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/merchants/{merchant_id}/delete", response_model=None)
+async def merchant_soft_delete(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> RedirectResponse:
+    """Soft-delete a merchant from the dossier surface.
+
+    POST (not DELETE) so the dossier header can submit a plain HTML form
+    without JS. Confirms the merchant exists and is not already deleted,
+    flips ``merchants.deleted_at`` to now, writes one
+    ``merchant.deleted`` audit row, and redirects to the merchants list.
+
+    The repository's read methods filter ``deleted_at IS NOT NULL`` so
+    no caller (dashboard, portfolio, renewals, match panel) needs to
+    change — the merchant simply disappears from every list and a
+    direct hit to ``/ui/merchants/{id}`` returns 404. All descendant
+    documents / transactions / analyses / decisions / audit rows are
+    preserved per CLAUDE.md auditability.
+
+    Audit-write failure propagates per CLAUDE.md rule. The repo write
+    runs first so a soft-delete that the operator sees succeed is
+    always reflected in the audit log; an audit-write failure after a
+    successful repo flip surfaces a 500 but does NOT roll back the
+    repo write (the merchant stays soft-deleted) — same posture as the
+    notes route above.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    now = datetime.now(UTC)
+    try:
+        merchants.soft_delete(merchant_id, deleted_at=now)
+    except MerchantNotFoundError as exc:
+        # Concurrent double-submit: the repo guard returns NotFound for
+        # an already-deleted row even though ``get`` succeeded a moment
+        # ago. Surface as 404 so the operator sees a normal not-found
+        # page rather than a 500.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    audit.record(
+        actor="operator",
+        actor_email=actor_email,
+        action="merchant.deleted",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={"business_name": merchant.business_name},
+    )
+
+    return RedirectResponse("/ui/merchants", status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ---------------------------------------------------------------------------
+# Feature D — merchant context fields (migration 064)
+# ---------------------------------------------------------------------------
+
+
+_DEAL_CONTEXT_MAX_CHARS: Final[int] = 8000
+
+
+@router.post("/merchants/{merchant_id}/deal-context", response_model=None)
+async def merchant_set_deal_context(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    deal_context: Annotated[str, Form()] = "",
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> RedirectResponse:
+    """Persist the operator-written ``deal_context`` for a merchant.
+
+    Feature D — surfaces the textarea on the dossier Context panel.
+    Trims surrounding whitespace; an empty submission clears the field
+    (NULL on the DB) — distinct from the operator-notes flow which is
+    append-only and treats empty submissions as no-ops, because
+    ``deal_context`` is a single replaceable note rather than a
+    timestamped log.
+
+    Audit (per CLAUDE.md auditability rule): one
+    ``merchant.deal_context.updated`` row per successful save.
+    ``details`` carries the new length only — never the body bytes,
+    per the migration-064 PII posture (operator may quote merchant
+    identity / processor names in the textarea).
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    trimmed = deal_context.strip()
+    if len(trimmed) > _DEAL_CONTEXT_MAX_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"deal_context exceeds {_DEAL_CONTEXT_MAX_CHARS}-char limit",
+        )
+
+    normalized = trimmed or None
+    merchants.set_deal_context(merchant.id, normalized)
+
+    audit.record(
+        actor="operator",
+        actor_email=actor_email,
+        action="merchant.deal_context.updated",
         subject_type="merchant",
         subject_id=merchant.id,
         details={
-            "note_chars": len(stripped),
-            "total_chars": len(updated_notes),
+            "length": len(trimmed),
+            "cleared": normalized is None,
         },
     )
 
-    return _render_notes_block(updated_merchant)
-
-
-def _render_notes_block(merchant: MerchantRow) -> HTMLResponse:
-    """Render the dossier notes block partial via the shared template
-    singleton. Used both by the HTMX swap and the initial dossier
-    render."""
-    html = templates.get_template("_merchant_notes_block.html.j2").render(
-        merchant=merchant,
+    return RedirectResponse(
+        url=f"/ui/merchants/{merchant.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
-    return HTMLResponse(content=html)
+
+
+@router.post("/merchants/{merchant_id}/close-context/refresh", response_model=None)
+async def merchant_refresh_close_context(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    close_client: Annotated[CloseClient, Depends(get_close_client)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> RedirectResponse:
+    """Force-refresh the merchant's Close-derived context columns.
+
+    Feature D — surfaces the "Refresh Close fields" button on the
+    dossier Context panel. Synchronous: the operator gets the new
+    values on the post-redirect dossier render.
+
+    Requires a linked ``close_lead_id`` (404 otherwise — the panel hides
+    the button when no lead is linked, but this guards against a stale
+    tab submitting after the operator unlinked the lead).
+
+    Close API failures surface as 503 — distinct from the webhook
+    posture which swallows Close failures to keep the webhook 200-OK
+    for Close. Here the operator clicked the button explicitly and
+    deserves to see the failure rather than being silently misled into
+    thinking the refresh succeeded.
+
+    Audit (success path): the ``merchant.close_context.refreshed`` row
+    is written inside ``refresh_close_context_for_merchant`` with the
+    pulled counts. This route adds a ``trigger`` field to the actor
+    so the operator can distinguish manual refreshes from
+    webhook-driven ones in the audit log surface.
+    """
+    # Local import to avoid the circular import the
+    # ``aegis.merchants.close_context`` module would otherwise trigger
+    # (close_context already imports from aegis.merchants, and
+    # importing close_context here pulls aegis.merchants.repository
+    # through the same package init).
+    from aegis.merchants.close_context import refresh_close_context_for_merchant
+
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    if not merchant.close_lead_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="merchant has no Close lead linked",
+        )
+
+    try:
+        refresh_close_context_for_merchant(
+            merchant.id,
+            merchant.close_lead_id,
+            close_client=close_client,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+    except CloseError as exc:
+        # Operator-initiated — surface the Close failure so they can
+        # retry / escalate rather than swallowing it like the webhook
+        # path does. Audit row for the failure mirrors the webhook
+        # best-effort wrapper so the audit log has a uniform shape.
+        audit.record(
+            actor="operator",
+            actor_email=actor_email,
+            action="merchant.close_context.refresh_failed",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": merchant.close_lead_id,
+                "status_code": exc.status_code,
+                "error": str(exc)[:200],
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"close_context_refresh_failed: {exc}",
+        ) from exc
+
+    return RedirectResponse(
+        url=f"/ui/merchants/{merchant.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 _FUNDER_RESPONSE_STATUSES = frozenset({"approved", "declined", "countered", "pending"})
@@ -2440,6 +2635,12 @@ async def merchant_detail(
             top_matched_funder = funder_repo.get(_matched[0].funder_id)
             stips_result = evaluate_stips(top_matched_funder, merchant)
 
+    # Feature C — operator notes panel. Newest-first list of timestamped
+    # cards rendered above the chips section. Bounded to 50 rows to keep
+    # the dossier read cost predictable when a merchant has accumulated
+    # many notes over time.
+    operator_notes = merchants.list_notes(merchant_id=merchant_id, limit=50)
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -2475,6 +2676,8 @@ async def merchant_detail(
             "merchant_shadow_signals": merchant_shadow_signals,
             "revenue_trends": revenue_trends,
             "funder_note_submissions": funder_note_submissions,
+            "operator_notes": operator_notes,
+            "operator_note_max_chars": MERCHANT_NOTE_MAX_CHARS,
             "doc_checklist": {
                 "voided_check_on_file": merchant.voided_check_on_file,
                 "drivers_license_on_file": merchant.drivers_license_on_file,

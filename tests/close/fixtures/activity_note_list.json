@@ -1,0 +1,44 @@
+{
+  "data": [
+    {
+      "_type": "Note",
+      "id": "acti_sanitized_NoTe01aBcD",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "contact_id": null,
+      "user_id": "user_test",
+      "date_created": "2026-06-15T19:12:08.512000+00:00",
+      "date_updated": "2026-06-15T19:12:08.512000+00:00",
+      "activity_at": "2026-06-15T19:12:08.512000+00:00",
+      "note": "Broker confirmed merchant has 2 active MCA positions paying down. Cap stack target = $25k advance, 1.30 factor, 6mo term. Statements coming Friday.",
+      "attachments": []
+    },
+    {
+      "_type": "Note",
+      "id": "acti_sanitized_NoTe02wXyZ",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "contact_id": null,
+      "user_id": "user_test",
+      "date_created": "2026-06-14T15:03:22.116000+00:00",
+      "date_updated": "2026-06-14T15:03:22.116000+00:00",
+      "activity_at": "2026-06-14T15:03:22.116000+00:00",
+      "note": "Operator note: prior decline from REDACTED_FUNDER for low TIB. Merchant now 14mo in business; reconsidering.",
+      "attachments": []
+    },
+    {
+      "_type": "Note",
+      "id": "acti_sanitized_NoTe03qrst",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "contact_id": null,
+      "user_id": "user_test",
+      "date_created": "2026-06-13T11:45:00.000000+00:00",
+      "date_updated": "2026-06-13T11:45:00.000000+00:00",
+      "activity_at": "2026-06-13T11:45:00.000000+00:00",
+      "note": "Initial intake call. Owner wants funds for inventory expansion. No prior MCA experience disclosed.",
+      "attachments": []
+    }
+  ],
+  "has_more": false
+}

@@ -44,10 +44,10 @@ from aegis.config import get_settings
 # is the exact failure mode we are closing.
 _SYSLOG_PRIORITY_BY_LEVEL: Final[dict[int, int]] = {
     logging.CRITICAL: 2,  # crit
-    logging.ERROR:    3,  # err
-    logging.WARNING:  4,  # warning
-    logging.INFO:     6,  # info
-    logging.DEBUG:    7,  # debug
+    logging.ERROR: 3,  # err
+    logging.WARNING: 4,  # warning
+    logging.INFO: 6,  # info
+    logging.DEBUG: 7,  # debug
 }
 _UNMAPPED_PRIORITY_FALLBACK: Final[int] = 3  # err — fail loud, not invisible
 
@@ -68,6 +68,14 @@ _PII_KEYS: Final[frozenset[str]] = frozenset(
         "owner_dob",
         "transaction_description",
         "description",  # parser/Transaction.description is PII
+        # Feature D — merchant context fields (migration 064). The Close
+        # note bodies and call transcripts often quote transaction
+        # descriptions / name owners; the Close lead description carries
+        # operator-typed merchant identity. Mask in logs by key.
+        "close_notes_summary",
+        "close_call_transcripts",
+        "close_lead_description",
+        "deal_context",
     }
 )
 
@@ -80,9 +88,7 @@ _MASK: Final[str] = "***"
 # match so logs remain readable.
 
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-_PHONE_RE = re.compile(
-    r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"
-)
+_PHONE_RE = re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
 _SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _EIN_RE = re.compile(r"\b\d{2}-\d{7}\b")
 # Bare 9-16 digit runs catch raw account/SSN/EIN without separators.
@@ -122,10 +128,29 @@ class PiiMaskingFilter(logging.Filter):
     # Standard LogRecord attributes — never overwrite these.
     _RESERVED: Final[frozenset[str]] = frozenset(
         {
-            "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
-            "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
-            "created", "msecs", "relativeCreated", "thread", "threadName",
-            "processName", "process", "message", "asctime", "taskName",
+            "name",
+            "msg",
+            "args",
+            "levelname",
+            "levelno",
+            "pathname",
+            "filename",
+            "module",
+            "exc_info",
+            "exc_text",
+            "stack_info",
+            "lineno",
+            "funcName",
+            "created",
+            "msecs",
+            "relativeCreated",
+            "thread",
+            "threadName",
+            "processName",
+            "process",
+            "message",
+            "asctime",
+            "taskName",
         }
     )
 
@@ -169,9 +194,7 @@ class _JournalPriorityFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         line = super().format(record)
-        priority = _SYSLOG_PRIORITY_BY_LEVEL.get(
-            record.levelno, _UNMAPPED_PRIORITY_FALLBACK
-        )
+        priority = _SYSLOG_PRIORITY_BY_LEVEL.get(record.levelno, _UNMAPPED_PRIORITY_FALLBACK)
         return f"<{priority}>{line}"
 
 

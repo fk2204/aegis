@@ -1,34 +1,120 @@
-{# Operator merchant notes — rendered at top of dossier below masthead.
+{# Operator notes panel — Feature C (2026-06-18 redesign).
 
-   Append-only display: the textarea posts a single new entry, the
-   route prepends a timestamped line, and this partial re-renders.
-   HTMX swap targets `#merchant-notes-block` on this surface; the
-   route returns the same partial so the swap is byte-stable.
+   Full-width block rendered between the merchant name and the dossier
+   chips section. Three regions, stacked:
+
+     1. Editor: 6-row textarea, character counter (vanilla JS — see the
+        IIFE at the bottom), visible Save button. Plain HTML form POST
+        to /ui/merchants/{id}/notes; the route writes one row and
+        redirects (303) back to the dossier so a card immediately
+        renders below.
+     2. Footnote: count of notes on file.
+     3. Card list: timestamped cards, newest-first. Empty-state copy
+        when no notes have been entered yet.
+
+   Inputs:
+     * ``merchant``                — MerchantRow
+     * ``operator_notes``          — list[MerchantNoteRow], newest-first
+     * ``operator_note_max_chars`` — int char cap (mirrors DB CHECK)
+
+   PII: note bodies are operator-curated free text. Renders with
+   Jinja's autoescape so HTML in a body is escaped, not interpreted.
 #}
-<section id="merchant-notes-block" class="merchant-notes">
-  <header class="notes-header">
-    <h3>Operator notes</h3>
-    <span class="footnote">
-      {% if merchant.notes and merchant.notes.strip() %}
-        {{ merchant.notes.split('\n')|select|list|length }} line{{ '' if merchant.notes.split('\n')|select|list|length == 1 else 's' }} on file
+<section id="merchant-notes-block" class="merchant-notes-panel" aria-label="Operator notes">
+  <header class="merchant-notes-panel__header">
+    <h3 class="merchant-notes-panel__title">Operator notes</h3>
+    <span class="merchant-notes-panel__footnote">
+      {% if operator_notes %}
+        {{ operator_notes|length }} note{{ '' if operator_notes|length == 1 else 's' }} on file
       {% else %}
         no notes yet
       {% endif %}
     </span>
   </header>
 
-  {% if merchant.notes and merchant.notes.strip() %}
-    <pre class="notes-history">{{ merchant.notes }}</pre>
-  {% endif %}
-
-  <form class="notes-form"
-        hx-post="/ui/merchants/{{ merchant.id }}/notes"
-        hx-target="#merchant-notes-block"
-        hx-swap="outerHTML">
-    <textarea name="note_text"
-              rows="2"
-              placeholder="Add a note — broker quirk, pricing discussion, prior decline, …"
+  <form class="merchant-notes-panel__form"
+        method="post"
+        action="/ui/merchants/{{ merchant.id }}/notes">
+    <label class="merchant-notes-panel__label" for="merchant-notes-body-{{ merchant.id }}">
+      Add a note
+    </label>
+    <textarea id="merchant-notes-body-{{ merchant.id }}"
+              class="merchant-notes-panel__textarea"
+              name="body"
+              rows="6"
+              maxlength="{{ operator_note_max_chars }}"
+              data-merchant-notes-textarea
+              data-max-chars="{{ operator_note_max_chars }}"
+              placeholder="Broker source quirks, prior decline reasons, pricing discussion, …"
               required></textarea>
-    <button type="submit">Add note</button>
+    <div class="merchant-notes-panel__meta">
+      <span class="merchant-notes-panel__counter"
+            data-merchant-notes-counter
+            aria-live="polite">
+        0 / {{ operator_note_max_chars }}
+      </span>
+      <button type="submit" class="merchant-notes-panel__save">Save note</button>
+    </div>
   </form>
+
+  {% if operator_notes %}
+    <ol class="merchant-notes-panel__cards" aria-label="Prior operator notes, newest first">
+      {% for note in operator_notes %}
+        <li class="merchant-notes-card" data-note-id="{{ note.id }}">
+          <header class="merchant-notes-card__header">
+            <time class="merchant-notes-card__when"
+                  datetime="{{ note.created_at.isoformat() if note.created_at else '' }}">
+              {{ note.created_at.strftime('%Y-%m-%d %H:%M UTC') if note.created_at else '—' }}
+            </time>
+            <span class="merchant-notes-card__actor">{{ note.actor }}</span>
+          </header>
+          <p class="merchant-notes-card__body">{{ note.body }}</p>
+        </li>
+      {% endfor %}
+    </ol>
+  {% else %}
+    <p class="merchant-notes-panel__empty">
+      No operator notes recorded yet for this merchant.
+    </p>
+  {% endif %}
 </section>
+
+{# Vanilla-JS character counter. Scoped to this block by data-attributes
+   so multiple instances on a page would each wire independently. IIFE +
+   "use strict" mirrors the project pattern in static/evidence_copy.js.
+   No HTMX, no jQuery, no external deps.
+#}
+<script>
+(function () {
+  "use strict";
+
+  function wireTextarea(textarea) {
+    var max = parseInt(textarea.dataset.maxChars, 10);
+    if (!max || isNaN(max)) return;
+    var counter = textarea.closest("form").querySelector("[data-merchant-notes-counter]");
+    if (!counter) return;
+    var warnAt = Math.max(0, max - 200);
+    function update() {
+      var len = textarea.value.length;
+      counter.textContent = len + " / " + max;
+      counter.classList.toggle("is-warn", len >= warnAt && len < max);
+      counter.classList.toggle("is-over", len >= max);
+    }
+    textarea.addEventListener("input", update);
+    update();
+  }
+
+  function wire() {
+    var nodes = document.querySelectorAll("[data-merchant-notes-textarea]");
+    for (var i = 0; i < nodes.length; i++) {
+      wireTextarea(nodes[i]);
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", wire);
+  } else {
+    wire();
+  }
+})();
+</script>

@@ -20,7 +20,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict
 
 from aegis.db import get_supabase
-from aegis.merchants.models import MerchantRow
+from aegis.merchants.models import MerchantNoteRow, MerchantRow
 
 if TYPE_CHECKING:
     from aegis.merchants.renewal_attestations import (
@@ -334,6 +334,25 @@ class MerchantRepository(Protocol):
     def upsert(self, merchant: MerchantRow) -> MerchantRow: ...
     def delete(self, merchant_id: UUID) -> None: ...
 
+    # Migration 065 — operator-initiated soft-delete ----------------------------
+
+    def soft_delete(self, merchant_id: UUID, *, deleted_at: datetime) -> MerchantRow:
+        """Mark a merchant as soft-deleted; return the updated row.
+
+        Sets ``merchants.deleted_at`` to the supplied timestamp. After
+        this call the merchant is invisible to every read method on the
+        repository (``get``, ``list_all``, ``find_by_*``,
+        ``count_total``) — that's the whole point of the soft-delete:
+        the row keeps its history (documents, transactions, analyses,
+        decisions, audit log) but the dossier surface stops rendering
+        it.
+
+        Raises ``MerchantNotFoundError`` when the row is unknown OR
+        already soft-deleted. The "already deleted" path guards against
+        a double-submit that would otherwise silently re-stamp the
+        timestamp and produce a spurious audit row at the caller.
+        """
+
     # Migration 034 — merchant-from-statement flow ---------------------------
 
     def create_provisional(self) -> MerchantRow:
@@ -370,27 +389,105 @@ class MerchantRepository(Protocol):
         row on observed change.
         """
 
+    # Migration 066 — operator notes (Feature C) ---------------------------
+
+    def add_note(
+        self,
+        *,
+        merchant_id: UUID,
+        body: str,
+        actor: str,
+    ) -> MerchantNoteRow:
+        """Persist one operator note row.
+
+        Body is trimmed by the caller; this method does not re-validate
+        the trim. The 4000-char cap is enforced at both the application
+        layer (the route returns 400) and the DB (CHECK constraint), but
+        the model field validation is the canonical gate — passing a
+        body longer than ``MERCHANT_NOTE_MAX_CHARS`` raises a
+        Pydantic ValidationError.
+        """
+
+    def list_notes(
+        self,
+        *,
+        merchant_id: UUID,
+        limit: int = 50,
+    ) -> list[MerchantNoteRow]:
+        """Return notes for one merchant, newest-first.
+
+        Drives the dossier operator-notes card list. Bounded ``limit``
+        keeps the read predictable even when a merchant accumulates many
+        notes over time.
+        """
+
+    # Feature D — merchant context fields (migration 064) ----------------
+
+    def set_deal_context(self, merchant_id: UUID, text: str | None) -> int:
+        """Persist ``deal_context`` for the merchant.
+
+        IO-only — the calling route writes the
+        ``merchant.deal_context.updated`` audit row. Returns the rowcount
+        (0 when the merchant doesn't exist) so the caller can gate its
+        audit + redirect on observed change. ``text=None`` clears the
+        column; empty string is treated identically by the route.
+        """
+
+    def set_close_context(
+        self,
+        merchant_id: UUID,
+        *,
+        notes_summary: str | None,
+        lead_description: str | None,
+        call_transcripts: str | None,
+    ) -> int:
+        """Persist the three Close-derived context columns atomically.
+
+        IO-only — the calling orchestrator
+        (``aegis.merchants.close_context``) writes the
+        ``merchant.close_context.refreshed`` audit row with the counts
+        only. Bodies are NEVER passed through ``audit_log`` per
+        CLAUDE.md PII rule. Returns the rowcount.
+        """
+
 
 class InMemoryMerchantRepository:
     """Dict-backed merchant store. Tests + offline."""
 
     def __init__(self) -> None:
         self._by_id: dict[UUID, MerchantRow] = {}
+        # Migration 066 — Feature C operator-notes panel. List-backed so
+        # the round-trip mirrors the Supabase ``merchant_notes`` table
+        # newest-first semantics. Pre-066 ``merchants.notes`` text-column
+        # data is NOT migrated into here automatically — the new panel
+        # only renders rows added via ``add_note``.
+        self._notes: list[MerchantNoteRow] = []
 
     def get(self, merchant_id: UUID) -> MerchantRow:
+        # Migration 065 — soft-deleted rows are invisible to read paths.
+        # Treating them as not-found makes the existing 404 cascade on
+        # the dossier / edit / match routes behave correctly without
+        # any caller changes.
         try:
-            return self._by_id[merchant_id]
+            row = self._by_id[merchant_id]
         except KeyError as exc:
             raise MerchantNotFoundError(str(merchant_id)) from exc
+        if row.deleted_at is not None:
+            raise MerchantNotFoundError(str(merchant_id))
+        return row
 
     def find_by_close_lead_id(self, close_lead_id: str) -> MerchantRow | None:
         for m in self._by_id.values():
+            if m.deleted_at is not None:
+                continue
             if m.close_lead_id == close_lead_id:
                 return m
         return None
 
     def find_by_close_opportunity_id(self, close_opportunity_id: str) -> MerchantRow | None:
         for m in self._by_id.values():
+            if m.deleted_at is not None:
+                continue
             if m.close_opportunity_id == close_opportunity_id:
                 return m
         return None
@@ -400,19 +497,25 @@ class InMemoryMerchantRepository:
         if not needle:
             return None
         for m in self._by_id.values():
+            if m.deleted_at is not None:
+                continue
             if m.email and m.email.strip().lower() == needle:
                 return m
         return None
 
     def list_all(self, *, state: str | None = None) -> list[MerchantRow]:
-        rows = list(self._by_id.values())
+        # Migration 065 — filter out soft-deleted rows. The list surface
+        # is the dominant read path (every dashboard, every match /
+        # portfolio / renewals projection iterates it), so the filter
+        # lands here once.
+        rows = [m for m in self._by_id.values() if m.deleted_at is None]
         if state is not None:
             s = state.upper()
             rows = [m for m in rows if m.state == s]
         return sorted(rows, key=lambda m: m.business_name.lower())
 
     def count_total(self) -> int:
-        return len(self._by_id)
+        return sum(1 for m in self._by_id.values() if m.deleted_at is None)
 
     def upsert(self, merchant: MerchantRow) -> MerchantRow:
         # Enforce uniqueness on close_lead_id (DB partial-UNIQUE index
@@ -445,6 +548,20 @@ class InMemoryMerchantRepository:
 
     def delete(self, merchant_id: UUID) -> None:
         self._by_id.pop(merchant_id, None)
+
+    # Migration 065 — operator-initiated soft-delete ----------------------------
+
+    def soft_delete(self, merchant_id: UUID, *, deleted_at: datetime) -> MerchantRow:
+        # ``self._by_id`` retains soft-deleted rows (the whole point of
+        # soft-delete), so we peek at the underlying dict directly
+        # instead of going through ``get`` — ``get`` already filters
+        # them out as not-found.
+        existing = self._by_id.get(merchant_id)
+        if existing is None or existing.deleted_at is not None:
+            raise MerchantNotFoundError(str(merchant_id))
+        updated = existing.model_copy(update={"deleted_at": deleted_at, "updated_at": deleted_at})
+        self._by_id[merchant_id] = updated
+        return updated
 
     # Migration 034 — merchant-from-statement flow ---------------------------
 
@@ -493,16 +610,96 @@ class InMemoryMerchantRepository:
         self._by_id[merchant_id] = updated
         return 1
 
+    # Migration 066 — operator notes (Feature C) ---------------------------
+
+    def add_note(
+        self,
+        *,
+        merchant_id: UUID,
+        body: str,
+        actor: str,
+    ) -> MerchantNoteRow:
+        # MerchantNoteRow's Field constraints enforce the 1..4000 char
+        # cap + non-empty actor at construction time — passing through
+        # validation here so the in-memory backend matches the DB CHECK.
+        row = MerchantNoteRow(
+            merchant_id=merchant_id,
+            body=body,
+            actor=actor,
+            created_at=datetime.now(UTC),
+        )
+        self._notes.append(row)
+        return row
+
+    def list_notes(
+        self,
+        *,
+        merchant_id: UUID,
+        limit: int = 50,
+    ) -> list[MerchantNoteRow]:
+        matches = [n for n in self._notes if n.merchant_id == merchant_id]
+        # Newest-first. created_at is set at insert time on the in-memory
+        # path so None never appears, but sort tolerantly anyway so a
+        # future SQL-direct seed test doesn't crash on a None timestamp.
+        matches.sort(
+            key=lambda n: n.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        return matches[: max(0, limit)]
+
+    # Feature D — merchant context fields (migration 064) ----------------
+
+    def set_deal_context(self, merchant_id: UUID, text: str | None) -> int:
+        existing = self._by_id.get(merchant_id)
+        if existing is None or existing.deleted_at is not None:
+            return 0
+        normalized = text if text else None
+        updated = existing.model_copy(
+            update={
+                "deal_context": normalized,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._by_id[merchant_id] = updated
+        return 1
+
+    def set_close_context(
+        self,
+        merchant_id: UUID,
+        *,
+        notes_summary: str | None,
+        lead_description: str | None,
+        call_transcripts: str | None,
+    ) -> int:
+        existing = self._by_id.get(merchant_id)
+        if existing is None or existing.deleted_at is not None:
+            return 0
+        updated = existing.model_copy(
+            update={
+                "close_notes_summary": notes_summary,
+                "close_lead_description": lead_description,
+                "close_call_transcripts": call_transcripts,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._by_id[merchant_id] = updated
+        return 1
+
 
 class SupabaseMerchantRepository:
     """Persistence backed by Postgres ``merchants`` table."""
 
     def get(self, merchant_id: UUID) -> MerchantRow:
+        # Migration 065 — every read path filters ``deleted_at IS NULL``
+        # so a soft-deleted merchant 404s on the dossier, edit form,
+        # match panel, etc. without any caller changes. ``is_("deleted_at",
+        # "null")`` is the supabase-py PostgREST idiom for ``IS NULL``.
         result = (
             get_supabase()
             .table("merchants")
             .select("*")
             .eq("id", str(merchant_id))
+            .is_("deleted_at", "null")
             .limit(1)
             .execute()
         )
@@ -516,6 +713,7 @@ class SupabaseMerchantRepository:
             .table("merchants")
             .select("*")
             .eq("close_lead_id", close_lead_id)
+            .is_("deleted_at", "null")
             .limit(1)
             .execute()
         )
@@ -529,6 +727,7 @@ class SupabaseMerchantRepository:
             .table("merchants")
             .select("*")
             .eq("close_opportunity_id", close_opportunity_id)
+            .is_("deleted_at", "null")
             .limit(1)
             .execute()
         )
@@ -541,14 +740,26 @@ class SupabaseMerchantRepository:
         if not needle:
             return None
         result = (
-            get_supabase().table("merchants").select("*").ilike("email", needle).limit(1).execute()
+            get_supabase()
+            .table("merchants")
+            .select("*")
+            .ilike("email", needle)
+            .is_("deleted_at", "null")
+            .limit(1)
+            .execute()
         )
         if not result.data:
             return None
         return _row_to_merchant(cast(dict[str, Any], result.data[0]))
 
     def list_all(self, *, state: str | None = None) -> list[MerchantRow]:
-        query = get_supabase().table("merchants").select("*").order("business_name")
+        query = (
+            get_supabase()
+            .table("merchants")
+            .select("*")
+            .is_("deleted_at", "null")
+            .order("business_name")
+        )
         if state is not None:
             query = query.eq("state", state.upper())
         result = query.execute()
@@ -556,7 +767,14 @@ class SupabaseMerchantRepository:
 
     def count_total(self) -> int:
         try:
-            result = get_supabase().table("merchants").select("id").limit(10000).execute()
+            result = (
+                get_supabase()
+                .table("merchants")
+                .select("id")
+                .is_("deleted_at", "null")
+                .limit(10000)
+                .execute()
+            )
         except Exception:
             return 0
         return len(result.data or [])
@@ -571,6 +789,25 @@ class SupabaseMerchantRepository:
 
     def delete(self, merchant_id: UUID) -> None:
         get_supabase().table("merchants").delete().eq("id", str(merchant_id)).execute()
+
+    # Migration 065 — operator-initiated soft-delete ----------------------------
+
+    def soft_delete(self, merchant_id: UUID, *, deleted_at: datetime) -> MerchantRow:
+        # ``UPDATE ... WHERE id = ? AND deleted_at IS NULL`` so a
+        # double-submit raises NotFound rather than silently
+        # re-stamping the timestamp. PostgREST returns the updated
+        # rows by default; ``result.data`` empty == 0 rows matched.
+        result = (
+            get_supabase()
+            .table("merchants")
+            .update({"deleted_at": deleted_at.isoformat()})
+            .eq("id", str(merchant_id))
+            .is_("deleted_at", "null")
+            .execute()
+        )
+        if not result.data:
+            raise MerchantNotFoundError(str(merchant_id))
+        return _row_to_merchant(cast(dict[str, Any], result.data[0]))
 
     # Migration 034 — merchant-from-statement flow ---------------------------
 
@@ -619,6 +856,114 @@ class SupabaseMerchantRepository:
             .execute()
         )
         return len(result.data or [])
+
+    # Migration 066 — operator notes (Feature C) ---------------------------
+
+    def add_note(
+        self,
+        *,
+        merchant_id: UUID,
+        body: str,
+        actor: str,
+    ) -> MerchantNoteRow:
+        # Validate at the model layer first so the 1..4000 / actor-non-
+        # empty contract is enforced identically on both backends — and
+        # so we never round-trip through Postgres only to fail the
+        # CHECK constraint with a less actionable error.
+        candidate = MerchantNoteRow(
+            merchant_id=merchant_id,
+            body=body,
+            actor=actor,
+        )
+        payload: dict[str, Any] = {
+            "id": str(candidate.id),
+            "merchant_id": str(candidate.merchant_id),
+            "body": candidate.body,
+            "actor": candidate.actor,
+        }
+        result = get_supabase().table("merchant_notes").insert(payload).execute()
+        if not result.data:
+            raise RuntimeError("supabase.insert returned no row for merchant_notes")
+        return _row_to_merchant_note(cast(dict[str, Any], result.data[0]))
+
+    def list_notes(
+        self,
+        *,
+        merchant_id: UUID,
+        limit: int = 50,
+    ) -> list[MerchantNoteRow]:
+        result = (
+            get_supabase()
+            .table("merchant_notes")
+            .select("*")
+            .eq("merchant_id", str(merchant_id))
+            .order("created_at", desc=True)
+            .limit(max(0, limit))
+            .execute()
+        )
+        return [_row_to_merchant_note(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    # Feature D — merchant context fields (migration 064) ----------------
+
+    def set_deal_context(self, merchant_id: UUID, text: str | None) -> int:
+        # Filter on ``deleted_at IS NULL`` so a soft-deleted merchant is
+        # a true no-op (rowcount 0) — mirrors the in-memory contract and
+        # protects the operator from a stale-tab POST landing on a
+        # dossier that's been hidden.
+        normalized = text if text else None
+        result = (
+            get_supabase()
+            .table("merchants")
+            .update({"deal_context": normalized})
+            .eq("id", str(merchant_id))
+            .is_("deleted_at", "null")
+            .execute()
+        )
+        return len(result.data or [])
+
+    def set_close_context(
+        self,
+        merchant_id: UUID,
+        *,
+        notes_summary: str | None,
+        lead_description: str | None,
+        call_transcripts: str | None,
+    ) -> int:
+        # Atomic three-column update; PostgREST applies the SET list in
+        # one UPDATE so a transient Close failure on one slot can't leave
+        # the other two in a half-refreshed state at the DB.
+        result = (
+            get_supabase()
+            .table("merchants")
+            .update(
+                {
+                    "close_notes_summary": notes_summary,
+                    "close_lead_description": lead_description,
+                    "close_call_transcripts": call_transcripts,
+                }
+            )
+            .eq("id", str(merchant_id))
+            .is_("deleted_at", "null")
+            .execute()
+        )
+        return len(result.data or [])
+
+
+def _row_to_merchant_note(row: dict[str, Any]) -> MerchantNoteRow:
+    """Map a ``merchant_notes`` table row to ``MerchantNoteRow``.
+
+    Mirrors the ``_row_to_merchant`` precedent. ``created_at`` is NOT NULL
+    on the table side; the optional accessor + ``_parse_dt`` keep parity
+    with the model's nullable annotation in case a future schema drift
+    surfaces a NULL.
+    """
+    return MerchantNoteRow(
+        id=UUID(row["id"]),
+        merchant_id=UUID(row["merchant_id"]),
+        body=row["body"],
+        actor=row["actor"],
+        created_at=_parse_dt(row.get("created_at")),
+    )
 
 
 def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
@@ -672,8 +1017,21 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         close_opportunity_id=row.get("close_opportunity_id"),
         industry_choice=row.get("industry_choice"),
         notes=row.get("notes"),
+        # Feature D (migration 064). ``row.get`` collapses missing keys
+        # to ``None`` so a pre-064 read (replica, restored backup)
+        # surfaces every context field as ``None`` — the safe default
+        # (prompt builder treats ``None`` / empty as "omit the line").
+        deal_context=row.get("deal_context"),
+        close_lead_description=row.get("close_lead_description"),
+        close_notes_summary=row.get("close_notes_summary"),
+        close_call_transcripts=row.get("close_call_transcripts"),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
+        # Migration 065. None for every pre-065 row + every live row;
+        # populated only after ``soft_delete``. Pre-065 reads (replica,
+        # restored backup) collapse to None via ``row.get`` which is
+        # the correct active-row default.
+        deleted_at=_parse_dt(row.get("deleted_at")),
     )
 
 
@@ -732,6 +1090,15 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "close_opportunity_id": m.close_opportunity_id,
         "industry_choice": m.industry_choice,
         "notes": m.notes,
+        # Feature D (migration 064). Round-trip through ``upsert`` so a
+        # full-row save (e.g. webhook merchant upsert) preserves any
+        # context fields previously set. The dedicated ``set_*_context``
+        # methods bypass the full-row payload and target the relevant
+        # columns directly.
+        "deal_context": m.deal_context,
+        "close_lead_description": m.close_lead_description,
+        "close_notes_summary": m.close_notes_summary,
+        "close_call_transcripts": m.close_call_transcripts,
     }
     return payload
 

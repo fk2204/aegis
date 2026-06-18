@@ -373,6 +373,37 @@ def get_custom_field(payload: dict[str, Any], aegis_field_name: str) -> Any:  # 
     return payload.get(f"custom.{cf_id}")
 
 
+def extract_lead_description(close_lead_payload: dict[str, Any]) -> str | None:
+    """Pull the Close Lead ``description`` field.
+
+    Feature D — used by the merchant-context refresh orchestrator to
+    populate ``merchants.close_lead_description``. Lead ``description``
+    is a top-level (non-custom-field) field on the Lead object; it sits
+    alongside ``display_name`` / ``name`` / ``url`` in the payload.
+
+    Returns ``None`` when:
+      * the key is missing entirely (Lead has no description set),
+      * the value is JSON ``null``,
+      * the value collapses to an empty / whitespace-only string after
+        ``strip()``.
+
+    Trims surrounding whitespace; preserves internal newlines /
+    formatting so the operator's paragraph structure survives the
+    round-trip into the extraction prompt.
+    """
+    raw = close_lead_payload.get("description")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        # Defensive — Close's contract is string, but a surprise should
+        # collapse to None rather than raise; the orchestrator is
+        # best-effort and a single weird field must not block the
+        # refresh.
+        return None
+    trimmed = raw.strip()
+    return trimmed or None
+
+
 def filename_matches_statement_filter(filename: str, filters: tuple[str, ...]) -> bool:
     """Case-insensitive substring match of ``filename`` against ``filters``.
 
@@ -466,6 +497,7 @@ __all__ = [
     "FICO_RANGE_LOWER_BOUND",
     "NON_STATEMENT_FILENAME_TERMS",
     "FieldMapError",
+    "extract_lead_description",
     "filename_is_non_statement",
     "filename_matches_statement_filter",
     "get_custom_field",

@@ -168,11 +168,12 @@
   {% endif %}
 </header>
 
-{# Operator notes — append-only timestamped free-form notes about the
-   merchant. Sits at the very top of the dossier so the underwriter
-   sees broker-source quirks, prior decline reasons, pricing
-   discussions, etc. before scanning the score. Rendered via the
-   shared partial so the route's HTMX swap returns the same shape. #}
+{# Operator notes panel — Feature C (2026-06-18 redesign). Full-width
+   block positioned between the merchant name (in the masthead above)
+   and the chips section / sheet (below). Renders the editor + the list
+   of timestamped note cards via the shared partial. Inputs come from
+   the dossier route's TemplateResponse: ``operator_notes`` (list,
+   newest-first) + ``operator_note_max_chars`` (char cap mirror). #}
 {% include "_merchant_notes_block.html.j2" %}
 
 {# === sheet === #}
@@ -255,6 +256,27 @@
         {% endif %}
       </div>
       {% endif %}
+      {# Migration 065 — operator soft-delete. Posts a plain form (no
+         HTMX) so the dossier survives without JS; native confirm() is
+         the codebase's de-facto destructive-action pattern (no modal
+         infra mounted on the dossier). Sets merchants.deleted_at and
+         redirects to the merchants list. The underlying row + its
+         documents / analyses / decisions / audit log are preserved
+         forever — only the operator surface hides them. #}
+      <div class="crosslink delete-merchant">
+        <form method="post"
+              action="/ui/merchants/{{ merchant.id }}/delete"
+              class="inline"
+              data-test-id="merchant-delete-form"
+              onsubmit="return confirm('Delete this merchant from the dossier?\n\nThe underlying records (documents, statements, decisions, audit log) are preserved. The merchant will simply disappear from every list. This cannot be undone from the dashboard.');">
+          <button type="submit"
+                  data-test-id="merchant-delete-button"
+                  title="Soft-delete this merchant — hides from all lists; underlying data preserved"
+                  style="color:var(--decline)">
+            ✕ Delete merchant
+          </button>
+        </form>
+      </div>
     </div>
   </aside>
 
@@ -384,6 +406,82 @@
                 </div>
               {% endif %}
             </div>
+
+            {# ============== Context panel (Feature D — migration 064) ============== #}
+            {# Operator-editable ``deal_context`` textarea + read-only
+               blocks for the three Close-derived context fields. Sits
+               strictly below the chips section so the underwriter has
+               the score + docs + stips picture before being asked to
+               write deal context. The read-only blocks surface the
+               Close lead description + most-recent notes + most-recent
+               call transcripts that get injected into the Bedrock
+               extraction prompt — the underwriter can preview the
+               exact context the LLM will see. #}
+            <section class="dossier-context-panel"
+                     data-test-id="dossier-context-panel"
+                     style="margin:14px 0;padding:12px 14px;border:1px solid var(--ink-4, #d8d8d4);border-radius:6px;background:var(--ink-bg, #fafaf7)">
+              <header style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+                <strong style="text-transform:uppercase;letter-spacing:0.08em;font-size:11px;color:var(--ink-3)">Deal &amp; Close context</strong>
+                <span class="footnote" style="font-size:11px;color:var(--ink-3)">injected into extraction prompts</span>
+              </header>
+
+              <form method="post"
+                    action="/ui/merchants/{{ merchant.id }}/deal-context"
+                    class="deal-context-form"
+                    style="margin-bottom:10px">
+                <label for="deal-context-textarea" style="display:block;font-size:11px;color:var(--ink-3);margin-bottom:4px">
+                  Operator notes (free-form context about the deal)
+                </label>
+                <textarea id="deal-context-textarea"
+                          name="deal_context"
+                          rows="3"
+                          maxlength="8000"
+                          placeholder="Broker quirks, processor exclusions, prior pricing, anything that helps the LLM read the statements …"
+                          style="width:100%;font-family:inherit;font-size:12px;padding:6px 8px;border:1px solid var(--ink-4, #d8d8d4);border-radius:4px">{{ merchant.deal_context or '' }}</textarea>
+                <div style="margin-top:6px">
+                  <button type="submit" style="font-size:11px">Save context</button>
+                </div>
+              </form>
+
+              <div class="close-context-readonly" data-test-id="close-context-readonly">
+                {% if merchant.close_lead_id %}
+                  <form method="post"
+                        action="/ui/merchants/{{ merchant.id }}/close-context/refresh"
+                        style="float:right;margin:0">
+                    <button type="submit"
+                            data-test-id="refresh-close-context"
+                            style="font-size:11px">↻ Refresh Close fields</button>
+                  </form>
+                {% endif %}
+
+                <div class="context-block" data-field="close_lead_description" style="margin-bottom:8px">
+                  <div style="font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">Close lead description</div>
+                  {% if merchant.close_lead_description %}
+                    <pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;margin:0;padding:6px 8px;border-left:3px solid var(--rule, #d8d8d4);background:rgba(0,0,0,0.02)">{{ merchant.close_lead_description }}</pre>
+                  {% else %}
+                    <span style="color:var(--ink-3);font-size:11px;font-style:italic">— not set —</span>
+                  {% endif %}
+                </div>
+
+                <div class="context-block" data-field="close_notes_summary" style="margin-bottom:8px">
+                  <div style="font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">Recent Close notes</div>
+                  {% if merchant.close_notes_summary %}
+                    <pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;margin:0;padding:6px 8px;border-left:3px solid var(--rule, #d8d8d4);background:rgba(0,0,0,0.02);max-height:200px;overflow-y:auto">{{ merchant.close_notes_summary }}</pre>
+                  {% else %}
+                    <span style="color:var(--ink-3);font-size:11px;font-style:italic">— no recent notes pulled —</span>
+                  {% endif %}
+                </div>
+
+                <div class="context-block" data-field="close_call_transcripts">
+                  <div style="font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">Recent call summaries</div>
+                  {% if merchant.close_call_transcripts %}
+                    <pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;margin:0;padding:6px 8px;border-left:3px solid var(--rule, #d8d8d4);background:rgba(0,0,0,0.02);max-height:200px;overflow-y:auto">{{ merchant.close_call_transcripts }}</pre>
+                  {% else %}
+                    <span style="color:var(--ink-3);font-size:11px;font-style:italic">— no recent calls pulled —</span>
+                  {% endif %}
+                </div>
+              </div>
+            </section>
 
             <div class="actions">
               {% if _actions_locked %}

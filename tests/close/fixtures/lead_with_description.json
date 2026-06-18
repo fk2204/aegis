@@ -1,0 +1,13 @@
+{
+  "id": "lead_test",
+  "name": "Sanitized Test Merchant",
+  "display_name": "Sanitized Test Merchant",
+  "description": "Inbound from broker REDACTED_BROKER. Merchant runs a HVAC service business in TX. Looking for $25k advance to bridge summer slow season. Has 2 active MCAs paying down — confirmed via plaid pull. Watchlist: 3rd lender shopping.",
+  "url": null,
+  "organization_id": "orga_test",
+  "contacts": [],
+  "status_id": "stat_test_active",
+  "status_label": "Active",
+  "tasks": [],
+  "opportunities": []
+}

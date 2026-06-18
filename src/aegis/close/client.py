@@ -202,6 +202,52 @@ class CloseAttachment(BaseModel):
         return self
 
 
+class CloseNote(BaseModel):
+    """One Close ``activity/note`` record for a Lead.
+
+    Feature D — merchant context refresh consumes
+    ``GET /api/v1/activity/note/?lead_id=...&_limit=N`` and joins the
+    bodies of the most recent N items into ``merchants.close_notes_summary``.
+    Only the structural minimum is modeled; Close's note payload carries
+    many more fields (organization_id, user_id, attachments[], etc.) that
+    AEGIS does not need at this surface and that ``extra="ignore"`` drops
+    safely.
+
+    Note body field name. Per the captured live payload in
+    ``tests/close/fixtures/activity_note_list.json`` (2026-06-18), Close
+    returns the body verbatim under ``note``. Some legacy API docs
+    reference ``note_html`` / ``body_text``; we explicitly DO NOT trust
+    those — the wire shape is ``note``. The body content is PII-bearing
+    and never logged.
+    """
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=False)
+
+    id: str = Field(min_length=1)
+    note: str | None = None
+    date_created: str | None = None
+
+
+class CloseCall(BaseModel):
+    """One Close ``activity/call`` record for a Lead.
+
+    Feature D — merchant context refresh consumes
+    ``GET /api/v1/activity/call/?lead_id=...&_limit=N`` and joins the
+    ``note`` field (post-call operator notes / disposition transcript)
+    of the most recent N items into ``merchants.close_call_transcripts``.
+
+    Same posture as :class:`CloseNote`: structural minimum only, PII
+    body, extra fields ignored. Close exposes additional fields
+    (duration, recording_url, direction, etc.) that AEGIS does not need.
+    """
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=False)
+
+    id: str = Field(min_length=1)
+    note: str | None = None
+    date_created: str | None = None
+
+
 class CloseRateLimitError(CloseError):
     """429 Too Many Requests. Retried by tenacity within the budget.
 
@@ -460,6 +506,70 @@ class CloseClient:
             "/api/v1/activity/note/",
             json={"lead_id": lead_id, "note": note_text},
         )
+
+    def list_recent_notes(self, lead_id: str, limit: int = 5) -> list[CloseNote]:
+        """GET /api/v1/activity/note/?lead_id={id}&_limit={limit}.
+
+        Returns the most-recent ``limit`` Note activities for the lead
+        as :class:`CloseNote` structs. Feature D — the orchestrator
+        concatenates the ``note`` bodies into ``merchants.close_notes_summary``
+        so the Bedrock extraction prompt can use the operator's
+        narrative as context.
+
+        ``limit`` is clamped to a minimum of 1. The wire layer applies
+        the same auth + retry semantics as :meth:`request`.
+        """
+        safe_limit = max(1, limit)
+        page = self.request(
+            "GET",
+            "/api/v1/activity/note/",
+            params={"lead_id": lead_id, "_limit": safe_limit},
+        )
+        raw_items = page.get("data", [])
+        if not isinstance(raw_items, list):
+            raise CloseError(
+                f"close /api/v1/activity/note/ returned non-list data: {type(raw_items).__name__}"
+            )
+        items: list[CloseNote] = []
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                raise CloseError(
+                    f"close /api/v1/activity/note/ entry non-object: {type(raw).__name__}"
+                )
+            items.append(CloseNote.model_validate(raw))
+        return items
+
+    def list_recent_calls(self, lead_id: str, limit: int = 3) -> list[CloseCall]:
+        """GET /api/v1/activity/call/?lead_id={id}&_limit={limit}.
+
+        Returns the most-recent ``limit`` Call activities for the lead
+        as :class:`CloseCall` structs. Feature D — the orchestrator
+        concatenates the ``note`` fields (operator-typed post-call
+        disposition summaries) into ``merchants.close_call_transcripts``
+        for the extraction prompt.
+
+        ``limit`` is clamped to a minimum of 1. Same auth + retry
+        semantics as :meth:`request`.
+        """
+        safe_limit = max(1, limit)
+        page = self.request(
+            "GET",
+            "/api/v1/activity/call/",
+            params={"lead_id": lead_id, "_limit": safe_limit},
+        )
+        raw_items = page.get("data", [])
+        if not isinstance(raw_items, list):
+            raise CloseError(
+                f"close /api/v1/activity/call/ returned non-list data: {type(raw_items).__name__}"
+            )
+        items: list[CloseCall] = []
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                raise CloseError(
+                    f"close /api/v1/activity/call/ entry non-object: {type(raw).__name__}"
+                )
+            items.append(CloseCall.model_validate(raw))
+        return items
 
     def list_lead_attachments(self, lead_id: str) -> list[CloseAttachment]:
         """Enumerate PDF attachments across all Note + Email activities
@@ -798,7 +908,9 @@ def _filename_from_content_disposition(header_value: str) -> str | None:
 __all__ = [
     "CloseAttachment",
     "CloseAuthError",
+    "CloseCall",
     "CloseClient",
     "CloseError",
+    "CloseNote",
     "CloseRateLimitError",
 ]

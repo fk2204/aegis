@@ -80,7 +80,7 @@ from aegis.merchants.shadow_signals import (
     record_shadow_signal,
 )
 from aegis.ops.cost_tracking import CostTrackingBedrockClient
-from aegis.parser.pipeline import PipelineResult, run_pipeline
+from aegis.parser.pipeline import MerchantContext, PipelineResult, run_pipeline
 from aegis.parser.processor import (
     ProcessorPipelineResult,
     detect_processor,
@@ -144,7 +144,7 @@ async def parse_document(
 
     try:
         # Verify the row exists before doing expensive parser work.
-        repository.get_document(document_id)
+        doc_pre_parse = repository.get_document(document_id)
     except DocumentNotFoundError:
         _log.error("worker.parse.unknown_document document_id=%s", document_id)
         _safe_unlink(pdf_path)
@@ -156,6 +156,19 @@ async def parse_document(
         subject_type="document",
         subject_id=document_id,
         details={"pdf_path": pdf_path},
+    )
+
+    # Feature D — load the merchant's free-text context (operator notes
+    # + Close lead description + recent notes + recent call transcripts)
+    # so the Bedrock extraction prompt can disambiguate ambiguous
+    # statement layouts / transactions using known deal context.
+    # ``None`` when the doc has no merchant (bearer upload) OR the
+    # merchant row has no context fields set. The prompt builder
+    # treats both cases identically — no MERCHANT CONTEXT block in the
+    # prompt suffix.
+    merchant_context = _load_merchant_context(
+        merchants_repo=merchants_repo,
+        merchant_id=doc_pre_parse.merchant_id,
     )
 
     # Brand detection — Stripe / Square statements take a different
@@ -212,7 +225,12 @@ async def parse_document(
     #       (migration 034 — flag the merchant for manual naming).
     # ===================================================================
     try:
-        result: PipelineResult = await asyncio.to_thread(run_pipeline, pdf_path, llm)
+        result: PipelineResult = await asyncio.to_thread(
+            _run_pipeline_with_merchant_context,
+            pdf_path,
+            llm,
+            merchant_context,
+        )
     except asyncio.CancelledError:
         # arq's job-timeout path: ``arq.worker.run_job`` wraps the
         # task in ``asyncio.wait_for(task, AEGIS_WORKER_JOB_TIMEOUT)``
@@ -962,6 +980,73 @@ def _flag_provisional_for_manual_naming(
             reason,
             exc_info=True,
         )
+
+
+def _load_merchant_context(
+    *,
+    merchants_repo: MerchantRepository,
+    merchant_id: UUID | None,
+) -> MerchantContext | None:
+    """Read the merchant's free-text context columns into a
+    :class:`MerchantContext` for the extraction prompt.
+
+    Returns ``None`` when:
+      * the document has no merchant (bearer / orphan upload), OR
+      * the merchant lookup fails for any reason (deleted, missing),
+      * the merchant row exists but every context field is empty.
+
+    A None return short-circuits the prompt builder — equivalent to "no
+    MERCHANT CONTEXT block". Failure to read a merchant row never fails
+    the parse — the prompt simply lacks the context block.
+    """
+    if merchant_id is None:
+        return None
+    try:
+        merchant = merchants_repo.get(merchant_id)
+    except Exception:
+        # Best-effort. A deleted / missing merchant should not block
+        # an otherwise valid parse. The doc's merchant_id can lag the
+        # merchant row in rare paths (e.g. operator deleted between
+        # upload and parse start) — the lack of context is a soft
+        # degradation, not a parse failure.
+        _log.warning(
+            "worker.merchant_context.load_failed merchant_id=%s",
+            merchant_id,
+            exc_info=True,
+        )
+        return None
+    ctx = MerchantContext(
+        deal_context=merchant.deal_context,
+        close_lead_description=merchant.close_lead_description,
+        close_notes_summary=merchant.close_notes_summary,
+        close_call_transcripts=merchant.close_call_transcripts,
+    )
+    if ctx.is_empty():
+        return None
+    return ctx
+
+
+def _run_pipeline_with_merchant_context(
+    pdf_path: str,
+    llm: LLMClient,
+    merchant_context: MerchantContext | None,
+) -> PipelineResult:
+    """Thin wrapper so ``asyncio.to_thread`` gets a single callable
+    signature it can pass positional args to.
+
+    Exists because ``run_pipeline`` takes ``merchant_context`` as a
+    keyword-only argument and ``to_thread`` would otherwise need an
+    inline lambda — extracting it makes the worker call site easier
+    to read.
+
+    Only forwards ``merchant_context`` when it's non-None so existing
+    test stubs (``monkeypatch.setattr("aegis.workers.run_pipeline",
+    fake_fn)``) whose ``fake_fn`` signature predates Feature D keep
+    working.
+    """
+    if merchant_context is None:
+        return run_pipeline(pdf_path, llm)
+    return run_pipeline(pdf_path, llm, merchant_context=merchant_context)
 
 
 def _safe_unlink(pdf_path: str) -> None:

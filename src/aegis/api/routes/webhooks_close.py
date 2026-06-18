@@ -72,6 +72,7 @@ from aegis.funder_note_submissions import (
 )
 from aegis.funders.repository import FunderNotFoundError, FunderRepository
 from aegis.logger import get_logger
+from aegis.merchants.close_context import refresh_close_context_for_merchant
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import MerchantRepository
 
@@ -168,6 +169,19 @@ async def close_webhook(
         audit=audit,
     )
 
+    # Feature D — merchant context refresh on activity-level events.
+    # Catches activity.note / activity.call / activity.email creates and
+    # updates that resolve to a known merchant via ``lead_id``.
+    # Independent of the Pre-UW trigger so the operator's notes / calls
+    # stay live regardless of opportunity stage. Best-effort: a Close
+    # API failure here MUST NOT 5xx the webhook.
+    _refresh_close_context_on_activity_event(
+        event=event,
+        close_client=close_client,
+        merchants=merchants,
+        audit=audit,
+    )
+
     if not matches:
         # Filtered out. The audit row stands; nothing else to do.
         return None
@@ -207,13 +221,35 @@ async def close_webhook(
         audit=audit,
     )
 
+    # Feature D — merchant context refresh. After the merchant row
+    # resolves we pull the Lead description + the 5 most-recent Close
+    # notes + the 3 most-recent calls and persist them on the merchant
+    # so the next Bedrock extraction prompt sees them.
+    #
+    # Best-effort: a Close API failure here MUST NOT 5xx the webhook
+    # (Close retries every webhook for 72 hours; a side-path failure
+    # would surface as repeated 5xxs without improving safety). We log,
+    # audit the failure, and continue. The Lead payload we already
+    # fetched is reused via the ``lead_fetcher`` injection so the
+    # refresh costs at most 2 additional Close round-trips (note + call
+    # listings).
+    merchant_for_audit = merchants.find_by_close_lead_id(lead_id)
+    if merchant_for_audit is not None:
+        _refresh_close_context_best_effort(
+            merchant_id=merchant_for_audit.id,
+            lead_id=lead_id,
+            lead_payload=lead,
+            close_client=close_client,
+            merchants=merchants,
+            audit=audit,
+        )
+
     # Stage 5 — fire-and-forget the attachment-orchestration arq job.
     # Failure to enqueue (Redis blip etc.) audits but does NOT 5xx the
     # webhook: Close will retry within 72 hours and the merchant
     # upsert is already idempotent, so a self-healing re-run is cheap.
     # Converting transient enqueue failures to 5xx would just generate
     # noise without adding any safety.
-    merchant_for_audit = merchants.find_by_close_lead_id(lead_id)
     await enqueue_close_orchestration(
         request=request,
         close_lead_id=lead_id,
@@ -973,6 +1009,123 @@ def _post_fund_the_deal_task(
             "funder_name": funder_name,
             "task_text": text,
         },
+    )
+
+
+# ----------------------------------------------------------------------
+# Feature D — merchant context refresh on Close webhook events
+# ----------------------------------------------------------------------
+
+
+def _refresh_close_context_best_effort(
+    *,
+    merchant_id: UUID,
+    lead_id: str,
+    lead_payload: dict[str, Any] | None,
+    close_client: CloseClient,
+    merchants: MerchantRepository,
+    audit: AuditLog,
+) -> None:
+    """Call ``refresh_close_context_for_merchant``; swallow Close failures.
+
+    Webhooks MUST stay 200-OK to Close (CLAUDE.md). A Close API failure
+    on the context-refresh side path is logged + audited as
+    ``merchant.close_context.refresh_failed`` and the webhook continues.
+
+    ``lead_payload`` — when the caller has already fetched the Lead via
+    ``close_client.get_lead`` we reuse it via a closure on the
+    orchestrator's ``lead_fetcher`` kwarg. ``None`` means "fetch lazily".
+    """
+    if lead_payload is not None:
+        lead_fetcher: Any = lambda _lead_id: lead_payload  # noqa: E731 — single-use closure
+    else:
+        lead_fetcher = None
+
+    try:
+        refresh_close_context_for_merchant(
+            merchant_id,
+            lead_id,
+            close_client=close_client,
+            merchants_repo=merchants,
+            audit=audit,
+            lead_fetcher=lead_fetcher,
+        )
+    except CloseError as exc:
+        _log.warning(
+            "close_webhook.close_context_refresh_failed lead_id=%s status=%s",
+            lead_id,
+            exc.status_code,
+        )
+        # Audit row carries no body content (PII rule). Per CLAUDE.md
+        # "audit_log writes must succeed or the calling op fails" — a
+        # failure to record this failure DOES propagate; the webhook
+        # only swallows the Close-side error, not the audit-write
+        # error. The auditor itself raising would surface as a 500
+        # since the operator's ``AuditLog`` is supposed to be local
+        # (Supabase insert) and a failure there is a real problem.
+        audit.record(
+            actor="close_webhook",
+            action="merchant.close_context.refresh_failed",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={
+                "close_lead_id": lead_id,
+                "status_code": exc.status_code,
+                "error": str(exc)[:200],
+            },
+        )
+
+
+# Activity event object_type values that should trigger a context
+# refresh. Notes / calls / emails created or updated on the lead all
+# carry information the LLM extraction prompt benefits from.
+_REFRESH_TRIGGER_OBJECT_TYPES: frozenset[str] = frozenset(
+    {"activity.note", "activity.call", "activity.email"}
+)
+_REFRESH_TRIGGER_ACTIONS: frozenset[str] = frozenset({"created", "updated"})
+
+
+def _refresh_close_context_on_activity_event(
+    *,
+    event: dict[str, Any],
+    close_client: CloseClient,
+    merchants: MerchantRepository,
+    audit: AuditLog,
+) -> None:
+    """Fire merchant-context refresh when a Close activity event resolves
+    to a known merchant.
+
+    Quiet no-op when:
+      * Event isn't an activity-level note/call/email create/update.
+      * Event has no resolvable ``lead_id``.
+      * Lead doesn't map to a known merchant.
+
+    Caller already audits ``close.webhook.received`` upstream, so the
+    no-op paths leave no extra audit noise.
+    """
+    object_type = event.get("object_type")
+    if object_type not in _REFRESH_TRIGGER_OBJECT_TYPES:
+        return
+    if event.get("action") not in _REFRESH_TRIGGER_ACTIONS:
+        return
+
+    lead_id_raw = event.get("lead_id")
+    if not isinstance(lead_id_raw, str) or not lead_id_raw:
+        return
+
+    merchant = merchants.find_by_close_lead_id(lead_id_raw)
+    if merchant is None:
+        return
+
+    _refresh_close_context_best_effort(
+        merchant_id=merchant.id,
+        lead_id=lead_id_raw,
+        # Activity events don't carry the Lead payload — let the
+        # orchestrator fetch lazily via close_client.get_lead.
+        lead_payload=None,
+        close_client=close_client,
+        merchants=merchants,
+        audit=audit,
     )
 
 

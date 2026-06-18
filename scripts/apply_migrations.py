@@ -522,6 +522,31 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='funders' "
         "AND column_name='operator_status'"
     ),
+    "064_merchant_context_fields.sql": (
+        # 064 adds four free-text context columns on merchants for
+        # Bedrock prompt injection: deal_context (operator-written),
+        # close_lead_description, close_notes_summary,
+        # close_call_transcripts. The four ALTER COLUMN statements land
+        # in the same transaction; probing the first column suffices.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='deal_context'"
+    ),
+    "065_merchants_deleted_at.sql": (
+        # 065 adds merchants.deleted_at (nullable timestamptz) + a partial
+        # index for the soft-delete contract. The column is the load-bearing
+        # artifact — the index and column land together.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='deleted_at'"
+    ),
+    "066_merchant_notes.sql": (
+        # 066 creates the merchant_notes table (uuid pk, merchant_id fk,
+        # body text NOT NULL CHECK length 1..4000, actor text, created_at
+        # timestamptz default now()) + index on (merchant_id, created_at desc).
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='merchant_notes'"
+    ),
 }
 
 
