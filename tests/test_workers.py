@@ -46,9 +46,7 @@ def _real_file_hash(path: Path) -> str:
 
 
 @pytest.fixture
-def chunk_b_storage(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> Iterator[Path]:
+def chunk_b_storage(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
     """Point ``aegis_upload_dir`` at ``tmp_path`` so chunk-B's
     ``quarantine/`` and ``quarantine/dead-letter/`` writes land where
     the test can inspect them. Resets the storage_objects backend
@@ -56,6 +54,7 @@ def chunk_b_storage(
     over."""
     monkeypatch.setenv("AEGIS_UPLOAD_DIR", str(tmp_path))
     from aegis.config import get_settings
+
     get_settings.cache_clear()
     storage_objects.reset_backend_for_tests()
     yield tmp_path
@@ -76,9 +75,7 @@ async def test_parse_document_persists_and_audits(
 
     fake_result = _make_pipeline_result()
 
-    def fake_run_pipeline(
-        _path: str, _llm: object, today: date | None = None
-    ) -> PipelineResult:
+    def fake_run_pipeline(_path: str, _llm: object, today: date | None = None) -> PipelineResult:
         return fake_result
 
     monkeypatch.setattr("aegis.workers.run_pipeline", fake_run_pipeline)
@@ -107,13 +104,9 @@ async def test_parse_document_failure_records_error_and_unlinks(
 ) -> None:
     repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
-    row = repo.create_document(
-        file_hash="i" * 64, byte_size=10, original_filename="f.pdf"
-    )
+    row = repo.create_document(file_hash="i" * 64, byte_size=10, original_filename="f.pdf")
 
-    def boom(
-        _path: str, _llm: object, today: date | None = None
-    ) -> PipelineResult:
+    def boom(_path: str, _llm: object, today: date | None = None) -> PipelineResult:
         raise RuntimeError("parser blew up")
 
     monkeypatch.setattr("aegis.workers.run_pipeline", boom)
@@ -134,6 +127,67 @@ async def test_parse_document_failure_records_error_and_unlinks(
     after = repo.get_document(row.id)
     assert after.parse_status == "error"
     assert after.error_detail and "parser blew up" in after.error_detail
+
+
+async def test_parse_document_emits_td_shadow_audit_row(
+    monkeypatch: pytest.MonkeyPatch, fake_pdf: Path
+) -> None:
+    """TD shadow warnings on ValidationResult → one audit row per match.
+
+    Telemetry for the CLAUDE.md shadow-first discipline: until live-flip
+    rows accumulate, the operator can query
+    ``WHERE action='parser.shadow.td_withdrawal_coercion'`` to see what
+    the rule WOULD do across real prod parses.
+    """
+    from dataclasses import replace
+
+    from aegis.parser.models import ValidationResult
+
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+    row = repo.create_document(
+        file_hash=_real_file_hash(fake_pdf),
+        byte_size=fake_pdf.stat().st_size,
+        original_filename="f.pdf",
+    )
+
+    base = _make_pipeline_result()
+    fake_result = replace(
+        base,
+        validation=ValidationResult(
+            passed=True,
+            warnings=[
+                "shadow_td_withdrawal_coercion_would_clear:"
+                "listed_2015.00_printed_2000.00_service_charges_15.00_residual_0.00",
+                "shadow_td_withdrawal_drift_unattributed:"
+                "listed_2050.00_printed_2000.00_service_charges_0_residual_50.00",
+                # Non-TD shadow string: must NOT produce an audit row.
+                "daily_balance_continuity_break:2026-01-15_expected_5000.00_actual_5001.50_diff_1.50",
+            ],
+        ),
+    )
+
+    def fake_run_pipeline(_path: str, _llm: object, today: date | None = None) -> PipelineResult:
+        return fake_result
+
+    monkeypatch.setattr("aegis.workers.run_pipeline", fake_run_pipeline)
+
+    await parse_document(
+        {"repository": repo, "audit": audit, "llm": object()},
+        str(row.id),
+        str(fake_pdf),
+    )
+
+    shadow_entries = [
+        e for e in audit.entries if e["action"] == "parser.shadow.td_withdrawal_coercion"
+    ]
+    assert len(shadow_entries) == 2, [e["action"] for e in audit.entries]
+    outcomes = sorted(e["details"]["outcome"] for e in shadow_entries)
+    assert outcomes == ["coercion_would_clear", "drift_unattributed"]
+    # Subject wiring — every shadow row must be tied back to its document
+    # so the operator can pull the source PDF from the audit detail.
+    assert all(e["subject_type"] == "document" for e in shadow_entries)
+    assert all(e["subject_id"] == str(row.id) for e in shadow_entries)
 
 
 async def test_parse_document_unknown_id_raises_and_unlinks(
@@ -180,9 +234,7 @@ async def test_parse_document_cancelled_marks_error_unlinks_and_reraises(
 
     repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
-    row = repo.create_document(
-        file_hash="c" * 64, byte_size=10, original_filename="cancel.pdf"
-    )
+    row = repo.create_document(file_hash="c" * 64, byte_size=10, original_filename="cancel.pdf")
 
     def cancel_during_pipeline(
         _path: str, _llm: object, today: date | None = None
@@ -241,9 +293,7 @@ async def test_run_processor_branch_cancelled_marks_error_unlinks_and_reraises(
     # Route to the processor branch by faking detection.
     monkeypatch.setattr(
         "aegis.workers.detect_processor",
-        lambda _path: ProcessorDetection(
-            brand="stripe", stripe_hits=3, square_hits=0
-        ),
+        lambda _path: ProcessorDetection(brand="stripe", stripe_hits=3, square_hits=0),
     )
 
     def cancel_during_processor_pipeline(
@@ -251,9 +301,7 @@ async def test_run_processor_branch_cancelled_marks_error_unlinks_and_reraises(
     ) -> object:
         raise _asyncio.CancelledError()
 
-    monkeypatch.setattr(
-        "aegis.workers.run_processor_pipeline", cancel_during_processor_pipeline
-    )
+    monkeypatch.setattr("aegis.workers.run_processor_pipeline", cancel_during_processor_pipeline)
 
     with pytest.raises(_asyncio.CancelledError):
         await parse_document(
@@ -419,9 +467,7 @@ async def test_parse_document_finalize_idempotent_on_already_finalized(
 
     # Operator already finalized this merchant before parse completed.
     provisional = merchants_repo.create_provisional()
-    merchants_repo.finalize_provisional(
-        merchant_id=provisional.id, business_name="Operator Name"
-    )
+    merchants_repo.finalize_provisional(merchant_id=provisional.id, business_name="Operator Name")
 
     row = docs_repo.create_document(
         file_hash=_real_file_hash(fake_pdf),
@@ -430,9 +476,7 @@ async def test_parse_document_finalize_idempotent_on_already_finalized(
         merchant_id=provisional.id,
     )
 
-    fake_result = _pipeline_result_with_account_holder(
-        "Statement Name From Parser"
-    )
+    fake_result = _pipeline_result_with_account_holder("Statement Name From Parser")
 
     monkeypatch.setattr(
         "aegis.workers.run_pipeline",
@@ -454,9 +498,7 @@ async def test_parse_document_finalize_idempotent_on_already_finalized(
     final = merchants_repo.get(provisional.id)
     assert final.business_name == "Operator Name"
     # NO audit row was written — the action was a no-op.
-    assert not [
-        e for e in audit.entries if e["action"] == "merchant.finalized"
-    ]
+    assert not [e for e in audit.entries if e["action"] == "merchant.finalized"]
 
 
 async def test_parse_document_blank_account_holder_marks_needs_manual_naming(
@@ -502,9 +544,7 @@ async def test_parse_document_blank_account_holder_marks_needs_manual_naming(
     flagged = merchants_repo.get(provisional.id)
     assert flagged.status == "needs_manual_naming"
 
-    rows = [
-        e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"
-    ]
+    rows = [e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"]
     assert len(rows) == 1
     assert rows[0]["details"]["reason"] == "blank_account_holder"
     assert rows[0]["details"]["source_document_id"] == str(row.id)
@@ -577,9 +617,7 @@ async def test_parse_document_exception_flags_merchant_and_reraises(
         merchant_id=provisional.id,
     )
 
-    def boom(
-        _p: str, _l: object, today: date | None = None
-    ) -> PipelineResult:
+    def boom(_p: str, _l: object, today: date | None = None) -> PipelineResult:
         raise RuntimeError("parser blew up mid-extraction")
 
     monkeypatch.setattr("aegis.workers.run_pipeline", boom)
@@ -599,9 +637,7 @@ async def test_parse_document_exception_flags_merchant_and_reraises(
     flagged = merchants_repo.get(provisional.id)
     assert flagged.status == "needs_manual_naming"
 
-    rows = [
-        e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"
-    ]
+    rows = [e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"]
     assert len(rows) == 1
     assert rows[0]["details"]["reason"] == "parse_exception"
 
@@ -628,9 +664,7 @@ async def test_parse_document_cancellation_flags_merchant_and_reraises(
         merchant_id=provisional.id,
     )
 
-    def cancel(
-        _p: str, _l: object, today: date | None = None
-    ) -> PipelineResult:
+    def cancel(_p: str, _l: object, today: date | None = None) -> PipelineResult:
         raise _asyncio.CancelledError()
 
     monkeypatch.setattr("aegis.workers.run_pipeline", cancel)
@@ -650,9 +684,7 @@ async def test_parse_document_cancellation_flags_merchant_and_reraises(
     flagged = merchants_repo.get(provisional.id)
     assert flagged.status == "needs_manual_naming"
 
-    rows = [
-        e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"
-    ]
+    rows = [e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"]
     assert len(rows) == 1
     assert rows[0]["details"]["reason"] == "parse_cancelled"
 
@@ -685,9 +717,7 @@ async def test_processor_branch_success_flags_provisional_for_manual_naming(
 
     monkeypatch.setattr(
         "aegis.workers.detect_processor",
-        lambda _path: ProcessorDetection(
-            brand="stripe", stripe_hits=3, square_hits=0
-        ),
+        lambda _path: ProcessorDetection(brand="stripe", stripe_hits=3, square_hits=0),
     )
 
     @dataclass
@@ -754,9 +784,7 @@ async def test_processor_branch_success_flags_provisional_for_manual_naming(
     flagged = merchants_repo.get(provisional.id)
     assert flagged.status == "needs_manual_naming"
 
-    rows = [
-        e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"
-    ]
+    rows = [e for e in audit.entries if e["action"] == "merchant.needs_manual_naming"]
     assert len(rows) == 1
     assert rows[0]["details"]["reason"] == "processor_branch"
     assert rows[0]["details"]["source_document_id"] == str(row.id)
@@ -794,9 +822,7 @@ async def test_parse_document_wraps_bedrock_client_with_cost_tracking(
 
     captured_llm: list[object] = []
 
-    def fake_run_pipeline(
-        _path: str, llm: object, today: date | None = None
-    ) -> PipelineResult:
+    def fake_run_pipeline(_path: str, llm: object, today: date | None = None) -> PipelineResult:
         captured_llm.append(llm)
         return _make_pipeline_result()
 
@@ -833,9 +859,7 @@ async def test_parse_document_does_not_wrap_non_bedrock_llm(
 
     captured_llm: list[object] = []
 
-    def fake_run_pipeline(
-        _path: str, llm: object, today: date | None = None
-    ) -> PipelineResult:
+    def fake_run_pipeline(_path: str, llm: object, today: date | None = None) -> PipelineResult:
         captured_llm.append(llm)
         return _make_pipeline_result()
 
@@ -882,9 +906,7 @@ async def test_parse_document_routes_processor_pdf_to_processor_pipeline(
     # Force detection to "stripe" regardless of the PDF contents.
     monkeypatch.setattr(
         "aegis.workers.detect_processor",
-        lambda _path: ProcessorDetection(
-            brand="stripe", stripe_hits=3, square_hits=0
-        ),
+        lambda _path: ProcessorDetection(brand="stripe", stripe_hits=3, square_hits=0),
     )
 
     @dataclass
@@ -977,9 +999,7 @@ async def test_parse_document_ambiguous_processor_routes_to_manual_review(
 
     monkeypatch.setattr(
         "aegis.workers.detect_processor",
-        lambda _path: ProcessorDetection(
-            brand="ambiguous", stripe_hits=3, square_hits=3
-        ),
+        lambda _path: ProcessorDetection(brand="ambiguous", stripe_hits=3, square_hits=3),
     )
 
     out = await parse_document(
@@ -992,9 +1012,7 @@ async def test_parse_document_ambiguous_processor_routes_to_manual_review(
     assert not fake_pdf.exists()
     actions = [e["action"] for e in audit.entries]
     assert "document.parse.error" in actions
-    err_event = next(
-        e for e in audit.entries if e["action"] == "document.parse.error"
-    )
+    err_event = next(e for e in audit.entries if e["action"] == "document.parse.error")
     assert err_event["details"]["error"] == "AmbiguousProcessor"
 
 
@@ -1028,12 +1046,12 @@ async def test_chunk_b_success_populates_storage_columns(
     chunk_b_storage: Path,
 ) -> None:
     """Success path locks down all four contract details:
-      * documents.storage_path is populated
-      * documents.sha256_original == sha256(plaintext_bytes)
-      * documents.encryption_key_version == 1 (the conftest test key)
-      * documents.retention_until ≈ NOW() + 7yr (±2s tolerance)
-      * audit document.original_stored row written
-      * plaintext at pdf_path is deleted
+    * documents.storage_path is populated
+    * documents.sha256_original == sha256(plaintext_bytes)
+    * documents.encryption_key_version == 1 (the conftest test key)
+    * documents.retention_until ≈ NOW() + 7yr (±2s tolerance)
+    * audit document.original_stored row written
+    * plaintext at pdf_path is deleted
     """
     repo = InMemoryDocumentRepository()
     audit = InMemoryAuditLog()
@@ -1064,17 +1082,12 @@ async def test_chunk_b_success_populates_storage_columns(
     assert persisted.encryption_key_version == 1
     assert persisted.retention_until is not None
     expected_retention = datetime.now(UTC) + timedelta(days=365 * 7)
-    delta = abs(
-        (persisted.retention_until - expected_retention).total_seconds()
-    )
+    delta = abs((persisted.retention_until - expected_retention).total_seconds())
     assert delta < 2.0, f"retention_until off by {delta}s"
 
     actions = [e["action"] for e in audit.entries]
     assert "document.original_stored" in actions
-    success_event = next(
-        e for e in audit.entries
-        if e["action"] == "document.original_stored"
-    )
+    success_event = next(e for e in audit.entries if e["action"] == "document.original_stored")
     assert success_event["details"]["encryption_key_version"] == 1
     assert success_event["details"]["byte_size"] == len(plaintext_bytes)
 
@@ -1131,8 +1144,7 @@ async def test_chunk_b_upload_failure_quarantines_ciphertext(
 
     # Audit row written with the expected reason + outcome
     storage_failed_rows = [
-        e for e in audit.entries
-        if e["action"] == "document.original_storage_failed"
+        e for e in audit.entries if e["action"] == "document.original_storage_failed"
     ]
     assert len(storage_failed_rows) == 1
     failure = storage_failed_rows[0]
@@ -1164,6 +1176,7 @@ async def test_chunk_b_upload_failure_quarantines_ciphertext(
     # Meta sidecar carries everything reconcile needs to retry
     # without re-reading plaintext or re-encrypting
     import json as _json
+
     meta = _json.loads(meta_path.read_text())
     assert meta["reason"] == "upload_failed"
     assert meta["sha256_original"] == hashlib.sha256(plaintext_bytes).hexdigest()
@@ -1212,8 +1225,7 @@ async def test_chunk_b_sha256_divergence_dead_letters(
 
     # Audit reason + outcome
     storage_failed_rows = [
-        e for e in audit.entries
-        if e["action"] == "document.original_storage_failed"
+        e for e in audit.entries if e["action"] == "document.original_storage_failed"
     ]
     assert len(storage_failed_rows) == 1
     failure = storage_failed_rows[0]
@@ -1255,6 +1267,7 @@ async def test_chunk_b_quarantine_dir_is_mode_0700(
     differ; the prod box is Linux which is what matters.
     """
     import sys
+
     if sys.platform.startswith("win"):
         pytest.skip("POSIX-mode test; Windows chmod is permissive")
 
@@ -1299,6 +1312,7 @@ async def test_chunk_b_dead_letter_dir_is_mode_0700(
     """Q4(a) — quarantine/dead-letter/ must also be mode 0700.
     Triggered via sha256 divergence (the canonical terminal path)."""
     import sys
+
     if sys.platform.startswith("win"):
         pytest.skip("POSIX-mode test; Windows chmod is permissive")
 
@@ -1323,9 +1337,7 @@ async def test_chunk_b_dead_letter_dir_is_mode_0700(
 
     dlq = chunk_b_storage / "quarantine" / "dead-letter"
     dmode = dlq.stat().st_mode & 0o777
-    assert dmode == 0o700, (
-        f"quarantine/dead-letter/ must be mode 0700 (got 0o{dmode:o})"
-    )
+    assert dmode == 0o700, f"quarantine/dead-letter/ must be mode 0700 (got 0o{dmode:o})"
     # And the parent quarantine/ which dead-letter sits under
     qdir = chunk_b_storage / "quarantine"
     qmode = qdir.stat().st_mode & 0o777
@@ -1383,8 +1395,7 @@ async def test_chunk_b_fifth_path_unmapped_exception_unlinks_and_audits(
 
     # Audit row written with reason=unknown outcome=best_effort_cleanup
     storage_failed_rows = [
-        e for e in audit.entries
-        if e["action"] == "document.original_storage_failed"
+        e for e in audit.entries if e["action"] == "document.original_storage_failed"
     ]
     assert len(storage_failed_rows) == 1
     failure = storage_failed_rows[0]
@@ -1446,13 +1457,13 @@ async def test_chunk_b_write_failure_preserves_plaintext(
     # Trigger the upload-fail branch (which calls _write_quarantine)
     def boom_upload(path: str, data: bytes) -> None:
         raise storage_objects.StorageError("transient upload failure")
+
     monkeypatch.setattr("aegis.storage_objects.upload", boom_upload)
 
     # Force _write_quarantine to ENOSPC — escapes the inner except
-    def enospc_write(
-        document_id: UUID, *, ciphertext: bytes, meta: dict[str, Any]
-    ) -> None:
+    def enospc_write(document_id: UUID, *, ciphertext: bytes, meta: dict[str, Any]) -> None:
         raise OSError(errno.ENOSPC, "No space left on device")
+
     monkeypatch.setattr("aegis.workers._write_quarantine", enospc_write)
 
     out = await parse_document(
@@ -1473,8 +1484,7 @@ async def test_chunk_b_write_failure_preserves_plaintext(
 
     # Audit signals the discrimination — write_failure_preserved
     storage_failed_rows = [
-        e for e in audit.entries
-        if e["action"] == "document.original_storage_failed"
+        e for e in audit.entries if e["action"] == "document.original_storage_failed"
     ]
     assert len(storage_failed_rows) == 1
     failure = storage_failed_rows[0]
@@ -1643,6 +1653,7 @@ def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     d.mkdir()
     monkeypatch.setenv("AEGIS_UPLOAD_DIR", str(d))
     from aegis.config import get_settings as _gs
+
     _gs.cache_clear()
     return d
 
@@ -1665,8 +1676,12 @@ async def test_orchestrator_happy_path_filters_and_persists(
     )
     enqueued: list[tuple[str, str]] = []
     ctx = _orchestrator_ctx(
-        merchants=merchants, repo=repo, audit=audit, close=close,
-        upload_dir=upload_dir, enqueue_calls=enqueued,
+        merchants=merchants,
+        repo=repo,
+        audit=audit,
+        close=close,
+        upload_dir=upload_dir,
+        enqueue_calls=enqueued,
     )
 
     summary = await process_close_attachments(ctx, "lead_abc", "webhook")
@@ -1694,7 +1709,10 @@ async def test_orchestrator_no_merchant_audits_and_returns(
     audit = InMemoryAuditLog()
     close = _FakeCloseClient(attachments=[])
     ctx = _orchestrator_ctx(
-        merchants=merchants, repo=repo, audit=audit, close=close,
+        merchants=merchants,
+        repo=repo,
+        audit=audit,
+        close=close,
         upload_dir=upload_dir,
     )
 
@@ -1755,7 +1773,10 @@ async def test_orchestrator_per_attachment_fetch_failure_isolated(
         },
     )
     ctx = _orchestrator_ctx(
-        merchants=merchants, repo=repo, audit=audit, close=close,
+        merchants=merchants,
+        repo=repo,
+        audit=audit,
+        close=close,
         upload_dir=upload_dir,
     )
 
@@ -1788,8 +1809,12 @@ async def test_orchestrator_dedup_via_sha256(upload_dir: Path) -> None:
     )
     enqueued: list[tuple[str, str]] = []
     ctx = _orchestrator_ctx(
-        merchants=merchants, repo=repo, audit=audit, close=close,
-        upload_dir=upload_dir, enqueue_calls=enqueued,
+        merchants=merchants,
+        repo=repo,
+        audit=audit,
+        close=close,
+        upload_dir=upload_dir,
+        enqueue_calls=enqueued,
     )
 
     summary = await process_close_attachments(ctx, "lead_abc", "webhook")
@@ -1813,7 +1838,10 @@ async def test_orchestrator_caps_at_15_without_override(
     atts = [_attachment(f"f_{i:02d}", f"stmt_{i:02d}.pdf") for i in range(17)]
     close = _FakeCloseClient(attachments=atts)
     ctx = _orchestrator_ctx(
-        merchants=merchants, repo=repo, audit=audit, close=close,
+        merchants=merchants,
+        repo=repo,
+        audit=audit,
+        close=close,
         upload_dir=upload_dir,
     )
 
@@ -1827,9 +1855,7 @@ async def test_orchestrator_caps_at_15_without_override(
     actions = [e["action"] for e in audit.entries]
     assert "close.orchestration.capped" in actions
     assert "close.orchestration.warn_high_attachment_count" in actions
-    capped_row = next(
-        e for e in audit.entries if e["action"] == "close.orchestration.capped"
-    )
+    capped_row = next(e for e in audit.entries if e["action"] == "close.orchestration.capped")
     assert capped_row["details"]["deferred_count"] == 2
 
 
@@ -1845,12 +1871,18 @@ async def test_orchestrator_override_cap_processes_all(
     atts = [_attachment(f"f_{i:02d}", f"stmt_{i:02d}.pdf") for i in range(17)]
     close = _FakeCloseClient(attachments=atts)
     ctx = _orchestrator_ctx(
-        merchants=merchants, repo=repo, audit=audit, close=close,
+        merchants=merchants,
+        repo=repo,
+        audit=audit,
+        close=close,
         upload_dir=upload_dir,
     )
 
     summary = await process_close_attachments(
-        ctx, "lead_abc", "rescan", override_cap=True,
+        ctx,
+        "lead_abc",
+        "rescan",
+        override_cap=True,
     )
 
     assert summary["fetched"] == 17
@@ -1874,17 +1906,21 @@ async def test_orchestrator_trigger_label_propagates(
         attachments=[_attachment("f1", "stmt.pdf")],
     )
     ctx = _orchestrator_ctx(
-        merchants=merchants, repo=repo, audit=audit, close=close,
+        merchants=merchants,
+        repo=repo,
+        audit=audit,
+        close=close,
         upload_dir=upload_dir,
     )
 
     summary = await process_close_attachments(
-        ctx, "lead_abc", "rescan", actor_email="filip@commerafunding.com",
+        ctx,
+        "lead_abc",
+        "rescan",
+        actor_email="filip@commerafunding.com",
     )
 
     assert summary["trigger"] == "rescan"
-    fetched = next(
-        e for e in audit.entries if e["action"] == "close.attachment.fetched"
-    )
+    fetched = next(e for e in audit.entries if e["action"] == "close.attachment.fetched")
     assert fetched["details"]["trigger"] == "rescan"
     assert fetched["actor_email"] == "filip@commerafunding.com"

@@ -86,6 +86,7 @@ from aegis.parser.processor import (
     detect_processor,
     run_processor_pipeline,
 )
+from aegis.parser.shadow_audit import shadow_audit_payloads
 from aegis.parser.tampering import TamperingEvaluation
 from aegis.pdf_store import (
     PdfStoreRepository,
@@ -303,6 +304,22 @@ async def parse_document(
             "flag_count": len(result.all_flags),
         },
     )
+
+    # Shadow-flag audit emission. CLAUDE.md "Shadow-first for ALL new
+    # scoring rules" requires audit-log telemetry for every shadow check
+    # before the live-flip decision. The deterministic validate gate
+    # emits shadow flags as strings on ValidationResult.warnings (no DB
+    # in scope there by design); we translate + persist here, where
+    # `audit` and `document_id` are. Audit-write failure propagates per
+    # the existing pattern.
+    for shadow_payload in shadow_audit_payloads(list(result.validation.warnings)):
+        audit.record(
+            actor="worker",
+            action=shadow_payload.action,
+            subject_type="document",
+            subject_id=document_id,
+            details=shadow_payload.details,
+        )
 
     # U15 — cross-statement / related-account detection. Runs
     # immediately after persist_parse_result so the just-stored
