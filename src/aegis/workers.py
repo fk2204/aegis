@@ -55,7 +55,6 @@ from aegis.close.field_map import (
 )
 from aegis.config import get_settings
 from aegis.crypto import CryptoConfigError, current_key_version, encrypt_pdf
-from aegis.funders.monitor import run_funder_monitor_cron
 from aegis.funders.replies import (
     FunderReplyError,
     FunderReplyPayload,
@@ -2136,21 +2135,19 @@ class WorkerSettings:
     #   * 09:00 UTC daily — renewal reminder: one Close task per renewing
     #     merchant per calendar month. Operator's daily start; the
     #     task lands in the morning queue.
-    #   * 09:00 UTC Monday — funder folder monitor. Scans the operator's
-    #     guidelines folder (env: AEGIS_FUNDER_MONITOR_PATH) for new or
-    #     changed PDFs/PNGs and runs the extract + merge pipeline. On
-    #     prod the path is typically unmounted → graceful skip with a
-    #     ``funder_monitor.path_unavailable`` audit row, no other work.
+    #
+    # NOT registered here: the funder folder monitor. The OneDrive
+    # guidelines folder lives on the operator's Windows box and isn't
+    # mounted on the Hetzner prod box, so running it as a server arq
+    # cron would only ever produce graceful-skip audit rows. It now
+    # runs as a Windows Task Scheduler job — see
+    # ``deploy/windows/INSTALL_FUNDER_MONITOR.md``. The cron entrypoint
+    # ``aegis.funders.monitor.run_funder_monitor_cron`` is kept in
+    # place so a future Windows-side arq worker could register it
+    # without a code change.
     cron_jobs = (
         cron(run_archive_cron, hour=2, minute=0, run_at_startup=False),
         cron(run_renewal_reminder_cron, hour=9, minute=0, run_at_startup=False),
-        cron(
-            run_funder_monitor_cron,
-            weekday=0,  # Monday (arq follows ISO 0..6 = Mon..Sun)
-            hour=9,
-            minute=0,
-            run_at_startup=False,
-        ),
     )
     on_startup = _on_startup
     on_shutdown = _on_shutdown
