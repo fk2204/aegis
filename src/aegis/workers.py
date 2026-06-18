@@ -55,6 +55,7 @@ from aegis.close.field_map import (
 )
 from aegis.config import get_settings
 from aegis.crypto import CryptoConfigError, current_key_version, encrypt_pdf
+from aegis.funders.monitor import run_funder_monitor_cron
 from aegis.funders.replies import (
     FunderReplyError,
     FunderReplyPayload,
@@ -2131,13 +2132,25 @@ class WorkerSettings:
 
     functions = (parse_document, process_funder_reply, process_close_attachments)
     # Crons:
-    #   * 02:00 UTC — audit retention archiver (master plan §17).
-    #   * 09:00 UTC — renewal reminder: one Close task per renewing
+    #   * 02:00 UTC daily — audit retention archiver (master plan §17).
+    #   * 09:00 UTC daily — renewal reminder: one Close task per renewing
     #     merchant per calendar month. Operator's daily start; the
     #     task lands in the morning queue.
+    #   * 09:00 UTC Monday — funder folder monitor. Scans the operator's
+    #     guidelines folder (env: AEGIS_FUNDER_MONITOR_PATH) for new or
+    #     changed PDFs/PNGs and runs the extract + merge pipeline. On
+    #     prod the path is typically unmounted → graceful skip with a
+    #     ``funder_monitor.path_unavailable`` audit row, no other work.
     cron_jobs = (
         cron(run_archive_cron, hour=2, minute=0, run_at_startup=False),
         cron(run_renewal_reminder_cron, hour=9, minute=0, run_at_startup=False),
+        cron(
+            run_funder_monitor_cron,
+            weekday=0,  # Monday (arq follows ISO 0..6 = Mon..Sun)
+            hour=9,
+            minute=0,
+            run_at_startup=False,
+        ),
     )
     on_startup = _on_startup
     on_shutdown = _on_shutdown

@@ -161,6 +161,16 @@ class Settings(BaseSettings):
     # corpus + token-cost data validates the per-deal savings.
     aegis_parser_page_routing: bool = False
 
+    # Weekly funder folder monitor (cron: every Monday 09:00 UTC).
+    # When set, ``run_funder_monitor_cron`` walks this folder recursively,
+    # SHA-256s every PDF/PNG, and runs the extract + merge pipeline on any
+    # file whose hash doesn't match a funder's stored
+    # ``guidelines_source_pdf_hash``. Unset on prod by design — the folder
+    # lives on the operator's Windows OneDrive sync; the cron audits
+    # ``funder_monitor.path_unavailable`` and returns 0 work when not
+    # configured or unmounted, so prod ticks become free no-ops.
+    aegis_funder_monitor_path: str | None = None
+
     # Tampering composition rule mode. The rule itself
     # (``aegis.parser.tampering.evaluate_tampering``) always runs and
     # always writes an audit row when it fires:
