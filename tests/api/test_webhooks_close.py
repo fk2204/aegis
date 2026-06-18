@@ -491,9 +491,9 @@ def test_webhook_enqueues_orchestration_after_merchant_upsert(
     assert resp.status_code == 204, resp.text
 
     pending = getattr(
-        client.app.state,
+        client.app.state,  # type: ignore[attr-defined]
         "pending_close_orchestration_jobs",
-        [],  # type: ignore[attr-defined]
+        [],
     )
     assert pending == [
         {
@@ -554,9 +554,9 @@ def test_webhook_filtered_event_does_not_enqueue(
     assert resp.status_code == 204
 
     pending = getattr(
-        client.app.state,
+        client.app.state,  # type: ignore[attr-defined]
         "pending_close_orchestration_jobs",
-        [],  # type: ignore[attr-defined]
+        [],
     )
     assert pending == []
     actions = [e["action"] for e in audit.entries]
@@ -624,9 +624,9 @@ def test_lead_updated_with_existing_merchant_refreshes_and_enqueues(
 
     # The attachment orchestration was enqueued with the lead-updated trigger.
     pending = getattr(
-        client.app.state,
+        client.app.state,  # type: ignore[attr-defined]
         "pending_close_orchestration_jobs",
-        [],  # type: ignore[attr-defined]
+        [],
     )
     assert pending == [
         {
@@ -669,9 +669,9 @@ def test_lead_updated_with_no_merchant_creates_one(
     actions = [e["action"] for e in audit.entries]
     assert "close.merchant.created" in actions
     pending = getattr(
-        client.app.state,
+        client.app.state,  # type: ignore[attr-defined]
         "pending_close_orchestration_jobs",
-        [],  # type: ignore[attr-defined]
+        [],
     )
     assert len(pending) == 1
     assert pending[0]["trigger"] == "webhook_lead_updated"
@@ -705,9 +705,9 @@ def test_lead_updated_idempotent_redelivery_dedups_attachment_path(
     assert resp2.status_code == 204
 
     pending = getattr(
-        client.app.state,
+        client.app.state,  # type: ignore[attr-defined]
         "pending_close_orchestration_jobs",
-        [],  # type: ignore[attr-defined]
+        [],
     )
     # Two enqueues — the SHA-256 dedup inside process_close_attachments
     # is what makes this safe, not the route itself.
