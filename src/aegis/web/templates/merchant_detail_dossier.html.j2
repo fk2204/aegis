@@ -168,13 +168,11 @@
   {% endif %}
 </header>
 
-{# Operator notes panel — Feature C (2026-06-18 redesign). Full-width
-   block positioned between the merchant name (in the masthead above)
-   and the chips section / sheet (below). Renders the editor + the list
-   of timestamped note cards via the shared partial. Inputs come from
-   the dossier route's TemplateResponse: ``operator_notes`` (list,
-   newest-first) + ``operator_note_max_chars`` (char cap mirror). #}
-{% include "_merchant_notes_block.html.j2" %}
+{# Operator notes panel was previously positioned here (between the
+   masthead and the sheet). Moved to the bottom of ``<main>`` below in
+   the 2026-06-18 audit-log removal — the dossier reads top-to-bottom as
+   verdict → cashflow → routing → submissions → operator notes, with
+   the operator-curated notes as the closing block. #}
 
 {# === sheet === #}
 <div class="sheet">
@@ -190,7 +188,7 @@
       <a href="#profile"><span class="n">§ 4¾</span> Merchant profile</a>
       <a href="#disposition"><span class="n">§ 5</span> Disposition</a>
       {% if funder_note_submissions %}<a href="#submissions"><span class="n">§ 5½</span> Funder submissions</a>{% endif %}
-      {% if history %}<a href="#audit"><span class="n">§ 6</span> Audit log</a>{% endif %}
+      <a href="#operator-notes"><span class="n">§ 6</span> Operator notes</a>
     </nav>
 
     <div class="compliance">
@@ -1308,41 +1306,16 @@
       </section>
     {% endif %}
 
-    {# ============== § 6 AUDIT LOG ============== #}
-    {% if history %}
-      <section id="audit" class="section">
-        <header>
-          <span class="n">§ 6</span>
-          <h2>Audit <em>log</em></h2>
-          <span class="footnote">last {{ history|length }} event{{ '' if history|length == 1 else 's' }} · newest first</span>
-        </header>
-        {# R4.8 (2026-06-09): table-scroll wrapper — audit log has 4
-           columns of which Actor/Details may carry long strings. #}
-        <div class="table-scroll">
-        <table class="audit-ledger">
-          <thead>
-            <tr><th style="width:170px">When</th><th style="width:120px">Actor</th><th style="width:220px">Action</th><th>Details</th></tr>
-          </thead>
-          <tbody>
-            {% for h in history %}
-              <tr>
-                <td class="when">{{ (h.created_at or '—')|string|truncate(19, True, '') }}</td>
-                <td>{{ h.actor }}</td>
-                <td class="action">{{ h.action }}</td>
-                <td class="details">
-                  {% if h.details %}
-                    {% for k, v in h.details.items() %}
-                      {% if v is not none %}{{ k }}={{ v|string|truncate(60, True, '…') }}{% if not loop.last %} · {% endif %}{% endif %}
-                    {% endfor %}
-                  {% else %}—{% endif %}
-                </td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        </div>
-      </section>
-    {% endif %}
+    {# ============== § 6 OPERATOR NOTES ============== #}
+    {# Moved from the top-of-dossier slot (above the chips) to the
+       bottom of main on 2026-06-18, replacing the audit-log section.
+       Audit-log was internal telemetry — operators never read it on
+       the dossier; it stays on the Admin / Audit Log surface. Reads
+       its inputs from the route's TemplateResponse: ``operator_notes``
+       (list, newest-first) + ``operator_note_max_chars``. #}
+    <section id="operator-notes" class="section">
+      {% include "_merchant_notes_block.html.j2" %}
+    </section>
 
   </main>
 </div>

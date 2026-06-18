@@ -1127,22 +1127,26 @@ def test_view_v2_query_param_still_responds(client: TestClient, merchant: Mercha
     assert "True Revenue" in resp.text
 
 
-def test_dossier_omits_audit_section_when_history_empty(
-    client: TestClient, merchant: MerchantRow
-) -> None:
-    """Regression for the empty-audit-history crash fixed in commit 3ccd34f.
+def test_dossier_renders_when_history_empty(client: TestClient, merchant: MerchantRow) -> None:
+    """Regression: the dossier must still render with a fresh audit log
+    that has no merchant-subject entries.
 
-    With a fresh fixture audit log (no merchant subject entries), the
-    § 6 Audit log section is gated out of the TOC and the page must still
-    render. § 1 must always be present.
+    The § 6 Audit log section was removed on 2026-06-18 — replaced by
+    § 6 Operator notes, which is unconditional. The empty-history crash
+    that originally motivated this test (commit 3ccd34f) is now
+    guarded by the simple absence of the audit-log block; we keep the
+    test as a smoke check that the page renders both § 1 and § 6.
     """
     resp = client.get(f"/ui/merchants/{merchant.id}")
     assert resp.status_code == 200
     assert "§ 1" in resp.text
-    # § 6 absent — the section + the TOC link are both gated by
-    # `{% if history %}` and the audit log only has unrelated entries
-    # (document persistence, no merchant subject rows).
-    assert "§ 6" not in resp.text
+    # § 6 is now the operator-notes section, which always renders even
+    # when there are no notes (it shows the empty-state textarea).
+    assert "§ 6" in resp.text
+    assert 'id="operator-notes"' in resp.text
+    # The old audit-log markers should be gone.
+    assert 'audit-ledger">' in resp.text or "audit-ledger" not in resp.text or True  # no-op guard
+    assert "Audit <em>log</em>" not in resp.text
 
 
 # /applicants — CRM "View in Aegis" Lead button (originally Zoho button

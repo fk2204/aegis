@@ -997,7 +997,12 @@
   margin-top: 14px;
 }
 
-/* ============ audit ledger ============ */
+/* ============ ledger table (statements + profile + submissions) ============
+   Class name dates back to the audit-log section that was removed
+   2026-06-18; the table style is generic and the same rules drive the
+   statements ledger, the merchant-profile key/value table, and the
+   funder-submissions table. Kept under the legacy ``.audit-ledger`` name
+   to avoid churning three unrelated templates for a cosmetic rename. */
 .dossier-page .audit-ledger {
   width: 100%;
   border-collapse: collapse;
@@ -1410,11 +1415,12 @@
     font-size: 16px;
   }
 
-  /* --- Audit-ledger table cells — slightly larger floor --------- */
+  /* --- .audit-ledger tables (statements / profile / submissions) -
+       slightly larger floor for phone legibility ------------------- */
   .dossier-page .audit-ledger,
   .dossier-page .audit-ledger td,
   .dossier-page .audit-ledger th {
-    font-size: 12px;                /* desktop 11px; bump for phone legibility */
+    font-size: 12px;
   }
 
   /* --- Statusbar — wrap so timestamp doesn't push items off ----- */

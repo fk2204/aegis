@@ -264,18 +264,15 @@ def test_dossier_renders_existing_notes_as_cards_newest_first(
     assert "2 notes on file" in html
 
 
-def test_notes_panel_renders_below_name_and_above_sheet(
+def test_notes_panel_renders_at_bottom_of_dossier_main(
     client: TestClient,
     merchant_repo: InMemoryMerchantRepository,
 ) -> None:
-    """The dossier contract for Feature C: the operator notes panel sits
-    between the merchant name (in the masthead) and the chips section
-    (inside ``<div class="sheet">``). The sheet div is the stable anchor
-    that always renders — the document-on-file chips only appear once a
-    document has been uploaded and the score panel has rendered, so the
-    sheet container is what we lock against. Notes block landing
-    BETWEEN the name and the sheet ensures it sits above every chip on
-    the dossier.
+    """Post-2026-06-18 dossier contract: the operator notes panel is the
+    LAST section in ``<main>``, replacing the removed audit-log block.
+    It sits below the verdict section (the first ``<section>`` in main)
+    and immediately before the closing ``</main>`` tag, wrapped in a
+    ``<section id="operator-notes">``.
     """
     m = _seed_merchant(merchant_repo)
     resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
@@ -285,11 +282,19 @@ def test_notes_panel_renders_below_name_and_above_sheet(
     pos_notes = html.find('id="merchant-notes-block"')
     pos_sheet = html.find('<div class="sheet">')
     pos_name = html.find('class="title">Notes Test LLC')
+    pos_verdict = html.find('id="verdict"')
+    pos_main_close = html.find("</main>")
+    pos_operator_notes_section = html.find('id="operator-notes"')
 
     assert pos_notes != -1, "notes block missing from dossier"
     assert pos_sheet != -1, "sheet container missing — template drift?"
     assert pos_name != -1, "merchant name h1 missing — template drift?"
+    assert pos_verdict != -1, "verdict section missing — template drift?"
+    assert pos_main_close != -1, "main closing tag missing — template drift?"
+    assert pos_operator_notes_section != -1, "operator-notes section wrapper missing"
 
-    # Notes panel sits BELOW the merchant name and ABOVE the sheet
-    # container (which holds every chip on the page).
-    assert pos_name < pos_notes < pos_sheet
+    # The notes block now sits AFTER the verdict section (i.e. inside
+    # main, below the chips/score) and BEFORE the closing main tag.
+    assert pos_name < pos_sheet < pos_verdict < pos_notes < pos_main_close
+    # It's wrapped in the ``#operator-notes`` section.
+    assert pos_operator_notes_section < pos_notes
