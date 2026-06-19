@@ -55,6 +55,9 @@ from aegis.close.field_map import (
 )
 from aegis.config import get_settings
 from aegis.crypto import CryptoConfigError, current_key_version, encrypt_pdf
+from aegis.funder_note_submissions.repository import (
+    FunderNoteSubmissionRepository,
+)
 from aegis.funders.replies import (
     FunderReplyError,
     FunderReplyPayload,
@@ -68,13 +71,14 @@ from aegis.funders.reply_extract import (
     FunderReplyExtractionError,
     extract_funder_reply,
 )
+from aegis.funders.repository import FunderNotFoundError, FunderRepository
 from aegis.llm import BedrockClient, LLMClient
 from aegis.logger import configure_logging, get_logger
 from aegis.merchants.cross_statement_pipeline import (
     run_cross_statement_detection,
 )
 from aegis.merchants.renewal_reminder import run_renewal_reminder_cron
-from aegis.merchants.repository import MerchantRepository
+from aegis.merchants.repository import MerchantNotFoundError, MerchantRepository
 from aegis.merchants.shadow_signals import (
     MerchantShadowSignalRepository,
     record_shadow_signal,
@@ -2126,6 +2130,194 @@ async def process_close_attachments(
     return summary
 
 
+_SUBMISSION_REMINDER_STALE_AFTER = timedelta(hours=24)
+
+
+def run_submission_reminder_pass(
+    *,
+    audit: AuditLog,
+    submissions: FunderNoteSubmissionRepository,
+    merchants: MerchantRepository,
+    funders: FunderRepository,
+    close_client: CloseClient,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Post one Close task per stale pending funder-note submission.
+
+    A submission is "stale" when ``status='pending'`` AND ``submitted_at``
+    is older than 24h. Dedupe key is a ``close.task.submission_reminder``
+    audit row keyed on the submission id — once a reminder fires it
+    NEVER fires again for that submission, regardless of how long the
+    funder takes to respond. (The operator clears the task in Close; if
+    they want a second nudge they re-submit, which creates a new row.)
+
+    Skip conditions:
+      * Merchant lookup raises ``MerchantNotFoundError`` (concurrent
+        delete) → structured log + skip.
+      * Funder lookup raises ``FunderNotFoundError`` (catalog cleanup) →
+        structured log + skip.
+      * Merchant has no ``close_lead_id`` → silent skip (no Lead to drop
+        the task on).
+      * Prior ``close.task.submission_reminder`` audit row for this
+        submission_id → silent skip (duplicate guard).
+
+    Close API errors on the task POST are audited as
+    ``close.task.submission_reminder_failed`` but do NOT raise — one bad
+    Lead must not abort the whole cron pass (same posture as the renewal
+    reminder).
+    """
+    now = now or datetime.now(UTC)
+    threshold = now - _SUBMISSION_REMINDER_STALE_AFTER
+    today = now.date()
+
+    rows = submissions.list_pending_older_than(threshold)
+    summary = {
+        "considered": len(rows),
+        "created": 0,
+        "skipped_no_lead": 0,
+        "skipped_dup": 0,
+        "skipped_missing_merchant": 0,
+        "skipped_missing_funder": 0,
+        "failed": 0,
+    }
+
+    for row in rows:
+        try:
+            merchant = merchants.get(row.merchant_id)
+        except MerchantNotFoundError:
+            _log.warning(
+                "submission_reminder.skip_missing_merchant submission_id=%s merchant_id=%s",
+                row.id,
+                row.merchant_id,
+            )
+            summary["skipped_missing_merchant"] += 1
+            continue
+
+        try:
+            funder = funders.get(row.funder_id)
+        except FunderNotFoundError:
+            _log.warning(
+                "submission_reminder.skip_missing_funder submission_id=%s funder_id=%s",
+                row.id,
+                row.funder_id,
+            )
+            summary["skipped_missing_funder"] += 1
+            continue
+
+        if not merchant.close_lead_id:
+            summary["skipped_no_lead"] += 1
+            continue
+
+        if _has_prior_submission_reminder(audit, row.id):
+            summary["skipped_dup"] += 1
+            continue
+
+        text = (
+            f"Log funder response — {merchant.business_name} submitted to "
+            f"{funder.name}. Was it approved, declined, or countered?"
+        )
+        try:
+            response = close_client.create_task(
+                lead_id=merchant.close_lead_id,
+                text=text,
+                due_date=today,
+            )
+        except CloseError as exc:
+            summary["failed"] += 1
+            audit.record(
+                actor="cron.submission_reminder",
+                action="close.task.submission_reminder_failed",
+                subject_type="funder_note_submission",
+                subject_id=row.id,
+                details={
+                    "submission_id": str(row.id),
+                    "funder_id": str(row.funder_id),
+                    "close_lead_id": merchant.close_lead_id,
+                    "status_code": exc.status_code,
+                    "error": str(exc)[:200],
+                },
+            )
+            continue
+
+        close_task_id = response.get("id") if isinstance(response, dict) else None
+        audit.record(
+            actor="cron.submission_reminder",
+            action="close.task.submission_reminder",
+            subject_type="funder_note_submission",
+            subject_id=row.id,
+            details={
+                "submission_id": str(row.id),
+                "funder_id": str(row.funder_id),
+                "close_lead_id": merchant.close_lead_id,
+                "close_task_id": close_task_id,
+            },
+        )
+        summary["created"] += 1
+
+    return summary
+
+
+def _has_prior_submission_reminder(audit: AuditLog, submission_id: UUID) -> bool:
+    """True if any ``close.task.submission_reminder`` audit row already
+    exists for ``submission_id`` — used as the duplicate guard.
+
+    The check uses ``subject_type='funder_note_submission'`` +
+    ``subject_id=submission_id`` so the lookup is bounded even when an
+    operator accumulates thousands of audit rows site-wide.
+    """
+    rows = audit.list_for_subject(
+        subject_type="funder_note_submission",
+        subject_id=submission_id,
+        action="close.task.submission_reminder",
+        limit=10,
+    )
+    sid = str(submission_id)
+    return any((r.get("details") or {}).get("submission_id") == sid for r in rows)
+
+
+async def run_submission_reminder_cron(ctx: dict[str, Any]) -> dict[str, int]:
+    """arq daily cron entrypoint.
+
+    Reads dependencies from the arq context (tests inject in-memory
+    fakes) and falls back to the process-wide DI when not present —
+    the same pattern ``run_renewal_reminder_cron`` and
+    ``run_archive_cron`` use.
+    """
+    from aegis.api.deps import (
+        get_audit,
+        get_close_client,
+        get_funder_note_submission_repository,
+        get_funder_repository,
+        get_merchant_repository,
+    )
+
+    audit = ctx.get("audit") or get_audit()
+    submissions = ctx.get("submissions") or get_funder_note_submission_repository()
+    merchants = ctx.get("merchants") or get_merchant_repository()
+    funders = ctx.get("funders") or get_funder_repository()
+    close_client = ctx.get("close_client") or get_close_client()
+
+    summary = run_submission_reminder_pass(
+        audit=audit,
+        submissions=submissions,
+        merchants=merchants,
+        funders=funders,
+        close_client=close_client,
+    )
+    _log.info(
+        "submission_reminder.run considered=%s created=%s skipped_no_lead=%s "
+        "skipped_dup=%s skipped_missing_merchant=%s skipped_missing_funder=%s failed=%s",
+        summary["considered"],
+        summary["created"],
+        summary["skipped_no_lead"],
+        summary["skipped_dup"],
+        summary["skipped_missing_merchant"],
+        summary["skipped_missing_funder"],
+        summary["failed"],
+    )
+    return summary
+
+
 class WorkerSettings:
     """arq config. Reads concurrency + timeout from env via Settings."""
 
@@ -2135,6 +2327,10 @@ class WorkerSettings:
     #   * 09:00 UTC daily — renewal reminder: one Close task per renewing
     #     merchant per calendar month. Operator's daily start; the
     #     task lands in the morning queue.
+    #   * 17:00 UTC daily — submission reminder: one Close task per
+    #     pending ``funder_note_submission`` that's >24h old, deduped
+    #     forever per submission. Late-day fire so the operator gets
+    #     the nudge for everything submitted earlier in their day.
     #
     # NOT registered here: the funder folder monitor. The OneDrive
     # guidelines folder lives on the operator's Windows box and isn't
@@ -2148,6 +2344,7 @@ class WorkerSettings:
     cron_jobs = (
         cron(run_archive_cron, hour=2, minute=0, run_at_startup=False),
         cron(run_renewal_reminder_cron, hour=9, minute=0, run_at_startup=False),
+        cron(run_submission_reminder_cron, hour=17, minute=0, run_at_startup=False),
     )
     on_startup = _on_startup
     on_shutdown = _on_shutdown
@@ -2197,4 +2394,6 @@ __all__ = [
     "parse_document",
     "process_close_attachments",
     "process_funder_reply",
+    "run_submission_reminder_cron",
+    "run_submission_reminder_pass",
 ]

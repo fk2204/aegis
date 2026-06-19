@@ -85,6 +85,19 @@ class FunderNoteSubmissionRepository(Protocol):
         Powers the Sprint 3 funder-performance page.
         """
 
+    def list_pending_older_than(
+        self,
+        threshold: datetime,
+    ) -> list[FunderNoteSubmissionRow]:
+        """Return ``status='pending'`` submissions whose ``submitted_at``
+        is strictly older than ``threshold``, oldest-first.
+
+        Powers ``run_submission_reminder_cron`` — the operator nudge for
+        stale funder responses. Oldest-first ordering puts the most
+        overdue submissions at the head of the pass so a per-run task
+        budget (if added later) catches the worst offenders first.
+        """
+
     def list_recent(
         self,
         *,
@@ -169,6 +182,16 @@ class InMemoryFunderNoteSubmissionRepository:
         rows = [r for r in self._by_id.values() if r.funder_id == funder_id]
         rows.sort(key=lambda r: r.submitted_at, reverse=True)
         return rows[:limit]
+
+    def list_pending_older_than(
+        self,
+        threshold: datetime,
+    ) -> list[FunderNoteSubmissionRow]:
+        rows = [
+            r for r in self._by_id.values() if r.status == "pending" and r.submitted_at < threshold
+        ]
+        rows.sort(key=lambda r: r.submitted_at)
+        return rows
 
     def list_recent(
         self,
@@ -308,6 +331,21 @@ class SupabaseFunderNoteSubmissionRepository:
             .eq("funder_id", str(funder_id))
             .order("submitted_at", desc=True)
             .limit(limit)
+            .execute()
+        )
+        return [_row_from_dict(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    def list_pending_older_than(
+        self,
+        threshold: datetime,
+    ) -> list[FunderNoteSubmissionRow]:
+        result = (
+            get_supabase()
+            .table("funder_note_submissions")
+            .select("*")
+            .eq("status", "pending")
+            .lt("submitted_at", threshold.isoformat())
+            .order("submitted_at", desc=False)
             .execute()
         )
         return [_row_from_dict(cast(dict[str, Any], r)) for r in (result.data or [])]
