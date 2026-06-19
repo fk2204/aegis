@@ -200,6 +200,25 @@ class BedrockClient:
         )
         return _first_json_object(_text_blocks(response))
 
+    def generate_text(self, prompt: str, *, max_tokens: int = 512) -> str:
+        """Send a plain text prompt and return the model's response text.
+
+        Non-streaming. No JSON parsing — caller gets the raw concatenated
+        text blocks. Used for short, free-form generation tasks
+        (funder-submission narrative, etc.) where the response is a few
+        sentences and doesn't need structured-output extraction.
+
+        Does NOT retry. Callers that need retry semantics wrap with their
+        own tenacity decorator; the funder-narrative path returns empty
+        on any failure rather than blocking the dossier render.
+        """
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return _text_blocks(response)
+
     def invoke_with_web_search(self, prompt: str, *, max_uses: int = 5) -> str:
         """Send the prompt with the ``web_search_20250305`` server tool enabled.
 

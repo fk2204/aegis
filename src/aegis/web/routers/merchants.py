@@ -1069,6 +1069,33 @@ async def merchant_submit_to_funder(
         days_negative=score_input.days_negative,
     )
 
+    # Prepend the Bedrock-generated funder-facing narrative when
+    # available. Empty string when Bedrock was unavailable — note
+    # falls back to the structured-only format. The narrative is the
+    # same one the dossier renders in the Funder summary card, so
+    # operators see what gets posted before clicking Submit.
+    from aegis.scoring_v2.deal_summary import (
+        CloseContext as _CloseCtx,
+    )
+    from aegis.scoring_v2.deal_summary import (
+        generate_funder_narrative as _gen_narrative,
+    )
+
+    narrative = _gen_narrative(
+        merchant=merchant,
+        score_result=score_result,
+        mca_stack=mca_stack,
+        balance_health=balance_health,
+        offer=offer,
+        close_context=_CloseCtx(
+            lead_description=merchant.close_lead_description,
+            notes_summary=merchant.close_notes_summary,
+            call_transcripts=merchant.close_call_transcripts,
+        ),
+    )
+    if narrative:
+        note_text = f"{narrative}\n\n{note_text}"
+
     try:
         close_response = close_client.post_note(
             merchant.close_lead_id,
@@ -2680,19 +2707,37 @@ async def merchant_detail(
     # scoreable (no document on file, no balance_health, no MCA stack);
     # the template renders an empty-state in that branch.
     deal_summary = None
+    funder_narrative = ""
     if score_result is not None and balance_health is not None and mca_stack is not None:
-        from aegis.scoring_v2.deal_summary import CloseContext, generate_deal_summary
+        from aegis.scoring_v2.deal_summary import (
+            CloseContext,
+            generate_deal_summary,
+            generate_funder_narrative,
+        )
 
+        _close_ctx = CloseContext(
+            lead_description=merchant.close_lead_description,
+            notes_summary=merchant.close_notes_summary,
+            call_transcripts=merchant.close_call_transcripts,
+        )
         deal_summary = generate_deal_summary(
             merchant=merchant,
             score_result=score_result,
             mca_stack=mca_stack,
             balance_health=balance_health,
-            close_context=CloseContext(
-                lead_description=merchant.close_lead_description,
-                notes_summary=merchant.close_notes_summary,
-                call_transcripts=merchant.close_call_transcripts,
-            ),
+            close_context=_close_ctx,
+        )
+        # Bedrock-generated 3-4 sentence funder-facing narrative. Empty
+        # string when Bedrock is unavailable — the template renders a
+        # "narrative not available" state and the Submit path falls
+        # back to format_funder_note alone.
+        funder_narrative = generate_funder_narrative(
+            merchant=merchant,
+            score_result=score_result,
+            mca_stack=mca_stack,
+            balance_health=balance_health,
+            offer=offer,
+            close_context=_close_ctx,
         )
 
     return templates.TemplateResponse(
@@ -2733,6 +2778,7 @@ async def merchant_detail(
             "operator_notes": operator_notes,
             "operator_note_max_chars": MERCHANT_NOTE_MAX_CHARS,
             "deal_summary": deal_summary,
+            "funder_narrative": funder_narrative,
             "doc_checklist": {
                 "voided_check_on_file": merchant.voided_check_on_file,
                 "drivers_license_on_file": merchant.drivers_license_on_file,

@@ -195,6 +195,40 @@
   </section>
 {% endif %}
 
+{# ============== Funder-ready narrative (2026-06-18) ============== #}
+{# Bedrock-generated 3-4 sentence underwriter-tone paragraph that the
+   team can copy-paste into a funder Slack / call. Sits directly below
+   the deal-summary card. The same string is prepended to the Close
+   Note that posts when the operator clicks Submit-to-funder.
+
+   Empty ``funder_narrative`` means Bedrock was unavailable when the
+   dossier rendered — surface a small empty-state hint so the operator
+   can re-load the dossier later instead of wondering whether the
+   section is just missing. #}
+{% if deal_summary %}
+  <section class="funder-narrative-card" data-test-id="funder-narrative-card">
+    <header class="funder-narrative-header">
+      <strong>Funder summary</strong>
+      {% if funder_narrative %}
+        <button type="button"
+                class="funder-narrative-copy"
+                data-test-id="funder-narrative-copy"
+                onclick="(function(btn){ const el=document.querySelector('[data-funder-narrative-body]'); if(!el)return; navigator.clipboard.writeText(el.innerText).then(function(){ const o=btn.textContent; btn.textContent='Copied ✓'; setTimeout(function(){btn.textContent=o;},1500); }); })(this);">
+          Copy
+        </button>
+      {% endif %}
+    </header>
+    {% if funder_narrative %}
+      <p class="funder-narrative-body"
+         data-test-id="funder-narrative-body"
+         data-funder-narrative-body>{{ funder_narrative }}</p>
+    {% else %}
+      <p class="funder-narrative-empty"
+         data-test-id="funder-narrative-empty">Narrative not available right now — reload the dossier to try generation again.</p>
+    {% endif %}
+  </section>
+{% endif %}
+
 {# === sheet === #}
 <div class="sheet">
 

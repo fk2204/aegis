@@ -281,3 +281,125 @@ def test_flags_are_deduplicated() -> None:
         close_context=CloseContext(),
     )
     assert summary.flags.count("active_lawsuits") == 1
+
+
+# ---------------------------------------------------------------------------
+# generate_funder_narrative
+# ---------------------------------------------------------------------------
+
+
+from aegis.scoring_v2.deal_summary import generate_funder_narrative  # noqa: E402
+
+
+class _StubBedrock:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.calls = 0
+        self.last_prompt: str | None = None
+
+    def generate_text(self, prompt: str) -> str:
+        self.calls += 1
+        self.last_prompt = prompt
+        return self.text
+
+
+class _RaisingBedrock:
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+    def generate_text(self, prompt: str) -> str:
+        raise self.exc
+
+
+def test_funder_narrative_happy_path() -> None:
+    client = _StubBedrock(
+        "Acme Inc. is a 4-year-old MA restaurant with $12K ADB and no "
+        "existing MCAs. Cashflow profile is clean and the integrity "
+        "score is strong; we recommend a $50K advance."
+    )
+    text = generate_funder_narrative(
+        merchant=_make_merchant(business_name="Acme Inc."),
+        score_result=_score(),
+        mca_stack=_empty_mca_stack(),
+        balance_health=_clean_balance_health(),
+        offer=None,
+        close_context=CloseContext(),
+        client=client,
+    )
+    assert "Acme Inc." in text
+    assert client.calls == 1
+
+
+def test_funder_narrative_empty_business_name_short_circuits() -> None:
+    """Cheap MerchantRow construction with empty business_name fails
+    Pydantic validation; we bypass via model_copy on a valid row."""
+    merchant = _make_merchant()
+    blank = merchant.model_copy(update={"business_name": "   "})
+    client = _StubBedrock("never called")
+    text = generate_funder_narrative(
+        merchant=blank,
+        score_result=_score(),
+        mca_stack=_empty_mca_stack(),
+        balance_health=_clean_balance_health(),
+        offer=None,
+        close_context=CloseContext(),
+        client=client,
+    )
+    assert text == ""
+    assert client.calls == 0
+
+
+def test_funder_narrative_bedrock_failure_returns_empty() -> None:
+    client = _RaisingBedrock(RuntimeError("bedrock_unavailable"))
+    text = generate_funder_narrative(
+        merchant=_make_merchant(),
+        score_result=_score(),
+        mca_stack=_empty_mca_stack(),
+        balance_health=_clean_balance_health(),
+        offer=None,
+        close_context=CloseContext(),
+        client=client,
+    )
+    assert text == ""
+
+
+def test_funder_narrative_prompt_carries_key_facts() -> None:
+    client = _StubBedrock("ok")
+    generate_funder_narrative(
+        merchant=_make_merchant(
+            business_name="Tasty Diner LLC",
+            industry_choice="Restaurant / Food Service",
+            time_in_business_months=48,
+        ),
+        score_result=_score(),
+        mca_stack=_heavy_mca_stack(),
+        balance_health=_clean_balance_health(),
+        offer=None,
+        close_context=CloseContext(
+            notes_summary="merchant expanding to a second location",
+            call_transcripts="seasonal slowdown explanation",
+        ),
+        client=client,
+    )
+    prompt = client.last_prompt or ""
+    assert "Tasty Diner LLC" in prompt
+    assert "Restaurant / Food Service" in prompt
+    assert "4 years" in prompt or "48" in prompt
+    assert "3" in prompt  # mca count
+    assert "42%" in prompt  # holdback
+    assert "expanding to a second location" in prompt
+    assert "seasonal slowdown" in prompt
+
+
+def test_funder_narrative_caps_response_length() -> None:
+    text = "X" * 10000
+    out = generate_funder_narrative(
+        merchant=_make_merchant(),
+        score_result=_score(),
+        mca_stack=_empty_mca_stack(),
+        balance_health=_clean_balance_health(),
+        offer=None,
+        close_context=CloseContext(),
+        client=_StubBedrock(text),
+    )
+    assert len(out) == 1500

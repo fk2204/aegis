@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, Protocol
 
 from aegis.merchants.models import MerchantRow
 from aegis.scoring.models import ScoreResult
@@ -313,9 +313,136 @@ def generate_deal_summary(
     return DealSummary(verdict=verdict, headline=headline, body=body, flags=flags)
 
 
+_NARRATIVE_CAP: int = 1500  # chars
+_NARRATIVE_MAX_TOKENS: int = 512
+
+_NARRATIVE_PROMPT_TEMPLATE = """\
+You are an MCA underwriter presenting a deal to a funder. Write a
+factual, concise 3-4 sentence narrative summarising this deal as if
+you were dropping it into a Slack or email to a funder rep. Plain
+business English. No marketing language. No bullet points. No code
+fences. Just the paragraph.
+
+Deal facts:
+- Business: {business_name}
+- Industry: {industry}
+- Time in business: {tib}
+- Avg monthly revenue (true): {true_revenue}
+- ADB: {adb}
+- Existing MCA positions: {mca_count}
+- Combined daily holdback: {holdback}
+- Suggested advance: {suggested_advance}
+- Suggested factor: {suggested_factor}
+- Key strengths: {strengths}
+- Key concerns: {concerns}
+- Operator context: {operator_context}
+- Recent Close note: {close_note}
+- Call summary: {call_summary}
+
+Write the narrative now."""
+
+
+class _BedrockTextClient(Protocol):
+    def generate_text(self, prompt: str) -> str: ...
+
+
+def _narrative_prompt(
+    *,
+    merchant: MerchantRow,
+    score_result: ScoreResult,
+    mca_stack: MCAStackAggregation,
+    balance_health: BalanceHealthAggregation,
+    offer: object | None,  # OfferRecommendation, kept loose to avoid the import cycle
+    close_context: CloseContext,
+) -> str:
+    """Build the prompt string for ``generate_funder_narrative``."""
+    strengths = _key_strengths(
+        score=score_result, mca_stack=mca_stack, balance_health=balance_health
+    )
+    concerns = _key_concerns(score=score_result, mca_stack=mca_stack, balance_health=balance_health)
+    suggested_advance = (
+        getattr(offer, "recommended_amount", None)
+        or score_result.suggested_max_advance
+        or Decimal("0")
+    )
+    suggested_factor = (
+        getattr(offer, "factor_rate", None) or score_result.recommended_factor_rate or Decimal("0")
+    )
+    holdback = mca_stack.estimated_combined_holdback_pct
+
+    return _NARRATIVE_PROMPT_TEMPLATE.format(
+        business_name=merchant.business_name or "Unknown",
+        industry=merchant.industry_choice or "unspecified",
+        tib=_format_months(merchant.time_in_business_months),
+        true_revenue="see ADB",  # true_revenue isn't on BalanceHealthAggregation today
+        adb=_format_money(balance_health.avg_daily_balance),
+        mca_count=mca_stack.active_mca_count,
+        holdback=_format_pct(holdback),
+        suggested_advance=_format_money(suggested_advance),
+        suggested_factor=f"{suggested_factor:.3f}" if suggested_factor else "not set",
+        strengths=", ".join(strengths) if strengths else "none surfaced",
+        concerns=", ".join(concerns) if concerns else "none surfaced",
+        operator_context=(merchant.deal_context or "—")[:300],
+        close_note=(close_context.notes_summary or "—")[:300],
+        call_summary=(close_context.call_transcripts or "—")[:300],
+    )
+
+
+def generate_funder_narrative(
+    merchant: MerchantRow,
+    score_result: ScoreResult,
+    mca_stack: MCAStackAggregation,
+    balance_health: BalanceHealthAggregation,
+    offer: object | None,
+    close_context: CloseContext,
+    *,
+    client: _BedrockTextClient | None = None,
+) -> str:
+    """Generate a 3-4 sentence funder-facing narrative via Bedrock.
+
+    Returns the empty string on any failure (Bedrock unavailable,
+    network blip, empty business name). Callers must NOT block on the
+    narrative — it's a paste-into-Close convenience, never a safety
+    gate.
+
+    ``client`` is injected for testability. Tests stub a small object
+    with a ``generate_text(prompt) -> str`` method; production lazily
+    constructs ``BedrockClient`` so import paths that never need the
+    narrative don't fail on missing creds.
+    """
+    if not (merchant.business_name or "").strip():
+        return ""
+
+    prompt = _narrative_prompt(
+        merchant=merchant,
+        score_result=score_result,
+        mca_stack=mca_stack,
+        balance_health=balance_health,
+        offer=offer,
+        close_context=close_context,
+    )
+
+    if client is None:
+        try:
+            from aegis.llm import BedrockClient
+
+            client = BedrockClient()
+        except Exception:
+            return ""
+
+    try:
+        text = client.generate_text(prompt)
+    except Exception:
+        return ""
+
+    cleaned = (text or "").strip()
+    return cleaned[:_NARRATIVE_CAP]
+
+
 __all__ = [
     "CloseContext",
     "DealSummary",
     "DealVerdict",
     "generate_deal_summary",
+    "generate_funder_narrative",
 ]
