@@ -196,6 +196,57 @@
 }
 .dossier-page .masthead .meta-row .value em { font-style: italic; color: var(--ink-2); }
 
+/* ============ deal-summary card (above the sheet) ============
+   Plain-English headline + 2-3 sentences + flat flag list at the very
+   top of the dossier. Background is verdict-driven so the team can
+   read the call at a glance: green for clean, amber for review, red
+   for decline. Approval / review / decline tokens are the same ones
+   the chip colours use so the card and the chips read consistently.
+   ----------------------------------------------------------------- */
+.dossier-page .deal-summary-card {
+  margin: 14px 24px 0;
+  padding: 14px 18px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper-2, var(--paper));
+}
+.dossier-page .deal-summary-clean {
+  border-color: color-mix(in oklch, var(--approve) 60%, var(--rule));
+  background: color-mix(in oklch, var(--approve-soft, var(--paper-2)) 80%, var(--paper));
+}
+.dossier-page .deal-summary-review {
+  border-color: color-mix(in oklch, var(--review) 60%, var(--rule));
+  background: color-mix(in oklch, var(--review) 12%, var(--paper));
+}
+.dossier-page .deal-summary-decline {
+  border-color: color-mix(in oklch, var(--decline) 60%, var(--rule));
+  background: color-mix(in oklch, var(--decline) 12%, var(--paper));
+}
+.dossier-page .deal-summary-headline {
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+.dossier-page .deal-summary-body {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink-2);
+  line-height: 1.4;
+  margin: 0 0 8px 0;
+}
+.dossier-page .deal-summary-flags {
+  margin: 0;
+  padding-left: 18px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.dossier-page .deal-summary-flags li {
+  margin-bottom: 2px;
+}
+
 /* ============ banner (from intake / upload flash) ============ */
 .dossier-page .flash {
   max-width: 1800px;

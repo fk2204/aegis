@@ -2674,6 +2674,27 @@ async def merchant_detail(
     # many notes over time.
     operator_notes = merchants.list_notes(merchant_id=merchant_id, limit=50)
 
+    # Plain-English deal summary card (2026-06-18 redesign). Rule-based,
+    # no LLM call — produces the headline + body + flags the team reads
+    # first at the top of the dossier. None when the deal isn't yet
+    # scoreable (no document on file, no balance_health, no MCA stack);
+    # the template renders an empty-state in that branch.
+    deal_summary = None
+    if score_result is not None and balance_health is not None and mca_stack is not None:
+        from aegis.scoring_v2.deal_summary import CloseContext, generate_deal_summary
+
+        deal_summary = generate_deal_summary(
+            merchant=merchant,
+            score_result=score_result,
+            mca_stack=mca_stack,
+            balance_health=balance_health,
+            close_context=CloseContext(
+                lead_description=merchant.close_lead_description,
+                notes_summary=merchant.close_notes_summary,
+                call_transcripts=merchant.close_call_transcripts,
+            ),
+        )
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -2711,6 +2732,7 @@ async def merchant_detail(
             "funder_note_submissions": funder_note_submissions,
             "operator_notes": operator_notes,
             "operator_note_max_chars": MERCHANT_NOTE_MAX_CHARS,
+            "deal_summary": deal_summary,
             "doc_checklist": {
                 "voided_check_on_file": merchant.voided_check_on_file,
                 "drivers_license_on_file": merchant.drivers_license_on_file,

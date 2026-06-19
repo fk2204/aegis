@@ -174,6 +174,27 @@
    verdict → cashflow → routing → submissions → operator notes, with
    the operator-curated notes as the closing block. #}
 
+{# ============== Plain-English deal summary card (2026-06-18) ============== #}
+{# Sits ABOVE the sheet so it's the first thing the team reads, before
+   any chips. Background colour is driven by ``deal_summary.verdict``:
+   green (clean) / amber (review) / red (decline). Rule-based — no LLM
+   call. Hidden when the deal isn't yet scoreable. #}
+{% if deal_summary %}
+  <section class="deal-summary-card deal-summary-{{ deal_summary.verdict }}"
+           data-test-id="deal-summary-card"
+           data-verdict="{{ deal_summary.verdict }}">
+    <div class="deal-summary-headline" data-test-id="deal-summary-headline">{{ deal_summary.headline }}</div>
+    <p class="deal-summary-body" data-test-id="deal-summary-body">{{ deal_summary.body }}</p>
+    {% if deal_summary.flags %}
+      <ul class="deal-summary-flags" data-test-id="deal-summary-flags">
+        {% for flag in deal_summary.flags %}
+          <li>{{ flag }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+{% endif %}
+
 {# === sheet === #}
 <div class="sheet">
 
