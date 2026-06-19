@@ -1087,6 +1087,26 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--all-leads",
+        action="store_true",
+        help=(
+            "Backfill mode for Close leads with at least one opportunity "
+            "but no corresponding AEGIS merchant. Bypasses the "
+            "documents-backlog enumeration entirely. Pulls every Close "
+            "opportunity via /api/v1/opportunity/ (paginated), dedupes "
+            "the lead_ids, diffs against ``merchants.close_lead_id``, "
+            "and for each unmatched lead: in --apply mode creates a "
+            "merchant (business_name from the lead's display_name, "
+            "close_lead_id from the lead, status=finalized) then runs "
+            "the lead's PDF attachments through the same SHA-dedup + "
+            "filename-deny-list + parse + pdf_store-seal pipeline the "
+            "default backlog mode uses. Dry-run by default: lists which "
+            "leads would have merchants created + how many attachments "
+            "would ingest, without any writes. Combine with --limit to "
+            "guard the first --apply pass."
+        ),
+    )
+    p.add_argument(
         "--merchant",
         default=None,
         help=(
@@ -1621,6 +1641,236 @@ def _vision_retry(
     return (len(candidates), succeeded, errored)
 
 
+# ─────────────────────────────────────────────────────────────────────
+# --all-leads mode: backfill merchants for Close leads with opportunities
+# ─────────────────────────────────────────────────────────────────────
+
+
+# Page size for ``GET /api/v1/opportunity/`` pagination. The Close API
+# defaults to 100 with no published hard ceiling; staying at 100 keeps
+# per-page latency predictable and the dry-run audit-friendly.
+_CLOSE_OPP_PAGE: Final[int] = 100
+
+# Defensive ceiling on the opportunity pagination loop. ~50 pages of 100
+# = 5,000 opportunities, more than 5 years of Commera ingest at current
+# velocity. Prevents an infinite loop on a malformed ``has_more`` reply.
+_CLOSE_OPP_MAX_PAGES: Final[int] = 50
+
+
+def _collect_unmatched_leads_with_opportunities(
+    close_client: CloseClient,
+    merchants_repo: SupabaseMerchantRepository,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Page through every Close opportunity, dedupe by lead_id, drop
+    leads already linked to an AEGIS merchant, and fetch the display
+    name for each remaining lead.
+
+    Returns ``(unmatched, counts)`` where ``unmatched`` is a list of
+    dicts with ``id`` / ``display_name`` / ``opportunity_count`` keys
+    (sorted by opportunity_count descending then display_name ascending
+    so the operator sees the highest-value leads first in the CSV) and
+    ``counts`` carries the high-level summary numbers for the summary
+    line.
+    """
+    opportunities: list[dict[str, Any]] = []
+    skip = 0
+    for _ in range(_CLOSE_OPP_MAX_PAGES):
+        resp = close_client.request(
+            "GET",
+            "/api/v1/opportunity/",
+            params={"_skip": skip, "_limit": _CLOSE_OPP_PAGE},
+        )
+        data = resp.get("data") or []
+        if not isinstance(data, list):
+            break
+        opportunities.extend(cast(list[dict[str, Any]], data))
+        if not resp.get("has_more"):
+            break
+        skip += _CLOSE_OPP_PAGE
+
+    opps_per_lead: dict[str, int] = {}
+    for opp in opportunities:
+        lid = opp.get("lead_id")
+        if isinstance(lid, str) and lid:
+            opps_per_lead[lid] = opps_per_lead.get(lid, 0) + 1
+
+    aegis_lead_ids: set[str] = {
+        m.close_lead_id for m in merchants_repo.list_all() if m.close_lead_id
+    }
+
+    unmatched: list[dict[str, Any]] = []
+    for lid, opp_count in opps_per_lead.items():
+        if lid in aegis_lead_ids:
+            continue
+        try:
+            lead = close_client.get_lead(lid)
+        except CloseError as exc:
+            _log.warning(
+                "recover_legacy_docs.all_leads.lead_fetch_failed lead_id=%s err=%s",
+                lid,
+                _format_error_chain(exc),
+            )
+            continue
+        display_name = lead.get("display_name") or lead.get("name") or "(no name)"
+        unmatched.append(
+            {
+                "id": lid,
+                "display_name": str(display_name),
+                "opportunity_count": opp_count,
+            }
+        )
+
+    unmatched.sort(key=lambda d: (-int(d["opportunity_count"]), d["display_name"]))
+    counts = {
+        "total_opportunities": len(opportunities),
+        "leads_with_opportunities": len(opps_per_lead),
+        "matched": len(opps_per_lead) - len(unmatched),
+        "unmatched": len(unmatched),
+    }
+    return unmatched, counts
+
+
+def _process_lead_all_mode(
+    lead_data: dict[str, Any],
+    *,
+    close_client: CloseClient,
+    merchants_repo: SupabaseMerchantRepository,
+    document_repo: SupabaseDocumentRepository,
+    pdf_store: SupabasePdfStoreRepository,
+    audit: AuditLog,
+    llm: object,
+    upload_dir: Path,
+    max_upload_bytes: int,
+    apply_writes: bool,
+    backfill_sha_matches: bool,
+) -> MerchantOutcome:
+    """Resolve one unmatched Close lead end-to-end.
+
+    Lists the lead's Close attachments FIRST and gates merchant
+    creation on attachment presence. A lead with zero PDF attachments
+    returns a no-attachments outcome and NEVER touches the merchants
+    table (even with --apply) — empty merchant rows would only add
+    noise the operator didn't ask for, and the lead can still be
+    linked manually via dashboard intake later.
+
+    For leads WITH attachments:
+      * dry-run: build a transient ``MerchantRow`` (not persisted) so
+        the per-attachment dedup / deny-list logic can simulate
+        outcomes against ``documents``; no rows are written.
+      * --apply: persist the merchant first via ``upsert``, write a
+        ``merchant.recovered_from_close`` audit row, then walk the
+        attachments through ``_process_attachment`` so each PDF lands
+        with a stable ``merchant_id`` FK on the new ``documents`` rows.
+    """
+    lead_id = str(lead_data["id"])
+    lead_name = str(lead_data["display_name"])
+    transient = MerchantRow(
+        business_name=lead_name,
+        close_lead_id=lead_id,
+        status="finalized",
+    )
+
+    # List attachments before touching the merchants table so we can
+    # short-circuit on zero-PDF leads.
+    try:
+        attachments = close_client.list_lead_attachments(lead_id)
+    except CloseError as exc:
+        return MerchantOutcome(
+            merchant_id=str(transient.id),
+            merchant_name=lead_name,
+            close_lead_id=lead_id,
+            attachments_found=0,
+            attachments_reingested=0,
+            attachments_backfilled=0,
+            attachments_skipped=0,
+            attachments_skipped_non_statement=0,
+            parse_results="",
+            errors=f"close_list: {_format_error_chain(exc)}",
+        )
+
+    if not attachments:
+        return MerchantOutcome(
+            merchant_id="",
+            merchant_name=lead_name,
+            close_lead_id=lead_id,
+            attachments_found=0,
+            attachments_reingested=0,
+            attachments_backfilled=0,
+            attachments_skipped=0,
+            attachments_skipped_non_statement=0,
+            parse_results="",
+            errors="",
+        )
+
+    if apply_writes:
+        try:
+            merchant = merchants_repo.upsert(transient)
+        except Exception as exc:
+            return MerchantOutcome(
+                merchant_id=str(transient.id),
+                merchant_name=lead_name,
+                close_lead_id=lead_id,
+                attachments_found=len(attachments),
+                attachments_reingested=0,
+                attachments_backfilled=0,
+                attachments_skipped=0,
+                attachments_skipped_non_statement=0,
+                parse_results="",
+                errors=f"merchant_upsert: {_format_error_chain(exc)}",
+            )
+        audit.record(
+            actor=_ACTOR,
+            action="merchant.recovered_from_close",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": lead_id,
+                "business_name": lead_name,
+                "source": "recover_legacy_docs --all-leads",
+                "opportunity_count": lead_data.get("opportunity_count"),
+                "attachments_found": len(attachments),
+            },
+        )
+    else:
+        merchant = transient
+
+    per_attachment: list[AttachmentOutcome] = [
+        _process_attachment(
+            attachment=att,
+            close_client=close_client,
+            merchant=merchant,
+            document_repo=document_repo,
+            pdf_store=pdf_store,
+            audit=audit,
+            llm=llm,
+            upload_dir=upload_dir,
+            max_upload_bytes=max_upload_bytes,
+            apply_writes=apply_writes,
+            backfill_sha_matches=backfill_sha_matches,
+        )
+        for att in attachments
+    ]
+
+    reingested = sum(1 for o in per_attachment if o.action == "ingest")
+    backfilled = sum(1 for o in per_attachment if o.action == "backfill")
+    skipped = sum(1 for o in per_attachment if o.action == "skip_duplicate")
+    skipped_non_statement = sum(1 for o in per_attachment if o.action == "skip_non_statement")
+    errors = "; ".join(o.detail for o in per_attachment if o.action == "error")
+    return MerchantOutcome(
+        merchant_id=str(merchant.id),
+        merchant_name=lead_name,
+        close_lead_id=lead_id,
+        attachments_found=len(attachments),
+        attachments_reingested=reingested,
+        attachments_backfilled=backfilled,
+        attachments_skipped=skipped,
+        attachments_skipped_non_statement=skipped_non_statement,
+        parse_results=_compact_parse_status_summary(per_attachment),
+        errors=errors,
+        _per_attachment=tuple(per_attachment),
+    )
+
+
 def main() -> int:
     args = _parse_args()
 
@@ -1702,6 +1952,85 @@ def main() -> int:
             file=sys.stderr,
         )
         return EXIT_ISSUES_FOUND if errored > 0 else EXIT_OK
+
+    if args.all_leads:
+        # Unmatched-lead backfill mode: bypass the documents backlog
+        # entirely. Pull every Close opportunity, dedupe lead_ids, drop
+        # leads already linked to an AEGIS merchant, then route each
+        # remaining lead through _process_lead_all_mode (transient
+        # merchant in dry-run; persisted merchant in --apply).
+        try:
+            unmatched, lead_counts = _collect_unmatched_leads_with_opportunities(
+                close_client, merchants_repo
+            )
+        except Exception as exc:
+            print(
+                f"ERROR: --all-leads enumeration failed: {exc}",
+                file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            close_client.close()
+            return EXIT_RUNTIME_ERROR
+
+        print(
+            f"# --all-leads enumeration: total_opportunities="
+            f"{lead_counts['total_opportunities']} leads_with_opportunities="
+            f"{lead_counts['leads_with_opportunities']} matched="
+            f"{lead_counts['matched']} unmatched={lead_counts['unmatched']}",
+            file=sys.stderr,
+        )
+
+        if args.limit is not None:
+            unmatched = unmatched[: args.limit]
+
+        all_leads_outcomes: list[MerchantOutcome] = []
+        try:
+            for lead_data in unmatched:
+                all_leads_outcomes.append(
+                    _process_lead_all_mode(
+                        lead_data,
+                        close_client=close_client,
+                        merchants_repo=merchants_repo,
+                        document_repo=document_repo,
+                        pdf_store=pdf_store,
+                        audit=audit,
+                        llm=llm,
+                        upload_dir=upload_dir,
+                        max_upload_bytes=max_upload_bytes,
+                        apply_writes=args.apply,
+                        backfill_sha_matches=args.backfill_sha_matches,
+                    )
+                )
+        finally:
+            close_client.close()
+
+        stream = _open_output_stream(args.output)
+        try:
+            write_csv(all_leads_outcomes, stream)
+        finally:
+            if stream is not sys.stdout:
+                stream.close()  # type: ignore[attr-defined]
+
+        total = len(all_leads_outcomes)
+        found = sum(r.attachments_found for r in all_leads_outcomes)
+        reingested = sum(r.attachments_reingested for r in all_leads_outcomes)
+        backfilled = sum(r.attachments_backfilled for r in all_leads_outcomes)
+        skipped = sum(r.attachments_skipped for r in all_leads_outcomes)
+        skipped_non_statement = sum(r.attachments_skipped_non_statement for r in all_leads_outcomes)
+        leads_with_pdfs = sum(1 for r in all_leads_outcomes if r.attachments_found > 0)
+        leads_without_pdfs = total - leads_with_pdfs
+        issues = sum(1 for r in all_leads_outcomes if r.is_issue)
+        mode = "APPLY" if args.apply else "DRY-RUN"
+        backfill_mode = " +backfill" if args.backfill_sha_matches else ""
+        print(
+            f"# mode={mode}{backfill_mode} +all-leads leads_processed={total} "
+            f"leads_with_pdfs={leads_with_pdfs} leads_without_pdfs="
+            f"{leads_without_pdfs} attachments_found={found} reingested="
+            f"{reingested} backfilled={backfilled} skipped={skipped} "
+            f"skipped_non_statement={skipped_non_statement} issues={issues}",
+            file=sys.stderr,
+        )
+        return EXIT_ISSUES_FOUND if issues > 0 else EXIT_OK
 
     if args.merchant is not None:
         # Single-merchant mode: bypass the backlog enumeration entirely
