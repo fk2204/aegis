@@ -555,6 +555,14 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='merchants' "
         "AND column_name='web_presence_summary'"
     ),
+    "068_merchant_ucc.sql": (
+        # 068 adds ucc_{filings,default_indicators,checked_at} to
+        # merchants. Three columns in one ADD COLUMN block; probe the
+        # first.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='ucc_filings'"
+    ),
 }
 
 

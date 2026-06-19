@@ -296,6 +296,18 @@ def score(
             audit=audit,
         )
 
+        # UCC + previous-default check (migration 068). Alongside the
+        # web-presence scan: one Bedrock + web_search round-trip per
+        # merchant on first score; persisted result reused on
+        # subsequent scores until the operator clicks Refresh.
+        from aegis.business_intel.refresh import ensure_ucc_check
+
+        ensure_ucc_check(
+            merchant_row,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+
     # U33 — feed Track A/B verdicts. The route operates on an operator-
     # provided ScoreInput payload but the merchant's docs are available
     # via ``deal.merchant_id`` so the active-engine flip has live inputs.

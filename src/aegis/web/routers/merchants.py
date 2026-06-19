@@ -1778,6 +1778,35 @@ async def merchant_refresh_close_context(
     )
 
 
+@router.post("/merchants/{merchant_id}/refresh-ucc", response_model=None)
+async def merchant_refresh_ucc(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+) -> RedirectResponse:
+    """Force-run the UCC + previous-default check for this merchant.
+
+    Same posture as the web-presence refresh: always runs, Bedrock
+    failure persists empty result + audit row so the operator sees
+    the click did something.
+    """
+    from aegis.business_intel.refresh import refresh_ucc_for_merchant
+
+    try:
+        refresh_ucc_for_merchant(
+            merchant_id,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return RedirectResponse(
+        url=f"/ui/merchants/{merchant_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @router.post("/merchants/{merchant_id}/refresh-web-presence", response_model=None)
 async def merchant_refresh_web_presence(
     merchant_id: UUID,

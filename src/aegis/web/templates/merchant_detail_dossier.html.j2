@@ -585,6 +585,57 @@
               {% endif %}
             </section>
 
+            {# ============== Legal & UCC panel (migration 068) ============== #}
+            {# UCC filings + previous-default search via Bedrock + web_search.
+               Soft signal only - both lists surface as match_funder
+               soft_concerns. This panel renders the operator-readable
+               source summary + a chip per finding + a Refresh button. #}
+            <section class="dossier-ucc-panel"
+                     data-test-id="dossier-ucc-panel"
+                     style="margin:14px 0;padding:12px 14px;border:1px solid var(--ink-4, #d8d8d4);border-radius:6px;background:var(--ink-bg, #fafaf7)">
+              <header style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+                <strong style="text-transform:uppercase;letter-spacing:0.08em;font-size:11px;color:var(--ink-3)">Legal &amp; UCC</strong>
+                <form method="post"
+                      action="/ui/merchants/{{ merchant.id }}/refresh-ucc"
+                      style="margin:0">
+                  <button type="submit"
+                          data-test-id="refresh-ucc"
+                          style="font-size:11px">↻ Refresh</button>
+                </form>
+              </header>
+
+              {% if merchant.ucc_checked_at %}
+                <div style="font-size:11px;color:var(--ink-3);margin-bottom:6px">
+                  checked {{ merchant.ucc_checked_at.strftime('%Y-%m-%d %H:%M UTC') }}
+                </div>
+                {% if merchant.ucc_filings %}
+                  <div data-test-id="ucc-filings" style="margin-bottom:6px">
+                    <div style="font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">UCC filings</div>
+                    {% for party in merchant.ucc_filings %}
+                      <span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#fde7d4;color:#7a3b00;font-size:11px;font-family:var(--mono, monospace);margin-right:4px;margin-bottom:2px">{{ party }}</span>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+                {% if merchant.ucc_default_indicators %}
+                  <div data-test-id="ucc-default-indicators" style="margin-bottom:6px">
+                    <div style="font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">Previous default indicators</div>
+                    {% for indicator in merchant.ucc_default_indicators %}
+                      <span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#f7c8c8;color:#7a0000;font-size:11px;font-family:var(--mono, monospace);margin-right:4px;margin-bottom:2px">{{ indicator }}</span>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+                {% if not merchant.ucc_filings and not merchant.ucc_default_indicators %}
+                  <p style="margin:0;font-size:11px;color:var(--ink-3);font-style:italic">No UCC filings or default indicators found.</p>
+                {% endif %}
+              {% else %}
+                <p data-test-id="ucc-empty"
+                   style="margin:0;font-size:11px;color:var(--ink-3);font-style:italic">
+                  Not yet checked. The next score will trigger an automatic check;
+                  click Refresh to check now.
+                </p>
+              {% endif %}
+            </section>
+
             <div class="actions">
               {% if _actions_locked %}
                 <span class="btn primary is-disabled" title="{{ _locked_title }}" aria-disabled="true">Match funders</span>

@@ -180,6 +180,19 @@ class MerchantRow(_StrictModel):
     web_presence_flags: list[str] = Field(default_factory=list)
     web_presence_scanned_at: datetime | None = None
 
+    # ------------------------------------------------------------------
+    # UCC filings + previous-default search (migration 068). Populated
+    # by ``aegis.business_intel.ucc_checker.check_ucc_and_defaults``
+    # on first score, or refreshed via the dossier ``Refresh`` button.
+    # Soft signal only - both lists surface as
+    # ``FunderMatch.soft_concerns`` strings; never gate a match.
+    # ``ucc_checked_at is None`` is the "needs first check" signal
+    # the scorer checks before invoking the checker.
+    # ------------------------------------------------------------------
+    ucc_filings: list[str] = Field(default_factory=list)
+    ucc_default_indicators: list[str] = Field(default_factory=list)
+    ucc_checked_at: datetime | None = None
+
     # Phase 7B funder-submission tracking (Pydantic-only — no Supabase
     # column yet, so these reset on a Supabase round-trip; audit_log is
     # the durable record. Persistence moves to a real submissions table

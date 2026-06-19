@@ -1031,6 +1031,10 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         web_presence_summary=row.get("web_presence_summary"),
         web_presence_flags=list(row.get("web_presence_flags") or []),
         web_presence_scanned_at=_parse_dt(row.get("web_presence_scanned_at")),
+        # Migration 068 — UCC filings + previous-default search.
+        ucc_filings=list(row.get("ucc_filings") or []),
+        ucc_default_indicators=list(row.get("ucc_default_indicators") or []),
+        ucc_checked_at=_parse_dt(row.get("ucc_checked_at")),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
         # Migration 065. None for every pre-065 row + every live row;
@@ -1112,6 +1116,10 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         # for "scanned but no flags" so the scorer doesn't re-fire.
         "web_presence_flags": list(m.web_presence_flags),
         "web_presence_scanned_at": m.web_presence_scanned_at,
+        # Migration 068.
+        "ucc_filings": list(m.ucc_filings),
+        "ucc_default_indicators": list(m.ucc_default_indicators),
+        "ucc_checked_at": m.ucc_checked_at,
     }
     return payload
 

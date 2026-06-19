@@ -573,14 +573,28 @@ def match_funder(
         for flag in merchant.web_presence_flags:
             web_presence_soft_concerns.append(f"web presence: {flag}")
 
+    # UCC + previous-default findings (migration 068). Each UCC filing
+    # and each default indicator surfaces as one soft concern with the
+    # ``UCC filing found:`` / ``Previous default indicator:`` prefix
+    # the operator instructed.
+    ucc_soft_concerns: list[str] = []
+    if merchant is not None:
+        for party in merchant.ucc_filings or []:
+            ucc_soft_concerns.append(f"UCC filing found: {party}")
+        for indicator in merchant.ucc_default_indicators or []:
+            ucc_soft_concerns.append(f"Previous default indicator: {indicator}")
+
     return FunderMatch(
         funder_id=funder.id,
         funder_name=funder.name,
         match_score=likelihood,
         reasons=reasons,
         # Union of hard fails + soft concerns + per-merchant stip soft
-        # concerns + web-presence flags — caller wants the full picture.
-        soft_concerns=hard + soft + stip_soft_concerns + web_presence_soft_concerns,
+        # concerns + web-presence flags + UCC/default findings — caller
+        # wants the full picture.
+        soft_concerns=(
+            hard + soft + stip_soft_concerns + web_presence_soft_concerns + ucc_soft_concerns
+        ),
         estimated_terms=estimated_terms,
         tier_matches=tier_matches,
         historical_approval_rate=historical_approval_rate,
