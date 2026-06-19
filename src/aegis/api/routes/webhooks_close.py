@@ -764,7 +764,20 @@ def _lead_to_merchant_fields(
     business_name = legal_name or lead.get("display_name") or lead.get("name") or ""
 
     state_raw = get_custom_field(lead, "state")
-    state = (state_raw or "").upper() if isinstance(state_raw, str) else ""
+    # ``MerchantRow.state`` is nullable but constrained to a 2-character
+    # uppercase code when set. Empty / non-string / non-2-alpha values
+    # collapse to None so the webhook upsert doesn't 500 on a Pydantic
+    # ``string_too_short`` validation error for leads whose Close
+    # ``State`` custom field is unset. The pre-2026-06-19 path coerced
+    # to "" and blew up — verified in syslog during the 2026-06-19
+    # ``recover_legacy_docs --all-leads`` run when 15 newly-created
+    # merchants triggered Close ``lead.updated`` webhooks against
+    # leads with no operator-set state.
+    state: str | None = None
+    if isinstance(state_raw, str):
+        candidate = state_raw.strip().upper()
+        if len(candidate) == 2 and candidate.isalpha():
+            state = candidate
 
     industry_choice = get_custom_field(lead, "industry")
     naics_explicit = get_custom_field(lead, "naics_code")
@@ -798,7 +811,7 @@ def _lead_to_merchant_fields(
         "business_name": str(business_name),
         "dba": _str_or_none(get_custom_field(lead, "dba_name")),
         "ein": _str_or_none(get_custom_field(lead, "ein")),
-        "owner_name": str(get_custom_field(lead, "owner_name") or ""),
+        "owner_name": _str_or_none(get_custom_field(lead, "owner_name")),
         "state": state,
         "industry_naics": naics,
         # Persist the raw Lead-side Industry choice string alongside

@@ -717,3 +717,176 @@ def test_lead_updated_idempotent_redelivery_dedups_attachment_path(
     # Only one merchant row keyed on this lead_id.
     matched = [r for r in repo._by_id.values() if r.close_lead_id == "lead_redelivered"]
     assert len(matched) == 1
+
+
+# ----------------------------------------------------------------------
+# Empty / invalid custom-field guards on _lead_to_merchant_fields
+# (regression for the 2026-06-19 syslog flood — leads with no operator-
+# set State or Owner Name 500'd the webhook because the field_map
+# coerced absent custom fields to "" and Pydantic rejected the
+# string_too_short MerchantRow.)
+# ----------------------------------------------------------------------
+
+
+_KEEP_DEFAULT = object()
+
+
+def _lead_payload_with(
+    *,
+    state: Any = _KEEP_DEFAULT,
+    owner_name: Any = _KEEP_DEFAULT,
+    close_lead_id: str = "lead_empty",
+) -> dict[str, Any]:
+    """Canned Lead payload with ``state`` / ``owner_name`` controlled
+    independently. Pass ``None`` to drop the custom-field key entirely
+    (mimics Close returning a payload with the field unset). Pass an
+    explicit string to override that field's value. Omit the argument
+    to keep the canned default.
+    """
+    payload = _lead_payload(close_lead_id=close_lead_id)
+    if state is not _KEEP_DEFAULT:
+        key = f"custom.{CLOSE_FIELD_IDS['state']}"
+        if state is None:
+            payload.pop(key, None)
+        else:
+            payload[key] = state
+    if owner_name is not _KEEP_DEFAULT:
+        key = f"custom.{CLOSE_FIELD_IDS['owner_name']}"
+        if owner_name is None:
+            payload.pop(key, None)
+        else:
+            payload[key] = owner_name
+    return payload
+
+
+def _build_client_with_payload(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, Any],
+) -> TestClient:
+    """One-off TestClient wired to a CloseClient that returns ``payload``
+    on every Lead GET."""
+    monkeypatch.setenv("CLOSE_API_KEY", "api_test")
+    monkeypatch.setenv("CLOSE_API_BASE", "https://api.close.example")
+    monkeypatch.setenv("CLOSE_WEBHOOK_SECRET", _TEST_SECRET_HEX)
+    monkeypatch.setenv("CLOSE_DOCS_IN_PRE_UW_STATUS_ID", _TRIGGER_STATUS_ID)
+    get_settings.cache_clear()
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    close_client = CloseClient(http_client=httpx.Client(transport=httpx.MockTransport(transport)))
+    reset_dependency_caches()
+    app = create_app()
+    app.dependency_overrides[get_merchant_repository] = lambda: repo
+    app.dependency_overrides[get_audit] = lambda: audit
+    app.dependency_overrides[get_close_client] = lambda: close_client
+    return TestClient(app)
+
+
+def test_webhook_handles_lead_with_unset_state(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lead payload with no ``state`` custom field must NOT 500. The
+    merchant lands with ``state=None``; downstream auto-state-detection
+    fills it later via Close note or operator edit."""
+    payload = _lead_payload_with(state=None, close_lead_id="lead_no_state")
+    with _build_client_with_payload(repo, audit, monkeypatch, payload) as tc:
+        resp = _post_signed(tc, _opportunity_event(lead_id="lead_no_state"))
+    assert resp.status_code == 204, resp.text
+    saved = repo.find_by_close_lead_id("lead_no_state")
+    assert saved is not None
+    assert saved.state is None
+    assert saved.owner_name == "Jane Roe"
+    reset_dependency_caches()
+
+
+def test_webhook_handles_lead_with_empty_string_state(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit empty string (Close convention for cleared fields)
+    behaves the same as an unset key — merchant gets ``state=None``."""
+    payload = _lead_payload_with(state="", close_lead_id="lead_empty_state")
+    with _build_client_with_payload(repo, audit, monkeypatch, payload) as tc:
+        resp = _post_signed(tc, _opportunity_event(lead_id="lead_empty_state"))
+    assert resp.status_code == 204, resp.text
+    saved = repo.find_by_close_lead_id("lead_empty_state")
+    assert saved is not None
+    assert saved.state is None
+    reset_dependency_caches()
+
+
+def test_webhook_handles_lead_with_non_2letter_state(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A garbage state value (typo, full state name, numeric noise)
+    must collapse to None rather than blow up Pydantic's max_length=2."""
+    payload = _lead_payload_with(state="California", close_lead_id="lead_garbage_state")
+    with _build_client_with_payload(repo, audit, monkeypatch, payload) as tc:
+        resp = _post_signed(tc, _opportunity_event(lead_id="lead_garbage_state"))
+    assert resp.status_code == 204, resp.text
+    saved = repo.find_by_close_lead_id("lead_garbage_state")
+    assert saved is not None
+    assert saved.state is None
+    reset_dependency_caches()
+
+
+def test_webhook_handles_lead_with_unset_owner_name(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lead payload with no ``owner_name`` custom field must NOT 500.
+    The merchant lands with ``owner_name=None`` (intake form fills it
+    later)."""
+    payload = _lead_payload_with(owner_name=None, close_lead_id="lead_no_owner")
+    with _build_client_with_payload(repo, audit, monkeypatch, payload) as tc:
+        resp = _post_signed(tc, _opportunity_event(lead_id="lead_no_owner"))
+    assert resp.status_code == 204, resp.text
+    saved = repo.find_by_close_lead_id("lead_no_owner")
+    assert saved is not None
+    assert saved.owner_name is None
+    assert saved.state == "CA"
+    reset_dependency_caches()
+
+
+def test_webhook_handles_lead_with_empty_string_owner_name(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _lead_payload_with(owner_name="   ", close_lead_id="lead_blank_owner")
+    with _build_client_with_payload(repo, audit, monkeypatch, payload) as tc:
+        resp = _post_signed(tc, _opportunity_event(lead_id="lead_blank_owner"))
+    assert resp.status_code == 204, resp.text
+    saved = repo.find_by_close_lead_id("lead_blank_owner")
+    assert saved is not None
+    assert saved.owner_name is None
+    reset_dependency_caches()
+
+
+def test_webhook_handles_lead_with_both_unset(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The combination the syslog actually surfaced: both state AND
+    owner_name unset together. Pre-fix this 500'd; merchant still has
+    ``business_name`` from display_name so the row remains valid."""
+    payload = _lead_payload_with(state=None, owner_name=None, close_lead_id="lead_both_unset")
+    with _build_client_with_payload(repo, audit, monkeypatch, payload) as tc:
+        resp = _post_signed(tc, _opportunity_event(lead_id="lead_both_unset"))
+    assert resp.status_code == 204, resp.text
+    saved = repo.find_by_close_lead_id("lead_both_unset")
+    assert saved is not None
+    assert saved.state is None
+    assert saved.owner_name is None
+    assert saved.business_name == "Acme Holdings LLC"
+    reset_dependency_caches()
