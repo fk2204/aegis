@@ -11,7 +11,7 @@ the schema (current state on ``main`` as of 2026-06-09).
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, tzinfo
 from typing import ClassVar
 from uuid import uuid4
 
@@ -88,10 +88,36 @@ def _merchant(
 
 
 @pytest.fixture
-def repo_with_renewals() -> InMemoryMerchantRepository:
+def frozen_today(monkeypatch: pytest.MonkeyPatch) -> date:
+    """Pin ``datetime.now(UTC).date()`` in ``aegis.merchants.repository``.
+
+    The repo accessors ``list_upcoming_renewals`` and
+    ``list_renewal_pipeline`` both read ``datetime.now(UTC).date()`` to
+    decide whether a maturity offset still falls inside the window the
+    fixture seeded. Without a freeze the offsets drift against wall-clock
+    time and the ``window_days=40`` boundary case (CA at 50 days out)
+    silently flips into the window once 10 days of real time pass, since
+    50 - 10 = 40 satisfies ``delta_days <= window_days``. Pin via a
+    ``datetime`` subclass whose ``now()`` returns a fixed instant; the
+    fixture seed below builds maturity offsets off the returned date so
+    seed and accessor agree.
+    """
+    frozen = date(2026, 6, 9)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> _FrozenDatetime:
+            return cls(frozen.year, frozen.month, frozen.day, 12, 0, tzinfo=tz)
+
+    monkeypatch.setattr("aegis.merchants.repository.datetime", _FrozenDatetime)
+    return frozen
+
+
+@pytest.fixture
+def repo_with_renewals(frozen_today: date) -> InMemoryMerchantRepository:
     """In-memory repo seeded with a known mix of renewals + non-renewals."""
     repo = InMemoryMerchantRepository()
-    today = date(2026, 6, 9)
+    today = frozen_today
     # NY renewal — 25 days out; well under the 30-day NY deadline.
     repo.upsert(
         _merchant(
