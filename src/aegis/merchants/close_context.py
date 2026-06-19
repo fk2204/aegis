@@ -68,6 +68,50 @@ RECENT_CALLS_LIMIT: int = 3
 # ends and the next begins.
 _BODY_SEPARATOR: str = "\n---\n"
 
+# Operators sometimes paste Commera's own marketing / product copy into
+# the Close Lead description ("We offer merchant cash advances and
+# working capital solutions ..." etc). That copy describes Commera,
+# not the merchant — surfacing it on the merchant dossier and in the
+# Bedrock funder-narrative prompt pollutes funder context with
+# information the funder already has on the broker.
+#
+# Heuristic: case-insensitive substring match on a small operator-
+# curated signal list. False-positive rate is acceptably low — a real
+# MCA merchant rarely describes its own business as "merchant cash
+# advance" or "working capital" (those phrases describe the funding
+# product, not the business), and "Commera" should never appear in a
+# legitimate merchant context.
+_COMMERA_BOILERPLATE_SIGNALS: tuple[str, ...] = (
+    "commera",
+    "merchant cash advance",
+    "working capital",
+)
+
+
+def _is_commera_boilerplate(description: str) -> bool:
+    """Return True when ``description`` looks like Commera's own
+    marketing copy rather than the merchant's context.
+    """
+    needle = description.lower()
+    return any(signal in needle for signal in _COMMERA_BOILERPLATE_SIGNALS)
+
+
+def _filter_commera_boilerplate(description: str | None) -> str | None:
+    """Drop Commera-marketing-copy descriptions; passthrough otherwise.
+
+    Returns ``None`` when the description is Commera's own product
+    pitch rather than the merchant's context, so the merchant row
+    stays NULL on ``close_lead_description`` instead of storing
+    boilerplate. Logged at INFO so the operator can audit the filter's
+    activity without exposing the body in the audit_log row.
+    """
+    if description is None:
+        return None
+    if _is_commera_boilerplate(description):
+        _log.info("close_context.lead_description_filtered_as_boilerplate")
+        return None
+    return description
+
 
 LeadFetcher = Callable[[str], dict[str, Any]]
 
@@ -138,7 +182,7 @@ def refresh_close_context_for_merchant(
     fetcher = lead_fetcher or _default_lead_fetcher(close_client)
     lead_payload = fetcher(lead_id)
 
-    lead_description = extract_lead_description(lead_payload)
+    lead_description = _filter_commera_boilerplate(extract_lead_description(lead_payload))
     notes = close_client.list_recent_notes(lead_id, RECENT_NOTES_LIMIT)
     calls = close_client.list_recent_calls(lead_id, RECENT_CALLS_LIMIT)
 

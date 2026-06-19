@@ -245,3 +245,77 @@ def test_refresh_subject_id_is_merchant_id() -> None:
     refreshes = [e for e in audit.entries if e["action"] == "merchant.close_context.refreshed"]
     assert refreshes[0]["subject_type"] == "merchant"
     assert refreshes[0]["subject_id"] == str(merchant.id)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Commera-boilerplate filter (rejects Commera's own marketing copy)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _run_refresh_with_description(description: str) -> tuple[MerchantRow, list[dict[str, Any]]]:
+    """Helper: refresh against a single description, return
+    (updated_merchant_row, audit_entries)."""
+    repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+    merchant = _seed_merchant(repo)
+    stub = _StubCloseClient()
+    refresh_close_context_for_merchant(
+        merchant.id,
+        "lead_test",
+        close_client=stub,  # type: ignore[arg-type]
+        merchants_repo=repo,
+        audit=audit,
+        lead_fetcher=lambda _lid: {"description": description},
+    )
+    return repo.get(merchant.id), audit.entries
+
+
+def test_refresh_drops_description_containing_commera() -> None:
+    """A description that mentions Commera is the broker's own marketing
+    copy, not merchant context — the merchant row's
+    ``close_lead_description`` stays NULL."""
+    updated, entries = _run_refresh_with_description(
+        "Commera offers fast working-capital advances to small businesses."
+    )
+    assert updated.close_lead_description is None
+    refreshes = [e for e in entries if e["action"] == "merchant.close_context.refreshed"]
+    assert refreshes[0]["details"]["lead_description_present"] is False
+
+
+def test_refresh_drops_description_containing_merchant_cash_advance() -> None:
+    updated, entries = _run_refresh_with_description(
+        "Pre-qualified for a merchant cash advance. 30-day term, 1.25 factor."
+    )
+    assert updated.close_lead_description is None
+    refreshes = [e for e in entries if e["action"] == "merchant.close_context.refreshed"]
+    assert refreshes[0]["details"]["lead_description_present"] is False
+
+
+def test_refresh_drops_description_containing_working_capital() -> None:
+    updated, _entries = _run_refresh_with_description(
+        "Looking for $50k working capital — let's talk!"
+    )
+    assert updated.close_lead_description is None
+
+
+def test_refresh_boilerplate_filter_is_case_insensitive() -> None:
+    """Match should be case-insensitive so SHOUTING / weird casing
+    doesn't slip through."""
+    updated, _entries = _run_refresh_with_description(
+        "Premium COMMERA product. Apply within 24 hours."
+    )
+    assert updated.close_lead_description is None
+
+
+def test_refresh_preserves_legit_merchant_description() -> None:
+    """A real merchant context that doesn't trip any signal passes
+    through verbatim. Surrounding whitespace is trimmed but the body
+    is intact."""
+    legit = (
+        "Family-owned trucking outfit running 4 reefers out of Lakeland. "
+        "Owner-operator since 2017. Needs reefer-engine reserve."
+    )
+    updated, entries = _run_refresh_with_description(legit)
+    assert updated.close_lead_description == legit
+    refreshes = [e for e in entries if e["action"] == "merchant.close_context.refreshed"]
+    assert refreshes[0]["details"]["lead_description_present"] is True
