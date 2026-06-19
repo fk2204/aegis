@@ -26,6 +26,7 @@ Several merchant-private helpers (``_state_tier``, ``_ofac_ribbon_status``,
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import io
 import re
@@ -465,6 +466,55 @@ def _load_latest_score_tier_per_merchant(
     return latest_tier
 
 
+def _build_match_cards(
+    *,
+    merchant: MerchantRow,
+    score_input: ScoreInput,
+    score_result: ScoreResult,
+    funder_repo: FunderRepository,
+    merchants_repo: MerchantRepository,
+    docs: DocumentRepository,
+    funder_note_subs: FunderNoteSubmissionRepository,
+    snapshot: DecisionSnapshot,
+) -> list[dict[str, Any]]:
+    """Run the per-funder matcher and return ranked card dicts.
+
+    Shared between the standalone ``/match`` panel and the dossier's
+    inline § 4 funder-matching section so the two surfaces stay in lockstep
+    (same color rule, same historical-approval boost, same sort order). On
+    a historical-index outage the matcher silently falls back to the
+    pre-Sprint-4 path -- the panel never 500s.
+    """
+    historical_index = _build_historical_index_for_match(
+        funder_note_subs=funder_note_subs,
+        merchants_repo=merchants_repo,
+        snapshot=snapshot,
+        documents=docs,
+    )
+    deal_industry_tier = industry_risk_tier(merchant.industry_choice)
+    deal_score_tier = score_result.tier
+    cards: list[dict[str, Any]] = []
+    for funder in funder_repo.list_active():
+        historical_rate = lookup_historical_approval_rate(
+            historical_index,
+            funder_id=funder.id,
+            industry_tier=deal_industry_tier,
+            score_tier=deal_score_tier,
+        )
+        m = match_funder(
+            funder,
+            score_input,
+            score_result,
+            historical_approval_rate=historical_rate,
+            merchant=merchant,
+        )
+        if m is None:
+            continue
+        cards.append(_match_card(funder, m, score_input))
+    cards.sort(key=lambda c: c["match_score"], reverse=True)
+    return cards
+
+
 @router.get("/merchants/{merchant_id}/match", response_class=HTMLResponse)
 async def merchant_match(
     request: Request,
@@ -563,41 +613,16 @@ async def merchant_match(
             detail=f"ofac_unavailable: {exc}",
         ) from exc
 
-    # Sprint 4 Feature 2 — historical-approval index. Once per request
-    # we load the 90-day window of submissions + a merchant→industry
-    # map + a merchant→score-tier map and pre-aggregate per-funder
-    # approval rates. Each ``match_funder`` call then looks up its
-    # own cell. A failure in this block falls back to an empty index
-    # (no boost, identical pre-Sprint-4 behaviour) so the panel never
-    # 500s on a submissions outage.
-    historical_index = _build_historical_index_for_match(
-        funder_note_subs=funder_note_subs,
+    cards = _build_match_cards(
+        merchant=merchant,
+        score_input=score_input,
+        score_result=score_result,
+        funder_repo=funder_repo,
         merchants_repo=merchants,
+        docs=docs,
+        funder_note_subs=funder_note_subs,
         snapshot=snapshot,
-        documents=docs,
     )
-    deal_industry_tier = industry_risk_tier(merchant.industry_choice)
-    deal_score_tier = score_result.tier
-
-    cards: list[dict[str, Any]] = []
-    for funder in funder_repo.list_active():
-        historical_rate = lookup_historical_approval_rate(
-            historical_index,
-            funder_id=funder.id,
-            industry_tier=deal_industry_tier,
-            score_tier=deal_score_tier,
-        )
-        m = match_funder(
-            funder,
-            score_input,
-            score_result,
-            historical_approval_rate=historical_rate,
-            merchant=merchant,
-        )
-        if m is None:
-            continue
-        cards.append(_match_card(funder, m, score_input))
-    cards.sort(key=lambda c: c["match_score"], reverse=True)
 
     # Preselect: pre-check the matching funder's checkbox unless the
     # funder is hard-failing this merchant (color=red), in which case we
@@ -655,6 +680,164 @@ async def merchant_match(
             "funder_responses": funder_responses,
             "preselect_funder_id": preselect_id_str,
             "preselect_banner": preselect_banner,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Matched-funders CSV download — paper-trail snapshot for the inline
+# dossier § 4 panel (Phase 7B inline-match wave). Distinct from
+# ``/submit`` below: that route builds per-funder application packages
+# the operator forwards to funders; this route is a single CSV summarising
+# which funders were considered for this deal + their match scores +
+# qualifying status. Used by the operator team when auditing routing
+# decisions after the fact.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/merchants/{merchant_id}/matched-funders.csv", response_model=None)
+async def merchant_matched_funders_csv(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
+    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
+) -> Response:
+    """Download a single CSV summarising every matched funder for this deal.
+
+    Header block carries the deal-level snapshot (business name, score,
+    tier, suggested-offer envelope) followed by a blank row, then a
+    table block with one row per matched funder + their match score,
+    color, hard fails, soft concerns, and estimated terms. The same
+    cards the inline § 4 dossier panel renders.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    if not merchant.is_finalized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="merchant is not finalized — name the merchant before downloading match CSV",
+        )
+
+    items = _collect_analyzed_for_merchant(docs, merchant_id)
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="merchant has no analyzed document — upload + parse first",
+        )
+
+    score_input = _score_input_multi_month(merchant, items)
+    csv_documents = [d for d, _ in items]
+    csv_analyses_by_doc = {d.id: a for d, a in items}
+    track_a_verdict, track_b_band = compute_score_deal_track_inputs(
+        documents=csv_documents,
+        list_transactions=docs.list_transactions,
+        analyses_by_doc=csv_analyses_by_doc,
+        merchant_id=merchant_id,
+    )
+    try:
+        score_result = score_deal(
+            score_input,
+            ofac=ofac,
+            track_a_verdict=track_a_verdict,
+            track_b_band=track_b_band,
+        )
+    except OFACStaleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"ofac_unavailable: {exc}",
+        ) from exc
+
+    latest_doc, latest_analysis = items[0]
+    latest_transactions = docs.list_transactions(latest_doc.id)
+    mca_stack = aggregate_mca_stack(
+        transactions=latest_transactions,
+        monthly_revenue=latest_analysis.monthly_revenue,
+        period_days=latest_analysis.statement_days,
+    )
+    offer = compute_offer(
+        true_revenue_monthly=latest_analysis.monthly_revenue,
+        holdback_capacity_monthly=(latest_analysis.monthly_revenue * Decimal("0.25")),
+        mca_stack=mca_stack,
+    )
+
+    cards = _build_match_cards(
+        merchant=merchant,
+        score_input=score_input,
+        score_result=score_result,
+        funder_repo=funder_repo,
+        merchants_repo=merchants,
+        docs=docs,
+        funder_note_subs=funder_note_subs,
+        snapshot=snapshot,
+    )
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(["# Deal", merchant.business_name])
+    writer.writerow(["# Merchant ID", str(merchant.id)])
+    writer.writerow(["# State", merchant.state or ""])
+    writer.writerow(["# Score", score_result.score])
+    writer.writerow(["# Tier", score_result.tier])
+    writer.writerow(["# Recommendation", score_result.recommendation])
+    writer.writerow(["# Monthly revenue", str(latest_analysis.monthly_revenue)])
+    if offer is not None:
+        writer.writerow(["# Suggested advance (recommended)", str(offer.recommended_amount)])
+        writer.writerow(["# Suggested advance (max)", str(offer.max_amount)])
+    else:
+        writer.writerow(["# Suggested advance (recommended)", ""])
+        writer.writerow(["# Suggested advance (max)", ""])
+    writer.writerow([])
+    writer.writerow(
+        [
+            "funder_name",
+            "funder_id",
+            "match_score",
+            "qualifies",
+            "color",
+            "hard_fails",
+            "soft_concerns",
+            "estimated_advance",
+            "estimated_factor",
+            "estimated_holdback_pct",
+            "estimated_apr",
+        ]
+    )
+    for c in cards:
+        et = c.get("estimated_terms")
+        writer.writerow(
+            [
+                c["funder_name"],
+                c["funder_id"],
+                c["match_score"],
+                "yes" if c["color"] != "red" else "no",
+                c["color"],
+                " | ".join(c["hard_reasons"]),
+                " | ".join(c["soft_concerns"]),
+                str(et.estimated_advance) if et and et.estimated_advance is not None else "",
+                str(et.estimated_factor) if et and et.estimated_factor is not None else "",
+                str(et.estimated_holdback_pct)
+                if et and et.estimated_holdback_pct is not None
+                else "",
+                str(et.estimated_apr) if et and et.estimated_apr is not None else "",
+            ]
+        )
+
+    filename = f"matched_funders_{slugify(merchant.business_name)}.csv"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "content-disposition": f'attachment; filename="{filename}"',
+            "cache-control": "private, no-store",
         },
     )
 
@@ -948,6 +1131,76 @@ async def merchant_submit_to_funder(
       6. Write ``deal.funder_note_posted`` audit on success, then
          return the "Submitted ✓" swap HTML (HTMX outerHTML).
     """
+    return await _perform_submit_to_funder(
+        merchant_id=merchant_id,
+        target_funder_id=None,
+        merchants=merchants,
+        docs=docs,
+        funder_repo=funder_repo,
+        ofac=ofac,
+        audit=audit,
+        close_client=close_client,
+        funder_note_subs=funder_note_subs,
+        actor_email=actor_email,
+    )
+
+
+@router.post("/merchants/{merchant_id}/submit-to-funder/{funder_id}", response_model=None)
+async def merchant_submit_to_specific_funder(
+    merchant_id: UUID,
+    funder_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    close_client: Annotated[CloseClient, Depends(get_close_client)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository,
+        Depends(get_funder_note_submission_repository),
+    ],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> HTMLResponse:
+    """Phase 7B per-funder submit (2026-06-19).
+
+    Same pipeline as ``merchant_submit_to_funder`` but narrows the
+    matched-funder list to the single funder identified in the path.
+    Powers the inline § 4 dossier panel's per-funder Submit buttons —
+    one button per matched funder, each posting only against that
+    specific funder so the Close Note + durable submission row land
+    scoped to the operator's actual click. Returns the same HTMX
+    swap HTML the global endpoint returns.
+    """
+    return await _perform_submit_to_funder(
+        merchant_id=merchant_id,
+        target_funder_id=funder_id,
+        merchants=merchants,
+        docs=docs,
+        funder_repo=funder_repo,
+        ofac=ofac,
+        audit=audit,
+        close_client=close_client,
+        funder_note_subs=funder_note_subs,
+        actor_email=actor_email,
+    )
+
+
+async def _perform_submit_to_funder(
+    *,
+    merchant_id: UUID,
+    target_funder_id: UUID | None,
+    merchants: MerchantRepository,
+    docs: DocumentRepository,
+    funder_repo: FunderRepository,
+    ofac: OFACClient | None,
+    audit: AuditLog,
+    close_client: CloseClient,
+    funder_note_subs: FunderNoteSubmissionRepository,
+    actor_email: str | None,
+) -> HTMLResponse:
+    """Shared implementation for the global + per-funder Submit-to-Funder
+    routes. ``target_funder_id`` narrows the matched list to one funder
+    when set; otherwise the existing top-ranked-three behavior applies."""
     try:
         merchant = merchants.get(merchant_id)
     except MerchantNotFoundError as exc:
@@ -1022,6 +1275,25 @@ async def merchant_submit_to_funder(
             continue
         matched.append(m)
     matched.sort(key=lambda fm: fm.match_score, reverse=True)
+
+    # Per-funder narrow when the dossier's inline § 4 panel posted a
+    # ``funder_id``. The targeted funder MUST exist in ``matched`` —
+    # if it doesn't, the dossier UI was stale (e.g., the funder was
+    # deactivated between the dossier render and the click) and we
+    # refuse with 400 rather than silently posting against the top
+    # global match. Empty filtered list also 400s so the "no matches"
+    # branch below only fires for the legacy global-submit branch.
+    if target_funder_id is not None:
+        narrowed = [m for m in matched if m.funder_id == target_funder_id]
+        if not narrowed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"funder {target_funder_id} is not a current match for this "
+                    "merchant — reload the dossier to refresh the panel"
+                ),
+            )
+        matched = narrowed
 
     # Stipulations gate (Sprint 6 Track A — supersedes the legacy
     # document-completeness check; the legacy adapter still exists for
@@ -1147,6 +1419,8 @@ async def merchant_submit_to_funder(
         "tier": score_result.tier,
         "matched_funder_count": len(matched),
     }
+    if target_funder_id is not None:
+        audit_details["target_funder_id"] = str(target_funder_id)
     if submission_row_id is not None:
         audit_details["funder_note_submission_id"] = str(submission_row_id)
     else:
@@ -2438,6 +2712,7 @@ async def merchant_detail(
         FunderNoteSubmissionRepository,
         Depends(get_funder_note_submission_repository),
     ],
+    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
 ) -> HTMLResponse:
     try:
         merchant = merchants.get(merchant_id)
@@ -2704,25 +2979,46 @@ async def merchant_detail(
     # the empty-state copy).
     funder_note_submissions = funder_note_subs.list_for_merchant(merchant_id=merchant_id, limit=50)
 
-    # Stipulations checklist (Sprint 6 Track A — supersedes the legacy
-    # completeness_warnings path; the dossier now renders the full
-    # bucketed view as red/green/yellow chips). Skipped when the
-    # merchant isn't yet scoreable (no score_result) — the button is
-    # hidden / disabled in that branch anyway. Also skipped when no
-    # funder matches; the submit-to-funder POST short-circuits in the
-    # same branch.
+    # Inline § 4 funder-matching panel (2026-06-19) — same card list the
+    # standalone /match panel renders. Built via ``_build_match_cards`` so
+    # the two surfaces stay in lockstep on color rule, historical-approval
+    # boost, and sort order. Skipped when the merchant isn't yet scoreable
+    # (no ``score_result`` or no ``score_input``) — § 4 falls back to its
+    # empty-state copy. The list is also the source of ``top_matched_funder``
+    # for the stipulations evaluator below; previously the dossier ran its
+    # own match loop here, which drifted from /match whenever the matcher
+    # gained a parameter.
+    matched_funders_cards: list[dict[str, Any]] = []
     top_matched_funder: FunderRow | None = None
     stips_result: StipsResult | None = None
     if score_result is not None and score_input is not None:
-        _matched: list[FunderMatch] = []
-        for _f in funder_repo.list_active():
-            _m = match_funder(_f, score_input, score_result, merchant=merchant)
-            if _m is not None:
-                _matched.append(_m)
-        if _matched:
-            _matched.sort(key=lambda fm: fm.match_score, reverse=True)
-            top_matched_funder = funder_repo.get(_matched[0].funder_id)
+        matched_funders_cards = _build_match_cards(
+            merchant=merchant,
+            score_input=score_input,
+            score_result=score_result,
+            funder_repo=funder_repo,
+            merchants_repo=merchants,
+            docs=docs,
+            funder_note_subs=funder_note_subs,
+            snapshot=snapshot,
+        )
+        if matched_funders_cards:
+            top_matched_funder = funder_repo.get(UUID(matched_funders_cards[0]["funder_id"]))
             stips_result = evaluate_stips(top_matched_funder, merchant)
+
+    # Most-recent funder reply per funder (audit-derived). The /match
+    # panel surfaces these on each card; the inline § 4 panel mirrors
+    # that affordance so the operator sees the reply chip without
+    # navigating to /match.
+    matched_funder_responses = _latest_funder_responses(audit, merchant_id)
+
+    # Per-funder submit history. Empty dict when the operator hasn't yet
+    # clicked Submit on any funder. The inline § 4 panel uses this to
+    # render a "Submitted ✓" chip on funders the operator already posted
+    # so the per-funder buttons don't look re-submittable on dossier reload.
+    submitted_funder_ids = {
+        str(s.funder_id) for s in funder_note_submissions if s.funder_id is not None
+    }
 
     # Feature C — operator notes panel. Newest-first list of timestamped
     # cards rendered above the chips section. Bounded to 50 rows to keep
@@ -2815,6 +3111,9 @@ async def merchant_detail(
             },
             "stips_result": (stips_result.model_dump() if stips_result else None),
             "top_matched_funder_name": (top_matched_funder.name if top_matched_funder else None),
+            "matched_funders": matched_funders_cards,
+            "matched_funder_responses": matched_funder_responses,
+            "submitted_funder_ids": submitted_funder_ids,
         },
     )
 

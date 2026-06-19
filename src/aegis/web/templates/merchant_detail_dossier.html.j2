@@ -637,33 +637,13 @@
             </section>
 
             <div class="actions">
-              {% if _actions_locked %}
-                <span class="btn primary is-disabled" title="{{ _locked_title }}" aria-disabled="true">Match funders</span>
-              {% else %}
-                <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Match funders</a>
-              {% endif %}
-              {# Submit-to-funder posts the AEGIS dossier summary as a
-                 Note on the Close Lead activity feed. Disabled when no
-                 Close Lead is linked; HTMX swaps the button to a
-                 "Submitted ✓" chip on 200. #}
-              {% if merchant.close_lead_id %}
-                <button class="btn"
-                        type="button"
-                        data-submit-to-funder="true"
-                        hx-post="/ui/merchants/{{ merchant.id }}/submit-to-funder"
-                        hx-target="this"
-                        hx-swap="outerHTML"
-                        hx-confirm="Post the AEGIS funder-submission summary as a Close Note?">
-                  Submit to Funder
-                </button>
-              {% else %}
-                <span class="btn is-disabled"
-                      data-submit-to-funder="disabled"
-                      aria-disabled="true"
-                      title="Link a Close Lead before submitting to a funder">
-                  Submit to Funder
-                </span>
-              {% endif %}
+              {# Phase 7B inline-match (2026-06-19): the standalone match
+                 link + global Submit-to-Funder button were retired from
+                 this action row. Funder matching now renders inline in
+                 § 4 below; per-funder Submit buttons sit on each card.
+                 The standalone /match page is still reachable from the
+                 Cross-references block for direct linking. #}
+              <a class="btn primary" href="#routing">Funder matching ↓</a>
               <a class="btn" href="/ui/merchants/{{ merchant.id }}/edit">Edit deal terms</a>
               <a class="btn" href="/ui/merchants/{{ merchant.id }}/findings.csv">Audit CSV</a>
               <a class="btn" href="/ui/merchants/{{ merchant.id }}/dossier.pdf">Download PDF dossier</a>
@@ -1221,31 +1201,170 @@
       </section>
     {% endif %}
 
-    {# ============== § 4 FUNDER ROUTING (summary) ============== #}
-    <section id="routing" class="section">
+    {# ============== § 4 FUNDER MATCHING (inline) ==============
+       Phase 7B inline-match (2026-06-19). Lifted the side-by-side
+       comparison from /ui/merchants/{id}/match into the dossier so the
+       full underwriting workflow (score → see matches → submit) lands
+       on one page. The standalone /match panel stays reachable for
+       direct linking. Each card carries its own Submit button posting
+       to /submit-to-funder with the funder_id form field; an HTMX swap
+       converts the button to a "Submitted ✓" chip on success. #}
+    <section id="routing" class="section" data-test-id="dossier-funder-matching">
       <header>
         <span class="n">§ 4</span>
-        <h2>Funder <em>routing</em></h2>
-        <span class="footnote">side-by-side comparison on /match</span>
+        <h2>Funder <em>matching</em></h2>
+        <span class="footnote">
+          {% if matched_funders %}{{ matched_funders|length }} active funder{{ '' if matched_funders|length == 1 else 's' }} considered{% else %}no matches yet{% endif %}
+          &middot;
+          <a href="/ui/merchants/{{ merchant.id }}/match" style="color:inherit">standalone view ↗</a>
+        </span>
       </header>
-      <div class="funder-summary">
-        <div class="copy">
-          {% if score_result and score_result.recommendation == 'decline' %}
+
+      {% if score_result and score_result.recommendation == 'decline' %}
+        <div class="funder-summary" data-test-id="dossier-funder-matching-decline">
+          <div class="copy">
             Deal is currently a hard decline &mdash; <em>no funders will be matched</em>. Resolve the hard-decline reasons above before routing.
-          {% elif merchant.submitted_to_funder_ids %}
-            Submitted to <strong>{{ merchant.submitted_to_funder_ids|length }} funder{{ '' if merchant.submitted_to_funder_ids|length == 1 else 's' }}</strong>{% if merchant.last_submitted_at %} on {{ merchant.last_submitted_at.strftime('%Y-%m-%d') }}{% endif %}. Awaiting responses; check the funder match page for replies.
-          {% else %}
-            Not yet submitted. The funder match page renders per-funder pass/fail across all active funders, with the routing CSV downloadable as a ZIP.
-          {% endif %}
+          </div>
         </div>
-        <div>
-          {% if _actions_locked %}
-            <span class="btn primary is-disabled" title="{{ _locked_title }}" aria-disabled="true">Open match panel →</span>
-          {% else %}
-            <a class="btn primary" href="/ui/merchants/{{ merchant.id }}/match">Open match panel →</a>
-          {% endif %}
+      {% elif not matched_funders %}
+        <div class="funder-summary" data-test-id="dossier-funder-matching-empty">
+          <div class="copy">
+            {% if score_result %}
+              No active funders match this merchant today. <a href="/ui/funders/import">Import a funder</a> or review the criteria comparison on the standalone match page.
+            {% else %}
+              The deal isn&apos;t yet scoreable &mdash; upload at least one analyzed statement before funder matching runs.
+            {% endif %}
+          </div>
         </div>
-      </div>
+      {% else %}
+        <div class="funder-matching-actions"
+             style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 14px;font-size:12px">
+          <a class="btn"
+             data-test-id="dossier-matched-funders-csv"
+             href="/ui/merchants/{{ merchant.id }}/matched-funders.csv">↓ Matched-funders CSV</a>
+          <span style="color:var(--ink-3);font-family:var(--mono);font-size:11px;letter-spacing:0.06em">
+            paper trail of every funder considered &middot; deal metrics + match scores + estimated terms
+          </span>
+        </div>
+
+        <div data-test-id="dossier-matched-funders-grid"
+             style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px;margin-bottom:18px">
+          {% for c in matched_funders %}
+            {% set _color_var = 'var(--approve)' if c.color == 'green' else 'var(--review)' if c.color == 'yellow' else 'var(--decline)' %}
+            {% set _already_submitted = c.funder_id in submitted_funder_ids %}
+            <div data-test-id="dossier-matched-funder-card"
+                 data-funder-id="{{ c.funder_id }}"
+                 data-color="{{ c.color }}"
+                 style="border:1px solid var(--rule);border-left:3px solid {{ _color_var }};background:var(--paper);padding:14px 14px 12px;{% if c.color == 'green' %}box-shadow:0 0 0 1px color-mix(in oklch, var(--approve) 30%, transparent);{% endif %}">
+              <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:8px">
+                <span style="font-family:var(--serif);font-weight:500;font-size:15px;letter-spacing:-0.005em;color:var(--ink)">
+                  <a href="/ui/funders/{{ c.funder_id }}" style="color:inherit;border-bottom:0">{{ c.funder_name }}</a>
+                </span>
+                <span style="font-family:var(--serif);font-size:24px;font-weight:600;letter-spacing:-0.022em;color:{{ _color_var }};font-variant-numeric:tabular-nums">{{ c.match_score }}<span style="font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-left:2px">/100</span></span>
+              </div>
+
+              {% if c.hard_reasons %}
+                <div style="margin-top:8px">
+                  <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--decline);margin-bottom:4px">Hard fails &middot; {{ c.hard_reasons|length }}</div>
+                  <ul style="margin:0;padding-left:14px;font-family:var(--serif);font-size:12px;color:var(--ink-2);line-height:1.45">
+                    {% for r in c.hard_reasons %}<li>{{ r }}</li>{% endfor %}
+                  </ul>
+                </div>
+              {% endif %}
+              {% if c.soft_concerns %}
+                <div style="margin-top:8px">
+                  <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--review);margin-bottom:4px">Soft concerns &middot; {{ c.soft_concerns|length }}</div>
+                  <ul style="margin:0;padding-left:14px;font-family:var(--serif);font-size:12px;color:var(--ink-2);line-height:1.45">
+                    {% for r in c.soft_concerns %}<li>{{ r }}</li>{% endfor %}
+                  </ul>
+                </div>
+              {% endif %}
+              {% if c.color == 'green' %}
+                <div style="margin-top:6px;font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--approve)">No blockers</div>
+              {% endif %}
+
+              {% if c.estimated_terms is not none %}
+                {% set et = c.estimated_terms %}
+                <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--rule)">
+                  <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:0.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px">Estimated terms</div>
+                  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(70px,1fr));gap:8px 12px;font-family:var(--serif);font-size:12px;color:var(--ink-2);line-height:1.35">
+                    <div>
+                      <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3)">Advance</div>
+                      <div class="mono-cell" style="font-size:13px;color:var(--ink);font-weight:500">{{ et.estimated_advance | whole_money }}</div>
+                    </div>
+                    <div>
+                      <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3)">Factor</div>
+                      <div class="mono-cell" style="font-size:13px;color:var(--ink);font-weight:500">{{ et.estimated_factor }}x</div>
+                    </div>
+                    <div>
+                      <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3)">Holdback</div>
+                      <div class="mono-cell" style="font-size:13px;color:var(--ink);font-weight:500">{{ et.estimated_holdback_pct | format_pct }}</div>
+                    </div>
+                    <div>
+                      <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--ink-3)">APR</div>
+                      <div class="mono-cell" style="font-size:13px;color:{% if et.estimated_apr is none %}var(--ink-3){% else %}var(--ink){% endif %};font-weight:500">{{ et.estimated_apr | format_pct }}</div>
+                    </div>
+                  </div>
+                </div>
+              {% endif %}
+
+              {% set _resp = (matched_funder_responses or {}).get(c.funder_id) %}
+              {% if _resp %}
+                {% set _rs_cls = {'approved':'pos','declined':'bad','countered':'warn','pending':''}.get(_resp.status, '') %}
+                <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--rule)">
+                  <div style="font-family:var(--mono);font-size:9px;letter-spacing:0.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:4px">Funder reply</div>
+                  <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+                    <span class="chip {{ _rs_cls }}">{{ _resp.status }}</span>
+                    {% if _resp.offered_amount %}<span class="mono-cell" style="font-size:11.5px">${{ _resp.offered_amount }}</span>{% endif %}
+                    {% if _resp.offered_factor %}<span class="mono-cell" style="font-size:11.5px">&times;{{ _resp.offered_factor }}</span>{% endif %}
+                    {% if _resp.offered_term_days %}<span class="mono-cell" style="font-size:11.5px">{{ _resp.offered_term_days }}d</span>{% endif %}
+                  </div>
+                </div>
+              {% endif %}
+
+              {# Per-funder submit button. Posts to /submit-to-funder
+                 with funder_id form field; the route filters matched
+                 funders to just this one. HTMX swaps the button with
+                 the "Submitted ✓" chip on 200. Disabled states:
+                 (a) red card — funder hard-fails this merchant;
+                 (b) merchant has no close_lead_id;
+                 (c) operator already submitted to this funder
+                     (one durable row already exists). #}
+              <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--rule);display:flex;justify-content:flex-end">
+                {% if _already_submitted %}
+                  <span class="btn primary is-disabled"
+                        data-test-id="dossier-submit-funder-already-submitted"
+                        data-submit-to-funder="already-submitted"
+                        aria-disabled="true">Submitted &check;</span>
+                {% elif c.color == 'red' %}
+                  <span class="btn is-disabled"
+                        data-test-id="dossier-submit-funder-disabled-hard-fail"
+                        data-submit-to-funder="disabled-hard-fail"
+                        aria-disabled="true"
+                        title="Funder hard-fails this merchant — resolve the hard-fail reasons above to enable">Submit to {{ c.funder_name }}</span>
+                {% elif not merchant.close_lead_id %}
+                  <span class="btn is-disabled"
+                        data-test-id="dossier-submit-funder-disabled-no-lead"
+                        data-submit-to-funder="disabled-no-lead"
+                        aria-disabled="true"
+                        title="Link a Close Lead before submitting to a funder">Submit to {{ c.funder_name }}</span>
+                {% else %}
+                  <button class="btn primary"
+                          type="button"
+                          data-test-id="dossier-submit-funder-button"
+                          data-funder-id="{{ c.funder_id }}"
+                          name="funder_id"
+                          value="{{ c.funder_id }}"
+                          hx-post="/ui/merchants/{{ merchant.id }}/submit-to-funder/{{ c.funder_id }}"
+                          hx-target="this"
+                          hx-swap="outerHTML"
+                          hx-confirm="Submit deal to {{ c.funder_name }}? This posts the AEGIS funder note to Close.">Submit to {{ c.funder_name }}</button>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
     </section>
 
     {# ============== § 4½ STATEMENTS LEDGER ============== #}
