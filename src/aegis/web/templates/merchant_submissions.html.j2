@@ -1,0 +1,92 @@
+{% extends "base.html.j2" %}
+{% set active = 'Deals' %}
+{% block title %}{{ merchant.business_name }} — Submissions — AEGIS{% endblock %}
+
+{# Phase 7C — per-merchant submission history.
+
+   Lists every funder_note_submission row for one merchant, newest
+   first. Each row is anchored ``id="funder-{funder_id}"`` so the
+   dossier inline matched-funders panel can deep-link to a specific
+   funder via ``…/submissions#funder-{funder_id}``.
+
+   Read-only surface. Updates still flow through the PATCH route on
+   the dossier's § 5½ block.
+#}
+
+{% block deck %}
+{% set title = merchant.business_name %}
+{% set subtitle = "· submissions" %}
+{% set meta = (submissions|length|string) ~ " submission" ~ ('' if submissions|length == 1 else 's') ~ " · newest first" %}
+{% set actions = [
+    {"label": "← Dossier", "href": "/ui/merchants/" ~ merchant.id|string},
+    {"label": "All submissions", "href": "/ui/submissions"},
+] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+  <div>
+    <header class="sect-head">
+      <h2>Funder submission history</h2>
+      <div class="rule"></div>
+      <div class="meta">merchant {{ merchant.id|string|truncate(8, True, '') }}</div>
+    </header>
+
+    {% if not submissions %}
+      <div class="empty" data-test-id="merchant-submissions-empty">
+        No submissions yet — submit to a funder from the dossier above.
+      </div>
+    {% else %}
+      <table class="queue" data-test-id="merchant-submissions-table">
+        <thead>
+          <tr>
+            <th>Funder</th>
+            <th>Submitted</th>
+            <th>Status</th>
+            <th class="num">Offer amount</th>
+            <th class="num">Factor</th>
+            <th class="num">Holdback</th>
+            <th class="num">Days to response</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in submissions %}
+            <tr id="funder-{{ s.funder_id }}"
+                data-test-id="merchant-submission-row"
+                data-submission-id="{{ s.id }}"
+                data-funder-id="{{ s.funder_id }}"
+                data-status="{{ s.status }}">
+              <td class="merchant">
+                <a href="/ui/funders/{{ s.funder_id }}">{{ s.funder_name }}</a>
+              </td>
+              <td class="mono-cell">{{ s.submitted_at_date }}</td>
+              <td>
+                {% if s.status_chip_class %}
+                  <span class="chip {{ s.status_chip_class }}">{{ s.status }}</span>
+                {% else %}
+                  <span class="chip">{{ s.status }}</span>
+                {% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right">
+                {% if s.offer_amount is not none %}{{ s.offer_amount | whole_money }}{% else %}—{% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right">
+                {% if s.offer_factor is not none %}{{ s.offer_factor }}x{% else %}—{% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right">
+                {% if s.offer_holdback is not none %}{{ s.offer_holdback | format_pct }}{% else %}—{% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right">
+                {% if s.days_to_response is not none %}{{ s.days_to_response }}{% else %}—{% endif %}
+              </td>
+              <td>{{ s.notes or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

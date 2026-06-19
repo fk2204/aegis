@@ -1361,6 +1361,16 @@
                           hx-confirm="Submit deal to {{ c.funder_name }}? This posts the AEGIS funder note to Close.">Submit to {{ c.funder_name }}</button>
                 {% endif %}
               </div>
+
+              {# Phase 7C deep-link — quiet "View history" link routes to
+                 the per-merchant submissions page anchored on this
+                 funder's row so the operator can review the timeline of
+                 prior submissions / responses for this funder pair. #}
+              <div style="margin-top:6px;text-align:right;font-family:var(--mono);font-size:10px;letter-spacing:0.06em;color:var(--ink-3)">
+                <a href="/ui/merchants/{{ merchant.id }}/submissions#funder-{{ c.funder_id }}"
+                   data-test-id="dossier-funder-card-view-history"
+                   style="color:inherit">View history ↗</a>
+              </div>
             </div>
           {% endfor %}
         </div>

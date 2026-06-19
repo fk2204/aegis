@@ -1,0 +1,230 @@
+{% extends "base.html.j2" %}
+{% set active = 'Portfolio' %}
+{% block title %}Submissions — AEGIS{% endblock %}
+
+{# Phase 7C — portfolio-wide submission history.
+
+   Most recent ``limit`` submissions across every merchant, newest
+   first. Filters are purely client-side: the JS at the bottom reads
+   ``data-status`` / ``data-funder-id`` / ``data-submitted-at`` on
+   each row and toggles row visibility without a round-trip.
+
+   Date toggle defaults to "Last 30 days" so a year-old account opens
+   to a meaningful screen instead of a thousand pre-historic rows.
+#}
+
+{% block deck %}
+{% set title = "Submissions" %}
+{% set subtitle = "· portfolio" %}
+{% set meta = (submissions|length|string) ~ " submission" ~ ('' if submissions|length == 1 else 's') ~ " · newest first · cap " ~ (limit|string) %}
+{% set actions = [
+    {"label": "Today", "href": "/ui/"},
+    {"label": "Portfolio", "href": "/ui/portfolio"},
+] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="strip" data-test-id="portfolio-submissions-counters">
+  <div class="cell" data-test-id="counter-pending">
+    <div class="k">Pending</div>
+    <div class="v {{ 'warn' if pending_count > 0 else '' }}">{{ pending_count }}</div>
+  </div>
+  <div class="cell" data-test-id="counter-approved-month">
+    <div class="k">Approved this month</div>
+    <div class="v {{ 'calm' if approved_month_count > 0 else '' }}">{{ approved_month_count }}</div>
+  </div>
+  <div class="cell" data-test-id="counter-declined-month">
+    <div class="k">Declined this month</div>
+    <div class="v {{ 'bad' if declined_month_count > 0 else '' }}">{{ declined_month_count }}</div>
+  </div>
+</section>
+
+<section class="body cols-1">
+  <div>
+    <header class="sect-head">
+      <h2>All submissions</h2>
+      <div class="rule"></div>
+      <div class="meta">showing <span data-test-id="visible-row-count">{{ submissions|length }}</span> of {{ submissions|length }}</div>
+    </header>
+
+    {# Filter controls — purely client-side. #}
+    <div class="portfolio-submission-filters"
+         data-test-id="portfolio-submission-filters"
+         style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:8px 0 14px;font-size:12px">
+      <div data-test-id="filter-status-chips" style="display:flex;gap:6px;align-items:center">
+        <span class="sub" style="text-transform:uppercase;letter-spacing:0.08em;font-size:10.5px;color:var(--ink-3)">Status</span>
+        <button type="button" class="chip" data-status-filter="all" data-test-id="status-filter-all">All</button>
+        <button type="button" class="chip" data-status-filter="pending" data-test-id="status-filter-pending">Pending</button>
+        <button type="button" class="chip pos" data-status-filter="approved" data-test-id="status-filter-approved">Approved</button>
+        <button type="button" class="chip bad" data-status-filter="declined" data-test-id="status-filter-declined">Declined</button>
+        <button type="button" class="chip warn" data-status-filter="countered" data-test-id="status-filter-countered">Countered</button>
+      </div>
+      <div data-test-id="filter-funder" style="display:flex;gap:6px;align-items:center">
+        <label class="sub" for="funder-filter" style="text-transform:uppercase;letter-spacing:0.08em;font-size:10.5px;color:var(--ink-3)">Funder</label>
+        <select id="funder-filter" data-test-id="funder-filter-select" style="font-size:12px;padding:2px 6px">
+          <option value="all">All funders</option>
+          {% for funder_id, funder_name in distinct_funders %}
+            <option value="{{ funder_id }}">{{ funder_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div data-test-id="filter-date-range" style="display:flex;gap:6px;align-items:center">
+        <span class="sub" style="text-transform:uppercase;letter-spacing:0.08em;font-size:10.5px;color:var(--ink-3)">Window</span>
+        <button type="button" class="chip" data-date-filter="7" data-test-id="date-filter-7">7d</button>
+        <button type="button" class="chip" data-date-filter="30" data-test-id="date-filter-30">30d</button>
+        <button type="button" class="chip" data-date-filter="90" data-test-id="date-filter-90">90d</button>
+        <button type="button" class="chip" data-date-filter="all" data-test-id="date-filter-all">All</button>
+      </div>
+    </div>
+
+    {% if not submissions %}
+      <div class="empty" data-test-id="portfolio-submissions-empty">
+        No submissions yet — submit to a funder from any merchant dossier.
+      </div>
+    {% else %}
+      <table class="queue" data-test-id="portfolio-submissions-table">
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th>Funder</th>
+            <th>Submitted</th>
+            <th>Status</th>
+            <th class="num">Offer amount</th>
+            <th class="num">Factor</th>
+            <th class="num">Holdback</th>
+            <th class="num">Days to response</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in submissions %}
+            <tr data-test-id="portfolio-submission-row"
+                data-submission-id="{{ s.id }}"
+                data-status="{{ s.status }}"
+                data-funder-id="{{ s.funder_id }}"
+                data-merchant-id="{{ s.merchant_id }}"
+                data-submitted-at="{{ s.submitted_at_iso }}">
+              <td class="merchant">
+                <a href="/ui/merchants/{{ s.merchant_id }}">{{ s.merchant_name }}</a>
+              </td>
+              <td>
+                <a href="/ui/funders/{{ s.funder_id }}">{{ s.funder_name }}</a>
+              </td>
+              <td class="mono-cell">{{ s.submitted_at_date }}</td>
+              <td>
+                {% if s.status_chip_class %}
+                  <span class="chip {{ s.status_chip_class }}">{{ s.status }}</span>
+                {% else %}
+                  <span class="chip">{{ s.status }}</span>
+                {% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right">
+                {% if s.offer_amount is not none %}{{ s.offer_amount | whole_money }}{% else %}—{% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right">
+                {% if s.offer_factor is not none %}{{ s.offer_factor }}x{% else %}—{% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right">
+                {% if s.offer_holdback is not none %}{{ s.offer_holdback | format_pct }}{% else %}—{% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right">
+                {% if s.days_to_response is not none %}{{ s.days_to_response }}{% else %}—{% endif %}
+              </td>
+              <td>{{ s.notes or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</section>
+
+{# Vanilla-JS row filter — no React, no HTMX. State lives entirely in
+   data-* attributes on the buttons + rows so the operator can refresh
+   the page to reset. Default state: All / All / 30d. #}
+<script>
+(function () {
+  var table = document.querySelector('[data-test-id="portfolio-submissions-table"]');
+  if (!table) return;
+
+  var rows = Array.prototype.slice.call(
+    table.querySelectorAll('tr[data-test-id="portfolio-submission-row"]')
+  );
+  var statusButtons = document.querySelectorAll('[data-status-filter]');
+  var dateButtons = document.querySelectorAll('[data-date-filter]');
+  var funderSelect = document.getElementById('funder-filter');
+  var visibleCountEl = document.querySelector('[data-test-id="visible-row-count"]');
+
+  var state = {
+    status: 'all',
+    funder: 'all',
+    days: 30,
+  };
+
+  function setActive(buttons, predicate) {
+    buttons.forEach(function (btn) {
+      if (predicate(btn)) {
+        btn.setAttribute('aria-pressed', 'true');
+        btn.style.outline = '2px solid var(--ink)';
+      } else {
+        btn.removeAttribute('aria-pressed');
+        btn.style.outline = '';
+      }
+    });
+  }
+
+  function applyFilters() {
+    var cutoffMs = null;
+    if (state.days !== null) {
+      cutoffMs = Date.now() - state.days * 24 * 60 * 60 * 1000;
+    }
+    var visible = 0;
+    rows.forEach(function (row) {
+      var statusOk = state.status === 'all' || row.getAttribute('data-status') === state.status;
+      var funderOk = state.funder === 'all' || row.getAttribute('data-funder-id') === state.funder;
+      var dateOk = true;
+      if (cutoffMs !== null) {
+        var submittedAt = Date.parse(row.getAttribute('data-submitted-at'));
+        dateOk = !isNaN(submittedAt) && submittedAt >= cutoffMs;
+      }
+      var shouldShow = statusOk && funderOk && dateOk;
+      row.style.display = shouldShow ? '' : 'none';
+      if (shouldShow) visible++;
+    });
+    if (visibleCountEl) visibleCountEl.textContent = String(visible);
+
+    setActive(statusButtons, function (btn) {
+      return btn.getAttribute('data-status-filter') === state.status;
+    });
+    setActive(dateButtons, function (btn) {
+      var v = btn.getAttribute('data-date-filter');
+      if (v === 'all') return state.days === null;
+      return parseInt(v, 10) === state.days;
+    });
+  }
+
+  statusButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.status = btn.getAttribute('data-status-filter');
+      applyFilters();
+    });
+  });
+  dateButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var v = btn.getAttribute('data-date-filter');
+      state.days = v === 'all' ? null : parseInt(v, 10);
+      applyFilters();
+    });
+  });
+  if (funderSelect) {
+    funderSelect.addEventListener('change', function () {
+      state.funder = funderSelect.value;
+      applyFilters();
+    });
+  }
+
+  applyFilters();
+})();
+</script>
+{% endblock %}

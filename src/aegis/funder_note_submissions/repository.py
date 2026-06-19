@@ -85,6 +85,18 @@ class FunderNoteSubmissionRepository(Protocol):
         Powers the Sprint 3 funder-performance page.
         """
 
+    def list_recent(
+        self,
+        *,
+        limit: int = 500,
+    ) -> list[FunderNoteSubmissionRow]:
+        """Return the most recent submissions across every merchant,
+        newest first. Powers the Phase 7C portfolio-wide submissions
+        view (``GET /ui/submissions``). ``limit`` keeps the response
+        bounded so a year-old account with thousands of rows still
+        renders fast.
+        """
+
     def get(self, submission_id: UUID) -> FunderNoteSubmissionRow:
         """Fetch a single submission by id. Raises
         ``FunderNoteSubmissionNotFoundError`` when absent."""
@@ -155,6 +167,15 @@ class InMemoryFunderNoteSubmissionRepository:
         limit: int = 500,
     ) -> list[FunderNoteSubmissionRow]:
         rows = [r for r in self._by_id.values() if r.funder_id == funder_id]
+        rows.sort(key=lambda r: r.submitted_at, reverse=True)
+        return rows[:limit]
+
+    def list_recent(
+        self,
+        *,
+        limit: int = 500,
+    ) -> list[FunderNoteSubmissionRow]:
+        rows = list(self._by_id.values())
         rows.sort(key=lambda r: r.submitted_at, reverse=True)
         return rows[:limit]
 
@@ -285,6 +306,21 @@ class SupabaseFunderNoteSubmissionRepository:
             .table("funder_note_submissions")
             .select("*")
             .eq("funder_id", str(funder_id))
+            .order("submitted_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [_row_from_dict(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    def list_recent(
+        self,
+        *,
+        limit: int = 500,
+    ) -> list[FunderNoteSubmissionRow]:
+        result = (
+            get_supabase()
+            .table("funder_note_submissions")
+            .select("*")
             .order("submitted_at", desc=True)
             .limit(limit)
             .execute()
