@@ -3624,6 +3624,31 @@ def _criteria_comparison(funder: FunderRow, score_input: ScoreInput) -> list[dic
     return rows
 
 
+def _is_marketplace_funder(funder: FunderRow) -> bool:
+    """Detect a marketplace / aggregator funder with no published criteria.
+
+    Three funders in the live catalog (Splash Advance, Big Think Capital,
+    Bizi Connect, 2026-06-20) are correctly active but carry no
+    underwriting criteria — they don't underwrite directly, they're
+    aggregator routes. The match panel still produces a card for them,
+    but the underlying ``match_score`` is meaningless because the
+    matcher had no thresholds to evaluate. Surface a "Marketplace" badge
+    in place of (or alongside) the score so the team doesn't read the
+    card as a normal criteria-based match.
+
+    Heuristic: ``active=True`` AND all three of the most-load-bearing
+    operator-set criteria are unset. Stops short of treating "active +
+    one or two criteria set" as a marketplace — that's a partial entry
+    the operator hasn't finished, a different problem.
+    """
+    return (
+        funder.active
+        and funder.min_monthly_revenue is None
+        and funder.min_credit_score is None
+        and funder.max_positions is None
+    )
+
+
 def _match_card(
     funder: FunderRow,
     match: FunderMatch,
@@ -3697,6 +3722,11 @@ def _match_card(
         # route's index build hit an outage. Template renders as a
         # short "track record" qualifier on the card when present.
         "historical_approval_rate": match.historical_approval_rate,
+        # Marketplace / aggregator flag — see ``_is_marketplace_funder``.
+        # Template surfaces a "Marketplace" badge in place of the score
+        # so the team doesn't misread a criteria-less card as a real
+        # criteria-based match.
+        "is_marketplace": _is_marketplace_funder(funder),
     }
 
 

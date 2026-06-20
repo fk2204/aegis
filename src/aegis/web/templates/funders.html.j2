@@ -133,6 +133,20 @@
                       data-test-id="funders-op-status-chip">
                   {{ _op_status_labels[f.operator_status] }}
                 </span>
+                {# Marketplace badge — funder is active but carries no
+                   published underwriting criteria. Mirrors the matched-
+                   funder card badge on the dossier so the operator can
+                   spot aggregator/no-criteria rows in either surface
+                   without comparing columns. See ``_is_marketplace_funder``
+                   in src/aegis/web/routers/merchants.py for the
+                   activation rule. #}
+                {% if f.active and f.min_monthly_revenue is none and f.min_credit_score is none and f.max_positions is none %}
+                  <span class="chip"
+                        data-test-id="funders-marketplace-badge"
+                        style="margin-left:6px;font-family:var(--mono);font-size:9.5px;letter-spacing:0.14em;text-transform:uppercase;background:var(--rule);color:var(--ink-2);padding:2px 6px">
+                    Marketplace
+                  </span>
+                {% endif %}
               </td>
 
               {# === Approval rate ===

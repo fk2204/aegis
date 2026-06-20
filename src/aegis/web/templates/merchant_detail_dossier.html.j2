@@ -1255,12 +1255,25 @@
             <div data-test-id="dossier-matched-funder-card"
                  data-funder-id="{{ c.funder_id }}"
                  data-color="{{ c.color }}"
-                 style="border:1px solid var(--rule);border-left:3px solid {{ _color_var }};background:var(--paper);padding:14px 14px 12px;{% if c.color == 'green' %}box-shadow:0 0 0 1px color-mix(in oklch, var(--approve) 30%, transparent);{% endif %}">
+                 {% if c.is_marketplace %}data-marketplace="true"{% endif %}
+                 style="border:1px solid var(--rule);border-left:3px solid {{ _color_var }};background:var(--paper);padding:14px 14px 12px;{% if c.color == 'green' and not c.is_marketplace %}box-shadow:0 0 0 1px color-mix(in oklch, var(--approve) 30%, transparent);{% endif %}">
               <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:8px">
                 <span style="font-family:var(--serif);font-weight:500;font-size:15px;letter-spacing:-0.005em;color:var(--ink)">
                   <a href="/ui/funders/{{ c.funder_id }}" style="color:inherit;border-bottom:0">{{ c.funder_name }}</a>
                 </span>
-                <span style="font-family:var(--serif);font-size:24px;font-weight:600;letter-spacing:-0.022em;color:{{ _color_var }};font-variant-numeric:tabular-nums">{{ c.match_score }}<span style="font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-left:2px">/100</span></span>
+                {% if c.is_marketplace %}
+                  {# Marketplace / aggregator funder — no published criteria
+                     means the match score has nothing to evaluate against.
+                     Surface the badge in place of the score so the operator
+                     doesn't misread an empty match as a meaningful one. #}
+                  <span class="chip"
+                        data-test-id="dossier-matched-funder-marketplace-badge"
+                        style="font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;background:var(--rule);color:var(--ink-2);padding:3px 8px">
+                    Marketplace
+                  </span>
+                {% else %}
+                  <span style="font-family:var(--serif);font-size:24px;font-weight:600;letter-spacing:-0.022em;color:{{ _color_var }};font-variant-numeric:tabular-nums">{{ c.match_score }}<span style="font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-left:2px">/100</span></span>
+                {% endif %}
               </div>
 
               {% if c.hard_reasons %}

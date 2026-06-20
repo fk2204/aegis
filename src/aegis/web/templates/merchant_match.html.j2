@@ -127,7 +127,19 @@
                     <input type="checkbox" name="funder_ids" value="{{ c.funder_id }}" data-color="{{ c.color }}" {% if _disabled %}disabled{% endif %} {% if preselect_funder_id and c.funder_id == preselect_funder_id %}checked{% endif %} style="width:auto">
                     <a href="/ui/funders/{{ c.funder_id }}" onclick="event.stopPropagation()" style="color:inherit;border-bottom:0">{{ c.funder_name }}</a>
                   </span>
-                  <span style="font-family:var(--serif);font-size:24px;font-weight:600;letter-spacing:-0.022em;color:{{ _color_var }};font-variant-numeric:tabular-nums">{{ c.match_score }}<span style="font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-left:2px">/100</span></span>
+                  {% if c.is_marketplace %}
+                    {# Marketplace / aggregator funder — no published
+                       criteria. Surface the badge instead of the score so
+                       the operator doesn't misread an empty match as
+                       meaningful. #}
+                    <span class="chip"
+                          data-test-id="match-card-marketplace-badge"
+                          style="font-family:var(--mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;background:var(--rule);color:var(--ink-2);padding:3px 8px">
+                      Marketplace
+                    </span>
+                  {% else %}
+                    <span style="font-family:var(--serif);font-size:24px;font-weight:600;letter-spacing:-0.022em;color:{{ _color_var }};font-variant-numeric:tabular-nums">{{ c.match_score }}<span style="font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-left:2px">/100</span></span>
+                  {% endif %}
                 </div>
 
                 {% if c.hard_reasons %}
