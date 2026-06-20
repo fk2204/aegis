@@ -20,7 +20,7 @@ import hashlib
 import hmac
 import json
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
@@ -121,25 +121,81 @@ def audit() -> InMemoryAuditLog:
     return InMemoryAuditLog()
 
 
+def _path_aware_transport_factory(
+    *,
+    has_opportunity: bool = True,
+    has_pdf: bool = True,
+    lead_payload_override: dict[str, Any] | None = None,
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Build an httpx transport that routes by path so the lead.updated
+    gate (opportunity + PDF check, 2026-06-20) has realistic inputs.
+
+    Defaults yield ``has_opportunity=True`` + ``has_pdf=True`` so the
+    pre-gate tests still pass without modification — the merchant
+    creation branch fires the way it always did. New gate tests pass
+    ``has_opportunity=False`` / ``has_pdf=False`` to exercise the skip
+    paths.
+    """
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        # /api/v1/lead/{lead_id}/ — canned lead payload
+        if path.startswith("/api/v1/lead/"):
+            return httpx.Response(200, json=lead_payload_override or _lead_payload())
+        # /api/v1/opportunity/ — gate read
+        if path.startswith("/api/v1/opportunity/"):
+            opps = [{"id": "oppo_stub", "lead_id": "lead_abc"}] if has_opportunity else []
+            return httpx.Response(200, json={"data": opps, "has_more": False})
+        # /api/v1/activity/note/ — gate's PDF check walks here first
+        if path.startswith("/api/v1/activity/note/"):
+            if has_pdf:
+                return httpx.Response(
+                    200,
+                    json={
+                        "data": [
+                            {
+                                "id": "acti_stub",
+                                "_type": "Note",
+                                "attachments": [
+                                    {
+                                        "id": "att_stub",
+                                        "filename": "stmt.pdf",
+                                        "content_type": "application/pdf",
+                                        "url": "https://app.close.com/go/file/persisted/stub",
+                                    }
+                                ],
+                            }
+                        ],
+                        "has_more": False,
+                    },
+                )
+            return httpx.Response(200, json={"data": [], "has_more": False})
+        if path.startswith("/api/v1/activity/email/"):
+            return httpx.Response(200, json={"data": [], "has_more": False})
+        # Fallback: the lead payload (back-compat with the pre-gate stub
+        # for any path the test isn't explicitly mapping).
+        return httpx.Response(200, json=lead_payload_override or _lead_payload())
+
+    return transport
+
+
 @pytest.fixture()
 def stub_close_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> CloseClient:
     """A CloseClient whose underlying httpx transport returns the canned
-    Lead payload for any GET. Reused across tests; sufficient because
-    the webhook only ever calls get_lead in step 4 scope."""
+    Lead payload for ``/lead/`` paths, a one-opportunity stub for
+    ``/opportunity/``, and a single PDF attachment for
+    ``/activity/note/``. The lead.updated gate (opportunity + PDF
+    presence, 2026-06-20) sees realistic positive inputs by default so
+    every pre-gate test still goes down the merchant-create branch."""
     monkeypatch.setenv("CLOSE_API_KEY", "api_test")
     monkeypatch.setenv("CLOSE_API_BASE", "https://api.close.example")
     monkeypatch.setenv("CLOSE_WEBHOOK_SECRET", _TEST_SECRET_HEX)
     monkeypatch.setenv("CLOSE_DOCS_IN_PRE_UW_STATUS_ID", _TRIGGER_STATUS_ID)
     get_settings.cache_clear()
 
-    def transport(request: httpx.Request) -> httpx.Response:
-        # Always return the canned lead payload — every GET in scope is
-        # a get_lead. The path includes the lead_id; we don't validate
-        # it here because the test composes the event.
-        return httpx.Response(200, json=_lead_payload())
-
+    transport = _path_aware_transport_factory()
     return CloseClient(http_client=httpx.Client(transport=httpx.MockTransport(transport)))
 
 
@@ -889,4 +945,173 @@ def test_webhook_handles_lead_with_both_unset(
     assert saved.state is None
     assert saved.owner_name is None
     assert saved.business_name == "Acme Holdings LLC"
+    reset_dependency_caches()
+
+
+# ----------------------------------------------------------------------
+# lead.updated new-merchant gate
+# (2026-06-20 — Close lead.updated subscription was bulk-creating
+# merchants for every lead change in the org, leaving 80% of the
+# merchants table empty. Gate the new-merchant branch on opportunity
+# presence AND PDF-attachment presence so AEGIS only mirrors leads
+# that are actual deals with documents to score.)
+# ----------------------------------------------------------------------
+
+
+def _build_gate_client(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    has_opportunity: bool,
+    has_pdf: bool,
+) -> TestClient:
+    """One-off TestClient with a CloseClient whose transport reports the
+    requested opportunity / PDF presence to the lead.updated gate."""
+    monkeypatch.setenv("CLOSE_API_KEY", "api_test")
+    monkeypatch.setenv("CLOSE_API_BASE", "https://api.close.example")
+    monkeypatch.setenv("CLOSE_WEBHOOK_SECRET", _TEST_SECRET_HEX)
+    monkeypatch.setenv("CLOSE_DOCS_IN_PRE_UW_STATUS_ID", _TRIGGER_STATUS_ID)
+    get_settings.cache_clear()
+    transport = _path_aware_transport_factory(has_opportunity=has_opportunity, has_pdf=has_pdf)
+    close_client = CloseClient(http_client=httpx.Client(transport=httpx.MockTransport(transport)))
+    reset_dependency_caches()
+    app = create_app()
+    app.dependency_overrides[get_merchant_repository] = lambda: repo
+    app.dependency_overrides[get_audit] = lambda: audit
+    app.dependency_overrides[get_close_client] = lambda: close_client
+    return TestClient(app)
+
+
+def test_lead_updated_gate_skips_when_no_opportunity(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cold prospect / no-opportunity lead → no merchant created, skip
+    audit row written."""
+    lead_id = "lead_no_opp"
+    with _build_gate_client(repo, audit, monkeypatch, has_opportunity=False, has_pdf=True) as tc:
+        resp = _post_signed(tc, _lead_updated_event(lead_id=lead_id))
+    assert resp.status_code == 204, resp.text
+    assert repo.find_by_close_lead_id(lead_id) is None
+    actions = [e["action"] for e in audit.entries]
+    assert "close.lead_update.skipped_no_opportunity" in actions
+    assert "close.merchant.created" not in actions
+    reset_dependency_caches()
+
+
+def test_lead_updated_gate_skips_when_opportunity_but_no_pdfs(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lead has an opportunity but no PDFs yet → still skip merchant
+    creation. The operator can attach a statement later; the next
+    lead.updated event will then create the merchant."""
+    lead_id = "lead_opp_no_pdfs"
+    with _build_gate_client(repo, audit, monkeypatch, has_opportunity=True, has_pdf=False) as tc:
+        resp = _post_signed(tc, _lead_updated_event(lead_id=lead_id))
+    assert resp.status_code == 204, resp.text
+    assert repo.find_by_close_lead_id(lead_id) is None
+    actions = [e["action"] for e in audit.entries]
+    assert "close.lead_update.skipped_no_pdfs" in actions
+    assert "close.merchant.created" not in actions
+    reset_dependency_caches()
+
+
+def test_lead_updated_gate_creates_when_opportunity_and_pdf_both_present(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both gates pass → existing auto-create behavior fires unchanged."""
+    lead_id = "lead_real_deal"
+    with _build_gate_client(repo, audit, monkeypatch, has_opportunity=True, has_pdf=True) as tc:
+        resp = _post_signed(tc, _lead_updated_event(lead_id=lead_id))
+    assert resp.status_code == 204, resp.text
+    created = repo.find_by_close_lead_id(lead_id)
+    assert created is not None
+    actions = [e["action"] for e in audit.entries]
+    assert "close.merchant.created" in actions
+    assert "close.lead_update.skipped_no_opportunity" not in actions
+    assert "close.lead_update.skipped_no_pdfs" not in actions
+    reset_dependency_caches()
+
+
+def test_lead_updated_gate_does_not_block_refresh_on_existing_merchant(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gate fires for NEW-merchant creation only. When the lead already
+    has an AEGIS merchant, the context refresh + attachment
+    orchestration still run even if the gate would have blocked a
+    fresh create. Otherwise an opportunity-less existing merchant
+    would stop getting context updates."""
+    from uuid import uuid4
+
+    from aegis.merchants.models import MerchantRow
+
+    lead_id = "lead_existing_merchant"
+    repo.upsert(
+        MerchantRow(
+            id=uuid4(),
+            close_lead_id=lead_id,
+            business_name="Existing Inc",
+        )
+    )
+
+    with _build_gate_client(repo, audit, monkeypatch, has_opportunity=False, has_pdf=False) as tc:
+        resp = _post_signed(tc, _lead_updated_event(lead_id=lead_id))
+    assert resp.status_code == 204, resp.text
+    assert repo.find_by_close_lead_id(lead_id) is not None
+
+    actions = [e["action"] for e in audit.entries]
+    # Skip-audit rows MUST NOT fire on the existing-merchant path
+    # otherwise the audit trail would falsely report a "skipped" event.
+    assert "close.lead_update.skipped_no_opportunity" not in actions
+    assert "close.lead_update.skipped_no_pdfs" not in actions
+    reset_dependency_caches()
+
+
+def test_lead_updated_gate_fails_open_when_close_api_errors(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient Close API failure on either gate check defaults to
+    ALLOW (fail-OPEN). The pre-gate auto-create behavior is the safer
+    fallback when the gate can't actually verify the lead's state — a
+    flap should never silently drop a real deal."""
+    monkeypatch.setenv("CLOSE_API_KEY", "api_test")
+    monkeypatch.setenv("CLOSE_API_BASE", "https://api.close.example")
+    monkeypatch.setenv("CLOSE_WEBHOOK_SECRET", _TEST_SECRET_HEX)
+    monkeypatch.setenv("CLOSE_DOCS_IN_PRE_UW_STATUS_ID", _TRIGGER_STATUS_ID)
+    get_settings.cache_clear()
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.startswith("/api/v1/lead/"):
+            return httpx.Response(200, json=_lead_payload())
+        # Both gate paths 500 — exercises fail-OPEN.
+        return httpx.Response(500, json={"error": "transient"})
+
+    close_client = CloseClient(http_client=httpx.Client(transport=httpx.MockTransport(transport)))
+    reset_dependency_caches()
+    app = create_app()
+    app.dependency_overrides[get_merchant_repository] = lambda: repo
+    app.dependency_overrides[get_audit] = lambda: audit
+    app.dependency_overrides[get_close_client] = lambda: close_client
+
+    lead_id = "lead_close_api_flap"
+    monkeypatch.setattr("aegis.close.client.time.sleep", lambda _s: None)
+    with TestClient(app) as tc:
+        resp = _post_signed(tc, _lead_updated_event(lead_id=lead_id))
+    assert resp.status_code == 204, resp.text
+    # Fail-OPEN: merchant was created despite the gate not getting a
+    # clean signal from Close.
+    assert repo.find_by_close_lead_id(lead_id) is not None
+    actions = [e["action"] for e in audit.entries]
+    assert "close.merchant.created" in actions
     reset_dependency_caches()

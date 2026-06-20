@@ -90,6 +90,7 @@ import tempfile
 import traceback
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final, cast
 from uuid import UUID
@@ -1048,6 +1049,26 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--cleanup-empty-merchants",
+        action="store_true",
+        help=(
+            "Separate maintenance mode: sweep merchants rows that the "
+            "Close lead.updated webhook auto-created in the last 48 "
+            "hours but never accumulated any documents. Selector: "
+            "close_lead_id IS NOT NULL AND deleted_at IS NULL AND "
+            "created_at >= now() - 48h AND NOT EXISTS (any documents "
+            "row with merchant_id = this id). Soft-deletes by setting "
+            "deleted_at = now() — the underlying row stays available "
+            "for replay if a future webhook lands a PDF for the same "
+            "lead, but the dashboard list / dossier / portfolio surfaces "
+            "filter it out. Writes a ``merchant.empty_cleanup`` audit "
+            "row per soft-delete. Dry-run by default; pass --apply to "
+            "execute. Use after a lead.updated scope change (e.g., the "
+            "2026-06-20 opportunity + PDF gate) to clear the empty rows "
+            "the pre-gate behavior populated."
+        ),
+    )
+    p.add_argument(
         "--fix-phantom-storage",
         action="store_true",
         help=(
@@ -1276,6 +1297,144 @@ def _cleanup_orphans(*, audit: AuditLog, apply_writes: bool) -> tuple[int, int]:
         file=sys.stderr,
     )
     return (len(rows), deleted)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Empty-merchant cleanup (--cleanup-empty-merchants)
+# ─────────────────────────────────────────────────────────────────────
+
+
+# Lookback window for the empty-merchant sweep. Scoped to 48h so the
+# cleanup follows the lead.updated gate (introduced 2026-06-20) and
+# doesn't touch merchants that pre-date the bug, which may have other
+# legitimate reasons for being empty (operator intentionally created
+# them, deal abandoned mid-funnel, etc.).
+_EMPTY_MERCHANT_LOOKBACK_HOURS: Final[int] = 48
+
+
+def _cleanup_empty_merchants(
+    *,
+    audit: AuditLog,
+    apply_writes: bool,
+    lookback_hours: int = _EMPTY_MERCHANT_LOOKBACK_HOURS,
+) -> tuple[int, int]:
+    """Sweep merchants the Close ``lead.updated`` webhook bulk-created
+    that never accumulated any documents.
+
+    Selector:
+      * ``close_lead_id IS NOT NULL`` — only Close-derived rows.
+      * ``deleted_at IS NULL`` — active rows only.
+      * ``created_at >= now() - lookback_hours`` — bounded recovery
+        window. Older empty merchants might be intentionally empty
+        (deal abandoned, operator-created stub) and aren't this
+        sweep's concern.
+      * No row in ``documents`` with ``merchant_id = m.id``.
+
+    Soft-delete posture (matches Migration 065): sets
+    ``deleted_at = now()`` rather than DELETE. The merchant row stays
+    intact so a future lead.updated event that lands an actual PDF
+    can re-surface it via the normal recovery path; the dashboard /
+    dossier / portfolio list views filter on ``deleted_at IS NULL``
+    so the row simply disappears from operator surfaces.
+
+    Audit: writes ``merchant.empty_cleanup`` per soft-delete with
+    counts only — no business_name / owner_name in details (PII
+    discipline per CLAUDE.md).
+
+    Returns ``(found, deleted)``. In dry-run mode ``deleted`` is
+    always ``0``.
+    """
+    sb = get_supabase()
+    cutoff = (datetime.now(UTC) - timedelta(hours=lookback_hours)).isoformat()
+
+    merchants_result = (
+        sb.table("merchants")
+        .select("id, business_name, close_lead_id, created_at")
+        .not_.is_("close_lead_id", "null")
+        .is_("deleted_at", "null")
+        .gte("created_at", cutoff)
+        .execute()
+    )
+    candidates = cast(list[dict[str, Any]], merchants_result.data or [])
+
+    if not candidates:
+        print(
+            f"# empty-merchant-cleanup: 0 candidates in last {lookback_hours}h",
+            file=sys.stderr,
+        )
+        return (0, 0)
+
+    candidate_ids = [str(c["id"]) for c in candidates]
+    docs_result = (
+        sb.table("documents").select("merchant_id").in_("merchant_id", candidate_ids).execute()
+    )
+    merchants_with_docs: set[str] = {
+        str(d["merchant_id"]) for d in cast(list[dict[str, Any]], docs_result.data or [])
+    }
+
+    empty_rows = [c for c in candidates if str(c["id"]) not in merchants_with_docs]
+
+    print(
+        f"# empty-merchant-cleanup: found {len(empty_rows)} empty merchant(s) "
+        f"in last {lookback_hours}h "
+        f"(close_lead_id IS NOT NULL, no documents linked)",
+        file=sys.stderr,
+    )
+    for r in empty_rows:
+        print(
+            f"#   id={r.get('id')}  created_at={r.get('created_at')}  "
+            f"close_lead_id={r.get('close_lead_id')!r}  "
+            f"business_name={(r.get('business_name') or '?')!r}",
+            file=sys.stderr,
+        )
+
+    if not apply_writes:
+        print(
+            "# DRY-RUN: pass --apply to actually soft-delete these merchants + "
+            "write merchant.empty_cleanup audit rows",
+            file=sys.stderr,
+        )
+        return (len(empty_rows), 0)
+
+    deleted = 0
+    now_iso = datetime.now(UTC).isoformat()
+    for r in empty_rows:
+        try:
+            merchant_id = UUID(str(r["id"]))
+        except (ValueError, KeyError) as exc:
+            print(
+                f"ERROR: skipping malformed row {r!r}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            sb.table("merchants").update({"deleted_at": now_iso}).eq(
+                "id", str(merchant_id)
+            ).execute()
+            audit.record(
+                actor=_ACTOR,
+                action="merchant.empty_cleanup",
+                subject_type="merchant",
+                subject_id=merchant_id,
+                details={
+                    "close_lead_id": r.get("close_lead_id"),
+                    "created_at": r.get("created_at"),
+                    "reason": "lead_updated_pre_gate_empty_merchant",
+                    "lookback_hours": lookback_hours,
+                },
+            )
+            deleted += 1
+        except Exception as exc:
+            print(
+                f"ERROR: soft-delete failed for {merchant_id}: {_format_error_chain(exc)}",
+                file=sys.stderr,
+            )
+
+    print(
+        f"# empty-merchant-cleanup: soft-deleted {deleted}/{len(empty_rows)}",
+        file=sys.stderr,
+    )
+    return (len(empty_rows), deleted)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1906,6 +2065,21 @@ def main() -> int:
         mode = "APPLY" if args.apply else "DRY-RUN"
         print(
             f"# mode={mode} +cleanup-orphans found={found} deleted={deleted}",
+            file=sys.stderr,
+        )
+        return EXIT_ISSUES_FOUND if found > 0 and not args.apply else EXIT_OK
+
+    # Empty-merchant cleanup follows the 2026-06-20 lead.updated gate.
+    # Sweeps merchants the pre-gate webhook bulk-created without any
+    # documents. Returns after the sweep — no Close traversal needed.
+    if args.cleanup_empty_merchants:
+        try:
+            found, deleted = _cleanup_empty_merchants(audit=audit, apply_writes=args.apply)
+        finally:
+            close_client.close()
+        mode = "APPLY" if args.apply else "DRY-RUN"
+        print(
+            f"# mode={mode} +cleanup-empty-merchants found={found} deleted={deleted}",
             file=sys.stderr,
         )
         return EXIT_ISSUES_FOUND if found > 0 and not args.apply else EXIT_OK

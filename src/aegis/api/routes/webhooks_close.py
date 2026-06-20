@@ -599,6 +599,50 @@ def _sync_pending_submissions(
 # ----------------------------------------------------------------------
 
 
+def _lead_has_opportunity(close_client: CloseClient, lead_id: str) -> bool:
+    """Return True when the Close lead has at least one opportunity.
+
+    Best-effort gate for the new-merchant branch of
+    ``_handle_lead_updated``. On any Close API failure we return True
+    (fail-OPEN) so a transient API blip doesn't silently block a real
+    deal from being captured — the original auto-create behavior is the
+    safer fallback when the gate can't actually verify.
+    """
+    try:
+        resp = close_client.request(
+            "GET",
+            "/api/v1/opportunity/",
+            params={"lead_id": lead_id, "_limit": 1},
+        )
+    except CloseError:
+        _log.warning(
+            "close_webhook.opportunity_check_failed lead_id=%s",
+            lead_id,
+            exc_info=True,
+        )
+        return True
+    data = resp.get("data")
+    return isinstance(data, list) and len(data) > 0
+
+
+def _lead_has_pdf_attachments(close_client: CloseClient, lead_id: str) -> bool:
+    """Return True when the Close lead has at least one PDF attachment.
+
+    Same fail-OPEN posture as ``_lead_has_opportunity`` — a Close API
+    error degrades to the pre-gate auto-create behavior.
+    """
+    try:
+        attachments = close_client.list_lead_attachments(lead_id)
+    except CloseError:
+        _log.warning(
+            "close_webhook.attachment_check_failed lead_id=%s",
+            lead_id,
+            exc_info=True,
+        )
+        return True
+    return len(attachments) > 0
+
+
 async def _handle_lead_updated(
     *,
     event: dict[str, Any],
@@ -616,6 +660,30 @@ async def _handle_lead_updated(
     enqueues an attachment scan whose ``process_close_attachments``
     job dedups against the existing ``documents.file_hash`` so already-
     parsed PDFs are skipped at near-zero cost.
+
+    New-merchant gate (2026-06-20). The Close ``lead.updated``
+    subscription fires for every lead change in the org — including
+    leads that have no opportunity and no PDFs (cold prospects,
+    duplicate leads, etc.). Before this gate, AEGIS auto-created a
+    merchant row for every such event, leaving 80% of the merchants
+    table empty (no docs, no scoring, just noise on the dossier).
+    Two cheap Close API checks now gate the create branch:
+
+      1. Does the lead have at least one opportunity? (``GET
+         /api/v1/opportunity/?lead_id=…&_limit=1``)
+      2. Does the lead have at least one PDF attachment? (existing
+         ``list_lead_attachments``)
+
+    When either check returns False, no merchant is created and an
+    audit row records the skip. Both checks fail-OPEN on a Close API
+    error so a transient blip degrades to the pre-gate behavior
+    (auto-create) rather than silently dropping a real deal.
+
+    The gate applies to NEW merchant creation only. When an existing
+    merchant already exists for this lead the handler proceeds with
+    the context refresh + attachment orchestration as before — the
+    point of the gate is to stop bulk-populating empty rows, not to
+    interfere with ongoing deal lifecycle.
 
     Failure modes match the Pre-UW path: Close ``get_lead`` failure
     becomes 503 (Close retries), ``_lead_to_merchant_fields`` parse
@@ -635,6 +703,27 @@ async def _handle_lead_updated(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"close_get_lead_failed: {exc}",
         ) from exc
+
+    existing = merchants.find_by_close_lead_id(lead_id)
+    if existing is None:
+        if not _lead_has_opportunity(close_client, lead_id):
+            audit.record(
+                actor="close_webhook",
+                action="close.lead_update.skipped_no_opportunity",
+                subject_type="close_lead",
+                subject_id=None,
+                details={"close_lead_id": lead_id},
+            )
+            return
+        if not _lead_has_pdf_attachments(close_client, lead_id):
+            audit.record(
+                actor="close_webhook",
+                action="close.lead_update.skipped_no_pdfs",
+                subject_type="close_lead",
+                subject_id=None,
+                details={"close_lead_id": lead_id},
+            )
+            return
 
     _upsert_merchant_from_lead(
         lead=lead,
