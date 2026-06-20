@@ -966,29 +966,56 @@ def _row_to_merchant_note(row: dict[str, Any]) -> MerchantNoteRow:
     )
 
 
+def _none_if_empty(value: object) -> object:
+    """Collapse empty / whitespace-only strings to ``None``; pass other
+    values through unchanged.
+
+    Hardens ``_row_to_merchant`` against pre-fix writes that landed
+    ``""`` on nullable text columns. Surfaced by ADG Global Express
+    on 2026-06-19: a Close webhook firing before fix `1966afa` had
+    deployed wrote ``owner_name=""`` to its row; later bulk
+    ``list_all()`` reads crashed Pydantic ``string_too_short``
+    validation on every consumer of the API. Coercing on read means
+    one poisoned row no longer blocks the rest of the table from
+    hydrating, and the next webhook write through the fixed path
+    (now `_str_or_none`-guarded) normalizes the column to NULL
+    organically. Booleans / decimals / ints / dates / lists are
+    unaffected because they're never strings on Supabase reads.
+    """
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
 def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
     # Migration 034 made owner_name / state nullable; business_name
     # stays NOT NULL (provisional rows carry a placeholder string per
     # the model docstring). ``status`` defaults to ``'finalized'`` for
     # safety against a pre-034 read (replica, restored backup) — matches
     # the DB DEFAULT on the column.
+    #
+    # Every nullable text column flows through ``_none_if_empty`` —
+    # see the docstring there for the ADG-Global-Express precedent. The
+    # NOT-NULL ``business_name`` is intentionally NOT coerced; an
+    # empty business_name is real data corruption that should fail
+    # loud, not silently hydrate as ``None``.
     from decimal import Decimal as _Decimal
 
     return MerchantRow(
         id=UUID(row["id"]),
         status=row.get("status") or "finalized",
         business_name=row["business_name"],
-        dba=row.get("dba"),
-        owner_name=row.get("owner_name"),
-        state=row.get("state"),
-        industry_naics=row.get("industry_naics"),
+        dba=_none_if_empty(row.get("dba")),
+        owner_name=_none_if_empty(row.get("owner_name")),
+        state=_none_if_empty(row.get("state")),
+        industry_naics=_none_if_empty(row.get("industry_naics")),
         industry_risk_tier=row.get("industry_risk_tier"),
         time_in_business_months=row.get("time_in_business_months"),
         credit_score=row.get("credit_score"),
-        email=row.get("email"),
-        phone=row.get("phone"),
+        email=_none_if_empty(row.get("email")),
+        phone=_none_if_empty(row.get("phone")),
         entity_type=row.get("entity_type"),
-        ein=row.get("ein"),
+        ein=_none_if_empty(row.get("ein")),
         requested_amount=(
             _Decimal(str(row["requested_amount"]))
             if row.get("requested_amount") is not None
@@ -1000,7 +1027,7 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
             else None
         ),
         requested_term_days=row.get("requested_term_days"),
-        broker_source=row.get("broker_source"),
+        broker_source=_none_if_empty(row.get("broker_source")),
         intake_date=_parse_date(row.get("intake_date")),
         is_renewal=bool(row.get("is_renewal", False)),
         maturity_date=_parse_date(row.get("maturity_date")),
@@ -1013,22 +1040,22 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         preferred_funder_id=(
             UUID(row["preferred_funder_id"]) if row.get("preferred_funder_id") else None
         ),
-        close_lead_id=row.get("close_lead_id"),
-        close_opportunity_id=row.get("close_opportunity_id"),
-        industry_choice=row.get("industry_choice"),
-        notes=row.get("notes"),
+        close_lead_id=_none_if_empty(row.get("close_lead_id")),
+        close_opportunity_id=_none_if_empty(row.get("close_opportunity_id")),
+        industry_choice=_none_if_empty(row.get("industry_choice")),
+        notes=_none_if_empty(row.get("notes")),
         # Feature D (migration 064). ``row.get`` collapses missing keys
         # to ``None`` so a pre-064 read (replica, restored backup)
         # surfaces every context field as ``None`` — the safe default
         # (prompt builder treats ``None`` / empty as "omit the line").
-        deal_context=row.get("deal_context"),
-        close_lead_description=row.get("close_lead_description"),
-        close_notes_summary=row.get("close_notes_summary"),
-        close_call_transcripts=row.get("close_call_transcripts"),
+        deal_context=_none_if_empty(row.get("deal_context")),
+        close_lead_description=_none_if_empty(row.get("close_lead_description")),
+        close_notes_summary=_none_if_empty(row.get("close_notes_summary")),
+        close_call_transcripts=_none_if_empty(row.get("close_call_transcripts")),
         # Migration 067 — web-presence reputation scan. Pre-067 reads
         # collapse to None / [] which is the "needs first scan" signal
         # the scorer checks before invoking the scanner.
-        web_presence_summary=row.get("web_presence_summary"),
+        web_presence_summary=_none_if_empty(row.get("web_presence_summary")),
         web_presence_flags=list(row.get("web_presence_flags") or []),
         web_presence_scanned_at=_parse_dt(row.get("web_presence_scanned_at")),
         # Migration 068 — UCC filings + previous-default search.

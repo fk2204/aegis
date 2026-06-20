@@ -126,9 +126,7 @@ def test_row_to_document_round_trips_every_non_retention_field() -> None:
     assert doc.id == UUID(_DOC_ID)
     assert doc.file_hash == _FILE_HASH
     assert doc.byte_size == 223762
-    assert doc.original_filename == (
-        "Business_Checking_Plus_x2414_Statement_May_2025.pdf"
-    )
+    assert doc.original_filename == ("Business_Checking_Plus_x2414_Statement_May_2025.pdf")
     assert doc.merchant_id is None
     assert doc.parse_status == "manual_review"
     assert doc.fraud_score == 12
@@ -341,6 +339,106 @@ def test_row_to_merchant_finalized_with_full_fields_round_trips() -> None:
     assert m.email == "jane@acme.example"
     assert m.close_lead_id == "lead_abc"
     assert m.entity_type == "llc"
+
+
+def test_row_to_merchant_coerces_empty_owner_name_to_none() -> None:
+    """ADG-Global-Express regression (2026-06-19): a Close webhook
+    firing before fix `1966afa` had deployed wrote ``owner_name=""``
+    to one row, and subsequent bulk ``list_all()`` reads crashed
+    Pydantic ``string_too_short`` validation on every consumer. The
+    mapper now coerces empty strings on read so one poisoned cell
+    doesn't block the entire table from hydrating."""
+    row = _finalized_merchant_row()
+    row["owner_name"] = ""
+
+    m = _row_to_merchant(row)
+
+    assert m.owner_name is None
+    assert m.business_name == "Acme LLC"  # other columns unaffected
+
+
+def test_row_to_merchant_coerces_whitespace_only_owner_name_to_none() -> None:
+    """A column whose value is whitespace-only ("\t   \n") is
+    semantically empty too; coerce it the same way an empty string is
+    handled so the strip / non-strip pair stays in lock-step."""
+    row = _finalized_merchant_row()
+    row["owner_name"] = "\t   \n"
+
+    m = _row_to_merchant(row)
+
+    assert m.owner_name is None
+
+
+def test_row_to_merchant_coerces_empty_state_to_none() -> None:
+    """State has both min_length=2 and max_length=2 — an empty string
+    triggers ``string_too_short`` the same way owner_name does."""
+    row = _finalized_merchant_row()
+    row["state"] = ""
+
+    m = _row_to_merchant(row)
+
+    assert m.state is None
+
+
+def test_row_to_merchant_preserves_valid_state_code() -> None:
+    """The coercion only fires on empty inputs; a real 2-letter code
+    must pass through verbatim or the round-trip is broken."""
+    row = _finalized_merchant_row()
+    row["state"] = "TX"
+
+    m = _row_to_merchant(row)
+
+    assert m.state == "TX"
+
+
+def test_row_to_merchant_coerces_empty_strings_across_all_nullable_text_columns() -> None:
+    """Every nullable ``str | None`` column on MerchantRow flows through
+    the same coercion. This guards against a future column add that
+    forgets to wrap a ``row.get`` in ``_none_if_empty`` — the regression
+    is a Pydantic crash on bulk reads, same shape as the ADG incident."""
+    row = _finalized_merchant_row()
+    empty_value = ""
+    columns_to_blank = [
+        "dba",
+        "owner_name",
+        "state",
+        "industry_naics",
+        "email",
+        "phone",
+        "ein",
+        "broker_source",
+        "close_lead_id",
+        "close_opportunity_id",
+        "industry_choice",
+        "notes",
+        "deal_context",
+        "close_lead_description",
+        "close_notes_summary",
+        "close_call_transcripts",
+        "web_presence_summary",
+    ]
+    for col in columns_to_blank:
+        row[col] = empty_value
+
+    m = _row_to_merchant(row)
+
+    for col in columns_to_blank:
+        assert getattr(m, col) is None, f"column {col!r} not coerced to None"
+
+
+def test_row_to_merchant_does_not_silence_business_name_corruption() -> None:
+    """``business_name`` is NOT NULL with ``min_length=1``. An empty
+    value here is real data corruption — the mapper must surface the
+    Pydantic ``ValidationError`` rather than silently hydrate the row
+    as ``None`` (which would also fail the NOT NULL type)."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    row = _finalized_merchant_row()
+    row["business_name"] = ""
+
+    with _pytest.raises(ValidationError):
+        _row_to_merchant(row)
 
 
 def test_row_to_merchant_needs_manual_naming_status_round_trips() -> None:
