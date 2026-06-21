@@ -64,6 +64,24 @@ from tests.test_storage import _make_pipeline_result
 _CLOSE_NOTE_ID = "acti_renewal_test_456"
 
 
+@pytest.fixture(autouse=True)
+def _stub_bedrock_narrative(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip Bedrock for every test in this module.
+
+    The Prepare-Renewal route prepends a Bedrock-generated narrative to
+    the renewal Close Note. On a workstation with AWS creds present, the
+    lazy ``BedrockClient`` construction succeeds and ``generate_text``
+    blocks on the AWS API, hanging the test. The narrative is empty-safe
+    by contract — the route falls back to the structured-only Close Note
+    when it returns "" — so stubbing to a no-op is equivalent to the
+    test-without-AWS-creds branch.
+    """
+    monkeypatch.setattr(
+        "aegis.scoring_v2.deal_summary.generate_funder_narrative",
+        lambda **_: "",
+    )
+
+
 def _set_close_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLOSE_API_KEY", "api_test")
     monkeypatch.setenv("CLOSE_API_BASE", "https://api.close.example")
