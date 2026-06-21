@@ -124,6 +124,43 @@ _BANK_HINTS: Final[dict[str, str]] = {
         "'Bank Deposits FDIC Insured | TD Bank, N.A. | Equal Housing "
         "Lender'."
     ),
+    "Bank of America, N.A.": (
+        "Statement period appears on page 1 formatted 'for Month D, "
+        "YYYY to Month D, YYYY' (full English month name, day, four-"
+        "digit year, the literal word 'to' as separator) — e.g. 'for "
+        "April 1, 2026 to April 30, 2026'. The account number appears "
+        "on page 1 next to the period line. Account summary block is "
+        "labeled 'Account summary' and carries Beginning balance, "
+        "Deposits and other credits, Withdrawals and other debits, "
+        "Checks, Service fees, Ending balance. Transactions split into "
+        "two named sections — 'Deposits and other credits' and "
+        "'Withdrawals and other debits' — with columns Date, "
+        "Description, Amount. The Bank of America layout does NOT "
+        "include a per-line running-balance column; daily ledger "
+        "balances appear instead on the last page in a 3-column grid. "
+        "Service fees (overdraft / NSF) are listed in their own "
+        "separate table, not interleaved with the transaction sections."
+    ),
+    "Third Coast Bank": (
+        "Statement period appears in the top-right area of page 1 as "
+        "two separate lines: 'Last statement: Month D, YYYY' and 'This "
+        "statement: Month D, YYYY' (full English month name, day, four-"
+        "digit year on each line). Summary block is labeled 'Select "
+        "Free Checking Business' and carries Beginning balance, Total "
+        "additions, Total subtractions, Ending balance, Average "
+        "balance, Avg collected balance. Transactions split across "
+        "three named sections in this order: 'CHECKS' (checks paid), "
+        "'DEBITS' (columns Date, Description, Subtractions), and "
+        "'CREDITS' (columns Date, Description, Additions). Each DEBITS "
+        "and CREDITS row occupies TWO lines — transaction type on the "
+        "first line, detail on the second — and each row is prefixed "
+        "with a single tick mark (the apostrophe character) before the "
+        "date. The Third Coast layout does NOT include a per-line "
+        "running-balance column; daily balances appear in a separate "
+        "'DAILY BALANCES' table at the end of the statement. Deposit-"
+        "type descriptions seen on this layout include 'Rtp Credit', "
+        "'ACH Credit', and plain 'Deposit'."
+    ),
 }
 
 
