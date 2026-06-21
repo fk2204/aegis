@@ -42,3 +42,36 @@ from aegis.config import get_settings
 
 # Clear cache so the test env is honored regardless of prior imports.
 get_settings.cache_clear()
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _stub_bedrock_narrative_global(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Global autouse: skip Bedrock narrative generation across every test.
+
+    Multiple route handlers (``merchant_detail`` GET,
+    ``_perform_submit_to_funder``, ``prepare-renewal``, …) call
+    ``aegis.scoring_v2.deal_summary.generate_funder_narrative``. On a
+    workstation with AWS creds present (``~/.aws/credentials`` or
+    ``/etc/aegis/aegis.env`` sourced) the lazy ``BedrockClient``
+    construction succeeds and ``generate_text`` blocks indefinitely on
+    the AWS API, hanging local pytest runs at whichever test first hits
+    the path. CI doesn't have AWS creds so this never reproduces there;
+    it's a workstation-only failure mode.
+
+    The narrative is empty-safe by contract — every caller falls back to
+    the structured-only Close-note / dossier path when it returns ``""``
+    — so a no-op stub is equivalent to the test-without-AWS-creds branch.
+
+    Tests in ``tests/scoring_v2/test_deal_summary.py`` that exercise
+    ``generate_funder_narrative`` directly are unaffected: they import
+    the name at module level and pass an explicit ``client=`` parameter,
+    bypassing both the lazy client construction and the module-attribute
+    lookup this monkeypatch targets.
+    """
+    monkeypatch.setattr(
+        "aegis.scoring_v2.deal_summary.generate_funder_narrative",
+        lambda **_: "",
+    )
