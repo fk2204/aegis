@@ -81,8 +81,9 @@ def main() -> int:
             print(f"  reusing merchant: {name} ({merchant_id})")
         else:
             payload = {k: v for k, v in m_def.items() if k != "filename_prefix"}
-            r = sb.table("merchants").insert(payload).execute()
-            merchant_id = r.data[0]["id"]
+            r = sb.table("merchants").insert(cast(Any, payload)).execute()
+            rows = cast(list[dict[str, Any]], r.data)
+            merchant_id = rows[0]["id"]
             print(f"  created merchant: {name} ({merchant_id})")
             by_name[name] = merchant_id
 

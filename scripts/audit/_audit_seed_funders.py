@@ -43,8 +43,9 @@ def main() -> int:
         "typical_holdback_high": str(Decimal("0.18")),
         "notes": "Seeded by audit run. Replace with real funder PDFs via /ui/funders/import.",
     }
-    r = sb.table("funders").insert(payload).execute()
-    print(f"  created funder: {payload['name']} ({r.data[0]['id']})")
+    r = sb.table("funders").insert(cast(Any, payload)).execute()
+    rows = cast(list[dict[str, Any]], r.data)
+    print(f"  created funder: {payload['name']} ({rows[0]['id']})")
     return 0
 
 
