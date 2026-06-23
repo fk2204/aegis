@@ -86,6 +86,7 @@ import argparse
 import asyncio
 import csv
 import hashlib
+import os
 import sys
 import tempfile
 import traceback
@@ -169,6 +170,43 @@ _PERIOD_RETRY_HINT: Final[str] = (
     "summary block printed near the period (typically a small table "
     "of `Total Deposits / Total Withdrawals / Ending Balance` rows). "
     "Use 0 when a category truly does not appear on this statement."
+)
+
+# 2026-06-23 regression: --reparse-sealed-manual-review wrote tempfiles
+# as root:root 0600; worker (aegis user) hit PermissionError; these 26
+# docs moved manual_review → error. Reset to manual_review so the fixed
+# flag can re-enqueue them. The chmod 0644 fix in
+# _reparse_sealed_manual_review (same commit) prevents the same class
+# of regression going forward. One-shot list — once these rows are
+# reset and re-enqueued cleanly, --reset-parse-status is dead code that
+# should be removed in a future cleanup.
+_PERMISSION_BUG_DOC_IDS: Final[tuple[str, ...]] = (
+    "130d2d1d-cd0d-4695-9d4b-30924611458b",
+    "1c4c883a-ce9e-4d85-b4dc-850e721ebcb6",
+    "35270827-7e12-46d9-ba4c-a3390c37b089",
+    "268d20ca-2c9c-4221-9ce5-64aaee1ee0ad",
+    "6386e7c7-e302-400f-a0c7-8a7757c4ccff",
+    "932dca55-2fed-4ea6-93e4-b0cb413a57cd",
+    "f4cb4d34-f1ec-48db-aa5f-876a08ef242c",
+    "97452104-79f0-4384-9924-ab82732f0d02",
+    "02e8cce5-b415-4cef-8a67-f0bd9ebc3b4d",
+    "49c7d058-3e2a-4554-ad46-f4063146b36e",
+    "5628e2bb-85b9-4fc5-9d28-017877ba382f",
+    "30e6d5f7-cbc2-4282-8350-198eac75cd75",
+    "eac78c49-db44-4633-8924-aceff99e7861",
+    "54a3756d-3844-46f1-821d-40d0b5e8ffeb",
+    "357baebe-9215-414a-8195-8b4b8e6d0c06",
+    "b2710c43-28d6-403c-a648-ba8c9f6c751e",
+    "7323ba15-a2b8-4404-86d4-9f95bf3fb5bc",
+    "f0df42da-ba63-4f78-900a-87ffcef80a70",
+    "026bbe3a-afcd-4056-bc6f-0ea24c6b9569",
+    "3630bbab-b0f4-4739-b383-441b813f0934",
+    "e0ee9129-050a-4735-b650-08f9e3295453",
+    "7d47def8-53f1-4993-a483-9c488c0fb6e3",
+    "2910b0fb-1eeb-47fe-b0a4-197b3c4a50b4",
+    "463ba348-3383-4c24-9dc3-e9608a4af9b5",
+    "8a8fa92a-ac6c-4f44-8fb8-8fb12a9c6fe2",
+    "554cad5a-9187-4a3d-8203-a9b79103cf7d",
 )
 
 
@@ -1087,6 +1125,22 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--reset-parse-status",
+        action="store_true",
+        help=(
+            "One-shot maintenance: reset the 26 documents the 2026-06-23 "
+            "tempfile-permission regression in --reparse-sealed-manual-review "
+            "pushed from parse_status='manual_review' to "
+            "parse_status='error'. Scope is the hardcoded "
+            "_PERMISSION_BUG_DOC_IDS tuple — does NOT accept arbitrary IDs. "
+            "Writes one document.parse_status_reset audit row per doc. "
+            "Dry-run by default; --apply to execute. Pair with the chmod "
+            "0644 fix in the same commit so a re-run of "
+            "--reparse-sealed-manual-review --apply after this reset can "
+            "actually parse the docs the worker process can now read."
+        ),
+    )
+    p.add_argument(
         "--reparse-sealed-manual-review",
         action="store_true",
         help=(
@@ -1995,6 +2049,14 @@ def _reparse_sealed_manual_review(
             tmp.write(plaintext)
         finally:
             tmp.close()
+        # 2026-06-23 regression fix: tempfile defaults to mode 0600, so a
+        # file written by root (this script runs over the CI deploy SSH
+        # key) is unreadable by the aegis user the worker runs as —
+        # parse_document then PermissionErrors at open() and the doc
+        # transitions manual_review → error. chmod 0644 mirrors the umask
+        # the upload route writes under (FastAPI runs as the aegis user
+        # so its tempfiles are owner-readable by definition).
+        os.chmod(tmp.name, 0o644)
         to_enqueue.append((doc_id, tmp.name, filename))
 
     if not apply_writes:
@@ -2045,6 +2107,106 @@ def _reparse_sealed_manual_review(
             issues += 1
 
     return (len(candidates), enqueued, issues)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# --reset-parse-status mode
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _reset_parse_status(
+    *,
+    audit: AuditLog,
+    apply_writes: bool,
+) -> tuple[int, int]:
+    """One-shot: reset the 26 docs the 2026-06-23 permission bug pushed
+    from ``manual_review`` to ``error``.
+
+    Scope is the hardcoded ``_PERMISSION_BUG_DOC_IDS`` tuple. Updates
+    each row's ``parse_status`` back to ``'manual_review'`` so the
+    chmod-fixed ``--reparse-sealed-manual-review`` can re-enqueue them.
+
+    Writes one ``document.parse_status_reset`` audit row per doc so the
+    intervention is grep-able in audit_log. Returns ``(reset, issues)``.
+    """
+    print(
+        f"# reset-parse-status: {len(_PERMISSION_BUG_DOC_IDS)} target doc(s)",
+        file=sys.stderr,
+    )
+    if not apply_writes:
+        for dry_doc_id in _PERMISSION_BUG_DOC_IDS:
+            print(
+                f"  {dry_doc_id} — would set parse_status='manual_review'",
+                file=sys.stderr,
+            )
+        print(
+            "# DRY-RUN: pass --apply to actually write",
+            file=sys.stderr,
+        )
+        return (0, 0)
+
+    sb = get_supabase()
+    reset = 0
+    issues = 0
+    for doc_id_str in _PERMISSION_BUG_DOC_IDS:
+        try:
+            doc_id = UUID(doc_id_str)
+        except ValueError as exc:
+            print(
+                f"  {doc_id_str} malformed UUID: {exc}",
+                file=sys.stderr,
+            )
+            issues += 1
+            continue
+        try:
+            result = (
+                sb.table("documents")
+                .update({"parse_status": "manual_review"})
+                .eq("id", str(doc_id))
+                .execute()
+            )
+        except Exception as exc:
+            print(
+                f"  {doc_id_str} UPDATE failed: {_format_error_chain(exc)}",
+                file=sys.stderr,
+            )
+            issues += 1
+            continue
+        updated_rows = cast(list[dict[str, Any]], result.data or [])
+        if not updated_rows:
+            print(
+                f"  {doc_id_str} UPDATE returned no row (already deleted? wrong id?)",
+                file=sys.stderr,
+            )
+            issues += 1
+            continue
+        try:
+            audit.record(
+                actor=_ACTOR,
+                action="document.parse_status_reset",
+                subject_type="document",
+                subject_id=doc_id,
+                details={
+                    "previous_parse_status": "error",
+                    "new_parse_status": "manual_review",
+                    "detail": "permission_bug_2026_06_23",
+                },
+            )
+        except Exception as exc:
+            print(
+                f"  {doc_id_str} audit write failed (parse_status already "
+                f"updated): {_format_error_chain(exc)}",
+                file=sys.stderr,
+            )
+            issues += 1
+            continue
+        print(
+            f"  {doc_id_str} reset error -> manual_review",
+            file=sys.stderr,
+        )
+        reset += 1
+
+    return (reset, issues)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -2350,6 +2512,21 @@ def main() -> int:
             file=sys.stderr,
         )
         return EXIT_ISSUES_FOUND if found > 0 and not args.apply else EXIT_OK
+
+    # Reset the 26 docs the 2026-06-23 permission bug pushed
+    # manual_review -> error. One-shot, hardcoded ID list. Returns after
+    # the reset.
+    if args.reset_parse_status:
+        try:
+            reset, issues = _reset_parse_status(audit=audit, apply_writes=args.apply)
+        finally:
+            close_client.close()
+        mode = "APPLY" if args.apply else "DRY-RUN"
+        print(
+            f"# mode={mode} +reset-parse-status reset={reset} issues={issues}",
+            file=sys.stderr,
+        )
+        return EXIT_ISSUES_FOUND if issues > 0 else EXIT_OK
 
     # Reparse-sealed-manual-review bypasses Close entirely: decrypts the
     # pdf_store blob for each stuck manual_review doc and enqueues a
