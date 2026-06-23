@@ -305,6 +305,20 @@ parser-tooling commits are in the `main` log between `33825d0` and
   `--backfill-sha-matches` Close re-fetch path on a later recovery
   run. Dry-run by default; bypasses Close traversal.
 
+## 2026-06-23 — Image-only bank layouts (vision-only, no extractable text)
+
+Three banks encountered during the June 2026 bank-coverage sweep whose
+statements are entirely image-based (0 extractable characters on all
+pages examined). Text-extraction hints cannot help these — they require
+vision-mode parsing. Flagged here so future sessions don't attempt
+text-hint seeding.
+
+| Bank | Statements examined | Notes |
+|---|---|---|
+| Arthur State Bank | 4 | All 0 chars, vision-only |
+| PNC Bank | 3 | All 0 chars, vision-only |
+| The Bank of Bennington | 3 | All 0 chars, vision-only |
+
 ## Conventions for future entries
 
 Each new finding gets a heading + the four-line shape above (Surface /

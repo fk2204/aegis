@@ -83,6 +83,7 @@ the default invocation is the dry-run preview — same posture as
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import hashlib
 import sys
@@ -1086,6 +1087,29 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--reparse-sealed-manual-review",
+        action="store_true",
+        help=(
+            "Separate maintenance mode: skip the Close traversal entirely "
+            "and find documents where parse_status='manual_review' AND "
+            "pdf_store has a sealed blob (storage_path IS NOT NULL). For "
+            "each candidate, decrypt the blob via pdf_store.fetch_plaintext, "
+            "write it to a UUID-named tempfile under aegis_upload_dir, and "
+            "(on --apply) enqueue a fresh parse_document arq job — the same "
+            "job the upload route enqueues post-dedup. Does NOT delete the "
+            "documents row and does NOT wipe transactions / analyses "
+            "children; the parse_document worker handles wipe-and-replace "
+            "internally. Use after a bank_layouts hint is authored for a "
+            "bank whose manual_review docs may now succeed with the new "
+            "hint context. Combine with --merchant to scope to a single "
+            "lead. Dry-run by default — lists what would be enqueued; pass "
+            "--apply to actually enqueue + write document.reparse_enqueued "
+            "audit rows. Distinct from --vision-retry, which runs the "
+            "pipeline inline (sync) and is scoped to docs whose first-pass "
+            "extraction never produced an analyses row."
+        ),
+    )
+    p.add_argument(
         "--vision-retry",
         action="store_true",
         help=(
@@ -1801,6 +1825,229 @@ def _vision_retry(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# --reparse-sealed-manual-review mode
+# ─────────────────────────────────────────────────────────────────────
+#
+# Different from --vision-retry in two important ways:
+#
+#   1. Selector. --vision-retry targets docs whose extraction never
+#      completed (no analyses row exists). --reparse-sealed-manual-review
+#      targets ANY manual_review doc with a sealed pdf_store blob,
+#      including ones whose extraction completed but validation pushed
+#      them to manual_review. This is the path for docs that need a
+#      re-parse after a bank_layouts hint was added — the existing
+#      analyses row will be replaced by the fresh parse.
+#
+#   2. Execution model. --vision-retry runs the pipeline INLINE in the
+#      script process (sync, blocks the script, burns Bedrock tokens
+#      against the script's actor). --reparse-sealed-manual-review
+#      ENQUEUES an arq parse_document job per doc — same job the upload
+#      route enqueues post-dedup — and returns immediately. The worker
+#      picks the jobs up async; tokens are billed against the worker
+#      process the same way a real upload is.
+#
+# Does NOT delete the documents row, does NOT wipe transactions /
+# analyses children. The parse_document worker job already handles the
+# wipe-and-replace cycle internally (mirrors the upload-route re-upload
+# semantics) so a row-level wipe here would race with the worker.
+
+
+def _select_sealed_manual_review_candidates(
+    *,
+    merchant_id: UUID | None,
+) -> list[dict[str, Any]]:
+    """Identify ``manual_review`` docs with a sealed ``pdf_store`` blob.
+
+    Selector:
+      * ``parse_status = 'manual_review'`` — only the stuck-doc bucket.
+      * ``storage_path IS NOT NULL`` — pdf_store has a sealed blob; the
+        plaintext is reachable without a Close re-fetch.
+      * Optionally ``merchant_id = ?`` when the caller passes a UUID.
+
+    Distinct from ``_select_vision_retry_candidates``: does NOT require
+    the analyses row to be absent. The use case here is a doc that DID
+    parse but landed in ``manual_review`` because validation failed (or
+    extraction returned partial data) — a re-parse with the now-available
+    bank_layouts hint may succeed where the first attempt didn't.
+    """
+    sb = get_supabase()
+    q = (
+        sb.table("documents")
+        .select("id, original_filename, parse_status, storage_path, merchant_id")
+        .eq("parse_status", "manual_review")
+        .not_.is_("storage_path", "null")
+    )
+    if merchant_id is not None:
+        q = q.eq("merchant_id", str(merchant_id))
+    result = q.execute()
+    return cast(list[dict[str, Any]], result.data or [])
+
+
+async def _enqueue_parse_jobs(
+    payloads: list[tuple[UUID, str]],
+) -> None:
+    """Enqueue one ``parse_document(document_id, pdf_path)`` job per pair.
+
+    Creates a short-lived arq pool against ``REDIS_URL`` (same settings
+    the FastAPI app uses at startup), pushes every job, then closes the
+    pool. Mirrors ``aegis.api.routes.upload._enqueue_parse_job`` —
+    keeping the same call signature ensures the worker handles the
+    enqueued job identically to a real upload-route post-dedup enqueue.
+    """
+    from arq import create_pool
+
+    from aegis.workers import build_redis_settings
+
+    pool = await create_pool(build_redis_settings())
+    try:
+        for doc_id, pdf_path in payloads:
+            await pool.enqueue_job("parse_document", str(doc_id), pdf_path)
+    finally:
+        await pool.close()
+
+
+def _reparse_sealed_manual_review(
+    *,
+    merchant_filter: MerchantRow | None,
+    pdf_store: SupabasePdfStoreRepository,
+    audit: AuditLog,
+    upload_dir: Path,
+    apply_writes: bool,
+) -> tuple[int, int, int]:
+    """Decrypt each sealed-blob manual_review doc and enqueue a re-parse.
+
+    For each candidate row:
+      1. Fetch plaintext from pdf_store.
+      2. Write plaintext to a UUID-named tempfile under ``upload_dir``
+         (worker reads a path, not bytes; matches the upload route's
+         pattern of writing to ``aegis_upload_dir`` before enqueue).
+      3. Emit the operator-facing log line for the dry-run preview.
+      4. On --apply: enqueue ``parse_document`` via arq, write a
+         ``document.reparse_enqueued`` audit row.
+
+    A decrypt or IO failure on one doc logs the error, increments the
+    issues counter, and continues to the next — the spec is fault-
+    tolerant so a single bad blob doesn't cancel the rest of the batch.
+
+    Returns ``(candidate_count, reparse_enqueued, issues)``. In dry-run
+    mode ``reparse_enqueued`` is always 0.
+    """
+    merchant_id = merchant_filter.id if merchant_filter is not None else None
+    candidates = _select_sealed_manual_review_candidates(merchant_id=merchant_id)
+    scope = (
+        f"merchant={merchant_filter.business_name!r}"
+        if merchant_filter is not None
+        else "all merchants"
+    )
+    print(
+        f"# reparse-sealed-manual-review: {len(candidates)} candidate(s) ({scope})",
+        file=sys.stderr,
+    )
+
+    # Per-doc dry-run preview + (on --apply) seal-plaintext-to-tempfile.
+    # The (UUID, path) pairs to enqueue accumulate here; we batch the
+    # arq enqueue at the end so a single asyncio.run pays for the pool
+    # init / teardown once.
+    to_enqueue: list[tuple[UUID, str, str]] = []  # (doc_id, tmp_path, filename)
+    issues = 0
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    for c in candidates:
+        filename = c.get("original_filename") or "?"
+        try:
+            doc_id = UUID(c["id"])
+        except (ValueError, KeyError) as exc:
+            print(
+                f"  malformed row {c!r}: {exc}",
+                file=sys.stderr,
+            )
+            issues += 1
+            continue
+        print(f"Enqueuing reparse for {doc_id} ({filename}) — sealed blob, manual_review")
+        if not apply_writes:
+            continue
+        try:
+            plaintext = pdf_store.fetch_plaintext(doc_id)
+        except PdfStoreNotFoundError as exc:
+            print(
+                f"  {str(doc_id)[:8]} pdf_store has no blob (storage_path column is stale): {exc}",
+                file=sys.stderr,
+            )
+            issues += 1
+            continue
+        except Exception as exc:
+            print(
+                f"  {str(doc_id)[:8]} pdf_store fetch failed: {_format_error_chain(exc)}",
+                file=sys.stderr,
+            )
+            issues += 1
+            continue
+        # Write plaintext to upload_dir under a UUID name (security: never
+        # trust filenames from input — CLAUDE.md). The worker's
+        # parse_document is responsible for the eventual cleanup via
+        # _safe_unlink-or-quarantine, same as the upload route's path.
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".pdf",
+            delete=False,
+            prefix=f"{_ACTOR}-reparse-",
+            dir=str(upload_dir),
+        )
+        try:
+            tmp.write(plaintext)
+        finally:
+            tmp.close()
+        to_enqueue.append((doc_id, tmp.name, filename))
+
+    if not apply_writes:
+        print(
+            "# DRY-RUN: pass --apply to actually enqueue parse_document jobs",
+            file=sys.stderr,
+        )
+        return (len(candidates), 0, issues)
+
+    if to_enqueue:
+        try:
+            asyncio.run(_enqueue_parse_jobs([(doc_id, path) for doc_id, path, _ in to_enqueue]))
+        except Exception as exc:
+            # Whole-batch enqueue failure (Redis down, etc.) — count
+            # every queued doc as an issue and clean up the tempfiles so
+            # we don't leak plaintext on disk.
+            print(
+                f"  arq enqueue batch failed: {_format_error_chain(exc)}",
+                file=sys.stderr,
+            )
+            for _, path, _ in to_enqueue:
+                Path(path).unlink(missing_ok=True)
+            return (len(candidates), 0, issues + len(to_enqueue))
+
+    # Audit-row writes happen AFTER the enqueue succeeds so a row in
+    # ``audit_log`` always reflects a real enqueue, not a dry-run-style
+    # intent.
+    enqueued = 0
+    for doc_id, tmp_path, filename in to_enqueue:
+        try:
+            audit.record(
+                actor=_ACTOR,
+                action="document.reparse_enqueued",
+                subject_type="document",
+                subject_id=doc_id,
+                details={
+                    "original_filename": filename,
+                    "pdf_path": tmp_path,
+                    "reason": "sealed_manual_review_recovery",
+                },
+            )
+            enqueued += 1
+        except Exception as exc:
+            print(
+                f"  {str(doc_id)[:8]} audit write failed: {_format_error_chain(exc)}",
+                file=sys.stderr,
+            )
+            issues += 1
+
+    return (len(candidates), enqueued, issues)
+
+
+# ─────────────────────────────────────────────────────────────────────
 # --all-leads mode: backfill merchants for Close leads with opportunities
 # ─────────────────────────────────────────────────────────────────────
 
@@ -2103,6 +2350,41 @@ def main() -> int:
             file=sys.stderr,
         )
         return EXIT_ISSUES_FOUND if found > 0 and not args.apply else EXIT_OK
+
+    # Reparse-sealed-manual-review bypasses Close entirely: decrypts the
+    # pdf_store blob for each stuck manual_review doc and enqueues a
+    # fresh parse_document arq job. The worker handles wipe-and-replace
+    # of the existing analyses + transactions rows internally.
+    if args.reparse_sealed_manual_review:
+        merchant_filter: MerchantRow | None = None
+        if args.merchant is not None:
+            try:
+                merchant_filter = _resolve_merchant_filter(args.merchant, merchants_repo)
+            except ValueError as exc:
+                print(
+                    f"ERROR: --merchant resolve failed: {exc}",
+                    file=sys.stderr,
+                )
+                close_client.close()
+                return EXIT_RUNTIME_ERROR
+        try:
+            found, enqueued, issues = _reparse_sealed_manual_review(
+                merchant_filter=merchant_filter,
+                pdf_store=pdf_store,
+                audit=audit,
+                upload_dir=upload_dir,
+                apply_writes=args.apply,
+            )
+        finally:
+            close_client.close()
+        mode = "APPLY" if args.apply else "DRY-RUN"
+        scope = f" +merchant={args.merchant!r}" if args.merchant is not None else ""
+        print(
+            f"# mode={mode} +reparse-sealed-manual-review{scope} "
+            f"candidates={found} reparse_enqueued={enqueued} issues={issues}",
+            file=sys.stderr,
+        )
+        return EXIT_ISSUES_FOUND if issues > 0 else EXIT_OK
 
     # Vision-retry is a separate code path that bypasses Close entirely —
     # pulls plaintext from pdf_store and re-runs the pipeline with the
