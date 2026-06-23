@@ -110,8 +110,13 @@ def calculate_apr(
         if p_amt <= 0:
             raise APRCalculationError(f"payment amount must be > 0 (got {p_amt})")
         day_offsets.append(offset)
+        # float(): scipy.optimize.brentq requires float for the npv
+        # callable; result is re-cast to Decimal at the bottom (line ~139
+        # via `Decimal(repr(apr_float))`). CA 10 CCR 950 / 12 CFR §1026
+        # App J both round to bp granularity, well within float precision.
         pmt_amounts.append(float(p_amt))
 
+    # float(): same reason as pmt_amounts above — npv() needs float math.
     principal = float(amount_financed)
     total_paid = sum(pmt_amounts)
     if total_paid <= principal:

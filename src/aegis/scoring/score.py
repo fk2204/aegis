@@ -1010,6 +1010,10 @@ def _score_revenue_volatility(deal: ScoreInput, b: _Builder) -> None:
     # are V1 calibration; master plan does not lock specific CV bands.
     if len(deal.monthly_breakdown) < 4:
         return
+    # float(): Decimal doesn't support fractional exponent (variance**0.5
+    # below raises on Decimal); cv is used only for threshold comparison
+    # against the 0.50 / 1.0 bands, never persisted. Money math elsewhere
+    # in this module stays in Decimal per CLAUDE.md.
     deposits = [float(m.deposits) for m in deal.monthly_breakdown]
     mean = statistics.mean(deposits)
     if mean <= 0:
