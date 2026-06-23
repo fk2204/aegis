@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AEGIS — Logo preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --paper: #FAFAF8;
+      --paper-2: #F0F5F2;
+      --rule: #D1DDD6;
+      --ink: #2D5A47;
+      --ink-2: #4A6B5E;
+      --ink-3: #7A8E82;
+      --accent: #1F3E32;
+      --sage: #A8D5BA;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 14px/1.5 Inter, system-ui, sans-serif;
+      padding: 48px 56px;
+    }
+    h1 {
+      font: 600 22px/1.2 Poppins, sans-serif;
+      letter-spacing: 0.5px;
+      margin: 0 0 8px;
+    }
+    .lede {
+      color: var(--ink-3);
+      margin: 0 0 40px;
+      max-width: 64ch;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin-bottom: 40px;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid var(--rule);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .card header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--rule);
+      background: var(--paper-2);
+    }
+    .card h2 {
+      font: 600 14px/1.3 Inter, sans-serif;
+      letter-spacing: 0.3px;
+      margin: 0;
+      text-transform: uppercase;
+    }
+    .card .desc {
+      font-size: 12px;
+      color: var(--ink-3);
+      margin-top: 4px;
+    }
+    .card section {
+      padding: 24px 20px;
+      border-bottom: 1px solid var(--rule);
+    }
+    .card section:last-child { border-bottom: 0; }
+    .card section h3 {
+      font: 500 10px/1 Inter, sans-serif;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      margin: 0 0 16px;
+    }
+    .scale-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+    .scale {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .scale .label {
+      font: 500 10px/1 'JetBrains Mono', ui-monospace, monospace;
+      color: var(--ink-3);
+      letter-spacing: 0.5px;
+    }
+    .scale img.s16 { width: 16px; height: 16px; }
+    .scale img.s24 { width: 24px; height: 24px; }
+    .scale img.s32 { width: 32px; height: 32px; }
+    .scale img.s64 { width: 64px; height: 64px; }
+    .scale img.s120 { width: 120px; height: 120px; }
+    .scale img.lockup-s {
+      height: 24px;
+      width: auto;
+    }
+    .scale img.lockup-m {
+      height: 32px;
+      width: auto;
+    }
+    .scale img.lockup-l {
+      height: 56px;
+      width: auto;
+    }
+    .dark-bg {
+      background: var(--ink);
+      padding: 24px 20px;
+    }
+    .dark-bg h3 { color: rgba(255,255,255,0.55); }
+    /* inverse: use CSS filter to invert? No — better to make a variant SVG. For now show the same SVG on dark; user will see contrast. */
+    .topbar-demo {
+      margin-top: 32px;
+      background: var(--ink);
+      color: #fff;
+      padding: 14px 20px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font: 600 12px/1 Poppins, sans-serif;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+    }
+    .topbar-demo img { height: 22px; width: auto; }
+    .topbar-demo .nav-items {
+      margin-left: 32px;
+      display: flex;
+      gap: 24px;
+      color: rgba(255,255,255,0.6);
+      letter-spacing: 0.6px;
+    }
+    .topbar-demo .nav-items span.active { color: #fff; }
+    .footnote {
+      margin-top: 56px;
+      padding-top: 24px;
+      border-top: 1px solid var(--rule);
+      color: var(--ink-3);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .footnote code {
+      background: var(--paper-2);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--ink-2);
+    }
+  </style>
+</head>
+<body>
+  <h1>AEGIS shield · logo candidates</h1>
+  <p class="lede">
+    Three shield variants in the Commera deep-forest palette (<code style="font-family:JetBrains Mono,monospace;font-size:12px">#2D5A47</code>).
+    Each shown at favicon (16px), small chrome (24px), header (32px), large (64–120px), and as a wordmark lockup.
+  </p>
+
+  <div class="grid">
+    <!-- ============ VARIANT A ============ -->
+    <div class="card">
+      <header>
+        <h2>A · Chevron monogram</h2>
+        <div class="desc">Cream chevron cut from a solid shield. Reads as a stylised "A" and as a heraldic chevron at once.</div>
+      </header>
+      <section>
+        <h3>Mark · sizes</h3>
+        <div class="scale-row">
+          <div class="scale"><img src="logos/aegis-mark-a.svg" class="s16" alt=""><span class="label">16</span></div>
+          <div class="scale"><img src="logos/aegis-mark-a.svg" class="s24" alt=""><span class="label">24</span></div>
+          <div class="scale"><img src="logos/aegis-mark-a.svg" class="s32" alt=""><span class="label">32</span></div>
+          <div class="scale"><img src="logos/aegis-mark-a.svg" class="s64" alt=""><span class="label">64</span></div>
+          <div class="scale"><img src="logos/aegis-mark-a.svg" class="s120" alt=""><span class="label">120</span></div>
+        </div>
+      </section>
+      <section>
+        <h3>Lockup · sizes</h3>
+        <div class="scale-row">
+          <div class="scale"><img src="logos/aegis-lockup-a.svg" class="lockup-s" alt=""><span class="label">24h</span></div>
+          <div class="scale"><img src="logos/aegis-lockup-a.svg" class="lockup-m" alt=""><span class="label">32h</span></div>
+          <div class="scale"><img src="logos/aegis-lockup-a.svg" class="lockup-l" alt=""><span class="label">56h</span></div>
+        </div>
+      </section>
+      <section class="dark-bg">
+        <h3>On forest bg</h3>
+        <div class="scale-row">
+          <div class="scale"><img src="logos/aegis-mark-a.svg" class="s32" alt=""></div>
+          <div class="scale"><img src="logos/aegis-mark-a.svg" class="s64" alt=""></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ VARIANT B ============ -->
+    <div class="card">
+      <header>
+        <h2>B · Heraldic fess</h2>
+        <div class="desc">Single horizontal bar cut from the shield. Most traditionally heraldic — clean, calm, conservative.</div>
+      </header>
+      <section>
+        <h3>Mark · sizes</h3>
+        <div class="scale-row">
+          <div class="scale"><img src="logos/aegis-mark-b.svg" class="s16" alt=""><span class="label">16</span></div>
+          <div class="scale"><img src="logos/aegis-mark-b.svg" class="s24" alt=""><span class="label">24</span></div>
+          <div class="scale"><img src="logos/aegis-mark-b.svg" class="s32" alt=""><span class="label">32</span></div>
+          <div class="scale"><img src="logos/aegis-mark-b.svg" class="s64" alt=""><span class="label">64</span></div>
+          <div class="scale"><img src="logos/aegis-mark-b.svg" class="s120" alt=""><span class="label">120</span></div>
+        </div>
+      </section>
+      <section>
+        <h3>Lockup · sizes</h3>
+        <div class="scale-row">
+          <div class="scale"><img src="logos/aegis-lockup-b.svg" class="lockup-s" alt=""><span class="label">24h</span></div>
+          <div class="scale"><img src="logos/aegis-lockup-b.svg" class="lockup-m" alt=""><span class="label">32h</span></div>
+          <div class="scale"><img src="logos/aegis-lockup-b.svg" class="lockup-l" alt=""><span class="label">56h</span></div>
+        </div>
+      </section>
+      <section class="dark-bg">
+        <h3>On forest bg</h3>
+        <div class="scale-row">
+          <div class="scale"><img src="logos/aegis-mark-b.svg" class="s32" alt=""></div>
+          <div class="scale"><img src="logos/aegis-mark-b.svg" class="s64" alt=""></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ VARIANT C ============ -->
+    <div class="card">
+      <header>
+        <h2>C · Per pale split</h2>
+        <div class="desc">Solid shield split vertically — forest left, deeper forest right. Two-tone, modern, no internal motif.</div>
+      </header>
+      <section>
+        <h3>Mark · sizes</h3>
+        <div class="scale-row">
+          <div class="scale"><img src="logos/aegis-mark-c.svg" class="s16" alt=""><span class="label">16</span></div>
+          <div class="scale"><img src="logos/aegis-mark-c.svg" class="s24" alt=""><span class="label">24</span></div>
+          <div class="scale"><img src="logos/aegis-mark-c.svg" class="s32" alt=""><span class="label">32</span></div>
+          <div class="scale"><img src="logos/aegis-mark-c.svg" class="s64" alt=""><span class="label">64</span></div>
+          <div class="scale"><img src="logos/aegis-mark-c.svg" class="s120" alt=""><span class="label">120</span></div>
+        </div>
+      </section>
+      <section>
+        <h3>Lockup · sizes</h3>
+        <div class="scale-row">
+          <div class="scale"><img src="logos/aegis-lockup-c.svg" class="lockup-s" alt=""><span class="label">24h</span></div>
+          <div class="scale"><img src="logos/aegis-lockup-c.svg" class="lockup-m" alt=""><span class="label">32h</span></div>
+          <div class="scale"><img src="logos/aegis-lockup-c.svg" class="lockup-l" alt=""><span class="label">56h</span></div>
+        </div>
+      </section>
+      <section class="dark-bg">
+        <h3>On forest bg</h3>
+        <div class="scale-row">
+          <div class="scale"><img src="logos/aegis-mark-c.svg" class="s32" alt=""></div>
+          <div class="scale"><img src="logos/aegis-mark-c.svg" class="s64" alt=""></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <h2 style="font:600 14px/1.3 Inter,sans-serif;letter-spacing:0.3px;text-transform:uppercase;margin:48px 0 16px;">In context · simulated topbar</h2>
+
+  <div class="topbar-demo">
+    <img src="logos/aegis-mark-a.svg" alt="">
+    <span>AEGIS</span>
+    <span style="opacity:0.4">A</span>
+    <div class="nav-items">
+      <span class="active">TODAY</span><span>DEALS</span><span>MERCHANTS</span><span>FUNDERS</span>
+    </div>
+  </div>
+  <div class="topbar-demo">
+    <img src="logos/aegis-mark-b.svg" alt="">
+    <span>AEGIS</span>
+    <span style="opacity:0.4">B</span>
+    <div class="nav-items">
+      <span class="active">TODAY</span><span>DEALS</span><span>MERCHANTS</span><span>FUNDERS</span>
+    </div>
+  </div>
+  <div class="topbar-demo">
+    <img src="logos/aegis-mark-c.svg" alt="">
+    <span>AEGIS</span>
+    <span style="opacity:0.4">C</span>
+    <div class="nav-items">
+      <span class="active">TODAY</span><span>DEALS</span><span>MERCHANTS</span><span>FUNDERS</span>
+    </div>
+  </div>
+
+  <p class="footnote">
+    Notes: marks use <code>fill-rule="evenodd"</code> to cut interior shapes from the shield, so the negative space adopts whatever background colour the SVG sits on — same asset works on cream, sage tint, or photographic backgrounds. Variant C uses two solid paths in two forest tones (no cutout). All marks are single-colour or two-tone solid paths; no strokes, no gradients — they render crisply at 16 px without anti-aliasing artefacts. On a dark forest topbar an inverted (cream-fill) version will be needed; I'll produce that once a variant is chosen.
+  </p>
+</body>
+</html>

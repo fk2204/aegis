@@ -86,6 +86,11 @@ logs/
 # is operator-side inspection, never committed.
 reports/
 
+# Local design artifacts — not for repo. Brand assets that belong in the
+# repo live under docs/brand/; operator-side scratch (drafts, exports,
+# Figma renders) stays out.
+design/
+
 # Node (we don't use it but listed per spec)
 node_modules/
 .tmp/

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 32" role="img" aria-label="AEGIS">
+  <title>AEGIS lockup — Variant C</title>
+  <path d="M4 4 H16 V30 Q4 22 4 14 Z" fill="#2D5A47"/>
+  <path d="M16 4 H28 V14 Q28 22 16 30 Z" fill="#1F3E32"/>
+  <text x="40" y="23.5" font-family="Poppins, Inter, system-ui, sans-serif"
+        font-size="20" font-weight="600" letter-spacing="3" fill="#2D5A47">AEGIS</text>
+</svg>
