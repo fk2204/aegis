@@ -39,6 +39,7 @@ dist/
 
 # Test / type / lint caches
 .pytest_cache/
+pytest_*.log
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
