@@ -54,14 +54,16 @@ import argparse
 import sys
 import traceback
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final, cast
 from uuid import UUID
 
 from aegis.audit import AuditLog, SupabaseAuditLog
 from aegis.bank_layouts.repository import (
+    HINTS_AVAILABLE_THRESHOLD,
     BankLayoutWriteError,
     SupabaseBankLayoutRepository,
 )
+from aegis.db import get_supabase
 
 # Exit codes — keep aligned with sibling scripts.
 EXIT_OK: Final[int] = 0
@@ -241,6 +243,114 @@ def _seed_one(
     )
 
 
+def _bump_parse_count_one(
+    *,
+    bank_name: str,
+    target_count: int,
+    repo: SupabaseBankLayoutRepository,
+    audit: AuditLog,
+    apply_writes: bool,
+) -> SeedOutcome:
+    """Bump ``successful_parses`` to at least ``target_count`` (GREATEST).
+
+    Operator-authorized backfill so a bank with a sparse parse history
+    crosses ``HINTS_AVAILABLE_THRESHOLD`` and starts using its authored
+    extraction_hints on the next parse. Never lowers the count — the
+    write is a no-op if the existing value already meets / exceeds the
+    target.
+    """
+    excerpt = f"target={target_count}"
+    existing = repo.find_by_bank_name(bank_name)
+    if existing is None:
+        return SeedOutcome(
+            bank_name=bank_name,
+            hint_excerpt=excerpt,
+            action="error",
+            detail=(
+                f"no bank_layouts row for {bank_name!r}; create one via the "
+                "hints-seeding path or via a real successful parse first."
+            ),
+        )
+
+    if existing.successful_parses >= target_count:
+        return SeedOutcome(
+            bank_name=bank_name,
+            hint_excerpt=excerpt,
+            action="set",
+            detail=(
+                f"no change — successful_parses={existing.successful_parses} "
+                f"already ≥ target={target_count} (GREATEST is a no-op)"
+            ),
+        )
+
+    print(
+        f"Bumping successful_parses for {bank_name} to {target_count} "
+        f"(operator-authorized backfill — not a real parse count)"
+    )
+
+    if not apply_writes:
+        return SeedOutcome(
+            bank_name=bank_name,
+            hint_excerpt=excerpt,
+            action="would_set",
+            detail=(
+                f"DRY-RUN — would set successful_parses to {target_count} "
+                f"on row id={existing.id} "
+                f"(current={existing.successful_parses})"
+            ),
+        )
+
+    try:
+        result = (
+            get_supabase()
+            .table("bank_layouts")
+            .update({"successful_parses": target_count})
+            .eq("id", str(existing.id))
+            .execute()
+        )
+    except Exception as exc:  # pragma: no cover — runtime/network only
+        return SeedOutcome(
+            bank_name=bank_name,
+            hint_excerpt=excerpt,
+            action="error",
+            detail=f"UPDATE failed: {type(exc).__name__}: {exc}",
+        )
+
+    updated_rows = cast(list[dict[str, Any]], result.data or [])
+    if not updated_rows:
+        return SeedOutcome(
+            bank_name=bank_name,
+            hint_excerpt=excerpt,
+            action="error",
+            detail=f"UPDATE returned no row for id={existing.id}",
+        )
+
+    new_count = int(updated_rows[0].get("successful_parses") or 0)
+    audit.record(
+        actor=_ACTOR,
+        action="bank_layouts.successful_parses_bumped",
+        subject_type="bank_layout",
+        subject_id=existing.id,
+        details={
+            "bank_name": bank_name,
+            "previous_successful_parses": existing.successful_parses,
+            "new_successful_parses": new_count,
+            "target_count": target_count,
+            "hints_available_threshold": HINTS_AVAILABLE_THRESHOLD,
+            "note": "operator-authorized backfill — not a real parse count",
+        },
+    )
+    return SeedOutcome(
+        bank_name=bank_name,
+        hint_excerpt=excerpt,
+        action="set",
+        detail=(
+            f"bumped successful_parses {existing.successful_parses} → "
+            f"{new_count} (row id={existing.id})"
+        ),
+    )
+
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
@@ -257,7 +367,45 @@ def _parse_args() -> argparse.Namespace:
             "dry-run (print the bank + hint excerpt that WOULD be seeded)."
         ),
     )
-    return p.parse_args()
+    p.add_argument(
+        "--bump-parse-count",
+        action="store_true",
+        help=(
+            "Operator-authorized backfill: UPDATE bank_layouts SET "
+            "successful_parses = GREATEST(current, --target-count) for the "
+            "bank passed via --bank-name. Used to lift a single sparse-"
+            "history bank across HINTS_AVAILABLE_THRESHOLD so its authored "
+            "extraction_hints start feeding the prompt on the next parse. "
+            "Requires --bank-name. DRY-RUN unless --apply is also passed."
+        ),
+    )
+    p.add_argument(
+        "--bank-name",
+        type=str,
+        default=None,
+        help=(
+            "Bank name to act on. REQUIRED with --bump-parse-count; ignored "
+            "in the default hints-seeding mode (that path iterates the "
+            "_BANK_HINTS dict)."
+        ),
+    )
+    p.add_argument(
+        "--target-count",
+        type=int,
+        default=HINTS_AVAILABLE_THRESHOLD,
+        help=(
+            "Target value for successful_parses when --bump-parse-count is "
+            f"set (default {HINTS_AVAILABLE_THRESHOLD}, the current "
+            "HINTS_AVAILABLE_THRESHOLD). The UPDATE is GREATEST(current, "
+            "target) — never lowers an already-higher count."
+        ),
+    )
+    args = p.parse_args()
+    if args.bump_parse_count and not args.bank_name:
+        p.error("--bump-parse-count requires --bank-name")
+    if args.bump_parse_count and args.target_count < 1:
+        p.error("--target-count must be a positive integer")
+    return args
 
 
 def main() -> int:
@@ -274,16 +422,27 @@ def main() -> int:
         return EXIT_RUNTIME_ERROR
 
     outcomes: list[SeedOutcome] = []
-    for bank_name, hint in _BANK_HINTS.items():
+    if args.bump_parse_count:
         outcomes.append(
-            _seed_one(
-                bank_name=bank_name,
-                hint=hint,
+            _bump_parse_count_one(
+                bank_name=args.bank_name,
+                target_count=args.target_count,
                 repo=repo,
                 audit=audit,
                 apply_writes=args.apply,
             )
         )
+    else:
+        for bank_name, hint in _BANK_HINTS.items():
+            outcomes.append(
+                _seed_one(
+                    bank_name=bank_name,
+                    hint=hint,
+                    repo=repo,
+                    audit=audit,
+                    apply_writes=args.apply,
+                )
+            )
 
     # Stdout report — one human-readable line per bank.
     for o in outcomes:
