@@ -13,10 +13,8 @@
 !.env.example
 !*.env.example
 
-# Operator-only PowerShell helpers with hardcoded tokens (bearer, Cloudflare
-# tunnel). These live on the operator box and are never in version control.
-install-cloudflare-tunnel.ps1
-upload-statements.ps1
+# Operator-only PowerShell helpers. Sanitized variants (token via $env:)
+# are tracked. Wildcard variants stay excluded for local-only token contents.
 upload-statements-*.ps1
 
 # Cloudflare API + connector tokens — operator-only, never in version control.
