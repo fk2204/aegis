@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import io
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -36,7 +36,13 @@ from aegis.compliance.render_events import (  # noqa: E402
 )
 from scripts import triage_render_events as cli  # noqa: E402
 
-_FIXED_TS = datetime(2026, 6, 8, 12, 0, tzinfo=UTC)
+# Pin one day before today (UTC) so the rendered_at timestamp always
+# lands inside the CLI's _DEFAULT_WINDOW_DAYS-day rolling window. Tests
+# that pass an explicit window use _FIXED_TS.date() as both endpoints,
+# so a moving date doesn't break them either.
+_FIXED_TS = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(
+    days=1
+)
 
 
 def _make_repo() -> InMemoryDisclosureRenderEventRepository:
@@ -108,9 +114,7 @@ def test_list_filters_by_status() -> None:
     """``--status apr_compute_failed`` returns only that bucket."""
     repo = _make_repo()
     buf = io.StringIO()
-    rc = cli.cmd_list(
-        _ns(status=RENDER_EVENT_STATUS_APR_FAILED), repo, buf
-    )
+    rc = cli.cmd_list(_ns(status=RENDER_EVENT_STATUS_APR_FAILED), repo, buf)
     assert rc == 0
 
     lines = [line for line in buf.getvalue().splitlines() if line.strip()]
@@ -234,9 +238,7 @@ def test_main_dispatches_list_subcommand_via_injection() -> None:
     """``main(argv, repo=fake, out=buf)`` dispatches without DSN env."""
     repo = _make_repo()
     buf = io.StringIO()
-    rc = cli.main(
-        ["list", "--status", "apr_compute_failed"], repo=repo, out=buf
-    )
+    rc = cli.main(["list", "--status", "apr_compute_failed"], repo=repo, out=buf)
     assert rc == 0
     out = buf.getvalue()
     assert "apr_compute_failed" in out
