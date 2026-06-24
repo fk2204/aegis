@@ -105,11 +105,24 @@ async def parse_document(
     ctx: dict[str, Any],
     document_id_str: str,
     pdf_path: str,
+    keep_local_plaintext: bool = True,
 ) -> dict[str, Any]:
     """arq job entrypoint. ``ctx`` is provided by arq, unused for now.
 
     Returns a small dict so the operator can spot-check job logs.
     PDF is deleted in the finally block — present even on error paths.
+
+    ``keep_local_plaintext`` controls the storage-step failure handling
+    when the pdf_store seal raises. ``True`` (default) preserves the
+    plaintext on disk for ops inspection — correct for upload-route jobs
+    where the user's original upload is the source of truth and the
+    plaintext is the only copy. ``False`` instructs the storage-step
+    failure handler to ``_safe_unlink`` instead — correct for jobs that
+    enqueue with a transient tempfile sourced from an existing pdf_store
+    seal (e.g. ``scripts/recover_legacy_docs.py
+    --reparse-sealed-manual-review`` — the encrypted copy already exists
+    in pdf_store and the local plaintext is purely a worker-readable
+    handoff that should never persist past the storage step).
     """
     document_id = UUID(document_id_str)
     repository: DocumentRepository = ctx.get("repository") or get_repository()
@@ -217,6 +230,7 @@ async def parse_document(
             repository=repository,
             merchants_repo=merchants_repo,
             pdf_store_repo=pdf_store_repo,
+            keep_local_plaintext=keep_local_plaintext,
         )
 
     # ===================================================================
@@ -418,6 +432,7 @@ async def parse_document(
         document_id=document_id,
         pdf_store_repo=pdf_store_repo,
         audit=audit,
+        keep_local_plaintext=keep_local_plaintext,
     )
     if pdf_store_ok:
         await _try_encrypted_storage_step(
@@ -446,6 +461,7 @@ async def _run_processor_branch(
     repository: DocumentRepository,
     merchants_repo: MerchantRepository,
     pdf_store_repo: PdfStoreRepository,
+    keep_local_plaintext: bool = True,
 ) -> dict[str, Any]:
     """Run the processor pipeline + audit the result (mp Phase 6.6).
 
@@ -608,6 +624,7 @@ async def _run_processor_branch(
         pdf_store_repo=pdf_store_repo,
         audit=audit,
         plaintext_bytes=pdf_bytes,
+        keep_local_plaintext=keep_local_plaintext,
     )
     if pdf_store_ok:
         await _try_encrypted_storage_step(
@@ -1218,6 +1235,7 @@ async def _try_pdf_store_step(
     pdf_store_repo: PdfStoreRepository,
     audit: AuditLog,
     plaintext_bytes: bytes | None = None,
+    keep_local_plaintext: bool = True,
 ) -> bool:
     """Seal the plaintext PDF and persist into Postgres ``pdf_store``.
 
@@ -1231,10 +1249,16 @@ async def _try_pdf_store_step(
         Supabase Storage step.
       * FAILURE (``PdfStoreWriteError`` or ``CryptoConfigError``) — no
         row written; audit ``document.encrypted_store_failed`` with
-        ``error_type`` + truncated message; returns ``False``. The
-        caller skips the Supabase Storage step and leaves the local
-        plaintext in place for ops inspection (the legacy step is what
-        would have unlinked).
+        ``error_type`` + truncated message; returns ``False``. By
+        default the caller skips the Supabase Storage step and leaves
+        the local plaintext in place for ops inspection (the legacy
+        step is what would have unlinked). When
+        ``keep_local_plaintext=False`` the failure path additionally
+        calls ``_safe_unlink`` so a transient script-written tempfile
+        (where an encrypted copy already exists in pdf_store and the
+        operator has nothing to inspect from a fresh decrypt) does NOT
+        persist past the storage step. See ``parse_document`` docstring
+        for the flag's contract.
 
     ``plaintext_bytes`` is an optimization: the processor branch already
     read the file at the top of the handler, so pass through to avoid
@@ -1264,9 +1288,15 @@ async def _try_pdf_store_step(
             details={
                 "error_type": type(exc).__name__,
                 "error_message": str(exc)[:500],
-                "outcome": "preserve_local_plaintext",
+                "outcome": (
+                    "preserve_local_plaintext"
+                    if keep_local_plaintext
+                    else "unlinked_local_plaintext"
+                ),
             },
         )
+        if not keep_local_plaintext:
+            _safe_unlink(pdf_path)
         return False
     except CryptoConfigError as exc:
         # Boot-time config drift surfaced at runtime: the key version
@@ -1281,9 +1311,15 @@ async def _try_pdf_store_step(
             details={
                 "error_type": type(exc).__name__,
                 "error_message": str(exc)[:500],
-                "outcome": "crypto_config_error",
+                "outcome": (
+                    "crypto_config_error"
+                    if keep_local_plaintext
+                    else "crypto_config_error_unlinked"
+                ),
             },
         )
+        if not keep_local_plaintext:
+            _safe_unlink(pdf_path)
         return False
 
     audit.record(
