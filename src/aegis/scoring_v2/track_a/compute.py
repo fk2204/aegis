@@ -247,6 +247,17 @@ def _drift_signal_token(failure: str) -> str:
     signal class (e.g. "show me all running-balance failures") works.
     Strips the persistence-time ``[MATH] `` / ``[META] `` etc. prefix
     if present so the token is the same regardless of input source.
+
+    F10 (INFO, docs/track_a_audit_2026-06-12.md): leading whitespace on
+    the input flag (e.g. ``" reconciliation_failed_period: …"``) is NOT
+    trimmed here. The current emitters always produce clean flags —
+    ``parser.pipeline._collect_flags`` writes ``f"[MATH] {f}"`` and
+    ``ValidationResult.failures`` arrives unprefixed — so the
+    ``.strip()`` defence-in-depth the audit suggested would never
+    actually trigger today. If a future admin-tool / hand-write path
+    introduces whitespace-leading flags, this is the spot to add
+    ``.strip()``; the persistence emitters being clean is the
+    invariant being relied on.
     """
     head = _strip_category_prefix(failure).split(":", 1)[0]
     return head
