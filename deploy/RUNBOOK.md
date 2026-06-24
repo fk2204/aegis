@@ -247,6 +247,58 @@ Cleanup: on failure, `verify_bedrock.py` keeps the remote `/tmp/aegis-verify-<uu
 
 ---
 
+## Bank layout operator tools
+
+Operator-facing flags for managing the `bank_layouts` table that feeds the Bedrock extraction prompt. Both are box-only — they require `/etc/aegis/aegis.env` to be sourced and live Supabase credentials. Dry-run by default; `--apply` to execute.
+
+### `scripts/seed_bank_hints.py --bump-parse-count`
+
+**When to use.** A new bank's extraction hint has just been authored in `_BANK_HINTS` (or added via a separate seed pass) but the bank's `bank_layouts.successful_parses` count is below `HINTS_AVAILABLE_THRESHOLD` (currently 3). Below the threshold the parser pipeline does NOT inject the hint into the Bedrock prompt — even if the hint text is in the row — so the bank's next statements parse without benefit. The bump is an operator-authorized backfill that lifts `successful_parses` to a target value so the hint takes effect immediately.
+
+**Syntax (one bank per invocation):**
+```bash
+ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 \
+  "cd /opt/aegis && set -a && source /etc/aegis/aegis.env && set +a && \
+  .venv/bin/python scripts/seed_bank_hints.py \
+  --bump-parse-count --bank-name 'Bank of America, N.A.' --target-count 3 --apply"
+```
+
+**What it does.** `UPDATE bank_layouts SET successful_parses = GREATEST(successful_parses, target_count)` for the named row, then writes one `bank_layouts.successful_parses_bumped` audit row capturing previous + new + target. `--target-count` defaults to `HINTS_AVAILABLE_THRESHOLD`. Case-insensitive `--bank-name` lookup.
+
+**Warning.** The bumped count is a BACKFILL, NOT a real parse count. Downstream metrics that read `bank_layouts.successful_parses` to gauge bank coverage will be inflated by the operator intervention. The audit row's `note` field carries `"operator-authorized backfill — not a real parse count"` for any future analyst untangling the inflation.
+
+**Idempotent.** If the row already meets / exceeds the target, the action is `set` with detail `"no change — successful_parses=N already ≥ target=M (GREATEST is a no-op)"` and no UPDATE issues.
+
+### `scripts/recover_legacy_docs.py --reparse-sealed-manual-review`
+
+**When to use.** After a `bank_layouts` hint is added for a bank whose existing documents are stuck at `parse_status='manual_review'` with a sealed `pdf_store` blob. The hint helps Bedrock extract cleanly on the next parse; this flag triggers that next parse against the already-decrypted plaintext without going through Close re-fetch.
+
+Distinct from `--vision-retry` (which targets manual_review docs whose extraction NEVER completed — no analyses row) and `--backfill-sha-matches` (which targets manual_review docs whose pdf_store seal is MISSING). This flag fills the gap: docs with completed parses + sealed seals that just need a fresh attempt under new hint context.
+
+**Syntax (sweeps every sealed manual_review doc):**
+```bash
+ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 \
+  "cd /opt/aegis && set -a && source /etc/aegis/aegis.env && set +a && \
+  .venv/bin/python scripts/recover_legacy_docs.py \
+  --reparse-sealed-manual-review --apply"
+```
+
+Add `--merchant <UUID-or-lead_id-or-business-name-substring>` to scope to a single merchant for a guarded first pass.
+
+**What it does (per candidate):**
+1. `pdf_store.fetch_plaintext(doc_id)` — decrypt the sealed blob.
+2. Write plaintext to a UUID-named tempfile under `aegis_upload_dir` (default `/var/lib/aegis/uploads/`).
+3. `chmod 0644` the tempfile so the `aegis`-user worker can read what `root` wrote (the script SSHes in as root; the worker runs as `aegis`).
+4. Enqueue `parse_document` on the arq queue with `keep_local_plaintext=False` so the worker's storage-step failure handler unlinks the tempfile instead of preserving it (the encrypted copy already exists in pdf_store; the transient plaintext should never persist past the parse).
+5. 100ms `asyncio.sleep` between enqueues to pace the burst against Supabase Storage — a 26-doc burst on 2026-06-23 caused 16 `pdf_store.storage_upload_failed` events; the pacing prevents recurrence.
+6. Audit row per enqueue: `document.reparse_enqueued` with the doc's filename + tempfile path.
+
+**Cleanup.** Tempfile lifecycle is owned by the worker — `_safe_unlink` fires on every parse outcome path including the storage-step failure handlers when `keep_local_plaintext=False`. The operator does NOT need to sweep `/var/lib/aegis/uploads/` after a run.
+
+**Outcome semantics.** A doc that comes back from the worker still in `parse_status='manual_review'` is NOT a script failure — the parser's anti-fraud + math gates intentionally hold real signal in manual_review for operator triage (`[MATH] reconciliation_failed_*`, `[META] editor_detected`, `[SHADOW] bank_statement_tampering_confirmed`, etc.). The reparse just gave the parser another chance under fresh hint context. Docs that DO transition to `proceed` / `decline` are the operator's win.
+
+---
+
 ## Secrets + key rotation
 
 ### Rotate the API bearer token
