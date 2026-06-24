@@ -105,17 +105,20 @@ _EDITING_TOOL_PATTERNS: Final[tuple[str, ...]] = (
 # Operator's call: real data first, no industry-typical placeholders
 # (CLAUDE.md OP-4).
 KNOWN_CREATOR_PATTERNS: Final[dict[str, list[str]]] = {
-    # JPMorgan Chase — n=11 sampled statements. /Creator is empty; the
+    # JPMorgan Chase — n=16 sampled statements (11 proceed + 5
+    # manual_review, all identical strings). /Creator is empty; the
     # bank identity lives on /Producer="OpenText Output Transformation
     # Engine - 23.4.25". Highest-confidence entry in this registry.
     "JPMorgan Chase Bank, N.A.": [
         "OpenText Output Transformation Engine",
     ],
-    # Bank of America — n=1 sampled statement. Both name variants the
-    # LLM emits get the same patterns to keep the gate uniform.
-    # /Creator="Bank of America"; /Producer carries an internal
-    # "TargetStream StreamEDS for Bank of America" tag. Treat as
-    # PRELIMINARY (n=1) — expand when more BoA statements parse.
+    # Bank of America — n=5 sampled statements (1 proceed + 3
+    # manual_review under "Bank of America, N.A." + 1 manual_review
+    # under "Bank of America" short variant). All five carry the same
+    # /Creator="Bank of America" + /Producer="TargetStream StreamEDS
+    # rv1.7.161 for Bank of America". Both name variants the LLM emits
+    # get the same patterns to keep the gate uniform. Upgraded from
+    # preliminary (n=1) on the 2026-06-24 wider-scope sample.
     "Bank of America, N.A.": [
         "Bank of America",
         "TargetStream",

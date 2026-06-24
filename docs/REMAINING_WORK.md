@@ -425,6 +425,13 @@ Three deterministic detectors plumbed in over four commits:
   `EvidenceItem.detail` 240-char truncation guard (mirrors F1a). Tests
   in `tests/scoring_v2/track_a/test_integrity_verdict.py` (7 new).
 
+**VyStar Credit Union — creator registry pending.** Two statements
+seen, both `manual_review` status — insufficient proceed-corroborated
+baseline to whitelist any creator string. Operator action: when the
+next VyStar statement parses to `proceed`, check its /Creator field
+and add it to `KNOWN_CREATOR_PATTERNS` if it matches a known-good bank
+export tool.
+
 **Shipping plan**: batch push of all four commits as one unit, hold
 for operator approval. After ship: F3-F11 (Track A audit findings) is
 the next punch-list, then operator's queued items — offer sizing wired
