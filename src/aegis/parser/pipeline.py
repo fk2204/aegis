@@ -75,6 +75,17 @@ from aegis.parser.validate import validate_extraction
 _log = get_logger(__name__)
 
 # THE thresholds. Read from here, not from anywhere else. (TS had three.)
+#
+# Forensic-layer signals (2026-06-24+) — font_inconsistency_detected,
+# creator_mismatch_detected, text_overlay_detected — contribute to
+# metadata_score directly inside ``aegis.parser.metadata.analyze_metadata``
+# (additive with the existing ``_font_inconsistency`` / ``_page_layer_anomaly``
+# contributions). They therefore get weighted by FRAUD_WEIGHTS["metadata"]
+# alongside every other metadata-class signal — no separate FRAUD_WEIGHTS
+# key, because adding a fourth key would break the sum-to-1 invariant
+# without restructuring ``_fraud_score``. The per-signal point values
+# (+15 / +20 / +25) are documented next to each signal's wiring in
+# ``metadata.py``.
 FRAUD_WEIGHTS: Final[dict[str, float]] = {
     "metadata": 0.35,
     "math": 0.40,

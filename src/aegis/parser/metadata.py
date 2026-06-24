@@ -127,6 +127,13 @@ class MetadataAnalysis:
     # back to the existing text path (conservative — never hides a real
     # text PDF behind OCR by accident).
     has_text_layer: bool = True
+    # Forensic layer (2026-06-24, master plan §6.4 follow-up). True when
+    # the row-level font-consistency detector found a page whose
+    # transaction spans don't match the page's modal font / size. This
+    # is distinct from the existing page-level ``font_inconsistency``
+    # flag, which compares one page's font set to OTHER pages' fonts.
+    # See ``aegis.parser.forensic.font_consistency`` for the algorithm.
+    font_inconsistency_detected: bool = False
     flags: list[str] = field(default_factory=list)
     fraud_score: int = 0
 
@@ -383,6 +390,30 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
 
     has_text_layer = _detect_text_layer(path)
 
+    # Row-level font consistency (2026-06-24 forensic layer extension).
+    # Runs after the pikepdf-based metadata checks because it uses
+    # pymupdf (separate document open) and reads per-text-run font/size,
+    # which pikepdf doesn't surface cleanly. Conservative fallback to
+    # no-flag on any failure — never fail a parse on a forensic
+    # detector error.
+    from aegis.parser.forensic.font_consistency import (
+        analyze as _font_consistency_analyze,
+    )
+
+    font_consistency = _font_consistency_analyze(path)
+    if font_consistency.inconsistency_detected:
+        flags.append(
+            f"font_inconsistency_detected: {font_consistency.affected_page_count} "
+            f"page(s); modal={font_consistency.modal_font or '?'}"
+        )
+        # Contribution mirrors ``_page_layer_anomaly`` (+15) — these are
+        # the same band of forensic signal strength. The contribution
+        # adds to metadata_score, which then gets weighted by
+        # FRAUD_WEIGHTS["metadata"] in pipeline.py — no separate
+        # FRAUD_WEIGHTS key needed, see the comment near FRAUD_WEIGHTS
+        # for the wiring rationale.
+        score += 15
+
     return MetadataAnalysis(
         pdf_creation_date=creation,
         pdf_modification_date=modification,
@@ -394,6 +425,7 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
         eof_markers=eof_markers,
         page_sizes=page_sizes,
         has_text_layer=has_text_layer,
+        font_inconsistency_detected=font_consistency.inconsistency_detected,
         flags=flags,
         fraud_score=min(100, score),
     )
@@ -468,9 +500,7 @@ def _font_inconsistency(pdf: pikepdf.Pdf) -> tuple[str | None, int]:
     for i, this_page in enumerate(per_page_fonts):
         if not this_page:
             continue
-        other_union: set[str] = set().union(
-            *(s for j, s in enumerate(per_page_fonts) if j != i)
-        )
+        other_union: set[str] = set().union(*(s for j, s in enumerate(per_page_fonts) if j != i))
         if other_union and not (this_page & other_union):
             inconsistent_pages += 1
 
