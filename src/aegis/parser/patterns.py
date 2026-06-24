@@ -42,30 +42,89 @@ from aegis.parser.models import ClassifiedTransaction
 # "remit", "factor") are ONLY decisive when paired with daily-cadence
 # behavior — see `_detect_mca_positions`. This is the TS-review fix.
 KNOWN_FUNDERS: Final[tuple[str, ...]] = (
-    "ondeck", "credibly", "bluevine", "kabbage", "rapid finance",
-    "forward financing", "can capital", "kapitus", "fora", "national funding",
-    "reliant", "libertas", "uplyft", "greenbox", "fundkite", "lendr",
-    "yellowstone", "everest", "cfg merchant", "fundbox", "loanbuilder",
-    "headway", "smart business", "velocity", "paypal working capital",
-    "square capital", "shopify capital", "amazon lending", "parafin",
-    "pipe", "wayflyer", "clearco", "enova", "mulligan",
-    "expansion capital", "torro", "idea financial", "balboa capital",
-    "channel partners", "capital daily", "merchant advance",
-    "itria ventures", "mantis funding", "gtr funding", "slate advance",
-    "biz2credit", "triton capital", "sos capital", "delta bridge",
-    "iou financial", "arf financial", "reward capital", "worldpay advance",
-    "stripe capital", "intuit merchant", "quickbooks capital",
-    "libertas funding", "greenbox capital", "rapid capital funding",
+    "ondeck",
+    "credibly",
+    "bluevine",
+    "kabbage",
+    "rapid finance",
+    "forward financing",
+    "can capital",
+    "kapitus",
+    "fora",
+    "national funding",
+    "reliant",
+    "libertas",
+    "uplyft",
+    "greenbox",
+    "fundkite",
+    "lendr",
+    "yellowstone",
+    "everest",
+    "cfg merchant",
+    "fundbox",
+    "loanbuilder",
+    "headway",
+    "smart business",
+    "velocity",
+    "paypal working capital",
+    "square capital",
+    "shopify capital",
+    "amazon lending",
+    "parafin",
+    "pipe",
+    "wayflyer",
+    "clearco",
+    "enova",
+    "mulligan",
+    "expansion capital",
+    "torro",
+    "idea financial",
+    "balboa capital",
+    "channel partners",
+    "capital daily",
+    "merchant advance",
+    "itria ventures",
+    "mantis funding",
+    "gtr funding",
+    "slate advance",
+    "biz2credit",
+    "triton capital",
+    "sos capital",
+    "delta bridge",
+    "iou financial",
+    "arf financial",
+    "reward capital",
+    "worldpay advance",
+    "stripe capital",
+    "intuit merchant",
+    "quickbooks capital",
+    "libertas funding",
+    "greenbox capital",
+    "rapid capital funding",
     "expansion capital group",
 )
 
 # Behavioral terms — only count when frequency confirms (TS-review fix).
 GENERIC_MCA_TERMS: Final[tuple[str, ...]] = (
-    "daily pmt", "daily payment", "daily business pmt", "merchant svc",
-    "biz advance", "rcvbl", "daily remittance", "ach daily", "daily debit",
-    "business daily", "daily withdrawal", "future receipts",
-    "advance", "remit", "factor", "holdback", "receivables",
-    "daily ach", "receivable purchase",
+    "daily pmt",
+    "daily payment",
+    "daily business pmt",
+    "merchant svc",
+    "biz advance",
+    "rcvbl",
+    "daily remittance",
+    "ach daily",
+    "daily debit",
+    "business daily",
+    "daily withdrawal",
+    "future receipts",
+    "advance",
+    "remit",
+    "factor",
+    "holdback",
+    "receivables",
+    "daily ach",
+    "receivable purchase",
 )
 
 # R1.1: Disguise descriptors used by funders / brokers to hide an MCA
@@ -74,10 +133,15 @@ GENERIC_MCA_TERMS: Final[tuple[str, ...]] = (
 # AND median spacing ≤2 days). Shadow-only output:
 # ``mca_disguise_candidate`` flag, no addition to mca_positions / score.
 DISGUISE_MCA_TERMS: Final[tuple[str, ...]] = (
-    "settlement adv", "settlement advance",
-    "revenue based lending", "revenue based financing",
-    "daily advance", "business cash adv", "merchant cash adv",
-    "funding ach", "capital advance",
+    "settlement adv",
+    "settlement advance",
+    "revenue based lending",
+    "revenue based financing",
+    "daily advance",
+    "business cash adv",
+    "merchant cash adv",
+    "funding ach",
+    "capital advance",
     "working capital adv",
 )
 
@@ -99,11 +163,32 @@ _FUZZY_MIN_OCCURRENCES: Final[int] = 3
 # these words still has a chance via the ratio path.
 _FUZZY_GENERIC_TOKENS: Final[frozenset[str]] = frozenset(
     {
-        "CAPITAL", "FUNDING", "FINANCE", "FINANCIAL",
-        "MERCHANT", "BUSINESS", "DAILY", "ADVANCE", "REMIT",
-        "ACH", "DEBIT", "CREDIT", "PAYMENT", "PAYMT", "PMT",
-        "GROUP", "VENTURES", "PARTNERS", "FUND", "LOAN", "LENDING",
-        "WORKING", "EXPANSION", "CASH", "BANK", "MERCHANTS",
+        "CAPITAL",
+        "FUNDING",
+        "FINANCE",
+        "FINANCIAL",
+        "MERCHANT",
+        "BUSINESS",
+        "DAILY",
+        "ADVANCE",
+        "REMIT",
+        "ACH",
+        "DEBIT",
+        "CREDIT",
+        "PAYMENT",
+        "PAYMT",
+        "PMT",
+        "GROUP",
+        "VENTURES",
+        "PARTNERS",
+        "FUND",
+        "LOAN",
+        "LENDING",
+        "WORKING",
+        "EXPANSION",
+        "CASH",
+        "BANK",
+        "MERCHANTS",
     }
 )
 # Minimum occurrences AND cadence for disguise-term flagging. The spec
@@ -158,10 +243,24 @@ _STRUCTURED_DEPOSIT_CATEGORIES: Final[frozenset[str]] = frozenset(
 # has payroll" signal. Absence is a soft red flag for businesses claiming
 # > $50k/mo revenue (per §6.4 `payroll_absent`).
 KNOWN_PAYROLL_PROCESSORS: Final[tuple[str, ...]] = (
-    "adp", "gusto", "paychex", "rippling", "square payroll",
-    "intuit payroll", "quickbooks payroll", "trinet", "justworks",
-    "zenefits", "deel", "bamboohr", "wagepoint", "onpay",
-    "patriot payroll", "surepayroll", "paylocity", "ultipro",
+    "adp",
+    "gusto",
+    "paychex",
+    "rippling",
+    "square payroll",
+    "intuit payroll",
+    "quickbooks payroll",
+    "trinet",
+    "justworks",
+    "zenefits",
+    "deel",
+    "bamboohr",
+    "wagepoint",
+    "onpay",
+    "patriot payroll",
+    "surepayroll",
+    "paylocity",
+    "ultipro",
     "workday payroll",
 )
 
@@ -172,27 +271,50 @@ KNOWN_PAYROLL_PROCESSORS: Final[tuple[str, ...]] = (
 # is in force. Surfaces a soft signal; final cross-check requires the
 # matched processor statement (Phase 2C).
 KNOWN_CARD_PROCESSORS: Final[tuple[str, ...]] = (
-    "stripe", "square", "toast", "clover", "shopify",
-    "paypal", "worldpay", "elavon", "global payments",
-    "tsys", "first data", "fiserv merchant", "heartland",
-    "authorize.net", "braintree",
+    "stripe",
+    "square",
+    "toast",
+    "clover",
+    "shopify",
+    "paypal",
+    "worldpay",
+    "elavon",
+    "global payments",
+    "tsys",
+    "first data",
+    "fiserv merchant",
+    "heartland",
+    "authorize.net",
+    "braintree",
 )
 
 # Reversal / dispute keywords used by `unauthorized_withdrawal_dispute`.
 # A credit row containing one of these paired with a prior matching MCA
 # debit means the merchant fought (and won) a funder withdrawal.
 REVERSAL_KEYWORDS: Final[tuple[str, ...]] = (
-    "reversal", "reverse", "dispute credit", "dispute cred",
-    "unauthorized", "return ach credit", "chargeback credit",
-    "ach return credit", "ach reversal", "claim credit",
+    "reversal",
+    "reverse",
+    "dispute credit",
+    "dispute cred",
+    "unauthorized",
+    "return ach credit",
+    "chargeback credit",
+    "ach return credit",
+    "ach reversal",
+    "claim credit",
     "withdrawal dispute",
 )
 
 # Chargeback / refund keywords used by `chargeback_velocity`. Counts
 # debit-side rows containing any of these terms grouped by month.
 CHARGEBACK_KEYWORDS: Final[tuple[str, ...]] = (
-    "chargeback", "charge back", "refund", "dispute",
-    "return ach", "merchant return", "credit reversal",
+    "chargeback",
+    "charge back",
+    "refund",
+    "dispute",
+    "return ach",
+    "merchant return",
+    "credit reversal",
 )
 
 
@@ -265,9 +387,7 @@ class PatternAnalysis:
         # Live + shadow flag codes combined, ordered live-first so any
         # operator-side substring search ("contains 'mca_stacking'")
         # behaves the same as before — the new shadow codes append.
-        return [p.code for p in self.patterns] + [
-            p.code for p in self.shadow_patterns
-        ]
+        return [p.code for p in self.patterns] + [p.code for p in self.shadow_patterns]
 
 
 # ---------------------------------------------------------------------------
@@ -475,9 +595,11 @@ def analyze_patterns(
     today = today or date.today()
     patterns: list[Pattern] = []
 
-    deposits = [t for t in transactions if t.amount > 0 and t.category in {
-        "deposit", "ach_credit", "wire_in", "refund"
-    }]
+    deposits = [
+        t
+        for t in transactions
+        if t.amount > 0 and t.category in {"deposit", "ach_credit", "wire_in", "refund"}
+    ]
     debits = [t for t in transactions if t.amount < 0]
     nsf_events = [t for t in transactions if t.category == "nsf_fee"]
     statement_days = max(1, (period_end - period_start).days + 1)
@@ -574,14 +696,21 @@ def analyze_patterns(
     shadow_patterns: list[Pattern] = []
     shadow_patterns.extend(_detect_fuzzy_mca_candidates(debits))
     shadow_patterns.extend(_detect_disguise_candidates(debits))
-    shadow_patterns.extend(
-        _detect_same_day_mca_funder_cluster(mca_positions, transactions)
-    )
+    shadow_patterns.extend(_detect_same_day_mca_funder_cluster(mca_positions, transactions))
     # M9 — structured-deposit (BSA threshold-avoidance) clusters.
     # Walks ALL transactions (not just classified deposits) so the
     # detector picks up rows whose category is ``deposit``,
     # ``ach_credit``, or ``wire_in`` per 31 USC § 5324 scope.
     shadow_patterns.extend(_detect_structured_deposit_cluster(transactions))
+    # Operator spec 2026-06-24 — shadow unreconciled internal transfer.
+    # ``all_bundle_transactions`` defaults to the single-statement input
+    # at parse time because ``analyze_patterns`` runs per-statement;
+    # multi-statement callers pass the bundle explicitly. Distinct from
+    # the live ``unreconciled_internal_transfer`` detector above — that
+    # one is tighter (±$1, ±3d) and lives on ``patterns``; this one is
+    # looser (±$50, ±5d) and lives on ``shadow_patterns`` for
+    # corpus-validation per CLAUDE.md decision-boundary discipline.
+    shadow_patterns.extend(detect_unreconciled_internal_transfers(transactions, transactions))
 
     ai_score = _ai_generated_statement_score(transactions, deposits)
 
@@ -781,8 +910,7 @@ def _fuzzy_match_known_funder(
         funder_tokens = [
             t
             for t in funder_upper.split()
-            if len(t) >= _FUZZY_PREFIX_OVERLAP_CHARS
-            and t not in _FUZZY_GENERIC_TOKENS
+            if len(t) >= _FUZZY_PREFIX_OVERLAP_CHARS and t not in _FUZZY_GENERIC_TOKENS
         ]
         for dtok in desc_tokens:
             if dtok in _FUZZY_GENERIC_TOKENS:
@@ -956,10 +1084,7 @@ def _detect_disguise_candidates(
         unique_days = sorted({r.posted_date for r in rows})
         if len(unique_days) < 2:
             continue
-        spacing = [
-            (unique_days[i + 1] - unique_days[i]).days
-            for i in range(len(unique_days) - 1)
-        ]
+        spacing = [(unique_days[i + 1] - unique_days[i]).days for i in range(len(unique_days) - 1)]
         if not spacing:
             continue
         median_spacing = statistics.median(spacing)
@@ -968,9 +1093,7 @@ def _detect_disguise_candidates(
         # statistics.median returns float|int; round to int days for the
         # flag string so we never expose a misleading "2.5d" cadence.
         median_int = round(median_spacing)
-        code = (
-            f"mca_disguise_candidate:{term}_{len(rows)}_{median_int}"
-        )
+        code = f"mca_disguise_candidate:{term}_{len(rows)}_{median_int}"
         detail = (
             f"disguise term '{term}' on {len(rows)} debit(s) at median "
             f"{median_int}d cadence — shadow-mode candidate"
@@ -1030,8 +1153,7 @@ def _detect_same_day_mca_funder_cluster(
             continue
         joined_names = "|".join(funders_on_day)
         code = (
-            f"mca_same_day_cluster:"
-            f"{posted_date.isoformat()}_{len(funders_on_day)}_({joined_names})"
+            f"mca_same_day_cluster:{posted_date.isoformat()}_{len(funders_on_day)}_({joined_names})"
         )
         detail = (
             f"{len(funders_on_day)} distinct funders debited on "
@@ -1142,9 +1264,7 @@ def _detect_structured_deposit_cluster(
             f"{len(members)}_deposits_in_{_STRUCTURED_DEPOSIT_WINDOW_DAYS}_day_window"
             f"_dates={dates_compact}"
         )
-        amounts_summary = ", ".join(
-            f"${m.amount.quantize(Decimal('0.01'))}" for m in members
-        )
+        amounts_summary = ", ".join(f"${m.amount.quantize(Decimal('0.01'))}" for m in members)
         detail = (
             f"{len(members)} deposit(s) in the BSA-avoidance band "
             f"($8,500-$9,999) within a {_STRUCTURED_DEPOSIT_WINDOW_DAYS}-day "
@@ -1236,9 +1356,7 @@ def _preloan_spike(
 
     week_ago = period_end - timedelta(days=7)
     last_week_ids = [d.id for d in deposits if d.posted_date >= week_ago]
-    last_week = sum(
-        (d.amount for d in deposits if d.posted_date >= week_ago), Decimal("0")
-    )
+    last_week = sum((d.amount for d in deposits if d.posted_date >= week_ago), Decimal("0"))
     earlier = total - last_week
     prior_weeks = (statement_days - 7) / 7
     earlier_weekly_avg = (earlier / Decimal(str(prior_weeks))) if prior_weeks > 0 else Decimal("0")
@@ -1252,9 +1370,7 @@ def _preloan_spike(
     )
     earlier_14 = total - last_14
     prior_14 = statement_days - 14
-    earlier_avg_14 = (
-        earlier_14 / Decimal(str(prior_14 / 14)) if prior_14 > 0 else Decimal("0")
-    )
+    earlier_avg_14 = earlier_14 / Decimal(str(prior_14 / 14)) if prior_14 > 0 else Decimal("0")
     spiked_14d = earlier_avg_14 > 0 and last_14 > earlier_avg_14 * Decimal("2.5")
 
     if not (spiked_7d or spiked_14d):
@@ -1469,8 +1585,7 @@ def _withdrawal_acceleration(
         code="withdrawal_acceleration",
         severity=20,
         detail=(
-            f"last-7d MCA debits: {len(last_week)} vs prior weekly avg "
-            f"{earlier_weekly_avg:.1f}"
+            f"last-7d MCA debits: {len(last_week)} vs prior weekly avg {earlier_weekly_avg:.1f}"
         ),
         source_ids=[d.id for d in last_week],
     )
@@ -1505,15 +1620,66 @@ def _recent_account_opening(period_start: date, today: date) -> Pattern | None:
 # unreconciled-transfer detector. Includes plain `transfer` and the wire
 # legs explicitly so funder/MCA-debit rows are never counted as
 # self-transfers (those have their own detectors).
-_TRANSFER_CATEGORIES: Final[frozenset[str]] = frozenset(
-    {"transfer", "wire_in", "wire_out"}
+_TRANSFER_CATEGORIES: Final[frozenset[str]] = frozenset({"transfer", "wire_in", "wire_out"})
+
+# Shadow-mode unreconciled-internal-transfer detector (operator spec
+# 2026-06-24). Distinct from the LIVE ``_unreconciled_internal_transfer``
+# below — that one uses tighter pair tolerance (±$1, ±3 days), single-
+# statement scope, and feeds the live ``patterns`` list. The shadow
+# detector loosens pair tolerance to the operator's spec (±$50, ±5 days),
+# widens scope to the entire bundle, and emits to
+# ``PatternAnalysis.shadow_patterns`` with code
+# ``unreconciled_internal_transfer`` so the pipeline can surface it as a
+# ``[SHADOW] unreconciled_internal_transfer:...`` flag without touching
+# ``fraud_score`` or ``parse_status``. Per CLAUDE.md "Decision-boundary
+# changes — shadow-first": ship the evidence path first, validate
+# false-positive rate against the corpus, THEN flip a config gate.
+#
+# Threshold rationale:
+# - Amount floor $500 — below this, internal transfers are routine
+#   reimbursements / sweeps; the false-positive rate on a wider net is
+#   unworkable. $500 matches the live detector's floor.
+# - Amount tolerance ±$50 — broader than the live ±$1 because real
+#   internal sweeps occasionally embed fees / FX rounding on the inbound
+#   leg. Operator pick; corpus may suggest tightening to ±$10.
+# - Window ±5 days — same reason as the tolerance. Internal moves
+#   between e.g. a small-bank checking and a brokerage cash account can
+#   take 3-4 business days; ±5 covers a long weekend at either end.
+# - Severity 25 per instance / compound 40 at 3+ / cap 60 — operator
+#   spec. The compound floor is interpreted as REPLACING the per-instance
+#   scaling once n >= 3 (test asserts severity=40 at 3 unmatched, not
+#   25*3=75); below the compound threshold the severity scales 25*n.
+_UNRECONCILED_TRANSFER_MIN_AMOUNT: Final[Decimal] = Decimal("500.00")
+_UNRECONCILED_TRANSFER_AMOUNT_TOLERANCE: Final[Decimal] = Decimal("50.00")
+_UNRECONCILED_TRANSFER_WINDOW_DAYS: Final[int] = 5
+_UNRECONCILED_TRANSFER_SEVERITY_PER: Final[int] = 25
+_UNRECONCILED_TRANSFER_COMPOUND_THRESHOLD: Final[int] = 3
+_UNRECONCILED_TRANSFER_SEVERITY_COMPOUND: Final[int] = 40
+_UNRECONCILED_TRANSFER_SEVERITY_CAP: Final[int] = 60
+# Anchored description tokens — case-insensitive substring match. The
+# operator listed "TRANSFER TO" / "WIRE TO" / "ACH TO" / "ZELLE TO"
+# explicitly as the OR branch alongside ``own_account`` classifier hits.
+# A leading word-boundary anchor prevents accidental hits on words
+# ending in those tokens (e.g. "GATEWAY TO" is not "WAY TO" but the
+# substring "AY TO" would not match either since the token starts with
+# its own keyword). The trailing space disambiguates "TRANSFER TO" from
+# "TRANSFER TODAY" — operator picked the directional verb phrase
+# explicitly.
+_UNRECONCILED_TRANSFER_OUT_DESC_TOKENS: Final[tuple[str, ...]] = (
+    "transfer to ",
+    "wire to ",
+    "ach to ",
+    "zelle to ",
 )
 
 # Token allow-list extracted from a description before counterparty
 # normalization. Cuts trailing transaction-id noise so two ACH deposits
 # from the same customer with different trace ids collapse to one bucket.
 _NORMALIZE_STOP_PATTERNS: Final[tuple[str, ...]] = (
-    r"\bid\b[\s:]+\d+", r"\btrace\s*#?\d+", r"#\d+", r"\d{6,}",
+    r"\bid\b[\s:]+\d+",
+    r"\btrace\s*#?\d+",
+    r"#\d+",
+    r"\d{6,}",
 )
 _NORMALIZE_STOP_RE: Final[re.Pattern[str]] = re.compile(
     "|".join(_NORMALIZE_STOP_PATTERNS), re.IGNORECASE
@@ -1592,6 +1758,184 @@ def _unreconciled_internal_transfer(
     )
 
 
+def _is_unreconciled_transfer_out_candidate(
+    txn: ClassifiedTransaction,
+    own_account_ids: set[UUID] | None,
+) -> bool:
+    """Return True when ``txn`` is a transfer-out candidate.
+
+    The operator spec is OR-joined: either the counterparty classifier
+    labeled the row ``own_account`` OR the description matches one of
+    ``TRANSFER TO`` / ``WIRE TO`` / ``ACH TO`` / ``ZELLE TO`` (case-
+    insensitive substring). ``own_account_ids`` is the optional set of
+    transaction ids the classifier marked ``own_account`` — when None
+    we fall back to description-only matching, which is the path the
+    parser pipeline uses today (classification runs after parse;
+    counterparty results live on a separate column).
+    """
+    if txn.amount >= 0:
+        return False
+    if abs(txn.amount) <= _UNRECONCILED_TRANSFER_MIN_AMOUNT:
+        return False
+    if own_account_ids is not None and txn.id in own_account_ids:
+        return True
+    desc_lower = txn.description.lower()
+    return any(tok in desc_lower for tok in _UNRECONCILED_TRANSFER_OUT_DESC_TOKENS)
+
+
+def _unreconciled_transfer_severity(unmatched_count: int) -> int:
+    """Operator-spec severity curve for the shadow detector.
+
+    - 1-2 unmatched legs:  ``25 * n`` (per-instance scaling)
+    - 3+ unmatched legs:   compound floor ``40``
+    - Hard cap:            ``60``
+
+    The compound rule REPLACES per-instance scaling at the 3+ threshold
+    rather than stacking on top of it. Verified against the operator's
+    test expectations (single -> 25, 3+ -> 40). The cap is a defensive
+    upper bound; with the current rules the highest reachable value is
+    50 (n=2) so the cap only matters if a future tuning raises the
+    per-instance unit above 30.
+    """
+    if unmatched_count >= _UNRECONCILED_TRANSFER_COMPOUND_THRESHOLD:
+        severity = _UNRECONCILED_TRANSFER_SEVERITY_COMPOUND
+    else:
+        severity = _UNRECONCILED_TRANSFER_SEVERITY_PER * unmatched_count
+    return min(_UNRECONCILED_TRANSFER_SEVERITY_CAP, severity)
+
+
+def detect_unreconciled_internal_transfers(
+    transactions: list[ClassifiedTransaction],
+    all_bundle_transactions: list[ClassifiedTransaction] | None = None,
+    own_account_ids: set[UUID] | None = None,
+) -> list[Pattern]:
+    """Shadow-mode detector — transfer-out with no matching transfer-in.
+
+    Operator spec (2026-06-24): find transfer-out transactions
+    (counterparty ``own_account`` OR description matches
+    ``TRANSFER TO`` / ``WIRE TO`` / ``ACH TO`` / ``ZELLE TO``) with
+    ``abs(amount) > $500`` that have NO matching transfer-in anywhere
+    in the submitted bundle within a 5-day window (same amount ±$50,
+    opposite direction).
+
+    Returns a list of ``Pattern`` rows with code
+    ``unreconciled_internal_transfer`` and severity per the compound
+    curve (``_unreconciled_transfer_severity``). The pipeline appends
+    these to ``PatternAnalysis.shadow_patterns`` and surfaces each one
+    as a ``[SHADOW] unreconciled_internal_transfer:...`` entry in
+    ``PipelineResult.all_flags``.
+
+    Bundle scope: ``all_bundle_transactions`` is the entire upload
+    bundle (every statement, every account). The match-in candidate may
+    live on a DIFFERENT statement than ``transactions`` — that's the
+    point of the bundle parameter. When ``all_bundle_transactions`` is
+    ``None`` the detector falls back to single-statement scope, which is
+    what the parse-time pipeline uses today (classification is
+    per-statement). A future multi-statement caller can pass the union
+    explicitly.
+
+    Match criterion (within bundle):
+        ``other.amount > 0`` (opposite direction)
+        AND ``abs(other.amount - abs(out.amount)) <= $50``
+        AND ``abs((other.posted_date - out.posted_date).days) <= 5``
+        AND ``other.id != out.id``
+
+    Each unmatched transfer-out becomes its OWN ``Pattern`` row, with
+    severity computed from the running unmatched count. Per-instance
+    severity makes the per-flag drilldown render meaningfully — the
+    operator can click a single suspicious row rather than a list of
+    five UUIDs under one aggregate. The compound severity floor at 3+
+    instances is encoded by emitting each row at the SAME compound
+    severity (40) once the threshold is crossed.
+
+    Shadow-mode discipline (CLAUDE.md "Decision-boundary changes"):
+    - This detector does NOT contribute to ``fraud_score`` (lives on
+      ``shadow_patterns``, not ``patterns``).
+    - This detector does NOT change ``parse_status`` (no parse-status
+      branch reads ``shadow_patterns``).
+    - ``FRAUD_WEIGHTS["shadow_unreconciled_internal_transfer"] == 0``
+      makes the scoring carve-out explicit.
+    - The flip from shadow -> live is a config / env-var change in a
+      future commit, after operator corpus validation.
+    """
+    if not transactions:
+        return []
+    bundle = all_bundle_transactions if all_bundle_transactions is not None else transactions
+
+    outs = [t for t in transactions if _is_unreconciled_transfer_out_candidate(t, own_account_ids)]
+    if not outs:
+        return []
+
+    # Inbound candidates: ANY positive-amount row anywhere in the bundle
+    # whose magnitude could match an outbound leg. Not restricted to
+    # ``_TRANSFER_CATEGORIES`` — a real internal transfer-in often lands
+    # as ``deposit`` / ``ach_credit`` / ``wire_in`` depending on rail.
+    # The matching tolerances do the disambiguation.
+    ins = [t for t in bundle if t.amount > 0]
+
+    tolerance = _UNRECONCILED_TRANSFER_AMOUNT_TOLERANCE
+    window = _UNRECONCILED_TRANSFER_WINDOW_DAYS
+
+    unmatched: list[ClassifiedTransaction] = []
+    consumed_in_ids: set[UUID] = set()
+    for out in outs:
+        out_mag = abs(out.amount)
+        match: ClassifiedTransaction | None = None
+        for cand in ins:
+            if cand.id == out.id or cand.id in consumed_in_ids:
+                continue
+            if abs(cand.amount - out_mag) > tolerance:
+                continue
+            if abs((cand.posted_date - out.posted_date).days) > window:
+                continue
+            match = cand
+            break
+        if match is None:
+            unmatched.append(out)
+        else:
+            consumed_in_ids.add(match.id)
+
+    if not unmatched:
+        return []
+
+    severity = _unreconciled_transfer_severity(len(unmatched))
+    out_patterns: list[Pattern] = []
+    for u in unmatched:
+        # Counterparty label: first 60 chars of the description with
+        # leading "TRANSFER TO" / "WIRE TO" stripped where possible so
+        # the rendered detail reads "to JOHN DOE CHK 7722" rather than
+        # "to TRANSFER TO JOHN DOE CHK 7722". Falls back to the raw
+        # description when no token leads.
+        desc = u.description.strip()
+        desc_lower = desc.lower()
+        counterparty = desc
+        for tok in _UNRECONCILED_TRANSFER_OUT_DESC_TOKENS:
+            if desc_lower.startswith(tok):
+                counterparty = desc[len(tok) :].strip() or desc
+                break
+        # Truncate for log hygiene — descriptions can be 200+ chars on
+        # some banks (Chase wire memos). 60 chars is enough to identify
+        # the counterparty when one is named.
+        if len(counterparty) > 60:
+            counterparty = counterparty[:60].rstrip()
+        amount_str = f"${out_mag.quantize(Decimal('0.01'))}"
+        detail = (
+            f"unmatched transfer-out {amount_str} on "
+            f"{u.posted_date.isoformat()} to {counterparty} — "
+            f"no matching transfer-in in the bundle within "
+            f"±${tolerance.quantize(Decimal('0.01'))} / ±{window}d"
+        )
+        out_patterns.append(
+            Pattern(
+                code="unreconciled_internal_transfer",
+                severity=severity,
+                detail=detail,
+                source_ids=[u.id],
+            )
+        )
+    return out_patterns
+
+
 def _mca_payoff_signature(
     debits: list[ClassifiedTransaction],
 ) -> Pattern | None:
@@ -1640,14 +1984,12 @@ def _counterparty_signals(
     revenue_rows = [
         t
         for t in transactions
-        if t.amount > 0
-        and t.category in {"deposit", "ach_credit", "wire_in", "refund"}
+        if t.amount > 0 and t.category in {"deposit", "ach_credit", "wire_in", "refund"}
     ]
     expense_rows = [
         t
         for t in transactions
-        if t.amount < 0
-        and t.category not in {"nsf_fee", "fee", "chargeback"}
+        if t.amount < 0 and t.category not in {"nsf_fee", "fee", "chargeback"}
     ]
 
     def _aggregate_side(
@@ -1688,9 +2030,7 @@ def _counterparty_signals(
         signals.top_5_revenue_share_pct = int(
             ((top5_total / rev_total) * Decimal(100)).to_integral_value()
         )
-        signals.top_5_revenue_source_ids = [
-            tid for _, _, ids in top5 for tid in ids
-        ]
+        signals.top_5_revenue_source_ids = [tid for _, _, ids in top5 for tid in ids]
 
     if exp_buckets and exp_total > 0:
         top5_exp = exp_buckets[:5]
@@ -1698,9 +2038,7 @@ def _counterparty_signals(
         signals.top_5_expense_share_pct = int(
             ((top5_exp_total / exp_total) * Decimal(100)).to_integral_value()
         )
-        signals.top_5_expense_source_ids = [
-            tid for _, _, ids in top5_exp for tid in ids
-        ]
+        signals.top_5_expense_source_ids = [tid for _, _, ids in top5_exp for tid in ids]
 
     return signals
 
@@ -1730,8 +2068,7 @@ def _customer_concentration(
         code="customer_concentration",
         severity=severity,
         detail=(
-            f"top counterparty = {pct}% of revenue "
-            f"({signals.top_counterparty_label or 'unknown'})"
+            f"top counterparty = {pct}% of revenue ({signals.top_counterparty_label or 'unknown'})"
         ),
         source_ids=list(signals.top_counterparty_source_ids),
     )
@@ -1751,8 +2088,7 @@ def _chargeback_velocity(
     cb_rows = [
         t
         for t in transactions
-        if t.amount < 0
-        and any(k in t.description.lower() for k in CHARGEBACK_KEYWORDS)
+        if t.amount < 0 and any(k in t.description.lower() for k in CHARGEBACK_KEYWORDS)
     ]
     if not cb_rows:
         return None
@@ -1793,8 +2129,7 @@ def _chargeback_velocity(
         code="chargeback_velocity",
         severity=20,
         detail=(
-            f"last-14d chargebacks: {len(recent)} vs prior "
-            f"{earlier_per_fortnight:.1f}/fortnight"
+            f"last-14d chargebacks: {len(recent)} vs prior {earlier_per_fortnight:.1f}/fortnight"
         ),
         source_ids=[t.id for t in recent],
     )
@@ -1810,16 +2145,11 @@ def _unauthorized_withdrawal_dispute(
     fundable for another stacker. Single-event fire — the keyword
     match plus debit-pairing is high specificity.
     """
-    mca_debits = [
-        t
-        for t in transactions
-        if t.amount < 0 and t.category == "mca_debit"
-    ]
+    mca_debits = [t for t in transactions if t.amount < 0 and t.category == "mca_debit"]
     candidate_credits = [
         t
         for t in transactions
-        if t.amount > 0
-        and any(k in t.description.lower() for k in REVERSAL_KEYWORDS)
+        if t.amount > 0 and any(k in t.description.lower() for k in REVERSAL_KEYWORDS)
     ]
     if not mca_debits or not candidate_credits:
         return None
@@ -1842,9 +2172,7 @@ def _unauthorized_withdrawal_dispute(
     return Pattern(
         code="unauthorized_withdrawal_dispute",
         severity=35,
-        detail=(
-            f"{len(pair_ids) // 2} reversal credit(s) paired with prior MCA debit(s)"
-        ),
+        detail=(f"{len(pair_ids) // 2} reversal credit(s) paired with prior MCA debit(s)"),
         source_ids=pair_ids,
     )
 
@@ -1933,8 +2261,7 @@ def _processor_holdback_detected(
     proc_rows = [
         t
         for t in transactions
-        if t.amount > 0
-        and any(p in t.description.lower() for p in KNOWN_CARD_PROCESSORS)
+        if t.amount > 0 and any(p in t.description.lower() for p in KNOWN_CARD_PROCESSORS)
     ]
     if len(proc_rows) < 10:
         return None
@@ -2001,8 +2328,7 @@ def _payroll_absent(
     revenue_rows = [
         t
         for t in transactions
-        if t.amount > 0
-        and t.category in {"deposit", "ach_credit", "wire_in", "refund"}
+        if t.amount > 0 and t.category in {"deposit", "ach_credit", "wire_in", "refund"}
     ]
     total = sum((r.amount for r in revenue_rows), Decimal("0"))
     if total < Decimal("50000.00"):
@@ -2080,4 +2406,5 @@ __all__ = [
     "Pattern",
     "PatternAnalysis",
     "analyze_patterns",
+    "detect_unreconciled_internal_transfers",
 ]

@@ -389,6 +389,14 @@ These detectors emit `Pattern(severity=0)` into `PatternAnalysis.shadow_patterns
 - **Time-in-business — graduated penalty.** Documents what a graduated TIB penalty (-15 / -8 / -5 / -2 / 0 across 3-23 months) would deduct vs. the live -15 / -8 / 0 bands.
 - **Source:** `src/aegis/scoring/score.py:_tib_ramp_shadow_flag` (H8).
 
+### `unreconciled_internal_transfer` — shadow, severity 25 per instance / compound 40 at 3+ / cap 60
+
+- **Transfer-out with no matching transfer-in in the submitted bundle — possible hidden bank account or undisclosed MCA funding.** Distinct from the live `unreconciled_internal_transfer` Pattern in §5 above: this shadow detector loosens pair tolerance to ±$50 / ±5 days and widens scope to the entire upload bundle (the matching transfer-in may live on a different statement), whereas the live detector is ±$1 / ±3 days and single-statement-scope.
+- **Detects:** Transfer-OUT rows with `abs(amount) > $500` where the counterparty classifier labels the row `own_account` OR the description starts with `TRANSFER TO` / `WIRE TO` / `ACH TO` / `ZELLE TO`. A matching transfer-in (same magnitude ±$50, opposite sign, posted within ±5 days, anywhere in the bundle) clears the row. Unmatched rows fire individually so each one renders as its own drill-down.
+- **Severity curve:** `min(60, 40 if n >= 3 else 25 * n)` where `n` = unmatched count. 1 unmatched = 25; 2 = 50; 3+ = 40 (compound floor replaces per-instance scaling at the threshold); 60 cap is a defensive upper bound.
+- **Shadow mode:** Emits to `PatternAnalysis.shadow_patterns` only; `FRAUD_WEIGHTS["shadow_unreconciled_internal_transfer"] == 0`. Does NOT contribute to `fraud_score`, does NOT change `parse_status`, does NOT alter hard-decline reasons. The pipeline surfaces each row as `[SHADOW] unreconciled_internal_transfer:...` in `all_flags`. Operator validates false-positive rate against the corpus before a future config flip to live.
+- **Source:** `src/aegis/parser/patterns.py:detect_unreconciled_internal_transfers`.
+
 ### `duplicate_pdf_upload:sha256_match_with_doc={uuid}:uploaded={iso}[:total_prior_copies={n}]` — shadow
 
 - **Duplicate PDF upload.** Same SHA-256 already uploaded for this merchant. The second parse re-computes aggregates against byte-identical data — the dashboard then shows 2x deposits for that period.
