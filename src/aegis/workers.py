@@ -2354,6 +2354,95 @@ async def run_submission_reminder_cron(ctx: dict[str, Any]) -> dict[str, int]:
     return summary
 
 
+async def run_track_a_regression_sentinel_cron(ctx: dict[str, Any]) -> dict[str, int]:
+    """arq weekly cron — Track A regression sentinel for the track_abc
+    engine.
+
+    Plan 4.2 follow-up to the 2026-06-23 cutover. Runs the same
+    ``run_lookback`` core the operator-facing CLI script invokes
+    (``scripts/track_a_historical_lookback.py``) against the live
+    document corpus, with ``skip_orphans=True`` because automated runs
+    shouldn't surface noise on docs without merchant context.
+
+    Outcome → audit row:
+
+      * **0 misses** → ``track_a_regression_sentinel.clean`` with
+        ``scanned_count`` and ``rows_with_legacy_decline``. The cron
+        ran; nothing actionable to surface; the audit row exists so
+        the operator can confirm the sentinel is firing weekly.
+      * **>=1 miss** → ``track_a_regression_sentinel.miss_rows_found``
+        with ``miss_count``, sample ``merchant_ids`` + ``document_ids``
+        (first 20 each), and ``scanned_count``. Surfaces on the
+        dashboard's recent-activity feed (which auto-pulls audit_log)
+        so the underwriter sees the regression sentinel fired.
+
+    The operator's CLI script is the triage tool — once a miss audit
+    row lands, re-run the script directly (with the same defaults) to
+    get the full CSV and categorise each row per
+    ``docs/STEP_2_CUTOVER_REVIEW.md``.
+    """
+    from aegis.api.deps import get_audit, get_repository
+    from aegis.scoring_v2.track_a.lookback import run_lookback
+
+    audit = ctx.get("audit") or get_audit()
+    repository = ctx.get("repository") or get_repository()
+
+    # Defaults mirror the CLI script's "run on the box" invocation:
+    # HARD_DECLINE_THRESHOLD-gated, 1000-doc cap, orphan-free.
+    rows = await asyncio.to_thread(
+        run_lookback,
+        repository,
+        skip_orphans=True,
+    )
+    misses = [r for r in rows if r.is_miss]
+    miss_count = len(misses)
+    scanned = len(rows)
+
+    if miss_count == 0:
+        audit.record(
+            actor="worker",
+            action="track_a_regression_sentinel.clean",
+            subject_type="track_a_regression_sentinel",
+            subject_id=None,
+            details={
+                "scanned_count": scanned,
+                "rows_with_legacy_decline": scanned,
+                "note": "Track A caught every legacy hard-decline; no regressions.",
+            },
+        )
+        _log.info(
+            "track_a_regression_sentinel.clean scanned=%s",
+            scanned,
+        )
+        return {"scanned": scanned, "miss_count": 0}
+
+    # Cap sample IDs at 20 each — the audit detail is for triage
+    # routing, not bulk export. The operator pulls the full CSV by
+    # re-running the CLI script.
+    sample_merchant_ids = sorted({r.merchant_id for r in misses if r.merchant_id})[:20]
+    sample_document_ids = [r.document_id for r in misses][:20]
+    audit.record(
+        actor="worker",
+        action="track_a_regression_sentinel.miss_rows_found",
+        subject_type="track_a_regression_sentinel",
+        subject_id=None,
+        details={
+            "scanned_count": scanned,
+            "miss_count": miss_count,
+            "sample_merchant_ids": sample_merchant_ids,
+            "sample_document_ids": sample_document_ids,
+            "triage_doc": "docs/STEP_2_CUTOVER_REVIEW.md",
+            "re_run_cmd": "scripts/track_a_historical_lookback.py",
+        },
+    )
+    _log.warning(
+        "track_a_regression_sentinel.miss_rows_found miss_count=%s scanned=%s",
+        miss_count,
+        scanned,
+    )
+    return {"scanned": scanned, "miss_count": miss_count}
+
+
 class WorkerSettings:
     """arq config. Reads concurrency + timeout from env via Settings."""
 
@@ -2367,6 +2456,15 @@ class WorkerSettings:
     #     pending ``funder_note_submission`` that's >24h old, deduped
     #     forever per submission. Late-day fire so the operator gets
     #     the nudge for everything submitted earlier in their day.
+    #   * 06:00 UTC Mondays — Track A regression sentinel. Weekly
+    #     re-validates that the live ``track_abc`` engine still catches
+    #     every doc the legacy ``fraud_score >= HARD_DECLINE_THRESHOLD``
+    #     rule would have declined. A miss row writes a
+    #     ``track_a_regression_sentinel.miss_rows_found`` audit which
+    #     surfaces on the dashboard recent-activity feed for operator
+    #     triage. Cadence picked to give the operator the report at the
+    #     start of the workweek with enough buffer to triage before
+    #     end-of-week submissions go out.
     #
     # NOT registered here: the funder folder monitor. The OneDrive
     # guidelines folder lives on the operator's Windows box and isn't
@@ -2381,6 +2479,13 @@ class WorkerSettings:
         cron(run_archive_cron, hour=2, minute=0, run_at_startup=False),
         cron(run_renewal_reminder_cron, hour=9, minute=0, run_at_startup=False),
         cron(run_submission_reminder_cron, hour=17, minute=0, run_at_startup=False),
+        cron(
+            run_track_a_regression_sentinel_cron,
+            weekday="mon",
+            hour=6,
+            minute=0,
+            run_at_startup=False,
+        ),
     )
     on_startup = _on_startup
     on_shutdown = _on_shutdown
@@ -2432,4 +2537,5 @@ __all__ = [
     "process_funder_reply",
     "run_submission_reminder_cron",
     "run_submission_reminder_pass",
+    "run_track_a_regression_sentinel_cron",
 ]
