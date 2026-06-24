@@ -319,6 +319,20 @@ text-hint seeding.
 | PNC Bank | 3 | All 0 chars, vision-only |
 | The Bank of Bennington | 3 | All 0 chars, vision-only |
 
+## 2026-06-23 — Step 2 scoring cutover: track_abc is live
+
+Track A historical lookback: EXIT 0, 42 legacy-declined docs scanned, 0 misses.
+All 42 correctly identified as decline under Track A (clean + strong_metadata branches).
+Cutover authorized by operator on 2026-06-23.
+
+AEGIS_SCORING_ENGINE=track_abc set in /etc/aegis/aegis.env.
+Legacy fraud_score path is now informational only.
+Track A integrity verdict + Track B business risk band drive live decline decisions.
+
+Pre-cutover reparse sweep: 26 sealed manual_review docs re-enqueued with bank hints.
+2 transitioned to proceed. 24 confirmed manual_review on real signal (reconciliation
+drift, editor metadata, tampering flags) — not hint failures, not regressions.
+
 ## Conventions for future entries
 
 Each new finding gets a heading + the four-line shape above (Surface /
