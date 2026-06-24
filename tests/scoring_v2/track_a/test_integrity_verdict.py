@@ -535,7 +535,20 @@ def vu_7722_signals() -> DocumentIntegritySignals:
     it's OCR slop or genuine drift. The ~$55 magnitude is consistent
     with the running-balance-drift signature the operator noted
     (per docs/REMAINING_WORK.md: VU 7722 — '3 of 4 months failed
-    reconciliation by $5 / $11 / $55')."""
+    reconciliation by $5 / $11 / $55').
+
+    F9 (INFO, docs/track_a_audit_2026-06-12.md) — Track A boundary
+    note: Track A is **per-document**, not per-bundle. This fixture
+    pins one of the four Lili statements (the $55 drift on Feb 2026);
+    the bundle-level "3 of 4 months drift" pattern that makes VU 7722
+    a load-bearing acceptance case lives in Track B / the parser's
+    pattern-detector layer, NOT here. A single-month $55 drift on its
+    own is genuinely OCR-band and ``drift_alone`` review is the
+    correct verdict at the Track A boundary. Per-doc coverage of the
+    other three months (Jan $5, Mar $11, Apr ...) would assert the
+    same thing on each — Track A's responsibility is per-doc; the
+    cross-month correlation is not its job.
+    """
     return DocumentIntegritySignals(
         document_id="vu7722_2026_02",
         metadata_score=0,  # ← real prod value; no editor metadata
