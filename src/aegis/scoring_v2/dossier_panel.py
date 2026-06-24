@@ -212,6 +212,20 @@ def build_unified_tracks_view(
     #            signal source (metadata_flags or all_flags). Sort
     #            by upload time descending so the most recent doc
     #            renders first.
+    #
+    # F7 (INFO, docs/track_a_audit_2026-06-12.md): the
+    # ``getattr(...) or ""`` fallback below tolerates two shapes
+    # because the test stubs (`_document_row_stub` in
+    # `tests/scoring_v2/test_dossier_panel.py`) pass `uploaded_at` as
+    # an ISO-8601 STRING while prod `DocumentRow` declares it as a
+    # required `datetime` (`storage.py:99`). String-string compare and
+    # datetime-datetime compare both work; the `or ""` only ever
+    # triggers on the (hypothetical) None case — where it would mask a
+    # real bug rather than crash the sort. Kept intentionally for
+    # backwards-compat with the existing test stubs; if the stubs are
+    # ever upgraded to the typed `DocumentRow`, drop the `or ""` so
+    # mypy + a None at runtime would surface a TypeError instead of
+    # silently mis-ordering.
     sorted_docs = sorted(
         documents,
         key=lambda d: getattr(d, "uploaded_at", None) or "",
