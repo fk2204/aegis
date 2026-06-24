@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import logging
 
-from aegis.logger import PiiMaskingFilter, _mask_string_for_test, get_logger
+from aegis.logger import (
+    PiiMaskingFilter,
+    _mask_string_for_test,
+    _mask_value,
+    get_logger,
+)
 
 
 def _record(msg: str, **extra: object) -> logging.LogRecord:
@@ -49,6 +54,21 @@ def test_bare_long_digit_run_is_masked() -> None:
 def test_short_digit_run_is_left_alone() -> None:
     masked = _mask_string_for_test("page 5 line 17 amount 42")
     assert "5" in masked and "17" in masked and "42" in masked
+
+
+def test_mask_value_does_not_mask_uuid_all_digit_tail() -> None:
+    """UUID4s whose last segment is all-digits must not be masked.
+    ~1.4% of random uuid4s have this shape — regression guard so
+    RNG state can't make audit-log tests flaky."""
+    uuid_with_digit_tail = "3fb6692a-df09-46e1-1b61-462791929883"
+    result = _mask_value(uuid_with_digit_tail)
+    assert result == uuid_with_digit_tail, f"UUID all-digit tail was incorrectly masked: {result}"
+
+
+def test_mask_value_still_masks_bare_account_numbers() -> None:
+    """Confirm the fix didn't break masking of real account numbers."""
+    assert _mask_value("account 462791929883") == "account ***"
+    assert _mask_value("routing 021000021") == "routing ***"
 
 
 def test_pii_key_in_extra_is_masked() -> None:

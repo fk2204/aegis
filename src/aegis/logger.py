@@ -92,7 +92,10 @@ _PHONE_RE = re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b
 _SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _EIN_RE = re.compile(r"\b\d{2}-\d{7}\b")
 # Bare 9-16 digit runs catch raw account/SSN/EIN without separators.
-_BARE_LONG_DIGITS_RE = re.compile(r"\b\d{9,16}\b")
+# (?<!-) excludes UUID-internal segments (e.g. the all-digit tail of a uuid4).
+# SSNs, EINs, and account/routing numbers are caught by their own patterns above
+# before this fallback fires, so this change does not reduce PII coverage.
+_BARE_LONG_DIGITS_RE = re.compile(r"(?<!-)\b\d{9,16}\b")
 
 
 def _mask_value(value: object) -> object:
