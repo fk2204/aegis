@@ -142,6 +142,12 @@ class MetadataAnalysis:
     # so this field is populated by ``parser.pipeline.run_pipeline``
     # rather than ``analyze_metadata``.
     creator_mismatch_detected: bool = False
+    # Forensic layer #3 (2026-06-24). True when a page's multiple
+    # text-bearing content streams have overlapping Y-ranges — the
+    # paste-over fraud signature. See
+    # ``aegis.parser.forensic.text_overlay`` for the algorithm. Runs at
+    # metadata time (no extraction dependency).
+    text_overlay_detected: bool = False
     flags: list[str] = field(default_factory=list)
     fraud_score: int = 0
 
@@ -422,6 +428,30 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
         # for the wiring rationale.
         score += 15
 
+    # Text-overlay detection (2026-06-24 forensic layer #3). Walks
+    # multi-stream pages looking for overlapping Y-ranges across
+    # text-bearing streams — the paste-over fraud signature. Uses
+    # pikepdf content-stream parsing on a fresh open (cheaper than
+    # re-reading the file). Conservative no-flag fallback on any
+    # parser failure.
+    from aegis.parser.forensic.text_overlay import (
+        analyze as _text_overlay_analyze,
+    )
+
+    text_overlay = _text_overlay_analyze(path)
+    text_overlay_detected = text_overlay.overlay_detected
+    if text_overlay_detected:
+        flags.append(
+            f"text_overlay_detected: page(s) "
+            f"{','.join(str(p) for p in text_overlay.affected_pages)}; "
+            f"streams={text_overlay.overlay_stream_count}"
+        )
+        # +25 contribution — strongest of the three forensic signals.
+        # Direct evidence of content-stream manipulation; the bar for
+        # false positive here is high enough that we feel comfortable
+        # weighting it above font (+15) and creator (also +15) signals.
+        score += 25
+
     return MetadataAnalysis(
         pdf_creation_date=creation,
         pdf_modification_date=modification,
@@ -434,6 +464,7 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
         page_sizes=page_sizes,
         has_text_layer=has_text_layer,
         font_inconsistency_detected=font_consistency.inconsistency_detected,
+        text_overlay_detected=text_overlay_detected,
         flags=flags,
         fraud_score=min(100, score),
     )
