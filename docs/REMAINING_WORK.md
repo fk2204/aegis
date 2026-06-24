@@ -1,11 +1,13 @@
 # AEGIS — Remaining work
 
-**Snapshot taken:** 2026-06-12 — afternoon update: F1 (a+b), F2, H1, H3
-all CLOSED earlier in the day (closures below); H2 still open pending
-operator decision; punch-list now reduced to F3-F11 (audit doc) and H4/
-H5/H7-H10 (hygiene doc). Morning update carried forward 2026-06-11's
-nine closures + the tampering shadow-review script + the two read-only
-audit docs.
+**Snapshot taken:** 2026-06-24 — overnight update. **Step 2 scoring
+cutover CLOSED** 2026-06-23 (commits c5c11fc + a80a388): track_abc
+now drives live decline decisions, legacy fraud_score informational at
+the scorer layer (parser-layer gate remains, separate retirement). H2
++ H4 + H5 + H7 + H8 + H9 hygiene findings all CLOSED in the same
+session. Punch-list now centered on the new 2026-06-23 audit findings
+(operational + code/docs hygiene + cron wiring) — see section at the
+bottom. Earlier carryover: F3-F11 (Track A audit doc) still open.
 **Purpose:** durable list of what's queued, parked, or systemic. So nothing's
 lost between sessions.
 
@@ -125,12 +127,28 @@ Not ready to ship; need dedicated thinking, not opportunistic patching.
 - This subsumes A.2 (the 65/70 threshold) and the A.1 EOF gate as
   policy implementations within the new tracks.
 
-### Step 2 of 3-track redesign — `fraud_score` retirement + A+B+C live cutover
-- **Status:** A/B/C live ADDITIVE on the dossier (commit `5d53d5d`,
-  verified VU + A&R KM 2026-06-05). The existing `score_deal` /
-  `fraud_score` path still controls every production decision. Step 2
-  retires `fraud_score` and flips A/B/C live. **NOT authorized** —
-  gated on the conditions below.
+### Step 2 of 3-track redesign — `fraud_score` retirement + A+B+C live cutover ✅ CLOSED 2026-06-23 (`c5c11fc` docs / `a80a388` chmod + reset / track_a EXIT 0)
+- **Status:** **FLIPPED.** `AEGIS_SCORING_ENGINE=track_abc` set in
+  `/etc/aegis/aegis.env` on the prod box 2026-06-23. Track A
+  integrity verdict + Track B band drive live decline decisions;
+  legacy `fraud_score` is informational only at the scorer layer
+  (parser-layer `fraud_score >= 65` gate remains in
+  `src/aegis/parser/pipeline.py` — known, documented, separate
+  retirement).
+- **Validation that authorised the flip:**
+  `scripts/track_a_historical_lookback.py` ran clean on the prod
+  corpus 2026-06-23 — EXIT 0, 42 legacy-declined docs scanned, 0
+  misses. All 42 correctly identified as decline under Track A (mix
+  of `clean` + `strong_metadata` branches). Authorisation log entry
+  in `docs/STEP_2_CUTOVER_REVIEW.md`.
+- **Pre-cutover protective work** (same session): 5 new
+  `bank_layouts` hints (`584344e`); `--reparse-sealed-manual-review`
+  flag (`11fe64d`) with chmod-0644 + dead-code-reset (`a80a388`);
+  root-cause tempfile leak fix in workers.py via
+  `keep_local_plaintext` flag (`22d3d1e`).
+- **Below is the original gating block, preserved for historical
+  reference.** All four conditions met by the lookback run + the
+  authorisation log entry.
 - **Diagnostics in place:**
   - `scripts/shadow_comparison_a_b_c_vs_fraud_score.py` (commit `973d7fd`).
     Read-only sweep — every merchant in the corpus, LIVE decision vs
@@ -283,6 +301,54 @@ at that point; nothing more to do as standing infra work.
 
 ---
 
+## 2026-06-23 audit findings
+
+Three parallel read-only agents covered docs/code drift, test/CI
+hygiene, and live prod state after the Step 2 scoring engine cutover.
+Closure status per the post-cutover-session work (`22d3d1e` and the
+companion items 3–6).
+
+- 🔴 **Tempfile leak in `--reparse-sealed-manual-review`** ✅ CLOSED
+  2026-06-24 (`22d3d1e`) — root-cause fix in `workers.py` via new
+  `keep_local_plaintext: bool = True` parameter on `parse_document` →
+  `_run_processor_branch` → `_try_pdf_store_step`. When False AND the
+  pdf_store seal fails, `_safe_unlink` runs before returning False.
+  Default True preserves every existing call site byte-identically;
+  reparse path passes False since the encrypted copy already exists
+  in pdf_store. 100ms `asyncio.sleep` paces the per-doc enqueues to
+  prevent the burst that caused 16 `pdf_store.storage_upload_failed`
+  events on 2026-06-23. Same commit removes the now-dead
+  `_PERMISSION_BUG_DOC_IDS` constant + `--reset-parse-status` flag.
+- 🟡 **Duplicate `AEGIS_SCORING_ENGINE`** in `/etc/aegis/aegis.env`
+  ✅ CLOSED 2026-06-24 — `awk '!seen[$0]++'` dedupe on the box
+  (no commit; prod ops only). Single occurrence at line 29 confirmed.
+- 🟡 **Unexplained 02:11 UTC restart** ✅ CLOSED 2026-06-24 — `last`
+  + `journalctl` traced to GH run `28070383602` (deploy workflow on
+  `c5c11fc`, started 02:11:31, sudo systemctl restart at 02:11:44,
+  both units back at 02:11:47). Routine CI auto-deploy that the
+  audit had missed connecting to a long queue gap. Not a real
+  anomaly.
+- 🟡 **`pdf_store.storage_upload_failed` x16 during reparse burst**
+  ✅ CLOSED 2026-06-24 (`22d3d1e`) — root-cause was the un-paced
+  26-job burst; the 100ms pacing in the same commit prevents
+  recurrence. Worker-side handler was already graceful (audit row +
+  preserve plaintext) — no half-state rows ever existed.
+- 🟡 **Tempfile sweep on the box** ✅ CLOSED 2026-06-24 — manual
+  `rm /var/lib/aegis/uploads/recover_legacy_docs_script-reparse-*.pdf`
+  on the box swept the 26 leaked files from the 2026-06-23 reparse
+  run. ~12 MB reclaimed. Going forward the worker-side fix
+  (`22d3d1e`) prevents recurrence.
+- 🟡 **Zero test coverage on `--bump-parse-count` /
+  `--reparse-sealed-manual-review`** — addressed by item 4 of this
+  session (`tests/scripts/test_seed_bank_hints.py` +
+  `tests/scripts/test_recover_legacy_docs.py`).
+- 🟡 **Track A lookback not wired as recurring cron** — addressed by
+  item 5 of this session (weekly Mon 06:00 UTC arq cron).
+- 🟡 **New operator flags not in RUNBOOK** — addressed by item 6 of
+  this session (`deploy/RUNBOOK.md` or equivalent canonical surface).
+
+---
+
 ## 2026-06-12 audit findings — operator triage queue
 
 Two read-only audits dispatched and landed alongside the tampering
@@ -326,13 +392,12 @@ judgment (severity calls, hook-config flips, scope decisions).
   are migrated automatically (unset on next `make install-hooks`).
   Verified by direct hook test: reject without annotation, pass with
   `not-applicable` / `approved by <name>`.
-- **H2 worth-fixing** — `design/` is untracked-and-not-gitignored
-  (Schrödinger). Contains brand assets (low risk) AND
-  `_audit_seed*.py` scripts that import `aegis.db` directly (high
-  risk per operating-principle #4). **Still open** — needs operator
-  decision: commit brand assets under `docs/brand/`, move audit scripts
-  to `scripts/audit/` after a security review, OR `.gitignore` the
-  whole directory with documented intent.
+- **H2 worth-fixing ✅ CLOSED 2026-06-23 (`eba8a2f`)** — moved brand
+  assets (`logo-preview.html` + 6 SVGs) to `docs/brand/`; moved
+  `_audit_seed.py` + `_audit_seed_funders.py` to `scripts/audit/`;
+  added `design/` to `.gitignore` with comment ("Local design
+  artifacts — not for repo"). Scripts each carry op-principle-#4
+  warnings in their docstrings.
 - **H3 worth-fixing ✅ CLOSED 2026-06-12 (`dcc65c1`)** — Four 2026-06-10
   ops gotchas (sudo NOPASSWD literal form, systemctl-status token leak,
   install-script token grep, read-rules-first) landed as a new
@@ -342,8 +407,35 @@ judgment (severity calls, hook-config flips, scope decisions).
 - **H6 ✅ ACTED ON 2026-06-12** — added `*.bak`, `*.swp`, `*~`,
   `.aider*` to `.gitignore`. The trivial one — other gitignore
   coverage is already strong on credentials/tokens.
-- **H4 / H5 / H7-H10** — 4 informational + 1 docs-archival
-  candidate + 1 scripts/_*.py operator-review pass. See doc.
+- **H4 CLAUDE.md modules table ✅ CLOSED 2026-06-23 (`8785325`,
+  refreshed in `c5c11fc`)** — `business_intel/` + `web_presence/`
+  added to the first-class-modules table; `scoring/` + `scoring_v2/`
+  refreshed to reflect track_abc as the live engine post-cutover.
+- **H5 `fraud_score` framing ✅ CLOSED 2026-06-23 (`8785325`,
+  refreshed in `c5c11fc`)** — historical context quote block + the
+  modules table rows updated. CLAUDE.md no longer claims legacy
+  drives production; clarifies parser-layer gate is a separate
+  retirement item.
+- **H6 ✅ ACTED ON 2026-06-12** — added `*.bak`, `*.swp`, `*~`,
+  `.aider*` to `.gitignore` (kept here for completeness).
+- **H7 deploy doc `uv sync --locked` step ✅ CLOSED 2026-06-23
+  (`8785325`)** — the on-box `uv sync --locked` step (added to
+  `.github/workflows/deploy.yml` on 2026-06-16 to fix the
+  ProtectSystem=strict outage) is now documented in the CLAUDE.md
+  deploy paragraph.
+- **H8 stale test skips ✅ CLOSED 2026-06-23 (`1f6a928`)** — deleted
+  `tests/test_quarterly_disclosure_render.py` (dead Phase 3
+  placeholder, real coverage in `tests/compliance/test_disclosure_tier1_context.py`);
+  deleted the conditional refer-mapping skip in
+  `tests/test_score_decision_snapshot.py`. Also fixed `pytest_*.log`
+  in `.gitignore` (`aa2d174`).
+- **H9 Decimal→float cast comments ✅ CLOSED 2026-06-23 (`2bfadff`)** —
+  `src/aegis/scoring/score.py:1013` and `src/aegis/compliance/apr.py:113-122`
+  now carry justification comments explaining why the float cast is
+  necessary (scipy/statistics math + Decimal's no-fractional-exponent
+  limitation; round-trip back to Decimal at storage).
+- **H10** — informational / docs-archival residual from the
+  2026-06-12 hygiene doc; not actioned this session.
 
 ### Tampering shadow review script ✅ SHIPPED 2026-06-12
 `scripts/tampering_shadow_review.py` — see the gating-conditions

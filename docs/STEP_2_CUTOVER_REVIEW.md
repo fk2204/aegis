@@ -145,6 +145,7 @@ move toward the flip — even a "not yet, blocked by row X" qualifies.
 | Date (UTC) | Operator | Decision | Open-row count | Notes |
 |---|---|---|---|---|
 | 2026-06-10 | filip | scaffold this template | 0 (lookback not yet run against prod) | Plan 4.3 — doc skeleton landed; first run pending corpus growth past N=1. |
+| 2026-06-23 | filip | FLIPPED — track_abc is live | 0 | Track A lookback EXIT 0, 42 scanned, 0 misses. AEGIS_SCORING_ENGINE=track_abc set in /etc/aegis/aegis.env. Commit c5c11fc. |
 
 The actual env-var flip
 (`AEGIS_SCORING_ENGINE=track_abc` in `/etc/aegis/aegis.env`) is plan
