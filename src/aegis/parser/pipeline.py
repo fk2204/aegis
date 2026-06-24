@@ -107,6 +107,16 @@ EOF_HARD_DECLINE: Final[int] = 2
 # `ocr_oversize_image_pdf` so the operator can split or rescan them.
 MAX_OCR_PAGES: Final[int] = 20
 
+# Total non-whitespace chars across the first ``_TEXT_LAYER_PROBE_PAGES``
+# pages required to send a doc through the text extraction path. Below
+# this floor the pipeline routes straight to vision and emits the
+# ``[META] vision_routed: chars=N`` flag — see the image-only routing
+# branch in ``run_pipeline``. Mirrors ``metadata._TEXT_LAYER_MIN_CHARS``
+# (the metadata-layer detection threshold); re-declared here so the
+# pipeline log line + flag detail read against the same name without
+# importing a private constant from the metadata module.
+VISION_ROUTE_THRESHOLD: Final[int] = 50
+
 # Average classification-confidence floor. Below this, the document goes
 # to manual_review regardless of math / metadata / pattern scores —
 # classifier signaling low confidence is the LLM telling us it can't
@@ -320,6 +330,7 @@ def run_pipeline(
     )
 
     used_ocr_fallback = False
+    used_vision_routed = False
     used_per_page_routing = False
     if settings.aegis_parser_page_routing and page_decisions and not is_homogeneous(page_decisions):
         # Mixed strategies → per-page extraction. is_homogeneous None /
@@ -351,10 +362,26 @@ def run_pipeline(
                 validation=synthetic_validation,
                 all_flags=_collect_flags(metadata, synthetic_validation, None, []),
             )
-        extraction = extract_statement_via_vision(
-            pdf_bytes, llm, prompt_suffix=extraction_prompt_suffix
+        # Image-only → vision-first. Skip the layout-hints block: hints
+        # describe text-layer structure (column labels, section
+        # delimiters, line geometry) that the vision model doesn't see
+        # the same way. The merchant-context block stays (it carries
+        # deal narrative, not extraction-layout instructions).
+        _log.info(
+            "parser.pipeline.vision_routed file=%s chars=%d threshold=%d",
+            getattr(pdf_path, "name", str(pdf_path)),
+            metadata.text_layer_char_count,
+            VISION_ROUTE_THRESHOLD,
         )
-        used_ocr_fallback = True
+        vision_prompt_suffix = _build_extraction_prompt_suffix(
+            bank_layouts=None,
+            known_bank_name=None,
+            merchant_context=merchant_context,
+        )
+        extraction = extract_statement_via_vision(
+            pdf_bytes, llm, prompt_suffix=vision_prompt_suffix
+        )
+        used_vision_routed = True
     else:
         try:
             extraction = extract_statement(pdf_bytes, llm, prompt_suffix=extraction_prompt_suffix)
@@ -421,6 +448,8 @@ def run_pipeline(
 
     if not validation.passed:
         flags = _collect_flags(metadata, validation, None, [])
+        if used_vision_routed:
+            flags.append(f"[META] vision_routed: chars={metadata.text_layer_char_count}")
         if used_ocr_fallback:
             flags.append("[META] ocr_fallback_used")
         if used_per_page_routing:
@@ -484,6 +513,8 @@ def run_pipeline(
     all_flags.extend(f"[CONFIDENCE] {f}" for f in confidence_failures)
     if triangulation_flag is not None:
         all_flags.append(f"[COMPOUND] {triangulation_flag}")
+    if used_vision_routed:
+        all_flags.append(f"[META] vision_routed: chars={metadata.text_layer_char_count}")
     if used_ocr_fallback:
         all_flags.append("[META] ocr_fallback_used")
     if used_per_page_routing:

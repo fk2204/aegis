@@ -168,12 +168,39 @@ def capturing_llm_broken() -> Iterator[_PromptCapturingLLM]:
     yield _PromptCapturingLLM(_broken_payload())
 
 
+@pytest.fixture
+def text_pdf_with_layer(tmp_path: Path) -> Path:
+    """Build a 2-page PDF with a real text layer well above the 50-char
+    aggregate floor — routes through the text extraction path so the
+    hint-injection contract can be exercised. The 2026-06-24 vision-
+    routing wire moved blank PDFs (used by ``clean_pdf_path``) onto the
+    vision path which intentionally strips the layout-hints block;
+    text-path injection tests need a real text-bearing PDF instead."""
+    import pymupdf
+
+    pdf = tmp_path / "text_with_layer.pdf"
+    doc = pymupdf.open()  # type: ignore[no-untyped-call]
+    body = "Chase Business Complete Checking statement page\n" * 5
+    for _ in range(2):
+        page = doc.new_page(width=612, height=792)
+        page.insert_text((72, 72), body, fontsize=10)
+    doc.save(pdf)  # type: ignore[no-untyped-call]
+    doc.close()  # type: ignore[no-untyped-call]
+    return pdf
+
+
 def test_prompt_injection_when_hints_exist(
-    clean_pdf_path: Path,
+    text_pdf_with_layer: Path,
     capturing_llm_clean: _PromptCapturingLLM,
 ) -> None:
     """When the bank crosses the 3-parse threshold + has non-empty hints,
-    the system prompt sent to Bedrock contains the hints header + body."""
+    the system prompt sent to Bedrock on the text-extraction path
+    contains the hints header + body.
+
+    Uses ``text_pdf_with_layer`` (not the session-scoped blank
+    ``clean_pdf_path``) so the doc takes the text path rather than the
+    new vision route — vision-routed docs intentionally strip the
+    layout-hints block (the 2026-06-24 wire)."""
     repo = InMemoryBankLayoutRepository()
     # Prime Chase with hints + 5 prior successful parses so the threshold
     # gate (>= 3) opens.
@@ -188,7 +215,7 @@ def test_prompt_injection_when_hints_exist(
     assert repo.find_by_bank_name("Chase").successful_parses >= HINTS_AVAILABLE_THRESHOLD  # type: ignore[union-attr]
 
     result = run_pipeline(
-        str(clean_pdf_path),
+        str(text_pdf_with_layer),
         capturing_llm_clean,
         today=date(2026, 2, 15),
         bank_layouts=repo,

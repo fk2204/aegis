@@ -52,9 +52,7 @@ def test_vision_extraction_shape_matches_text_extraction(
     vision_result = extract_statement_via_vision(pdf_bytes, clean_llm)
 
     assert text_result.statement.summary == vision_result.statement.summary
-    assert len(text_result.statement.transactions) == len(
-        vision_result.statement.transactions
-    )
+    assert len(text_result.statement.transactions) == len(vision_result.statement.transactions)
     for t_txn, v_txn in zip(
         text_result.statement.transactions,
         vision_result.statement.transactions,
@@ -74,7 +72,11 @@ def test_pipeline_routes_image_pdf_through_vision(
     tmp_path: Path,
     clean_llm: Any,
 ) -> None:
-    """An image-only PDF must be parsed via the vision branch and reach proceed/review."""
+    """An image-only PDF must be parsed via the vision branch and reach
+    proceed/review. Carries the ``[META] vision_routed: chars=N`` flag
+    (the 2026-06-24 wire that distinguishes proactive image-only routing
+    from the text→error→vision-fallback path; the latter still fires
+    ``ocr_fallback_used``)."""
     pdf = tmp_path / "image_only.pdf"
     _write_image_only_pdf(pdf, pages=2)
 
@@ -83,8 +85,13 @@ def test_pipeline_routes_image_pdf_through_vision(
     assert result.parse_status in {"proceed", "review"}, (
         f"image-only PDF unexpectedly went to manual_review; flags={result.all_flags}"
     )
-    assert any("ocr_fallback_used" in f for f in result.all_flags), (
-        f"expected ocr_fallback_used flag; got flags={result.all_flags}"
+    assert any("vision_routed" in f for f in result.all_flags), (
+        f"expected vision_routed flag; got flags={result.all_flags}"
+    )
+    # The proactive vision route must NOT also fire ocr_fallback_used —
+    # that flag is reserved for the text-extraction-error fallback path.
+    assert not any("ocr_fallback_used" in f for f in result.all_flags), (
+        f"vision_routed path must not also set ocr_fallback_used; got flags={result.all_flags}"
     )
 
 
@@ -99,9 +106,7 @@ def test_pipeline_oversize_image_pdf_lands_in_manual_review(
     result = run_pipeline(str(pdf), clean_llm, today=date(2026, 2, 15))
 
     assert result.parse_status == "manual_review"
-    assert result.extraction is None, (
-        "oversize image PDF must bail before calling the LLM"
+    assert result.extraction is None, "oversize image PDF must bail before calling the LLM"
+    assert any("ocr_oversize_image_pdf" in f for f in result.validation.failures), (
+        f"expected ocr_oversize_image_pdf failure; got {result.validation.failures}"
     )
-    assert any(
-        "ocr_oversize_image_pdf" in f for f in result.validation.failures
-    ), f"expected ocr_oversize_image_pdf failure; got {result.validation.failures}"

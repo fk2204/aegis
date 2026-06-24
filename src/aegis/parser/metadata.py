@@ -127,6 +127,14 @@ class MetadataAnalysis:
     # back to the existing text path (conservative — never hides a real
     # text PDF behind OCR by accident).
     has_text_layer: bool = True
+    # Total non-whitespace characters extracted from the first
+    # _TEXT_LAYER_PROBE_PAGES pages, used for the ``[META] vision_routed``
+    # log line and for downstream observability (e.g. "this doc had
+    # chars=8, hard image-only" vs "chars=600, real text layer"). Zero
+    # on probe failure — see ``_probe_text_layer`` for the safe-default
+    # path; ``has_text_layer`` still defaults to True in that case so a
+    # failure doesn't hide a real text PDF behind the vision route.
+    text_layer_char_count: int = 0
     # Forensic layer (2026-06-24, master plan §6.4 follow-up). True when
     # the row-level font-consistency detector found a page whose
     # transaction spans don't match the page's modal font / size. This
@@ -276,33 +284,59 @@ def _coerce_dt(value: object) -> datetime | None:
         return None
 
 
-# Minimum non-whitespace characters across the first probe-window pages
-# required to count as "has a text layer." Real bank statements yield
-# hundreds-to-thousands of characters per page; the floor of 50 protects
-# against a single watermark glyph or page-number text in an otherwise
-# image-only PDF flipping us back to the text path.
+# Minimum non-whitespace characters AGGREGATED across the first probe-
+# window pages required to count as "has a text layer". Real bank
+# statements yield hundreds-to-thousands of characters per page; the
+# total floor of 50 protects against a single watermark glyph or
+# page-number text in an otherwise image-only PDF flipping us back to
+# the text path. The aggregate-across-probed-pages metric is stricter
+# than the prior any-page-crosses-floor metric — a PDF where page 1
+# has a 60-char watermark but pages 2-3 are pure images previously
+# counted as "has text layer" and wasted a Bedrock text-extraction
+# call before the error-fallback routed it to vision. Aggregate
+# semantics catch that case at metadata time so the doc routes
+# straight to vision via the ``[META] vision_routed`` path.
 _TEXT_LAYER_MIN_CHARS: Final[int] = 50
 _TEXT_LAYER_PROBE_PAGES: Final[int] = 3
 
 
-def _detect_text_layer(pdf_path: str | Path) -> bool:
-    """Return True iff the first few pages contain extractable text.
+def _probe_text_layer(pdf_path: str | Path) -> tuple[bool, int]:
+    """Return ``(has_text_layer, total_chars)`` for the first probe-window
+    pages.
 
-    Defaults to True on any exception so an unexpected pymupdf failure
-    never silently hides a legitimate text-bearing PDF behind the OCR
-    fallback (which is slower and costs more tokens).
+    ``total_chars`` is the sum of non-whitespace characters across the
+    probed pages. ``has_text_layer`` is ``total_chars >= _TEXT_LAYER_MIN_CHARS``.
+
+    Defaults to ``(True, 0)`` on any exception so an unexpected pymupdf
+    failure never silently hides a legitimate text-bearing PDF behind
+    the OCR fallback (which is slower and costs more tokens). Callers
+    that need the count for vision-routing logging fall back to the
+    safe-default total of 0 in that case, which surfaces as ``chars=0``
+    on the vision-routed log line — accurate w.r.t. "we couldn't
+    measure".
     """
     try:
         with pymupdf.open(pdf_path) as doc:  # type: ignore[no-untyped-call]
             pages_to_probe = min(_TEXT_LAYER_PROBE_PAGES, doc.page_count)
+            total_chars = 0
             for i in range(pages_to_probe):
                 text = doc.load_page(i).get_text("text") or ""
                 # Strip whitespace — a page of blank lines is not a text layer.
-                if sum(1 for ch in text if not ch.isspace()) >= _TEXT_LAYER_MIN_CHARS:
-                    return True
-            return False
+                total_chars += sum(1 for ch in text if not ch.isspace())
+            return total_chars >= _TEXT_LAYER_MIN_CHARS, total_chars
     except Exception:
-        return True
+        return True, 0
+
+
+def _detect_text_layer(pdf_path: str | Path) -> bool:
+    """Back-compat wrapper around ``_probe_text_layer``.
+
+    Returns the boolean half only. Retained because external callers /
+    older tests may import this directly; the pipeline itself reads the
+    count from ``MetadataAnalysis.text_layer_char_count`` instead.
+    """
+    has_text_layer, _ = _probe_text_layer(pdf_path)
+    return has_text_layer
 
 
 def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
@@ -402,7 +436,7 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
 
     pdf.close()
 
-    has_text_layer = _detect_text_layer(path)
+    has_text_layer, text_layer_char_count = _probe_text_layer(path)
 
     # Row-level font consistency (2026-06-24 forensic layer extension).
     # Runs after the pikepdf-based metadata checks because it uses
@@ -463,6 +497,7 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
         eof_markers=eof_markers,
         page_sizes=page_sizes,
         has_text_layer=has_text_layer,
+        text_layer_char_count=text_layer_char_count,
         font_inconsistency_detected=font_consistency.inconsistency_detected,
         text_overlay_detected=text_overlay_detected,
         flags=flags,
