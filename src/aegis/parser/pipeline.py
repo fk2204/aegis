@@ -397,7 +397,11 @@ def run_pipeline(
     )
 
     parsed_bank_name = extraction.statement.summary.bank_name if extraction is not None else None
-    creator_fingerprint = _creator_fingerprint_analyze(metadata.pdf_creator, parsed_bank_name)
+    creator_fingerprint = _creator_fingerprint_analyze(
+        metadata.pdf_creator,
+        metadata.pdf_producer,
+        parsed_bank_name,
+    )
     if creator_fingerprint.mismatch_detected:
         metadata.creator_mismatch_detected = True
         metadata.flags.append(
