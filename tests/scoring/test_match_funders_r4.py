@@ -25,9 +25,11 @@ from aegis.compliance import apr as apr_module
 from aegis.funders.models import FunderRow
 from aegis.scoring.match_funders import (
     compute_estimated_terms,
+    evaluate_tier_matches,
     match_funder,
 )
 from aegis.scoring.models import ScoreInput, ScoreResult
+from aegis.scoring_v2.offer import OfferRecommendation
 
 # ---------------------------------------------------------------------------
 # Test fixtures
@@ -174,9 +176,7 @@ def test_r42_apr_none_on_optimizer_failure(monkeypatch: pytest.MonkeyPatch) -> N
     def _always_fail(*_args: object, **_kwargs: object) -> Decimal:
         raise apr_module.APRCalculationError("synthetic failure for test")
 
-    monkeypatch.setattr(
-        "aegis.scoring.match_funders.calculate_apr", _always_fail
-    )
+    monkeypatch.setattr("aegis.scoring.match_funders.calculate_apr", _always_fail)
 
     funder = _funder_with_pricing()
     terms = compute_estimated_terms(funder, _score(), _deal())
@@ -199,9 +199,7 @@ def test_r42_no_pricing_envelope_returns_none() -> None:
 
 def test_r42_partial_pricing_envelope_returns_none() -> None:
     """Funder with only factor (no holdback) → None. Won't fabricate the missing end."""
-    funder = _funder_with_pricing(
-        typical_holdback_low=None, typical_holdback_high=None
-    )
+    funder = _funder_with_pricing(typical_holdback_low=None, typical_holdback_high=None)
     terms = compute_estimated_terms(funder, _score(), _deal())
     assert terms is None
 
@@ -250,14 +248,10 @@ def test_r43_auto_decline_absolute_triggers_hard_fail() -> None:
     match = match_funder(funder, _deal(industry_naics="111998"), _score())
     assert match is not None
     assert match.match_score == 0, "hard fail must drop likelihood to 0"
-    assert any(
-        "auto_decline:" in c and "Do not fund cannabis" in c
-        for c in match.soft_concerns
-    )
+    assert any("auto_decline:" in c and "Do not fund cannabis" in c for c in match.soft_concerns)
 
 
-def test_r43_auto_decline_each_absolute_keyword(
-) -> None:
+def test_r43_auto_decline_each_absolute_keyword() -> None:
     """All five absolute triggers route to hard fail."""
     for trigger_text in (
         "Will decline open bankruptcy",
@@ -275,9 +269,9 @@ def test_r43_auto_decline_each_absolute_keyword(
         match = match_funder(funder, _deal(), _score())
         assert match is not None, trigger_text
         assert match.match_score == 0, f"{trigger_text!r} did not hard-fail"
-        assert any(
-            f"auto_decline: {trigger_text}" in c for c in match.soft_concerns
-        ), f"verbatim text missing for {trigger_text!r}"
+        assert any(f"auto_decline: {trigger_text}" in c for c in match.soft_concerns), (
+            f"verbatim text missing for {trigger_text!r}"
+        )
 
 
 def test_r43_auto_decline_soft_phrasing_becomes_soft_concern() -> None:
@@ -308,9 +302,7 @@ def test_r43_conditional_requirement_surfaces_verbatim() -> None:
     assert match is not None
     assert match.match_score > 0
     assert any(
-        "conditional:" in c
-        and "Verify YTD financials" in c
-        and "verify with funder" in c
+        "conditional:" in c and "Verify YTD financials" in c and "verify with funder" in c
         for c in match.soft_concerns
     )
 
@@ -362,13 +354,156 @@ def test_r43_mixed_entries_route_independently() -> None:
     # Hard fail because of the absolute auto_decline.
     assert match.match_score == 0
     concerns = match.soft_concerns
-    assert any(
-        c.startswith("auto_decline: ") and "cannabis" in c for c in concerns
+    assert any(c.startswith("auto_decline: ") and "cannabis" in c for c in concerns)
+    assert any(c.startswith("auto_decline_review: ") and "trucking" in c.lower() for c in concerns)
+    assert any(c.startswith("conditional: ") and "MVR" in c for c in concerns)
+
+
+# ---------------------------------------------------------------------------
+# Offer-sizing wire-through (2026-06-24)
+# ---------------------------------------------------------------------------
+#
+# ``compute_estimated_terms`` + ``evaluate_tier_matches`` accept an optional
+# ``offer`` parameter so the funder-match grid seeds from the capacity-
+# aware + stack-overload-discounted OfferRecommendation instead of the
+# legacy crude ``score.suggested_max_advance`` (tier x revenue multiple).
+# These tests pin the four contract points the wire-through guarantees:
+#
+# 1. ``offer=None`` (the default): behaviour identical to the legacy seed.
+# 2. ``offer`` populated: ``estimated_advance`` matches
+#    ``offer.recommended_amount`` after the funder-window clamp.
+# 3. Offer < funder.min_advance: clamps up to ``min_advance`` (the funder-
+#    side floor still binds even when the offer is smaller).
+# 4. ``evaluate_tier_matches`` threads the offer the same way — per-tier
+#    ``estimated_advance`` seeds from offer when supplied.
+
+
+def _offer(
+    recommended_amount: Decimal,
+    *,
+    max_amount: Decimal | None = None,
+    rationale: str = "sized at 1.0x monthly revenue",
+) -> OfferRecommendation:
+    """Construct an OfferRecommendation directly (bypass compute_offer)
+    so the tests pin the value flow, not the offer math."""
+    return OfferRecommendation(
+        recommended_amount=recommended_amount,
+        max_amount=max_amount if max_amount is not None else recommended_amount,
+        holdback_pct=Decimal("0.15"),
+        rationale=rationale,
     )
-    assert any(
-        c.startswith("auto_decline_review: ") and "trucking" in c.lower()
-        for c in concerns
+
+
+def test_offer_none_keeps_legacy_seed_behaviour_unchanged() -> None:
+    """Without offer, ``compute_estimated_terms`` seeds from
+    ``score.suggested_max_advance`` exactly as before (regression guard
+    for the wire-through's behaviour-neutral default)."""
+    funder = _funder_with_pricing()
+    score = _score(tier="C", suggested_max_advance=Decimal("75000.00"))
+    deal = _deal()
+    terms = compute_estimated_terms(funder, score, deal, offer=None)
+    assert terms is not None
+    # 75k is inside the funder's [5k, 250k] window — passes through.
+    assert terms.estimated_advance == Decimal("75000.00")
+
+
+def test_offer_populated_overrides_legacy_seed_for_advance() -> None:
+    """When ``offer.recommended_amount`` differs from
+    ``score.suggested_max_advance``, the offer wins — clamped to the
+    funder's [min, max] window."""
+    funder = _funder_with_pricing()
+    score = _score(tier="C", suggested_max_advance=Decimal("75000.00"))
+    # Offer is materially different (e.g. capacity-capped at $40k while
+    # the legacy crude sizing would have suggested $75k).
+    offer = _offer(Decimal("40000.00"))
+    terms = compute_estimated_terms(funder, score, _deal(), offer=offer)
+    assert terms is not None
+    assert terms.estimated_advance == Decimal("40000.00")
+    # Confirm the legacy seed was NOT used.
+    assert terms.estimated_advance != Decimal("75000.00")
+
+
+def test_offer_below_funder_min_advance_clamps_up() -> None:
+    """Offer below the funder's ``min_advance`` clamps UP to the floor
+    — funder-side minimums still bind regardless of which seed fed the
+    computation."""
+    funder = _funder_with_pricing(min_advance=Decimal("25000.00"))
+    score = _score(suggested_max_advance=Decimal("75000.00"))
+    offer = _offer(Decimal("8000.00"))  # below the $25k floor
+    terms = compute_estimated_terms(funder, score, _deal(), offer=offer)
+    assert terms is not None
+    assert terms.estimated_advance == Decimal("25000.00")
+
+
+def test_offer_above_funder_max_advance_clamps_down() -> None:
+    """Offer above the funder's ``max_advance`` clamps DOWN to the
+    ceiling — symmetric guard so the funder-window clamp logic stays
+    intact regardless of seed source."""
+    funder = _funder_with_pricing(max_advance=Decimal("100000.00"))
+    score = _score(suggested_max_advance=Decimal("50000.00"))
+    offer = _offer(Decimal("250000.00"))  # above the $100k ceiling
+    terms = compute_estimated_terms(funder, score, _deal(), offer=offer)
+    assert terms is not None
+    assert terms.estimated_advance == Decimal("100000.00")
+
+
+def test_evaluate_tier_matches_threads_offer_to_per_tier_advance() -> None:
+    """``evaluate_tier_matches`` mirrors ``compute_estimated_terms`` —
+    per-tier ``estimated_advance`` is clamped from
+    ``offer.recommended_amount`` when supplied, not
+    ``score.suggested_max_advance``."""
+    from aegis.funders.models import FunderTier
+
+    tier_elite = FunderTier(
+        name="Elite",
+        min_credit_score=700,
+        min_months_in_business=24,
+        min_monthly_revenue=Decimal("50000.00"),
+        max_positions=0,
+        max_advance=Decimal("250000.00"),
+        max_holdback=Decimal("0.10"),
+        buy_rate_low=Decimal("1.18"),
+        buy_rate_high=Decimal("1.22"),
     )
-    assert any(
-        c.startswith("conditional: ") and "MVR" in c for c in concerns
+    tier_b = FunderTier(
+        name="B",
+        min_credit_score=650,
+        min_months_in_business=12,
+        min_monthly_revenue=Decimal("25000.00"),
+        max_positions=1,
+        max_advance=Decimal("100000.00"),  # Elite's ceiling cut in half
+        max_holdback=Decimal("0.15"),
+        buy_rate_low=Decimal("1.25"),
+        buy_rate_high=Decimal("1.32"),
     )
+    funder = _funder_with_pricing(tiers=(tier_elite, tier_b))
+    score = _score(tier="A", suggested_max_advance=Decimal("220000.00"))
+    # Offer says only $80k is sustainable (capacity-capped).
+    offer = _offer(Decimal("80000.00"))
+    tier_matches = evaluate_tier_matches(funder, score, _deal(), offer=offer)
+
+    assert len(tier_matches) == 2
+    # Elite's max_advance is $250k — the $80k offer fits under it untouched.
+    elite = next(t for t in tier_matches if t.tier_name == "Elite")
+    assert elite.estimated_advance == Decimal("80000.00")
+    # B's max_advance is $100k — the $80k offer also fits under it.
+    b = next(t for t in tier_matches if t.tier_name == "B")
+    assert b.estimated_advance == Decimal("80000.00")
+    # Confirm the legacy seed ($220k) was NOT used — neither tier should
+    # report the score's suggested_max_advance clamped to its ceiling.
+    assert elite.estimated_advance != Decimal("220000.00")
+    assert b.estimated_advance != Decimal("100000.00")
+
+
+def test_match_funder_threads_offer_through_to_estimated_terms() -> None:
+    """End-to-end: ``match_funder(funder, deal, score, offer=...)`` →
+    ``FunderMatch.estimated_terms.estimated_advance`` matches the
+    offer-derived value. Pins the public-API contract, not just the
+    internal helper."""
+    funder = _funder_with_pricing()
+    score = _score(tier="C", suggested_max_advance=Decimal("75000.00"))
+    offer = _offer(Decimal("40000.00"))
+    match = match_funder(funder, _deal(), score, offer=offer)
+    assert match is not None
+    assert match.estimated_terms is not None
+    assert match.estimated_terms.estimated_advance == Decimal("40000.00")

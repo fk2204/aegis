@@ -76,6 +76,7 @@ from aegis.scoring.models import (
     TierMatch,
 )
 from aegis.scoring.pricing import estimate_tier_pricing
+from aegis.scoring_v2.offer import OfferRecommendation
 from aegis.scoring_v2.stips import evaluate_stips
 
 # Tier → position along the funder's pricing range, 0.0 = best end (low
@@ -130,6 +131,7 @@ def compute_estimated_terms(
     funder: FunderRow,
     score: ScoreResult,
     deal: ScoreInput,
+    offer: OfferRecommendation | None = None,
 ) -> EstimatedTerms | None:
     """Compute per-funder pricing guidance for a deal.
 
@@ -144,6 +146,17 @@ def compute_estimated_terms(
     The interpolation is linear between the funder's published low and
     high ends, indexed by ``_TIER_INTERPOLATION_POSITION``. See module
     docstring for the design rationale.
+
+    Advance-seed precedence (2026-06-24 offer-sizing wire-through):
+    when ``offer`` is not None, seed the funder-window clamp from
+    ``offer.recommended_amount`` instead of ``score.suggested_max_advance``.
+    Offer-derived sizing is capacity-aware + stack-overload-discounted
+    while the legacy score field is a crude tier x revenue multiple.
+    The funder ``[min_advance, max_advance]`` clamp logic is unchanged
+    — only the value that gets clamped differs. Falls back to the
+    legacy seed when ``offer`` is None so callers that don't compute
+    an offer (the api/routes/deals.py ``POST /api/deals/{id}/score``
+    legacy path keeps working) see no behaviour change.
     """
     # Tier mapping — emit None when the tier is unknown / unrepresented.
     if score.tier not in _TIER_INTERPOLATION_POSITION:
@@ -171,10 +184,11 @@ def compute_estimated_terms(
         funder.typical_holdback_low, funder.typical_holdback_high, position
     ).quantize(_RATE_QUANT, rounding=ROUND_HALF_UP)
 
-    # Advance: start from the score's suggested max, clamp into the
-    # funder's [min, max] window. Funders that publish only one bound
-    # constrain only that side.
-    advance = score.suggested_max_advance
+    # Advance: start from the offer's recommended amount (capacity-aware
+    # + stack-overload-discounted) when supplied, otherwise the legacy
+    # tier x revenue multiple. Clamp into the funder's [min, max] window;
+    # funders that publish only one bound constrain only that side.
+    advance = offer.recommended_amount if offer is not None else score.suggested_max_advance
     if funder.min_advance is not None and advance < funder.min_advance:
         advance = funder.min_advance
     if funder.max_advance is not None and advance > funder.max_advance:
@@ -254,6 +268,7 @@ def match_funder(
     *,
     historical_approval_rate: Decimal | None = None,
     merchant: MerchantRow | None = None,
+    offer: OfferRecommendation | None = None,
 ) -> FunderMatch | None:
     """Match a deal against a single funder. None if funder has no criteria configured.
 
@@ -542,12 +557,12 @@ def match_funder(
     # BEFORE the 0-100 cap). See the docstring above for the band.
     likelihood = _apply_historical_boost(likelihood, historical_approval_rate)
 
-    estimated_terms = compute_estimated_terms(funder, score, deal)
+    estimated_terms = compute_estimated_terms(funder, score, deal, offer=offer)
     # Per-tier shadow rows still surface on the dossier so the operator
     # sees the full matrix (which tiers qualified, which didn't, and why).
     # The qualifying tier above drives match_score; the full ``tier_matches``
     # below drives the operator-facing detail panel.
-    tier_matches = evaluate_tier_matches(funder, score, deal)
+    tier_matches = evaluate_tier_matches(funder, score, deal, offer=offer)
 
     # Sprint 6 — structured stipulations. When the caller supplies the
     # merchant, evaluate the funder's ``conditional_requirements`` against
@@ -680,6 +695,7 @@ def evaluate_tier_matches(
     funder: FunderRow,
     score: ScoreResult,
     deal: ScoreInput,
+    offer: OfferRecommendation | None = None,
 ) -> list[TierMatch]:
     """U28 — evaluate the merchant against each of a funder's tiers.
 
@@ -711,19 +727,26 @@ def evaluate_tier_matches(
     if not funder.tiers:
         return []
 
+    # 2026-06-24 offer-sizing wire-through: when an OfferRecommendation
+    # is supplied, seed the tier clamp from ``offer.recommended_amount``
+    # (capacity-aware + stack-overload-discounted). Falls back to the
+    # legacy ``score.suggested_max_advance`` when offer is None, so
+    # pre-wire-through callers see no behaviour change.
+    base_seed = offer.recommended_amount if offer is not None else score.suggested_max_advance
+
     out: list[TierMatch] = []
     for tier in funder.tiers:
         reasons = _evaluate_tier_criteria(tier, deal)
-        clamped_advance = _clamp_advance_to_tier(score.suggested_max_advance, tier.max_advance)
+        clamped_advance = _clamp_advance_to_tier(base_seed, tier.max_advance)
         # U37 — pricing guidance per tier. Computed against the clamped
         # advance so payback_total reflects the ceiling the tier actually
         # writes (Elite caps at $250k even when the score suggests more).
-        # Falls back to ``score.suggested_max_advance`` when the tier
-        # publishes no ``max_advance`` (clamp returns None in that case).
+        # Falls back to ``base_seed`` when the tier publishes no
+        # ``max_advance`` (clamp returns None in that case).
         pricing_advance = (
             clamped_advance
             if clamped_advance is not None
-            else (score.suggested_max_advance if score.suggested_max_advance > 0 else None)
+            else (base_seed if base_seed > 0 else None)
         )
         pricing = estimate_tier_pricing(tier, pricing_advance)
         out.append(

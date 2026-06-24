@@ -941,12 +941,17 @@
           {% endif %}
           {# Suggested-offer chip — informational only; does not affect the
              live decline path. Hidden when the offer math returned None
-             (sub-$5,000 floor or no remaining holdback capacity). #}
+             (sub-$5,000 floor or no remaining holdback capacity). The
+             rationale renders as a sub-line so the underwriter sees the
+             limiting factor (capacity cap / stack-overload discount /
+             plain revenue multiple) inline with the amount. #}
           {% if offer %}
             <div>
               <span class="k">Suggested Offer</span>
               <span class="v">{{ offer.recommended_amount | whole_money }} – {{ offer.max_amount | whole_money }}</span>
-              <span class="qual">{{ offer.rationale }}</span>
+              {% if offer.rationale %}
+                <span class="qual">{{ offer.rationale }}</span>
+              {% endif %}
             </div>
           {% endif %}
           {# Industry-tier chip — informational. Drawn from the merchant's

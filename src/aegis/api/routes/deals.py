@@ -410,9 +410,41 @@ def score_with_matches(
             detail=f"ofac_unavailable: {exc}",
         ) from exc
 
+    # 2026-06-24 offer-sizing wire-through: compute the offer so the
+    # match grid below seeds from ``offer.recommended_amount`` (capacity-
+    # aware + stack-overload-discounted) rather than the legacy
+    # ``score.suggested_max_advance`` (crude tier x revenue multiple).
+    # ``holdback_capacity_monthly`` falls back to ``monthly_revenue * 0.25``
+    # — the MCA-shop convention for max sustainable debt-service load.
+    # Best-effort: missing analysis / transactions on the doc fall back to
+    # ``offer=None`` and the matcher keeps the legacy seed.
+    from aegis.scoring_v2.mca_stack import aggregate_mca_stack
+    from aegis.scoring_v2.offer import OfferRecommendation, compute_offer
+
+    offer: OfferRecommendation | None = None
+    try:
+        analysis = docs.get_analysis(document_id)
+        if analysis is not None:
+            transactions = docs.list_transactions(document_id)
+            mca_stack = aggregate_mca_stack(
+                transactions=transactions,
+                monthly_revenue=analysis.monthly_revenue,
+                period_days=analysis.statement_days,
+            )
+            offer = compute_offer(
+                true_revenue_monthly=analysis.monthly_revenue,
+                holdback_capacity_monthly=(analysis.monthly_revenue * Decimal("0.25")),
+                mca_stack=mca_stack,
+            )
+    except Exception:
+        # Best-effort: any missing/malformed analysis or transactions
+        # falls back to ``offer=None`` so the matcher keeps the legacy
+        # seed instead of 500ing the score-with-matches endpoint.
+        offer = None
+
     matches = []
     for funder in funder_repo.list_active():
-        match = match_funder(funder, deal, score_result)
+        match = match_funder(funder, deal, score_result, offer=offer)
         if match is not None:
             matches.append(match)
     matches.sort(key=lambda m: m.match_score, reverse=True)

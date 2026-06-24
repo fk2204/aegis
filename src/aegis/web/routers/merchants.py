@@ -123,7 +123,7 @@ from aegis.scoring.submission_package import build_submission_files
 from aegis.scoring_v2.balance_health import compute_balance_health
 from aegis.scoring_v2.industry import IndustryTier, industry_risk_tier
 from aegis.scoring_v2.mca_stack import aggregate_mca_stack
-from aegis.scoring_v2.offer import compute_offer
+from aegis.scoring_v2.offer import OfferRecommendation, compute_offer
 from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
 from aegis.scoring_v2.score_for_sync import (
     recommended_factor_rate_from as _recommended_factor_rate_from,
@@ -476,6 +476,7 @@ def _build_match_cards(
     docs: DocumentRepository,
     funder_note_subs: FunderNoteSubmissionRepository,
     snapshot: DecisionSnapshot,
+    offer: OfferRecommendation | None = None,
 ) -> list[dict[str, Any]]:
     """Run the per-funder matcher and return ranked card dicts.
 
@@ -484,6 +485,12 @@ def _build_match_cards(
     (same color rule, same historical-approval boost, same sort order). On
     a historical-index outage the matcher silently falls back to the
     pre-Sprint-4 path -- the panel never 500s.
+
+    ``offer`` (2026-06-24 offer-sizing wire-through): when supplied,
+    threaded through ``match_funder`` so per-funder pricing and per-tier
+    sizing seed from ``offer.recommended_amount`` instead of the legacy
+    ``score.suggested_max_advance``. Callers that don't have an offer
+    handy can omit; behaviour is unchanged.
     """
     historical_index = _build_historical_index_for_match(
         funder_note_subs=funder_note_subs,
@@ -507,6 +514,7 @@ def _build_match_cards(
             score_result,
             historical_approval_rate=historical_rate,
             merchant=merchant,
+            offer=offer,
         )
         if m is None:
             continue
@@ -613,6 +621,24 @@ async def merchant_match(
             detail=f"ofac_unavailable: {exc}",
         ) from exc
 
+    # 2026-06-24 offer-sizing wire-through: feed the funder match grid
+    # from the same OfferRecommendation the dossier surfaces (capacity-
+    # aware + stack-overload-discounted). The grid previously seeded
+    # off ``score.suggested_max_advance`` (crude tier x revenue) — a
+    # known mismatch with the dossier offer chip.
+    _match_latest_doc, _match_latest_analysis = items[0]
+    _match_latest_txns = docs.list_transactions(_match_latest_doc.id)
+    _match_mca_stack = aggregate_mca_stack(
+        transactions=_match_latest_txns,
+        monthly_revenue=_match_latest_analysis.monthly_revenue,
+        period_days=_match_latest_analysis.statement_days,
+    )
+    offer = compute_offer(
+        true_revenue_monthly=_match_latest_analysis.monthly_revenue,
+        holdback_capacity_monthly=(_match_latest_analysis.monthly_revenue * Decimal("0.25")),
+        mca_stack=_match_mca_stack,
+    )
+
     cards = _build_match_cards(
         merchant=merchant,
         score_input=score_input,
@@ -622,6 +648,7 @@ async def merchant_match(
         docs=docs,
         funder_note_subs=funder_note_subs,
         snapshot=snapshot,
+        offer=offer,
     )
 
     # Preselect: pre-check the matching funder's checkbox unless the
@@ -778,6 +805,7 @@ async def merchant_matched_funders_csv(
         docs=docs,
         funder_note_subs=funder_note_subs,
         snapshot=snapshot,
+        offer=offer,
     )
 
     buffer = io.StringIO()
@@ -919,12 +947,30 @@ async def merchant_submit_to_funders(
             detail=f"ofac_unavailable: {exc}",
         ) from exc
 
+    # 2026-06-24 offer-sizing wire-through: the per-funder submission
+    # CSVs include ``estimated_advance`` which funders read directly.
+    # Seed it from the same OfferRecommendation the dossier surfaces
+    # so the operator's CSV-submitted advance matches what they see
+    # on screen (instead of the legacy crude tier x revenue seed).
+    _submit_latest_doc, _submit_latest_analysis = items[0]
+    _submit_latest_txns = docs.list_transactions(_submit_latest_doc.id)
+    _submit_mca_stack = aggregate_mca_stack(
+        transactions=_submit_latest_txns,
+        monthly_revenue=_submit_latest_analysis.monthly_revenue,
+        period_days=_submit_latest_analysis.statement_days,
+    )
+    offer = compute_offer(
+        true_revenue_monthly=_submit_latest_analysis.monthly_revenue,
+        holdback_capacity_monthly=(_submit_latest_analysis.monthly_revenue * Decimal("0.25")),
+        mca_stack=_submit_mca_stack,
+    )
+
     requested_set = set(requested_ids)
     matched: list[FunderMatch] = []
     for f in funder_repo.list_active():
         if f.id not in requested_set:
             continue
-        m = match_funder(f, score_input, score_result, merchant=merchant)
+        m = match_funder(f, score_input, score_result, merchant=merchant, offer=offer)
         if m is None:
             continue
         matched.append(m)
@@ -1270,7 +1316,7 @@ async def _perform_submit_to_funder(
 
     matched: list[FunderMatch] = []
     for f in funder_repo.list_active():
-        m = match_funder(f, score_input, score_result, merchant=merchant)
+        m = match_funder(f, score_input, score_result, merchant=merchant, offer=offer)
         if m is None:
             continue
         matched.append(m)
@@ -1582,7 +1628,7 @@ async def merchant_prepare_renewal(
 
     matched: list[FunderMatch] = []
     for f in funder_repo.list_active():
-        m = match_funder(f, score_input, score_result, merchant=merchant)
+        m = match_funder(f, score_input, score_result, merchant=merchant, offer=offer)
         if m is None:
             continue
         matched.append(m)
@@ -3001,6 +3047,7 @@ async def merchant_detail(
             docs=docs,
             funder_note_subs=funder_note_subs,
             snapshot=snapshot,
+            offer=offer,
         )
         if matched_funders_cards:
             top_matched_funder = funder_repo.get(UUID(matched_funders_cards[0]["funder_id"]))
@@ -3372,7 +3419,7 @@ def _build_pdf_dossier_context(
     if funder_repo is not None and score_input is not None and score_result is not None:
         _matched: list[FunderMatch] = []
         for _f in funder_repo.list_active():
-            _m = match_funder(_f, score_input, score_result)
+            _m = match_funder(_f, score_input, score_result, offer=offer)
             if _m is not None:
                 _matched.append(_m)
         _matched.sort(key=lambda fm: fm.match_score, reverse=True)
