@@ -134,6 +134,14 @@ class MetadataAnalysis:
     # flag, which compares one page's font set to OTHER pages' fonts.
     # See ``aegis.parser.forensic.font_consistency`` for the algorithm.
     font_inconsistency_detected: bool = False
+    # Forensic layer #2 (2026-06-24). True when the PDF's /Creator
+    # string matches a known editing-tool family AND does NOT match the
+    # identified bank's known-good creator patterns (per
+    # ``forensic.creator_fingerprint.KNOWN_CREATOR_PATTERNS``). The
+    # check runs AFTER extraction (because it needs ``bank_name``),
+    # so this field is populated by ``parser.pipeline.run_pipeline``
+    # rather than ``analyze_metadata``.
+    creator_mismatch_detected: bool = False
     flags: list[str] = field(default_factory=list)
     fraud_score: int = 0
 
