@@ -91,10 +91,10 @@ ALLOWED_CATEGORIES: Final = frozenset(
 # comparison script does not write these; the triage UI does.
 ALLOWED_TRIAGE_DECISIONS: Final = frozenset(
     {
-        "accept-new",        # Track A/B/C wins; cutover safe for this case
-        "accept-old",        # Legacy fraud_score wins; do NOT cut over
-        "both-valid",        # Semantic disagreement; neither is wrong
-        "needs-rule-change", # A track/severity needs adjusting before cutover
+        "accept-new",  # Track A/B/C wins; cutover safe for this case
+        "accept-old",  # Legacy fraud_score wins; do NOT cut over
+        "both-valid",  # Semantic disagreement; neither is wrong
+        "needs-rule-change",  # A track/severity needs adjusting before cutover
     }
 )
 
@@ -216,10 +216,7 @@ class ScoringDisagreementRepository(Protocol):
 
 def _validate_category(category: str) -> None:
     if category not in ALLOWED_CATEGORIES:
-        raise ValueError(
-            f"category must be one of {sorted(ALLOWED_CATEGORIES)}, "
-            f"got {category!r}"
-        )
+        raise ValueError(f"category must be one of {sorted(ALLOWED_CATEGORIES)}, got {category!r}")
 
 
 def _validate_triage_decision(decision: str | None) -> None:
@@ -236,6 +233,20 @@ def _canonical_evidence_json(evidence: dict[str, Any] | None) -> str:
     Sort keys so equal-content dicts hash identically regardless of
     insertion order. ``None`` serialises to the literal "null" so the
     hash distinguishes "no evidence captured" from "empty dict".
+
+    F11 (INFO, docs/track_a_audit_2026-06-12.md): the ``None`` →
+    ``"null"`` vs ``{}`` → ``"{}"`` separation is the deliberate
+    behaviour — the comparison script's contract is that "no evidence
+    captured" and "empty-dict evidence" are distinct categorisation
+    outcomes. The surface is brittle to upstream changes: if the
+    comparison-script ever switches a categorisation from emitting
+    ``None`` to emitting ``{}`` (or vice versa), one calendar day's
+    runs would spawn duplicate shadow-disagreement rows until the
+    next-day idempotency cycle catches up. The audit-doc forward-fix
+    is to flag this in ``docs/REMAINING_WORK.md`` under "shadow-
+    disagreement nuances" IF / WHEN the comparison script's evidence
+    shape changes; until then the distinction is the load-bearing
+    feature, not a bug.
     """
     if evidence is None:
         return "null"
@@ -466,9 +477,7 @@ def _row_to_record(row: dict[str, Any]) -> ScoringDisagreementRecord:
 
     comparison_run_at = _dt("comparison_run_at")
     if comparison_run_at is None:
-        raise ScoringDisagreementWriteError(
-            "supabase row missing required 'comparison_run_at'"
-        )
+        raise ScoringDisagreementWriteError("supabase row missing required 'comparison_run_at'")
 
     hard_declines_raw = row.get("legacy_hard_declines")
     if hard_declines_raw is None:
@@ -593,27 +602,19 @@ class SupabaseScoringDisagreementRepository:
         }
 
         try:
-            result = (
-                get_supabase()
-                .table("scoring_shadow_disagreements")
-                .insert(payload)
-                .execute()
-            )
+            result = get_supabase().table("scoring_shadow_disagreements").insert(payload).execute()
         except Exception as exc:
             _log.error(
                 "scoring_v2.shadow_disagreement.write_failed category=%s",
                 category,
             )
             raise ScoringDisagreementWriteError(
-                f"failed to record disagreement for merchant={merchant_id} "
-                f"category={category}"
+                f"failed to record disagreement for merchant={merchant_id} category={category}"
             ) from exc
 
         rows = cast(list[dict[str, Any]], result.data or [])
         if not rows:
-            raise ScoringDisagreementWriteError(
-                "supabase insert returned no row for disagreement"
-            )
+            raise ScoringDisagreementWriteError("supabase insert returned no row for disagreement")
         return _row_to_record(rows[0])
 
     def list_open(
@@ -631,11 +632,7 @@ class SupabaseScoringDisagreementRepository:
         if category is not None:
             _validate_category(category)
         try:
-            query = (
-                get_supabase()
-                .table("scoring_disagreements_open")
-                .select("*")
-            )
+            query = get_supabase().table("scoring_disagreements_open").select("*")
             if category is not None:
                 query = query.eq("category", category)
             if limit is not None:
@@ -771,9 +768,7 @@ class SupabaseScoringDisagreementRepository:
 
         rows = cast(list[dict[str, Any]], result.data or [])
         if not rows:
-            raise ScoringDisagreementWriteError(
-                f"triage update returned no row for id={record_id}"
-            )
+            raise ScoringDisagreementWriteError(f"triage update returned no row for id={record_id}")
         return _row_to_record(rows[0])
 
 
