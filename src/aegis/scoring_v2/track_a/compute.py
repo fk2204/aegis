@@ -46,6 +46,7 @@ from aegis.scoring_v2.track_a.signals import (
     _strip_category_prefix,
     extract_drift_failures,
     extract_editor_metadata_flag,
+    extract_forensic_signals,
     extract_other_metadata_flags,
 )
 
@@ -69,6 +70,17 @@ def compute_integrity_verdict(
     drift_failures = extract_drift_failures(signals.validation_failures)
     editor_flag = extract_editor_metadata_flag(signals.metadata_flags, signals.validation_failures)
     other_meta = extract_other_metadata_flags(signals.metadata_flags)
+    # Forensic-layer evidence (2026-06-24). The three deterministic
+    # detectors (font / creator / text-overlay) contribute to
+    # metadata_score inside the parser, then surface here as their own
+    # EvidenceItems alongside ``editor_detected`` and the drift rows.
+    # Extracted once and appended to EVERY branch (including ``clean``)
+    # so the underwriter sees the forensic finding regardless of which
+    # composition rule fired — the verdict is informational; the
+    # underlying signal isn't.
+    forensic_evidence = extract_forensic_signals(
+        signals.metadata_flags, signals.validation_failures
+    )
 
     # ── Branch 1: strong metadata (fail) ──────────────────────────
     if signals.metadata_score >= _STRONG_METADATA_FLOOR:
@@ -95,6 +107,7 @@ def compute_integrity_verdict(
         # "just metadata noise" and softening it to review.
         for f in drift_failures:
             evidence.append(EvidenceItem(signal=_drift_signal_token(f), detail=f))
+        evidence.extend(forensic_evidence)
         return IntegrityVerdict(
             document_id=signals.document_id,
             verdict="fail",
@@ -117,6 +130,7 @@ def compute_integrity_verdict(
                     detail=f,
                 )
             )
+        evidence.extend(forensic_evidence)
         return IntegrityVerdict(
             document_id=signals.document_id,
             verdict="fail",
@@ -148,6 +162,7 @@ def compute_integrity_verdict(
             )
         for f in other_meta:
             evidence.append(EvidenceItem(signal="metadata_flag", detail=f))
+        evidence.extend(forensic_evidence)
         return IntegrityVerdict(
             document_id=signals.document_id,
             verdict="review",
@@ -167,6 +182,7 @@ def compute_integrity_verdict(
                     detail=f,
                 )
             )
+        evidence.extend(forensic_evidence)
         return IntegrityVerdict(
             document_id=signals.document_id,
             verdict="review",
@@ -177,6 +193,25 @@ def compute_integrity_verdict(
         )
 
     # ── Branch 5: clean ───────────────────────────────────────────
+    # Even on a clean verdict, surface any forensic finding so the
+    # underwriter sees the standalone signal. The verdict stays clean
+    # because the forensic detectors are not standalone-decisive — they
+    # corroborate (their points already got rolled into metadata_score,
+    # and if that score didn't trip a branch above, the finding is
+    # informational at the Track A level).
+    if forensic_evidence:
+        return IntegrityVerdict(
+            document_id=signals.document_id,
+            verdict="clean",
+            branch="clean",
+            metadata_score=signals.metadata_score,
+            evidence=forensic_evidence,
+            rationale=(
+                f"Clean verdict (metadata_score={signals.metadata_score}, "
+                "no reconciliation drift, no editor metadata) — forensic "
+                "signals surfaced below for underwriter awareness."
+            ),
+        )
     return IntegrityVerdict(
         document_id=signals.document_id,
         verdict="clean",

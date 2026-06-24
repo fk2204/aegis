@@ -384,6 +384,37 @@ def run_pipeline(
         today=today,
     )
 
+    # Forensic layer #2 — PDF-creator fingerprinting. Runs HERE (post-
+    # extraction, pre-_fraud_score) so the +20 contribution propagates
+    # through ``_fraud_score`` and ``_decide``. Mutates
+    # ``metadata.creator_mismatch_detected`` so the dossier can show
+    # the boolean alongside the rest of the metadata fields. Appends
+    # the flag to ``metadata.flags`` so ``_collect_flags`` prefixes it
+    # with ``[META]`` naturally — same flow as
+    # ``font_inconsistency_detected`` / ``text_overlay_detected``.
+    from aegis.parser.forensic.creator_fingerprint import (
+        analyze as _creator_fingerprint_analyze,
+    )
+
+    parsed_bank_name = extraction.statement.summary.bank_name if extraction is not None else None
+    creator_fingerprint = _creator_fingerprint_analyze(metadata.pdf_creator, parsed_bank_name)
+    if creator_fingerprint.mismatch_detected:
+        metadata.creator_mismatch_detected = True
+        metadata.flags.append(
+            f"creator_mismatch_detected: detected={creator_fingerprint.detected_creator!r}; "
+            f"editing_tool={creator_fingerprint.editing_tool_match!r}; "
+            f"expected_one_of={creator_fingerprint.expected_patterns}"
+        )
+        # +20 contribution to metadata.fraud_score — stronger than the
+        # generic ``editor_detected`` signal (+15 inside
+        # ``_HARD_EDITORS``) because creator-vs-bank mismatch is a
+        # SPECIFIC fingerprint ("PDFlib on a BoA statement", not "PDFlib
+        # somewhere"). Mirrors the per-detector weights documented next
+        # to ``font_inconsistency_detected`` (+15) and
+        # ``text_overlay_detected`` (+25) in ``parser/metadata.py``.
+        # Clamped to 100 to match ``analyze_metadata``'s exit clamp.
+        metadata.fraud_score = min(100, metadata.fraud_score + 20)
+
     if not validation.passed:
         flags = _collect_flags(metadata, validation, None, [])
         if used_ocr_fallback:
@@ -453,28 +484,6 @@ def run_pipeline(
         all_flags.append("[META] ocr_fallback_used")
     if used_per_page_routing:
         all_flags.append("[META] per_page_routing_used")
-
-    # Forensic layer #2 — PDF-creator fingerprinting. Runs AFTER
-    # extraction (needs bank_name) so it lands here rather than inside
-    # analyze_metadata. Mutates ``metadata.creator_mismatch_detected``
-    # so the dossier can show the boolean alongside the rest of the
-    # metadata fields without re-running the check. The flag form is
-    # ``[META] creator_mismatch_detected: ...`` — same prefix as the
-    # other metadata signals so the dossier surface treats it
-    # consistently.
-    from aegis.parser.forensic.creator_fingerprint import (
-        analyze as _creator_fingerprint_analyze,
-    )
-
-    parsed_bank_name = extraction.statement.summary.bank_name if extraction is not None else None
-    creator_fingerprint = _creator_fingerprint_analyze(metadata.pdf_creator, parsed_bank_name)
-    if creator_fingerprint.mismatch_detected:
-        metadata.creator_mismatch_detected = True
-        all_flags.append(
-            f"[META] creator_mismatch_detected: detected={creator_fingerprint.detected_creator!r}; "
-            f"editing_tool={creator_fingerprint.editing_tool_match!r}; "
-            f"expected_one_of={creator_fingerprint.expected_patterns}"
-        )
 
     # R1.7 — ADB partial-coverage escalation (SHADOW). When the aggregator
     # reports more than 10% of period days skipped, the ADB metric is

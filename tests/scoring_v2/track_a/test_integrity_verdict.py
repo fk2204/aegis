@@ -607,3 +607,205 @@ def test_arkm_vs_vu_verdicts_distinguish_via_editor_presence(
     assert vu_v.verdict == "review"
     assert arkm_v.branch == "drift_plus_editor"
     assert vu_v.branch == "drift_alone"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Forensic-layer evidence surfacing (2026-06-24)
+# ─────────────────────────────────────────────────────────────────────
+#
+# The three deterministic forensic detectors
+# (``font_inconsistency_detected``, ``creator_mismatch_detected``,
+# ``text_overlay_detected``) contribute to ``metadata_score`` inside the
+# parser AND surface as their own EvidenceItems on the Track A verdict
+# so the underwriter sees the specific finding. The tests below verify:
+#
+# 1. Each forensic flag surfaces as a distinct EvidenceItem with a
+#    plain-English rationale.
+# 2. Forensic signals surface in EVERY branch, including ``clean`` — so
+#    a verdict that lands clean still shows the underwriter the signal
+#    the detector caught (e.g. font_inconsistency on its own without
+#    enough corroboration to fire a fail).
+# 3. Flag-source-agnostic: a forensic flag mirrored into BOTH
+#    ``metadata_flags`` and ``validation_failures`` (the
+#    ``_collect_flags`` + ``dossier_panel`` round-trip) surfaces ONCE,
+#    not twice — de-duplication on prefix.
+# 4. Forensic flags with verbose detail strings stay under
+#    ``EvidenceItem.detail`` ``max_length=240`` (truncation guard
+#    mirroring the F1a editor rationale pattern).
+
+
+def test_text_overlay_surfaces_as_evidence_on_clean_verdict() -> None:
+    """A text_overlay_detected flag with no other tripped signals →
+    clean verdict but evidence list contains the forensic finding so
+    the underwriter sees it on the dossier.
+
+    The forensic detectors are corroborating signals; their points
+    already got rolled into metadata_score upstream, but if that score
+    didn't trip a branch, Track A still surfaces the finding for
+    awareness rather than dropping it silently.
+    """
+    signals = DocumentIntegritySignals(
+        document_id="doc_text_overlay_clean",
+        metadata_score=22,  # Below medium floor (25)
+        metadata_flags=("[META] text_overlay_detected: page(s) 1,3; streams=4",),
+        validation_failures=(),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "clean"
+    assert v.branch == "clean"
+    # Forensic finding still surfaces as evidence on the clean verdict.
+    assert len(v.evidence) == 1
+    assert v.evidence[0].signal == "text_overlay_detected"
+    assert "paste-over" in v.evidence[0].detail.lower()
+    # The rationale calls out that the forensic signal is awareness-only.
+    assert "forensic" in v.rationale.lower()
+
+
+def test_font_inconsistency_surfaces_as_evidence_on_strong_metadata_fail() -> None:
+    """A font_inconsistency_detected flag riding on a strong-metadata
+    fail surfaces as its OWN EvidenceItem (not as a generic
+    ``metadata_flag`` row) so the underwriter sees the rationale ("Row-
+    level font/size mismatch on transaction spans — paste-over fraud
+    signature") rather than the raw parser string."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_font_inconsistency_strong",
+        metadata_score=72,
+        metadata_flags=(
+            "editor_detected: Foxit PhantomPDF 11.2",
+            "font_inconsistency_detected: 2 page(s); modal=Helvetica",
+        ),
+        validation_failures=(),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "fail"
+    assert v.branch == "strong_metadata"
+    signals_in_evidence = {e.signal for e in v.evidence}
+    assert "font_inconsistency_detected" in signals_in_evidence
+    forensic_row = next(e for e in v.evidence if e.signal == "font_inconsistency_detected")
+    assert "paste-over" in forensic_row.detail.lower()
+    # The font flag must NOT also appear as a generic ``metadata_flag``
+    # — it would be a dossier-rendering duplicate.
+    metadata_flag_rows = [e for e in v.evidence if e.signal == "metadata_flag"]
+    for row in metadata_flag_rows:
+        assert "font_inconsistency_detected" not in row.detail
+
+
+def test_creator_mismatch_surfaces_on_drift_plus_editor_fail() -> None:
+    """creator_mismatch_detected on a drift+editor fail surfaces as its
+    own EvidenceItem. Source-agnostic: the parser emits this flag into
+    ``all_flags`` (not ``metadata_flags``) because the check runs post-
+    extraction in pipeline.py — so the test exercises the
+    ``validation_failures`` source path."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_creator_mismatch_drift_editor",
+        metadata_score=38,
+        metadata_flags=("editor_detected: iText 2.1.7 by 1T3XT",),
+        validation_failures=(
+            "reconciliation_failed_period: expected 1000 got 950",
+            "[META] creator_mismatch_detected: detected='PDFlib+PDI 8.0.2p1'; "
+            "editing_tool='pdflib'; expected_one_of=['Adobe PDF Library']",
+        ),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "fail"
+    assert v.branch == "drift_plus_editor"
+    signals_in_evidence = {e.signal for e in v.evidence}
+    assert "creator_mismatch_detected" in signals_in_evidence
+    forensic_row = next(e for e in v.evidence if e.signal == "creator_mismatch_detected")
+    assert "known-good profile" in forensic_row.detail
+
+
+def test_all_three_forensic_signals_surface_together_on_medium_corroborated() -> None:
+    """All three forensic flags + medium metadata + drift → review via
+    medium_corroborated, with each forensic signal as a distinct
+    EvidenceItem in addition to the score / drift / metadata rows."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_all_forensic",
+        metadata_score=42,
+        metadata_flags=(
+            "font_inconsistency_detected: 1 page(s); modal=Helvetica",
+            "text_overlay_detected: page(s) 2; streams=3",
+        ),
+        validation_failures=(
+            "reconciliation_failed_period: expected 1000 got 950",
+            "[META] creator_mismatch_detected: detected='Sejda PDF Editor'; "
+            "editing_tool='sejda'; expected_one_of=['Adobe PDF Library']",
+        ),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "review"
+    assert v.branch == "medium_corroborated"
+    signals_in_evidence = {e.signal for e in v.evidence}
+    assert "font_inconsistency_detected" in signals_in_evidence
+    assert "text_overlay_detected" in signals_in_evidence
+    assert "creator_mismatch_detected" in signals_in_evidence
+
+
+def test_forensic_signal_mirrored_in_both_sources_dedupes() -> None:
+    """``parser/pipeline.py::_collect_flags`` mirrors every
+    ``metadata.flags`` entry into ``all_flags`` with a ``[META] `` prefix,
+    so a forensic flag commonly appears in BOTH ``metadata_flags`` and
+    (via ``dossier_panel._signals_for_document``)
+    ``validation_failures``. The forensic evidence extractor must de-
+    duplicate on prefix so the dossier row appears once, not twice."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_dedup",
+        metadata_score=8,
+        metadata_flags=("text_overlay_detected: page(s) 1; streams=2",),
+        validation_failures=("[META] text_overlay_detected: page(s) 1; streams=2",),
+    )
+    v = compute_integrity_verdict(signals)
+    assert v.verdict == "clean"
+    text_overlay_rows = [e for e in v.evidence if e.signal == "text_overlay_detected"]
+    assert len(text_overlay_rows) == 1
+
+
+def test_forensic_evidence_detail_truncates_under_max_length() -> None:
+    """A pathologically verbose forensic flag (long page list, long
+    creator string) must not push ``EvidenceItem.detail`` past Pydantic
+    max_length=240. The truncation guard mirrors the F1a editor
+    rationale fix in framing.py: silently downgrading the verdict to
+    None is the failure mode if Pydantic validation raises here."""
+    long_creator_flag = (
+        "creator_mismatch_detected: detected='" + ("X" * 300) + "'; "
+        "editing_tool='pdflib'; expected_one_of=['Adobe PDF Library']"
+    )
+    signals = DocumentIntegritySignals(
+        document_id="doc_long_creator",
+        metadata_score=8,
+        metadata_flags=(long_creator_flag,),
+        validation_failures=(),
+    )
+    v = compute_integrity_verdict(signals)
+    # Must NOT raise (Pydantic max_length=240 enforced on detail).
+    forensic_row = next(e for e in v.evidence if e.signal == "creator_mismatch_detected")
+    assert len(forensic_row.detail) <= 240
+    assert forensic_row.detail.endswith("...")
+
+
+def test_forensic_signal_not_double_surfaced_as_metadata_flag() -> None:
+    """The three forensic prefixes must NOT also flow through the
+    generic ``metadata_flag`` evidence rows. ``extract_other_metadata_flags``
+    filters them out so the dossier shows ONE row per forensic finding,
+    not two (one with rationale, one with raw parser string)."""
+    signals = DocumentIntegritySignals(
+        document_id="doc_no_double",
+        metadata_score=72,
+        metadata_flags=(
+            "editor_detected: Foxit PhantomPDF 11.2",
+            "text_overlay_detected: page(s) 1; streams=2",
+            "font_inconsistency_detected: 1 page(s); modal=Helvetica",
+            (
+                "creator_mismatch_detected: detected='PDFlib'; "
+                "editing_tool='pdflib'; expected_one_of=['Adobe PDF Library']"
+            ),
+        ),
+        validation_failures=(),
+    )
+    v = compute_integrity_verdict(signals)
+    metadata_flag_rows = [e for e in v.evidence if e.signal == "metadata_flag"]
+    # None of the forensic prefixes should appear in any ``metadata_flag`` row.
+    for row in metadata_flag_rows:
+        assert "text_overlay_detected" not in row.detail
+        assert "font_inconsistency_detected" not in row.detail
+        assert "creator_mismatch_detected" not in row.detail

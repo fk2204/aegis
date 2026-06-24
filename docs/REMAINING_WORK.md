@@ -380,7 +380,55 @@ judgment (severity calls, hook-config flips, scope decisions).
 - **F3-F11** — 6 WORTH + 3 INFO findings: boundary-test gaps,
   drift-only mirror in `all_flags`, lookback-script flag-prefix
   coupling, schema decline-field guard for `UnifiedTracksView`,
-  others. See doc for full punch-list. **Still open.**
+  others. See doc for full punch-list. **Still open — next punch-list
+  after the forensic integrity layer ships.**
+
+### Forensic integrity layer 🟡 IN-PROGRESS 2026-06-24
+Three deterministic detectors plumbed in over four commits:
+
+- **F-forensic-1 ✅ Commit `3fb6692` (local)** — `aegis.parser.forensic.font_consistency`
+  row-level font/size mismatch detector via pymupdf. Modal-family +
+  uniform-size guard so heading-vs-body legitimate variation doesn't
+  fire; flags when transaction spans use a non-modal family, or differ
+  in size by >1pt, or >20% of non-tx spans differ. Wired into
+  `analyze_metadata` (+15 to metadata_score) and surfaces as
+  `[META] font_inconsistency_detected: ...`.
+- **F-forensic-2 ✅ Commit `df0946e` (local)** — `aegis.parser.forensic.creator_fingerprint`
+  per-bank PDF /Creator mismatch via `KNOWN_CREATOR_PATTERNS` registry
+  (BoA / Chase / TD / Third Coast — all Adobe-family). Fires when the
+  /Creator names an editing tool (PDFlib, iText, Sejda, Foxit, etc.)
+  AND the parsed bank is registered AND the detected tool doesn't
+  match the bank's known-good profile. Wired into `run_pipeline`
+  POST-extraction (needs `bank_name`) at the same call site as the
+  validation gate; +20 to `metadata.fraud_score` propagates into
+  `_decide` because the check now runs BEFORE `_fraud_score`. Flag
+  form `[META] creator_mismatch_detected: detected=...; editing_tool=...; expected_one_of=[...]`.
+  **OPERATOR-ACTION**: verify the registry against real-merchant
+  statements — first few entries are placeholder Adobe-family; needs
+  ground-truth confirmation before it gates anything.
+- **F-forensic-3 ✅ Commit `1b61bd7` (local)** — `aegis.parser.forensic.text_overlay`
+  Y-range overlap detector across multi-stream pages via pikepdf
+  content-stream parsing. The paste-over fraud signature: original
+  bank-issued stream + second attack stream rendering replacement
+  text at the same Y coordinates. Wired into `analyze_metadata`
+  (+25 to metadata_score — strongest of the three because it's direct
+  evidence of content-stream manipulation). Flag form
+  `[META] text_overlay_detected: page(s) <list>; streams=<n>`.
+- **F-forensic-4 ✅ (this commit, local)** — Track A wire-through:
+  `extract_forensic_signals` helper in `scoring_v2/track_a/signals.py`
+  surfaces all three forensic flags as their own `EvidenceItem` rows
+  on EVERY branch of `compute_integrity_verdict` (including `clean`,
+  so the underwriter sees a standalone forensic finding for awareness
+  even when no branch fired). De-dupes when the same flag is mirrored
+  into both `metadata_flags` and `validation_failures` via
+  `_collect_flags`. Plain-English rationale per signal +
+  `EvidenceItem.detail` 240-char truncation guard (mirrors F1a). Tests
+  in `tests/scoring_v2/track_a/test_integrity_verdict.py` (7 new).
+
+**Shipping plan**: batch push of all four commits as one unit, hold
+for operator approval. After ship: F3-F11 (Track A audit findings) is
+the next punch-list, then operator's queued items — offer sizing wired
+into funder matching, image-only banks auto-routed to vision mode.
 
 ### `docs/repo_hygiene_2026-06-12.md` — Repo / tooling hygiene
 - **H1 act-now ✅ CLOSED 2026-06-12 (`bcf209a`)** — `make install-hooks`

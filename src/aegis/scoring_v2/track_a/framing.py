@@ -16,9 +16,7 @@ def frame_strong_metadata(metadata_score: int) -> str:
     )
 
 
-def frame_drift_plus_editor(
-    editor_flag: str, drift_count: int, metadata_score: int
-) -> str:
+def frame_drift_plus_editor(editor_flag: str, drift_count: int, metadata_score: int) -> str:
     short_editor = editor_flag.replace("editor_detected: ", "")
     # F1a guard: IntegrityVerdict.rationale is max_length=320 (models.py).
     # Static skeleton here is ~247 chars; long vendor / version strings
