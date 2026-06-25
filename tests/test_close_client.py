@@ -599,6 +599,27 @@ def test_close_attachment_is_pinned_true_parses() -> None:
     assert a.is_pinned is True
 
 
+def test_close_attachment_note_pinned_defaults_false() -> None:
+    """note_pinned defaults to False — set post-hoc by list_lead_attachments
+    when joining activity.note.pinned for note-provenanced files."""
+    a = CloseAttachment(id="leadfile_x", name="stmt.pdf")
+    assert a.note_pinned is False
+
+
+def test_close_attachment_note_pinned_can_be_set() -> None:
+    """The list_lead_attachments join mutates note_pinned in place after
+    model_validate. Confirm the field accepts True."""
+    a = CloseAttachment(
+        id="leadfile_x",
+        name="stmt.pdf",
+        content_type="application/pdf",
+        last_object_type="activity.note",
+        last_object_id="acti_xyz",
+    )
+    a.note_pinned = True
+    assert a.note_pinned is True
+
+
 # ----------------------------------------------------------------------
 # list_lead_attachments + CloseAttachment
 # ----------------------------------------------------------------------
@@ -751,33 +772,47 @@ def test_list_lead_attachments_real_shape_with_new_fields(
 ) -> None:
     """The Lead Files endpoint returns rich metadata — confirm checksum,
     download_url, is_pinned, and provenance fields flow through end to end.
-    Payload mirrors the 2026-05-28 real-data inspection."""
+    Payload mirrors the 2026-05-28 real-data inspection.
+
+    Includes the activity.note join: an activity.note-provenanced file
+    triggers a /api/v1/activity/note/ fetch. The transport branches on
+    URL so the file list + the notes list both return canned data."""
     _set_close_env(monkeypatch)
 
-    def transport(_: httpx.Request) -> httpx.Response:
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/files/"):
+            return httpx.Response(
+                200,
+                json={
+                    "has_more": False,
+                    "data": [
+                        {
+                            "id": "leadfile_0b4YISG3WcbhVfVCxgOT4d",
+                            "name": "april_bank_statement.pdf",
+                            "content_type": "application/pdf",
+                            "size": 278585,
+                            "checksum": "835b9dc89efa2a1fba2223497a773426",
+                            "download_url": (
+                                "https://app.close.com/go/file/persisted/orga_xyz/"
+                                "activity.note/acti_xyz/token/april_bank_statement.pdf/"
+                            ),
+                            "is_pinned": True,
+                            "last_object_type": "activity.note",
+                            "last_object_id": "acti_xyz",
+                            "thumbnail_url": "https://app.close.com/.../thumbnail/",
+                            "lead_id": "lead_abc",
+                            "organization_id": "orga_xyz",
+                        },
+                    ],
+                },
+            )
+        # /api/v1/activity/note/?lead_id=...
         return httpx.Response(
             200,
             json={
                 "has_more": False,
                 "data": [
-                    {
-                        "id": "leadfile_0b4YISG3WcbhVfVCxgOT4d",
-                        "name": "april_bank_statement.pdf",
-                        "content_type": "application/pdf",
-                        "size": 278585,
-                        "checksum": "835b9dc89efa2a1fba2223497a773426",
-                        "download_url": (
-                            "https://app.close.com/go/file/persisted/orga_xyz/"
-                            "activity.note/acti_xyz/token/april_bank_statement.pdf/"
-                        ),
-                        "is_pinned": True,
-                        "last_object_type": "activity.note",
-                        "last_object_id": "acti_xyz",
-                        # Extra real-response keys we don't model:
-                        "thumbnail_url": "https://app.close.com/.../thumbnail/",
-                        "lead_id": "lead_abc",
-                        "organization_id": "orga_xyz",
-                    },
+                    {"id": "acti_xyz", "pinned": False, "lead_id": "lead_abc"},
                 ],
             },
         )
@@ -795,6 +830,129 @@ def test_list_lead_attachments_real_shape_with_new_fields(
     assert a.is_pinned is True
     assert a.last_object_type == "activity.note"
     assert a.last_object_id == "acti_xyz"
+    # note_pinned joined as False (matches the canned notes payload)
+    assert a.note_pinned is False
+
+
+def test_list_lead_attachments_joins_note_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a file is attached via a Note, list_lead_attachments
+    enriches it with the parent note's pinned state via a single
+    /api/v1/activity/note/ call."""
+    _set_close_env(monkeypatch)
+    note_call_count = {"n": 0}
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/files/"):
+            return httpx.Response(
+                200,
+                json={
+                    "has_more": False,
+                    "data": [
+                        {
+                            "id": "leadfile_pinned",
+                            "name": "stmt_pinned_note.pdf",
+                            "content_type": "application/pdf",
+                            "download_url": "https://app.close.com/go/...",
+                            "is_pinned": False,  # file NOT pinned
+                            "last_object_type": "activity.note",
+                            "last_object_id": "acti_pinned",
+                        },
+                        {
+                            "id": "leadfile_unpinned",
+                            "name": "stmt_unpinned_note.pdf",
+                            "content_type": "application/pdf",
+                            "download_url": "https://app.close.com/go/...",
+                            "is_pinned": False,
+                            "last_object_type": "activity.note",
+                            "last_object_id": "acti_unpinned",
+                        },
+                        {
+                            "id": "leadfile_direct",
+                            "name": "stmt_direct.pdf",
+                            "content_type": "application/pdf",
+                            "download_url": "https://app.close.com/go/...",
+                            "is_pinned": True,  # file pinned, no parent note
+                            "last_object_type": "lead",
+                            "last_object_id": "lead_abc",
+                        },
+                    ],
+                },
+            )
+        # Notes endpoint — the join's data source
+        assert request.url.path == "/api/v1/activity/note/"
+        note_call_count["n"] += 1
+        return httpx.Response(
+            200,
+            json={
+                "has_more": False,
+                "data": [
+                    {"id": "acti_pinned", "pinned": True},
+                    {"id": "acti_unpinned", "pinned": False},
+                ],
+            },
+        )
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        items = client.list_lead_attachments("lead_abc")
+
+    # One notes call — fixed cost, not per-file.
+    assert note_call_count["n"] == 1
+    by_id = {a.id: a for a in items}
+    # note-pinned (file_pinned=False, note_pinned=True)
+    assert by_id["leadfile_pinned"].is_pinned is False
+    assert by_id["leadfile_pinned"].note_pinned is True
+    # note-unpinned (file_pinned=False, note_pinned=False)
+    assert by_id["leadfile_unpinned"].is_pinned is False
+    assert by_id["leadfile_unpinned"].note_pinned is False
+    # lead-direct (file_pinned=True, note_pinned stays False — no parent note)
+    assert by_id["leadfile_direct"].is_pinned is True
+    assert by_id["leadfile_direct"].note_pinned is False
+
+
+def test_list_lead_attachments_skips_note_fetch_when_no_note_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If no file has last_object_type='activity.note', we skip the
+    extra /api/v1/activity/note/ fetch entirely. Fixed cost = 0 when
+    not needed."""
+    _set_close_env(monkeypatch)
+    note_call_count = {"n": 0}
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/files/"):
+            return httpx.Response(
+                200,
+                json={
+                    "has_more": False,
+                    "data": [
+                        {
+                            "id": "leadfile_direct",
+                            "name": "stmt_direct.pdf",
+                            "content_type": "application/pdf",
+                            "download_url": "https://app.close.com/go/...",
+                            "is_pinned": True,
+                            "last_object_type": "lead",
+                            "last_object_id": "lead_abc",
+                        },
+                    ],
+                },
+            )
+        # Should NOT be called
+        note_call_count["n"] += 1
+        return httpx.Response(200, json={"has_more": False, "data": []})
+
+    with CloseClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(transport))
+    ) as client:
+        items = client.list_lead_attachments("lead_abc")
+
+    assert note_call_count["n"] == 0
+    assert len(items) == 1
+    assert items[0].note_pinned is False
 
 
 # ----------------------------------------------------------------------

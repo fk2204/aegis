@@ -414,16 +414,19 @@ def _attachment(
     *,
     content_type: str = "application/pdf",
     is_pinned: bool = True,
+    note_pinned: bool = False,
     checksum: str | None = None,
 ) -> CloseAttachment:
     """Factory defaults to a pinned PDF — the orchestrator's happy path
     under the post-pin-gate world. Tests that want unpinned files,
-    non-PDF MIME types, or specific checksums override explicitly."""
+    note-pinned files, non-PDF MIME types, or specific checksums
+    override explicitly."""
     return CloseAttachment(
         id=id_,
         name=name,
         content_type=content_type,
         is_pinned=is_pinned,
+        note_pinned=note_pinned,
         checksum=checksum,
         download_url=(
             f"https://app.close.com/go/file/persisted/orga/lead/{id_}/{name}/"
@@ -993,3 +996,148 @@ async def test_orchestrator_checksum_dedup_before_download(
     assert dedup_row["details"]["checksum"] == "abc123"
     # Only 2 downloads hit Close (the duplicate was rejected before fetch)
     assert len(close.download_calls) == 2
+
+
+# =====================================================================
+# process_close_attachments — note.pinned (commit 7 of
+# fix/close-note-attachments). The 2026-05-28 real-data test proved
+# operators pin in the activity feed (note.pinned) not the Files tab
+# (file.is_pinned); orchestrator must honor either signal.
+# =====================================================================
+
+
+async def test_orchestrator_note_pinned_only_processes(
+    upload_dir: Path,
+) -> None:
+    """A PDF with file_pinned=False BUT note_pinned=True is processed.
+    The activity-feed pin is the more natural Close UX; honoring it
+    keeps the operator workflow one-click."""
+    merchant = _make_merchant("lead_abc")
+    merchants = InMemoryMerchantRepository()
+    merchants.upsert(merchant)
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+
+    close = _FakeCloseClient(
+        attachments=[
+            # File NOT pinned in the Files tab; Note IS pinned in the feed
+            _attachment(
+                "note_only", "stmt_apr.pdf",
+                is_pinned=False, note_pinned=True,
+            ),
+        ],
+    )
+    enqueued: list[tuple[str, str]] = []
+    ctx = _orchestrator_ctx(
+        merchants=merchants, repo=repo, audit=audit, close=close,
+        upload_dir=upload_dir, enqueue_calls=enqueued,
+    )
+
+    summary = await process_close_attachments(ctx, "lead_abc", "webhook")
+    assert summary["fetched"] == 1
+    assert summary["skipped"] == 0
+    assert len(enqueued) == 1
+
+    fetched = next(
+        e for e in audit.entries if e["action"] == "close.attachment.fetched"
+    )
+    # Audit details captures WHICH signal triggered — for operator forensics.
+    assert fetched["details"]["file_pinned"] is False
+    assert fetched["details"]["note_pinned"] is True
+
+
+async def test_orchestrator_file_pinned_only_still_processes(
+    upload_dir: Path,
+) -> None:
+    """Existing path: file pinned in the Files tab, note (if any) not
+    pinned. Still works — backward compat with the chunk-4 design."""
+    merchant = _make_merchant("lead_abc")
+    merchants = InMemoryMerchantRepository()
+    merchants.upsert(merchant)
+    repo = InMemoryDocumentRepository()
+    audit = InMemoryAuditLog()
+
+    close = _FakeCloseClient(
+        attachments=[
+            _attachment(
+                "file_only", "stmt_apr.pdf",
+                is_pinned=True, note_pinned=False,
+            ),
+        ],
+    )
+    ctx = _orchestrator_ctx(
+        merchants=merchants, repo=repo, audit=audit, close=close,
+        upload_dir=upload_dir,
+    )
+
+    summary = await process_close_attachments(ctx, "lead_abc", "webhook")
+    assert summary["fetched"] == 1
+    fetched = next(
+        e for e in audit.entries if e["action"] == "close.attachment.fetched"
+    )
+    assert fetched["details"]["file_pinned"] is True
+    assert fetched["details"]["note_pinned"] is False
+
+
+async def test_orchestrator_both_pinned_records_both_signals(
+    upload_dir: Path,
+) -> None:
+    """Both signals can be True (operator pinned in both surfaces). The
+    audit row captures both so the trail is faithful."""
+    merchant = _make_merchant("lead_abc")
+    merchants = InMemoryMerchantRepository()
+    merchants.upsert(merchant)
+    audit = InMemoryAuditLog()
+    close = _FakeCloseClient(
+        attachments=[
+            _attachment(
+                "both", "stmt_apr.pdf",
+                is_pinned=True, note_pinned=True,
+            ),
+        ],
+    )
+    ctx = _orchestrator_ctx(
+        merchants=merchants, repo=InMemoryDocumentRepository(),
+        audit=audit, close=close, upload_dir=upload_dir,
+    )
+
+    await process_close_attachments(ctx, "lead_abc", "webhook")
+    fetched = next(
+        e for e in audit.entries if e["action"] == "close.attachment.fetched"
+    )
+    assert fetched["details"]["file_pinned"] is True
+    assert fetched["details"]["note_pinned"] is True
+
+
+async def test_orchestrator_neither_pinned_is_skipped(
+    upload_dir: Path,
+) -> None:
+    """When neither signal is True, the file is skipped via the
+    not_pinned reason and the audit details record both False states."""
+    merchant = _make_merchant("lead_abc")
+    merchants = InMemoryMerchantRepository()
+    merchants.upsert(merchant)
+    audit = InMemoryAuditLog()
+    close = _FakeCloseClient(
+        attachments=[
+            _attachment(
+                "neither", "stmt_apr.pdf",
+                is_pinned=False, note_pinned=False,
+            ),
+        ],
+    )
+    ctx = _orchestrator_ctx(
+        merchants=merchants, repo=InMemoryDocumentRepository(),
+        audit=audit, close=close, upload_dir=upload_dir,
+    )
+
+    summary = await process_close_attachments(ctx, "lead_abc", "webhook")
+    assert summary["fetched"] == 0
+    assert summary["skipped"] == 1
+
+    skip_row = next(
+        e for e in audit.entries if e["action"] == "close.attachment.skipped"
+    )
+    assert skip_row["details"]["reason"] == "not_pinned"
+    assert skip_row["details"]["file_pinned"] is False
+    assert skip_row["details"]["note_pinned"] is False

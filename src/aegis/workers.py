@@ -770,7 +770,11 @@ async def process_close_attachments(
             )
     else:
         for att in pdf_attachments:
-            if att.is_pinned:
+            # Operator confirmed via EITHER signal — file pin (Files tab)
+            # OR note pin (activity-feed pin on the wrapping Note). The
+            # natural Close UX is note-feed pinning; file pin remains
+            # supported for files attached without a note wrapper.
+            if att.is_pinned or att.note_pinned:
                 statement_candidates.append(att)
                 continue
             summary["skipped"] += 1
@@ -785,6 +789,8 @@ async def process_close_attachments(
                     "filename": att.name,
                     "reason": "not_pinned",
                     "close_lead_id": close_lead_id,
+                    "file_pinned": att.is_pinned,
+                    "note_pinned": att.note_pinned,
                 },
             )
         # Empty-state signal: ≥1 PDF on the Lead but none pinned. The
@@ -954,6 +960,12 @@ async def process_close_attachments(
                 "close_lead_id": close_lead_id,
                 "duplicate": is_duplicate,
                 "trigger": trigger,
+                # Which pin signal authorised this fetch. Both can be
+                # True (file + note both pinned); the operator can grep
+                # for note_pinned=true to see which fetches came via
+                # the activity-feed UX vs the Files-tab UX.
+                "file_pinned": att.is_pinned,
+                "note_pinned": att.note_pinned,
             },
         )
 

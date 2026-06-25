@@ -156,10 +156,25 @@ class CloseAttachment(BaseModel):
     # response omits it; callers downloading bytes must check non-None.
     download_url: str | None = None
 
-    # Operator-set pin flag (Close UI only — the public API exposes
-    # this field read-only). When True, signals "operator confirms this
-    # file is a bank statement" — the orchestrator's default filter.
+    # Operator-set pin flag on the leadfile itself (Close "Files" tab
+    # pin icon). Set via Close UI only — the public API exposes the
+    # field read-only. When True, signals "operator confirms this
+    # file is a bank statement."
     is_pinned: bool = False
+
+    # Note-level pin flag, lifted from ``activity.note.pinned`` when
+    # the file is attached via a Note (``last_object_type='activity.note'``).
+    # The 2026-05-28 real-data test surfaced that the natural Close UX
+    # — the pin icon in the activity feed — sets pin on the wrapping
+    # Note, not on the file directly. Operators rarely navigate to the
+    # Files tab to pin individually. Orchestrator gates on
+    # ``is_pinned OR note_pinned`` so either surface confirms "this is
+    # a statement."
+    #
+    # Always False for non-note provenance variants (lead-direct,
+    # email, sms, custom_activity) — only ``activity.note`` has a
+    # pin concept in this codebase today.
+    note_pinned: bool = False
 
     # Provenance — which activity (if any) the file was attached
     # through. Observed values:
@@ -169,7 +184,7 @@ class CloseAttachment(BaseModel):
     #   - "activity.sms"   — MMS attachments (none in our org currently)
     #   - "lead"           — File attached directly to the Lead via
     #                        Close UI drag-drop without a note wrapper
-    # Informational; not used for filtering today.
+    # Drives the note_pinned join in list_lead_attachments.
     last_object_type: str | None = None
     last_object_id: str | None = None
 
@@ -436,7 +451,62 @@ class CloseClient:
                     )
                 items.append(CloseAttachment.model_validate(raw))
             if not page.get("has_more"):
-                return items
+                break
+            skip += page_size
+
+        # Join activity.note.pinned onto note-provenanced files. The
+        # operator's natural Close UX is pinning notes in the activity
+        # feed (one-click action on the visible row); pinning files in
+        # the Files tab is a less-visited UI surface. Reading both
+        # signals lets either route confirm "this is a statement."
+        # Fixed cost: at most one extra paginated call per lead,
+        # regardless of how many note-attached files exist.
+        if any(it.last_object_type == "activity.note" for it in items):
+            pinned_map = self._fetch_note_pinned_map(lead_id)
+            for it in items:
+                if (
+                    it.last_object_type == "activity.note"
+                    and it.last_object_id is not None
+                ):
+                    it.note_pinned = pinned_map.get(it.last_object_id, False)
+
+        return items
+
+    def _fetch_note_pinned_map(self, lead_id: str) -> dict[str, bool]:
+        """Return ``{note_id: pinned}`` for every Note on the Lead.
+
+        Used by :meth:`list_lead_attachments` to enrich note-attached
+        files with their parent note's pin state. Paginated via the
+        same ``_limit`` (capped at 100) / ``_skip`` / ``has_more``
+        convention as siblings.
+
+        A non-list ``data`` payload raises CloseError so a future Close
+        API shape change fails loud rather than silently dropping pins.
+        """
+        result: dict[str, bool] = {}
+        skip = 0
+        page_size = 100
+        while True:
+            page = self.request(
+                "GET",
+                "/api/v1/activity/note/",
+                params={
+                    "lead_id": lead_id,
+                    "_limit": page_size,
+                    "_skip": skip,
+                },
+            )
+            notes = page.get("data", [])
+            if not isinstance(notes, list):
+                raise CloseError(
+                    "close /api/v1/activity/note/ returned non-list data: "
+                    f"{type(notes).__name__}"
+                )
+            for n in notes:
+                if isinstance(n, dict) and isinstance(n.get("id"), str):
+                    result[n["id"]] = bool(n.get("pinned", False))
+            if not page.get("has_more"):
+                return result
             skip += page_size
 
     @retry(

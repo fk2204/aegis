@@ -140,9 +140,18 @@ def close_client(
                             ),
                             "is_pinned": True,
                             "last_object_type": "activity.note",
+                            "last_object_id": "acti_xyz",
                         },
                     ],
                 },
+            )
+        # Notes endpoint — list_lead_attachments fetches this to enrich
+        # note-provenanced files with their parent note's pinned state.
+        # The from-close download path doesn't depend on note pin, so
+        # an empty payload (no pin info) is fine for these tests.
+        if path == "/api/v1/activity/note/":
+            return httpx.Response(
+                200, json={"has_more": False, "data": []}
             )
         # Download path — api.close.com after host rewrite. The code
         # knob applies here only.
@@ -302,12 +311,14 @@ def test_from_close_happy_path_persists_and_enqueues(
     row = docs.get_document(document_id)
     assert row.merchant_id == merchant.id
 
-    # Close was called twice now: once to list the lead's files, once
-    # to download the resolved attachment via the host-swapped URL.
-    assert len(close_transport_requests) == 2
+    # Close was called three times: list lead files, fetch notes (for
+    # the note.pinned join — fixed cost since the canned file is
+    # note-provenanced), then download via the host-swapped URL.
+    assert len(close_transport_requests) == 3
     assert close_transport_requests[0].url.path == "/api/v1/lead/lead_abc/files/"
-    assert close_transport_requests[1].url.host == "api.close.com"
-    assert "/go/file/persisted/" in close_transport_requests[1].url.path
+    assert close_transport_requests[1].url.path == "/api/v1/activity/note/"
+    assert close_transport_requests[2].url.host == "api.close.com"
+    assert "/go/file/persisted/" in close_transport_requests[2].url.path
 
     # Audit row.
     fetched = [e for e in audit.entries if e["action"] == "close.upload.fetched"]
@@ -343,9 +354,10 @@ def test_from_close_sha256_dedup_returns_existing_no_reparse(
     assert second.json()["duplicate"] is True
     assert second.json()["parse_enqueued"] is False
 
-    # Each call lists + downloads → 4 total Close requests across two
-    # /uploads/from-close calls. Only one document persists (SHA dedup).
-    assert len(close_transport_requests) == 4
+    # Each call lists + fetches notes + downloads → 6 total Close
+    # requests across two /uploads/from-close calls. Only one document
+    # persists (SHA dedup at persist time).
+    assert len(close_transport_requests) == 6
     assert len(docs._docs) == 1
 
     # Two close.upload.fetched audit rows; only the first carries
