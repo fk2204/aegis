@@ -204,6 +204,30 @@
         {% endif %}
       {% endif %}
     </div>
+
+    {# 5 — Shadow signals this week (Item 3 / 2026-06-25).
+       Counts distinct documents (NOT fires) with any [SHADOW] flag in
+       the last 7 days. The Wed 06:00 UTC cron writes the matching
+       audit rows; this card links to /ui/shadow-review for the full
+       list. #}
+    <div class="attn-section" data-test-id="today-attn-shadow-review">
+      <h3 class="attn-section-head">Shadow signals this week · {{ shadow_review_count }}</h3>
+      {% if not shadow_review_cards %}
+        <div class="empty empty-mini">No shadow flags fired in the last 7 days.</div>
+      {% else %}
+        <ul class="attn-list">
+          {% for c in shadow_review_cards %}
+            <li class="attn-card" data-test-id="{{ c.test_id }}">
+              <a class="attn-card-title" href="{{ c.href }}">{{ c.merchant_name }}</a>
+              <span class="attn-card-needs">{{ c.contributing_codes|join(", ") }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+        {% if shadow_review_count > shadow_review_cards|length %}
+          <div class="attn-more">+ {{ shadow_review_count - shadow_review_cards|length }} more</div>
+        {% endif %}
+      {% endif %}
+    </div>
   </div>
 
   {# ── CENTER 35% · Pipeline today ──────────────────────────────── #}

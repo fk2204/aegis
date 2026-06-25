@@ -46,6 +46,7 @@ from aegis.merchants.repository import (
     MerchantNotFoundError,
     MerchantRepository,
 )
+from aegis.ops.shadow_review import build_shadow_review_attention_section
 from aegis.parser.models import ClassifiedTransaction
 from aegis.scoring.multi_month import (
     score_input_multi_month as _score_input_multi_month,
@@ -178,6 +179,18 @@ async def index(
     ) = build_compliance_attention_section(
         get_compliance_obligation_repository(),
     )
+    # Shadow signals attention card — documents parsed in the last 7
+    # days with at least one ``[SHADOW] *`` flag on ``all_flags``.
+    # Surfaces the weekly cron's intake (`run_shadow_review_cron`) on
+    # the dashboard so the corpus-validation review for promoting a
+    # shadow detector to live is one click away from Today. `count` is
+    # the DISTINCT document count, paired with `source_document_ids`
+    # per the CLAUDE.md aggregate-with-source-ids rule.
+    (
+        shadow_review_count,
+        shadow_review_source_document_ids,
+        shadow_review_cards,
+    ) = build_shadow_review_attention_section(docs=docs, merchants=merchants_repo)
     today_pipeline = _compute_today_pipeline(docs, funder_note_subs, now=now_utc)
     today_recent_activity = _build_today_recent_activity(recent_activity_rows)
 
@@ -228,6 +241,9 @@ async def index(
             "compliance_count": compliance_count,
             "compliance_source_obligation_ids": compliance_source_obligation_ids,
             "compliance_cards": compliance_cards,
+            "shadow_review_count": shadow_review_count,
+            "shadow_review_source_document_ids": (shadow_review_source_document_ids),
+            "shadow_review_cards": shadow_review_cards,
             "today_pipeline": today_pipeline,
             "today_recent_activity": today_recent_activity,
             "quick_actions": quick_actions,

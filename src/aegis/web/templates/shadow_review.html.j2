@@ -1,0 +1,78 @@
+{% extends "base.html.j2" %}
+{% set active = 'Portfolio' %}
+{% block title %}Shadow review — AEGIS{% endblock %}
+
+{# Shadow-signal review (Item 3 / 2026-06-25).
+
+   Lists every document parsed in the trailing N days that has at least
+   one ``[SHADOW] *`` flag on ``DocumentRow.all_flags``. The Wednesday
+   06:00 UTC cron (`aegis.workers.run_shadow_review_cron`) writes the
+   matching audit rows; this page surfaces the same data interactively.
+
+   Surface contract: the route populates ``window_days`` (int),
+   ``doc_count`` (int), ``source_document_ids`` (list[UUID]), and
+   ``cards`` (list[ShadowReviewCard]). Empty cards renders the
+   no-signals empty-state copy.
+#}
+
+{% block deck %}
+{% set title = "Shadow review" %}
+{% set subtitle = "· last " ~ window_days ~ " days · per-doc [SHADOW] emissions" %}
+{% set meta %}
+  {{ doc_count }} document{{ '' if doc_count == 1 else 's' }} with shadow signals
+{% endset %}
+{% set actions = [
+    {"label": "Cross-merchant shadow", "href": "/ui/shadow-signals"},
+    {"label": "Today", "href": "/ui/"},
+] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1" data-test-id="shadow-review-page">
+  {% if not cards %}
+    <div class="empty" role="note" data-test-id="shadow-review-empty">
+      <strong>No shadow flags in the last {{ window_days }} days.</strong>
+      <span class="copy">
+        No <code>[SHADOW]</code> flags fired on any document parsed in the
+        window. The Wednesday review cron still writes a
+        <code>shadow_signal.weekly_summary_complete</code> audit row so a
+        quiet week is auditable.
+      </span>
+    </div>
+  {% else %}
+    <table data-test-id="shadow-review-table">
+      <thead>
+        <tr>
+          <th scope="col">Parsed</th>
+          <th scope="col">Merchant</th>
+          <th scope="col">Document</th>
+          <th scope="col">Shadow codes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in cards %}
+        <tr data-test-id="shadow-review-row" data-document-id="{{ c.document_id }}">
+          <td>
+            <time datetime="{{ c.parsed_at.isoformat() }}">
+              {{ c.parsed_at.strftime("%Y-%m-%d %H:%M UTC") }}
+            </time>
+          </td>
+          <td>
+            <a href="/ui/merchants/{{ c.merchant_id }}">{{ c.merchant_name }}</a>
+          </td>
+          <td>
+            <a href="/ui/documents/{{ c.document_id }}">{{ c.document_filename or '(no filename)' }}</a>
+          </td>
+          <td>
+            {% for code in c.contributing_codes %}
+              <code>{{ code }}</code>{% if not loop.last %} {% endif %}
+            {% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>
+{% endblock %}

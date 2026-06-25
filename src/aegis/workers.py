@@ -2446,6 +2446,46 @@ async def run_track_a_regression_sentinel_cron(ctx: dict[str, Any]) -> dict[str,
     return {"scanned": scanned, "miss_count": miss_count}
 
 
+async def run_shadow_review_cron(ctx: dict[str, Any]) -> dict[str, int]:
+    """arq weekly cron — shadow-signal review pass (Wed 06:00 UTC).
+
+    Aggregates every ``[SHADOW] *`` flag on documents parsed in the
+    trailing 7 days, writes one ``shadow_signal.weekly_summary`` audit
+    row per (document, flag_code) tuple, plus one
+    ``shadow_signal.weekly_summary_complete`` summary row. See
+    ``aegis.ops.shadow_review`` for the pass implementation.
+
+    Dependencies are resolved from the arq context first (tests inject
+    in-memory fakes) and fall back to the process-wide DI — same
+    pattern the other crons use.
+    """
+    from aegis.api.deps import get_audit, get_merchant_repository, get_repository
+    from aegis.ops.shadow_review import run_shadow_review_pass
+
+    audit = ctx.get("audit") or get_audit()
+    docs = ctx.get("docs") or get_repository()
+    merchants = ctx.get("merchants") or get_merchant_repository()
+
+    summary = run_shadow_review_pass(audit=audit, docs=docs, merchants=merchants)
+    _log.info(
+        "shadow_review.weekly_pass window_start=%s window_end=%s docs_scanned=%s "
+        "docs_with_shadow=%s audit_rows_written=%s audit_rows_skipped_dup=%s",
+        summary.window_start.isoformat(),
+        summary.window_end.isoformat(),
+        summary.docs_scanned,
+        len({fire.document_id for fire in summary.fires}),
+        summary.audit_rows_written,
+        summary.audit_rows_skipped_dup,
+    )
+    return {
+        "docs_scanned": summary.docs_scanned,
+        "docs_with_shadow": len({fire.document_id for fire in summary.fires}),
+        "fires": len(summary.fires),
+        "audit_rows_written": summary.audit_rows_written,
+        "audit_rows_skipped_dup": summary.audit_rows_skipped_dup,
+    }
+
+
 class WorkerSettings:
     """arq config. Reads concurrency + timeout from env via Settings."""
 
@@ -2503,6 +2543,22 @@ class WorkerSettings:
             minute=0,
             run_at_startup=False,
         ),
+        # 06:00 UTC Wednesdays — shadow-signal review pass.
+        # Aggregates every ``[SHADOW] *`` flag fired on documents
+        # parsed in the trailing 7 days. Writes one
+        # ``shadow_signal.weekly_summary`` audit row per (document,
+        # flag_code) and one ``shadow_signal.weekly_summary_complete``
+        # summary row carrying per-code counts + ``source_document_ids``.
+        # Wednesday is deliberately distinct from the Mon 06:00 Track A
+        # sentinel and Mon 07:00 compliance cron so the operator's
+        # morning queue doesn't triple-stack.
+        cron(
+            run_shadow_review_cron,
+            weekday="wed",
+            hour=6,
+            minute=0,
+            run_at_startup=False,
+        ),
     )
     on_startup = _on_startup
     on_shutdown = _on_shutdown
@@ -2552,6 +2608,7 @@ __all__ = [
     "parse_document",
     "process_close_attachments",
     "process_funder_reply",
+    "run_shadow_review_cron",
     "run_submission_reminder_cron",
     "run_submission_reminder_pass",
     "run_track_a_regression_sentinel_cron",
