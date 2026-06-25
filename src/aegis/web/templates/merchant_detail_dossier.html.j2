@@ -1547,6 +1547,7 @@
               <th style="width:110px">Status</th>
               <th style="width:140px">Offer</th>
               <th>Responded</th>
+              <th style="width:130px">Outcome</th>
             </tr>
           </thead>
           <tbody>
@@ -1558,6 +1559,12 @@
         </div>
       </section>
     {% endif %}
+
+    {# HTMX host for the "Record outcome" modal. Sits outside the
+       submissions table so the swap target survives row-level HTMX
+       swaps that replace individual <tr> elements. The Record-outcome
+       button in the row partial targets this host. #}
+    <div id="outcome-modal-host"></div>
 
     {# ============== § 6 OPERATOR NOTES ============== #}
     {# Moved from the top-of-dossier slot (above the chips) to the

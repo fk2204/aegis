@@ -11,7 +11,7 @@
    inputs leave the stored value unchanged (the route reads the form
    tolerantly).
 #}
-<tr data-test-id="submission-row" data-submission-id="{{ s.id }}">
+<tr id="submission-row-{{ s.id }}" data-test-id="submission-row" data-submission-id="{{ s.id }}">
   <td class="when">{{ (s.submitted_at or '—')|string|truncate(19, True, '') }}</td>
   <td>
     <a href="/ui/funders/{{ s.funder_id }}/performance">{{ s.funder_id|string|truncate(8, True, '') }}</a>
@@ -72,5 +72,20 @@
   </td>
   <td class="details">
     {% if s.responded_at %}{{ s.responded_at|string|truncate(19, True, '') }}{% else %}—{% endif %}
+  </td>
+  <td class="action" style="white-space:nowrap">
+    {# "Record outcome" opens an HTMX modal that writes to funder_replies
+       (migration 071). The status form in the previous cell updates the
+       funder_note_submission row inline; this button records a discrete,
+       audited outcome row alongside the submission. #}
+    <button type="button"
+            class="record-outcome-btn"
+            style="font-size:11px;padding:2px 8px"
+            hx-get="/ui/funder-replies/outcome-modal?merchant_id={{ s.merchant_id }}&funder_id={{ s.funder_id }}&submission_id={{ s.id }}"
+            hx-target="#outcome-modal-host"
+            hx-swap="innerHTML"
+            data-test-id="record-outcome-btn">
+      Record outcome
+    </button>
   </td>
 </tr>

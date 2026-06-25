@@ -280,13 +280,23 @@ def test_funder_approval_rate_math_is_exact() -> None:
     and the approval rate percentage.
 
     Setup:
-      * Funder F1: 6 submissions, 3 approved, 2 declined, 0 countered,
-        1 no-response → approval rate 3/5 = 60%.
+      * Funder F1: 6 submissions, 3 approved replies, 2 declined,
+        0 countered, 0 outcome=no_response → 1 submission still pending.
+        Approval rate 3/5 = 60%.
       * Funder F2: 4 submissions, 1 approved, 1 declined, 1 countered,
-        1 no-response → approval rate 1/3 = 33%.
+        0 outcome=no_response → 1 submission still pending. Approval
+        rate 1/3 = 33%.
 
     Post-U20: submissions come from the durable submissions table, not
     audit_log JSON. The replies side stays on funder_replies.
+
+    Post-migration-071: legacy email-parse rows use ``status`` (no
+    outcome column). Until an operator explicitly records
+    ``outcome='no_response'`` for a missing reply, the residual
+    submissions count as ``pending``, NOT ``no_response``. The
+    distinction is the load-bearing semantic of the manual outcome
+    capture path — "we haven't asked yet" is operationally different
+    from "we asked and the funder ghosted".
     """
     f1 = _funder("F1 Funder")
     f2 = _funder("F2 Funder")
@@ -300,7 +310,8 @@ def test_funder_approval_rate_math_is_exact() -> None:
         submissions.append(_submission(f2.id))
 
     # Replies: F1 3 approved + 2 declined; F2 1 approved + 1 declined +
-    # 1 countered. Each reply is a funder_replies row dict.
+    # 1 countered. Each reply is a funder_replies row dict — legacy
+    # email-parse shape (status only, no outcome column).
     reply_rows: list[dict[str, object]] = []
     for status in ["approved", "approved", "approved", "declined", "declined"]:
         reply_rows.append({"funder_id": str(f1.id), "deal_id": str(uuid4()), "status": status})
@@ -326,22 +337,115 @@ def test_funder_approval_rate_math_is_exact() -> None:
     assert f1_row.approved == 3
     assert f1_row.declined == 2
     assert f1_row.countered == 0
-    assert f1_row.no_response == 1
-    # 3 approved / (3 + 2 + 0) decided = 60%
+    # No operator-recorded no_response outcome rows — the missing
+    # reply rolls into ``pending``, not ``no_response``.
+    assert f1_row.no_response == 0
+    assert f1_row.pending == 1
+    # 3 approved / (3 + 2 + 0 + 0) decided = 60%
     assert f1_row.approval_rate_pct == 60
 
     assert f2_row.submitted == 4
     assert f2_row.approved == 1
     assert f2_row.declined == 1
     assert f2_row.countered == 1
-    assert f2_row.no_response == 1
-    # 1 / (1 + 1 + 1) = 33%
+    assert f2_row.no_response == 0
+    assert f2_row.pending == 1
+    # 1 / (1 + 1 + 1 + 0) = 33%
     assert f2_row.approval_rate_pct == 33
 
     # Cross-funder approval / decline rates.
     # Total decided = 5 + 3 = 8. Approved = 3 + 1 = 4. Declined = 2 + 1 = 3.
     assert metrics.approval_rate_pct == round((4 / 8) * 100)
     assert metrics.decline_rate_pct == round((3 / 8) * 100)
+
+
+def test_funder_outcome_counts_from_operator_recorded_outcome_rows() -> None:
+    """When funder_replies rows carry the new ``outcome`` column
+    (migration 071), the per-funder panel counts them by outcome and
+    distinguishes ``no_response`` from ``pending``.
+
+    Setup (matches the spec): 5 submissions to one funder, with 2
+    approved / 1 declined / 1 countered / 1 no_response recorded as
+    operator outcomes. ``pending`` = 5 - 5 = 0.
+    """
+    f1 = _funder("F1 Funder")
+    submissions: list[SubmissionRow] = [_submission(f1.id) for _ in range(5)]
+
+    # Operator-recorded outcomes — the new migration-071 column. Each
+    # row may have status NULL (no_response) or status mirrored from
+    # outcome (approved/declined/countered).
+    reply_rows: list[dict[str, object]] = []
+    for outcome in ("approved", "approved", "declined", "countered", "no_response"):
+        reply_rows.append(
+            {
+                "funder_id": str(f1.id),
+                "deal_id": str(uuid4()),
+                "outcome": outcome,
+                "status": outcome if outcome != "no_response" else None,
+            }
+        )
+
+    metrics = compute_portfolio_metrics(
+        merchants=[],
+        funders=[f1],
+        documents=[],
+        funder_reply_rows=reply_rows,
+        audit_rows=[],
+        decision_rows=[],
+        submissions=submissions,
+        date_range=DateRange(from_date=date(2026, 6, 1), to_date=date(2026, 6, 30)),
+    )
+
+    row = metrics.funder_table[0]
+    assert row.submitted == 5
+    assert row.approved == 2
+    assert row.declined == 1
+    assert row.countered == 1
+    assert row.no_response == 1
+    assert row.pending == 0
+    # Decided = approved + declined + countered + no_response = 5.
+    # Approval rate = 2 / 5 = 40%. no_response is counted as decided
+    # (operator confirmed the funder ghosted — a real signal); pending
+    # is excluded.
+    assert row.approval_rate_pct == 40
+
+
+def test_funder_outcome_pending_distinct_from_no_response() -> None:
+    """3 submissions, only 1 outcome recorded → pending=2, no_response=0.
+
+    This is the load-bearing semantic of migration 071: until the
+    operator explicitly records outcome='no_response', the residual
+    submissions are pending. The legacy approach (no_response =
+    submitted - replies) conflated the two, surfacing "ghosted" counts
+    that were actually "we haven't asked yet".
+    """
+    f1 = _funder("F1 Funder")
+    submissions = [_submission(f1.id) for _ in range(3)]
+    reply_rows: list[dict[str, object]] = [
+        {
+            "funder_id": str(f1.id),
+            "deal_id": str(uuid4()),
+            "outcome": "approved",
+            "status": "approved",
+        }
+    ]
+
+    metrics = compute_portfolio_metrics(
+        merchants=[],
+        funders=[f1],
+        documents=[],
+        funder_reply_rows=reply_rows,
+        audit_rows=[],
+        decision_rows=[],
+        submissions=submissions,
+        date_range=DateRange(from_date=date(2026, 6, 1), to_date=date(2026, 6, 30)),
+    )
+
+    row = metrics.funder_table[0]
+    assert row.submitted == 3
+    assert row.approved == 1
+    assert row.no_response == 0
+    assert row.pending == 2
 
 
 # ---------------------------------------------------------------------------

@@ -46,10 +46,10 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aegis.audit import AuditLog
 from aegis.db import get_supabase
@@ -61,6 +61,19 @@ _log = get_logger(__name__)
 
 ReplyStatus = Literal["approved", "declined", "countered"]
 IngestSource = Literal["webhook", "operator_paste"]
+
+# Operator-recorded outcome on a funder submission. Distinct from
+# ``ReplyStatus`` — the email-parse path can never produce a
+# 'no_response' (by definition there's no email when the funder
+# ghosted). Surfaced on the "Record outcome" modal on the dossier's
+# § 5½ funder submissions table.
+ReplyOutcome = Literal["approved", "declined", "countered", "no_response"]
+
+# Outcomes for which numeric offer fields are meaningful. 'declined'
+# and 'no_response' rows must have NULL amount / factor / term — the
+# DB CHECK constraint (migration 071) enforces this; we mirror it in
+# the write path so a bug in the form handler fails fast.
+_OUTCOMES_WITH_OFFER: frozenset[str] = frozenset({"approved", "countered"})
 
 
 # One place to maintain status -> override.outcome mapping. Adding a new
@@ -137,6 +150,79 @@ class FunderReplyPayload(BaseModel):
     received_at: datetime | None = None  # None -> DB default (NOW)
 
 
+# Pydantic field annotations for the outcome columns. Mirror the DB
+# shape from migration 071: numeric(14,2) for the offer amount,
+# numeric(6,4) for the factor rate (range matches ReplyTerms.factor +
+# the funder_note_submissions._FactorRate annotation).
+_OutcomeAmount = Annotated[Decimal, Field(max_digits=14, decimal_places=2, gt=Decimal("0"))]
+_OutcomeFactorRate = Annotated[
+    Decimal,
+    Field(max_digits=6, decimal_places=4, gt=Decimal("1"), le=Decimal("2")),
+]
+_OutcomeTermDays = Annotated[int, Field(ge=1, le=730)]
+
+
+class FunderReplyOutcomePayload(BaseModel):
+    """Operator-recorded outcome for a funder_note_submission.
+
+    Strict + frozen so a typo at the call site fails at construction
+    time, before any DB write happens. Distinct from
+    ``FunderReplyPayload`` because the manual-outcome path captures
+    operator intent (what the funder said per the operator) rather
+    than parsing an email body — no ``raw_text`` / ``parsed_confidence``
+    / math-reconcile gate.
+
+    Field-by-field invariants (mirror the DB CHECK from migration 071):
+
+      * ``outcome IN ('approved','declined','countered','no_response')``
+        — enforced by the Literal type.
+      * For ``outcome IN ('declined','no_response')`` the offer fields
+        (``outcome_amount`` / ``outcome_factor_rate`` /
+        ``outcome_term_days``) MUST be ``None``. A bug that sets them
+        anyway raises at validation time so the write never reaches the
+        DB CHECK.
+      * ``outcome_recorded_by`` is the operator email — populated by the
+        route from ``resolve_operator_email``. Required so the audit
+        chain is unbroken.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        validate_assignment=True,
+        frozen=True,
+    )
+
+    # Anchored on the funder_note_submissions row the operator is
+    # recording the outcome against — NOT a documents.id. Migration 071
+    # added funder_replies.submission_id (FK -> funder_note_submissions)
+    # and relaxed deal_id NOT NULL; the email-parse path still uses
+    # deal_id, the manual-outcome path uses submission_id.
+    submission_id: UUID
+    funder_id: UUID
+    outcome: ReplyOutcome
+    outcome_amount: _OutcomeAmount | None = None
+    outcome_factor_rate: _OutcomeFactorRate | None = None
+    outcome_term_days: _OutcomeTermDays | None = None
+    outcome_notes: str | None = Field(default=None, max_length=1000)
+    outcome_recorded_by: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _enforce_offer_field_invariant(self) -> FunderReplyOutcomePayload:
+        # Mirror the DB CHECK from migration 071: declined / no_response
+        # rows have no offer fields. Fail fast at the Pydantic layer
+        # instead of bouncing off Postgres at insert time.
+        if self.outcome not in _OUTCOMES_WITH_OFFER and (
+            self.outcome_amount is not None
+            or self.outcome_factor_rate is not None
+            or self.outcome_term_days is not None
+        ):
+            raise ValueError(
+                f"outcome={self.outcome!r} cannot carry offer fields "
+                f"(amount / factor_rate / term_days must be None)"
+            )
+        return self
+
+
 # ---------------------------------------------------------------------------
 # Validation (deterministic; no LLM in this layer)
 # ---------------------------------------------------------------------------
@@ -187,11 +273,7 @@ def validate_reply(payload: FunderReplyPayload) -> ReplyValidationResult:
     elif payload.status == "approved":
         warnings.append("missing_terms_for_reconcile: amount/factor/payback incomplete")
 
-    if (
-        t.term_days is not None
-        and t.daily_payment is not None
-        and t.payback is not None
-    ):
+    if t.term_days is not None and t.daily_payment is not None and t.payback is not None:
         derived = (Decimal(t.term_days) * t.daily_payment).quantize(Decimal("0.01"))
         gap = abs(derived - t.payback)
         if gap > TOLERANCE:
@@ -200,9 +282,7 @@ def validate_reply(payload: FunderReplyPayload) -> ReplyValidationResult:
                 f"{derived} but payback = {t.payback} (gap {gap})"
             )
 
-    return ReplyValidationResult(
-        passed=not failures, failures=failures, warnings=warnings
-    )
+    return ReplyValidationResult(passed=not failures, failures=failures, warnings=warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -219,9 +299,7 @@ class FunderReplyRepository(Protocol):
     outcome. Subsequent replies persist but don't overwrite (refinement 5).
     """
 
-    def insert_reply(
-        self, payload: FunderReplyPayload, *, source_email_sha256: str
-    ) -> UUID:
+    def insert_reply(self, payload: FunderReplyPayload, *, source_email_sha256: str) -> UUID:
         """Persist one funder_replies row; return its UUID."""
 
     def latest_open_override_for(self, deal_id: UUID) -> dict[str, Any] | None:
@@ -245,6 +323,20 @@ class FunderReplyRepository(Protocol):
         still NULL. Returns True if stamping occurred, False if the
         override was already stamped (idempotency)."""
 
+    def insert_outcome(
+        self,
+        payload: FunderReplyOutcomePayload,
+        *,
+        recorded_at: datetime,
+    ) -> UUID:
+        """Persist a manual operator-recorded outcome row into
+        ``funder_replies`` (migration 071 columns). Returns the new
+        row id. Raises ``FunderReplyError`` on persistence failure so
+        the calling route can surface the error to the operator
+        rather than silently audit-logging an outcome that didn't
+        land in the DB.
+        """
+
 
 class InMemoryFunderReplyRepository:
     """List-backed repository for tests + memory storage backend."""
@@ -259,9 +351,7 @@ class InMemoryFunderReplyRepository:
 
     # -- reply storage -------------------------------------------------------
 
-    def insert_reply(
-        self, payload: FunderReplyPayload, *, source_email_sha256: str
-    ) -> UUID:
+    def insert_reply(self, payload: FunderReplyPayload, *, source_email_sha256: str) -> UUID:
         row_id = uuid4()
         row = {
             "id": str(row_id),
@@ -273,9 +363,7 @@ class InMemoryFunderReplyRepository:
             "parsed_confidence": payload.parsed_confidence,
             "raw_text": payload.raw_text,
             "ingested_via": payload.ingested_via,
-            "received_at": (
-                payload.received_at.isoformat() if payload.received_at else None
-            ),
+            "received_at": (payload.received_at.isoformat() if payload.received_at else None),
         }
         self._replies.append(row)
         return row_id
@@ -294,9 +382,7 @@ class InMemoryFunderReplyRepository:
 
     def latest_open_override_for(self, deal_id: UUID) -> dict[str, Any] | None:
         candidates = [
-            r
-            for r in self._overrides
-            if r["deal_id"] == str(deal_id) and r.get("outcome") is None
+            r for r in self._overrides if r["deal_id"] == str(deal_id) and r.get("outcome") is None
         ]
         if not candidates:
             return None
@@ -326,13 +412,55 @@ class InMemoryFunderReplyRepository:
                 return True
         return False
 
+    def insert_outcome(
+        self,
+        payload: FunderReplyOutcomePayload,
+        *,
+        recorded_at: datetime,
+    ) -> UUID:
+        row_id = uuid4()
+        # Mirror the SupabaseFunderReplyRepository.insert_outcome shape —
+        # rows are dicts, Decimals stored as Decimal (the SQL layer in
+        # production casts to numeric; the in-memory layer keeps them
+        # native so portfolio analytics can do Decimal math without a
+        # conversion hop).
+        self._replies.append(
+            {
+                "id": str(row_id),
+                # deal_id stays NULL on manual outcome rows; submission_id
+                # is the anchor. The DB exclusive-or CHECK in migration
+                # 071 (funder_replies_anchor_xor_check) enforces this.
+                "deal_id": None,
+                "submission_id": str(payload.submission_id),
+                "funder_id": str(payload.funder_id),
+                # status is NULL for manual no_response outcome rows.
+                # For approved/declined/countered we mirror the outcome
+                # into status too so any read that still reaches for
+                # ``status`` (e.g. ``_compute_funder_table`` before the
+                # outcome wire-through lands) sees a sensible value.
+                "status": payload.outcome if payload.outcome != "no_response" else None,
+                "terms_json": {},
+                "source_email_sha256": None,
+                "parsed_confidence": None,
+                "raw_text": None,
+                "ingested_via": "operator_paste",
+                "received_at": recorded_at.isoformat(),
+                "outcome": payload.outcome,
+                "outcome_amount": payload.outcome_amount,
+                "outcome_factor_rate": payload.outcome_factor_rate,
+                "outcome_term_days": payload.outcome_term_days,
+                "outcome_notes": payload.outcome_notes,
+                "outcome_recorded_at": recorded_at.isoformat(),
+                "outcome_recorded_by": payload.outcome_recorded_by,
+            }
+        )
+        return row_id
+
 
 class SupabaseFunderReplyRepository:
     """Production repository backed by Postgres via supabase-py."""
 
-    def insert_reply(
-        self, payload: FunderReplyPayload, *, source_email_sha256: str
-    ) -> UUID:
+    def insert_reply(self, payload: FunderReplyPayload, *, source_email_sha256: str) -> UUID:
         row_id = uuid4()
         body: dict[str, Any] = {
             "id": str(row_id),
@@ -396,9 +524,7 @@ class SupabaseFunderReplyRepository:
                 .execute()
             )
         except Exception:
-            _log.warning(
-                "funder_replies.latest_reply_query_failed deal_id=%s", deal_id
-            )
+            _log.warning("funder_replies.latest_reply_query_failed deal_id=%s", deal_id)
             return None
         data = result.data or []
         if not data:
@@ -436,10 +562,61 @@ class SupabaseFunderReplyRepository:
                 override_id,
                 outcome,
             )
-            raise FunderReplyError(
-                f"failed to stamp override {override_id}"
-            ) from exc
+            raise FunderReplyError(f"failed to stamp override {override_id}") from exc
         return bool(result.data)
+
+    def insert_outcome(
+        self,
+        payload: FunderReplyOutcomePayload,
+        *,
+        recorded_at: datetime,
+    ) -> UUID:
+        row_id = uuid4()
+        # Decimals serialized as str so Postgres receives exact text on
+        # the numeric(14,2) / numeric(6,4) columns — never a binary-float
+        # round-trip. Mirrors the funder_note_submissions repo posture.
+        body: dict[str, Any] = {
+            "id": str(row_id),
+            # deal_id omitted (NULL); submission_id is the anchor for
+            # manual outcome rows per migration 071 anchor-XOR CHECK.
+            "submission_id": str(payload.submission_id),
+            "funder_id": str(payload.funder_id),
+            "ingested_via": "operator_paste",
+            "received_at": recorded_at.isoformat(),
+            "outcome": payload.outcome,
+            "outcome_amount": (
+                str(payload.outcome_amount) if payload.outcome_amount is not None else None
+            ),
+            "outcome_factor_rate": (
+                str(payload.outcome_factor_rate)
+                if payload.outcome_factor_rate is not None
+                else None
+            ),
+            "outcome_term_days": payload.outcome_term_days,
+            "outcome_notes": payload.outcome_notes,
+            "outcome_recorded_at": recorded_at.isoformat(),
+            "outcome_recorded_by": payload.outcome_recorded_by,
+        }
+        # Mirror the outcome into status for approved/declined/countered
+        # so legacy readers that still look at status see a sensible
+        # value. no_response leaves status NULL — the DB CHECK on row
+        # existence (mig 071 funder_replies_reply_or_outcome_check) is
+        # satisfied by the non-NULL outcome alone.
+        if payload.outcome != "no_response":
+            body["status"] = payload.outcome
+        try:
+            get_supabase().table("funder_replies").insert(body).execute()
+        except Exception as exc:
+            _log.error(
+                "funder_replies.insert_outcome_failed submission_id=%s funder_id=%s outcome=%s",
+                payload.submission_id,
+                payload.funder_id,
+                payload.outcome,
+            )
+            raise FunderReplyError(
+                f"failed to insert outcome row for submission {payload.submission_id}"
+            ) from exc
+        return row_id
 
 
 class FunderReplyError(RuntimeError):
@@ -534,9 +711,7 @@ def ingest_reply(
             "validation_passed": validation.passed,
             "failure_count": len(validation.failures),
             "parsed_confidence": confidence,
-            "stamped_override_id": (
-                str(stamped_override_id) if stamped_override_id else None
-            ),
+            "stamped_override_id": (str(stamped_override_id) if stamped_override_id else None),
             "source_email_sha256": source_hash,
         },
     )
@@ -553,6 +728,66 @@ def ingest_reply(
         validation=validation,
         stamped_override_id=stamped_override_id,
     )
+
+
+def record_outcome(
+    payload: FunderReplyOutcomePayload,
+    *,
+    repo: FunderReplyRepository,
+    audit: AuditLog,
+    now: datetime | None = None,
+) -> UUID:
+    """Persist a manual operator-recorded outcome and audit it.
+
+    Order:
+      1. Insert the funder_replies row (writes the new outcome columns
+         from migration 071).
+      2. Write the ``funder_reply.outcome_recorded`` audit row. Per
+         CLAUDE.md Auditability: an audit-write failure FAILS the
+         operation. The audit row is written AFTER the insert because
+         it needs the reply_id; if the audit row write fails, the
+         resulting state has a recorded outcome with no audit trail —
+         which is exactly what we want to fail loudly rather than
+         silently log-and-continue. The caller surfaces the
+         ``AuditWriteError`` to the operator.
+
+    Returns the new reply_id so the route can include it in the HTMX
+    response and the audit details payload.
+
+    Unlike ``ingest_reply`` this path does NOT touch the overrides
+    table. The override-stamping flow is exclusive to the email-parse
+    path (refinement 5 — funder emails stamp overrides; operator
+    captures of an outcome describe the funder_note_submission row,
+    not the AEGIS-vs-operator override).
+    """
+    if now is None:
+        now = datetime.now().astimezone()
+    reply_id = repo.insert_outcome(payload, recorded_at=now)
+    audit.record(
+        actor="dashboard",
+        actor_email=payload.outcome_recorded_by,
+        action="funder_reply.outcome_recorded",
+        # Subject is the funder_note_submission the outcome describes —
+        # not a document. Mirrors the FK on funder_replies.submission_id.
+        subject_type="funder_note_submission",
+        subject_id=payload.submission_id,
+        details={
+            "reply_id": str(reply_id),
+            "funder_id": str(payload.funder_id),
+            "outcome": payload.outcome,
+            "outcome_amount": (
+                str(payload.outcome_amount) if payload.outcome_amount is not None else None
+            ),
+            "outcome_factor_rate": (
+                str(payload.outcome_factor_rate)
+                if payload.outcome_factor_rate is not None
+                else None
+            ),
+            "outcome_term_days": payload.outcome_term_days,
+            "notes_chars": len(payload.outcome_notes) if payload.outcome_notes else 0,
+        },
+    )
+    return reply_id
 
 
 def stamp_override_from_replies(
@@ -642,11 +877,13 @@ __all__ = [
     "STATUS_TO_OUTCOME",
     "TOLERANCE",
     "FunderReplyError",
+    "FunderReplyOutcomePayload",
     "FunderReplyPayload",
     "FunderReplyRepository",
     "InMemoryFunderReplyRepository",
     "IngestSource",
     "IngestionResult",
+    "ReplyOutcome",
     "ReplyStatus",
     "ReplyTerms",
     "ReplyValidationResult",
@@ -654,6 +891,7 @@ __all__ = [
     "ingest_reply",
     "parse_terms_from_blob",
     "parse_terms_from_json",
+    "record_outcome",
     "stamp_override_from_replies",
     "validate_reply",
 ]

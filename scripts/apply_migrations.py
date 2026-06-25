@@ -586,6 +586,16 @@ MIGRATION_PROBES: dict[str, str] = {
         # than COUNT(decisions WHERE decided_by='backfill_2026_06') > 0.
         "SELECT 1 FROM pg_proc WHERE proname = 'block_decision_modification'"
     ),
+    "071_funder_replies_outcome.sql": (
+        # 071 adds the outcome capture columns + supporting CHECK
+        # constraints to funder_replies. The load-bearing artifact is
+        # the new ``outcome`` column itself; the four CHECK constraints
+        # + partial index land in the same BEGIN/COMMIT block, so
+        # column presence proves the migration's body executed.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='funder_replies' "
+        "AND column_name='outcome'"
+    ),
 }
 
 

@@ -147,6 +147,7 @@
             <th class="num">Declined</th>
             <th class="num">Countered</th>
             <th class="num">No response</th>
+            <th class="num">Pending</th>
             <th class="num">Accept rate</th>
           </tr>
         </thead>
@@ -161,6 +162,7 @@
               <td class="mono-cell" style="text-align:right">{{ row.declined }}</td>
               <td class="mono-cell" style="text-align:right">{{ row.countered }}</td>
               <td class="mono-cell" style="text-align:right">{{ row.no_response }}</td>
+              <td class="mono-cell" style="text-align:right">{{ row.pending }}</td>
               <td class="mono-cell" style="text-align:right">
                 {% if row.approval_rate_pct is not none %}{{ row.approval_rate_pct }}%{% else %}—{% endif %}
               </td>

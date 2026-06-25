@@ -75,6 +75,7 @@ from aegis.web.routers import compliance as _compliance_routes
 from aegis.web.routers import dashboard as _dashboard_routes
 from aegis.web.routers import disclosure_events as _disclosure_events_routes
 from aegis.web.routers import documents as _documents_routes
+from aegis.web.routers import funder_replies as _funder_replies_routes
 from aegis.web.routers import funders as _funders_routes
 from aegis.web.routers import intake as _intake_routes
 from aegis.web.routers import merchants as _merchants_routes
@@ -119,6 +120,7 @@ router.include_router(_close_queue_routes.router)
 router.include_router(_compliance_routes.router)
 router.include_router(_dashboard_routes.router)
 router.include_router(_documents_routes.router)
+router.include_router(_funder_replies_routes.router)
 router.include_router(_funders_routes.router)
 router.include_router(_intake_routes.router)
 router.include_router(_merchants_routes.router)
