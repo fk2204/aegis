@@ -346,7 +346,108 @@
         <span class="footnote">
           {% if score_window %}scored across {{ score_window.months_used }} month{{ '' if score_window.months_used == 1 else 's' }}{% else %}awaiting analysis{% endif %}
         </span>
+        {# Operator-override button (mp Phase 10 / migration 072).
+           Visible when the latest doc is in proceed/decline; manual_review
+           is already operator-driven and pending/error/review have no
+           recommendation to override yet. Opens an inline HTMX modal that
+           POSTs to /ui/merchants/{id}/documents/{doc_id}/override and
+           HX-Redirects back to the dossier on success. #}
+        {% if show_override_button and document %}
+          <a href="#override-modal"
+             class="btn small"
+             data-test-id="override-recommendation-btn"
+             style="margin-left:auto;border:1px solid var(--rule,#d8d8d4);padding:6px 12px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-1);background:var(--ink-bg,#fafaf7);text-decoration:none">
+            Override recommendation
+          </a>
+        {% endif %}
       </header>
+
+      {# Override modal. CSS-only :target affordance — anchor click sets
+         #override-modal in the URL fragment and the modal becomes visible;
+         clicking the X / backdrop navigates to # (back to top) and hides
+         it. Form posts via HTMX so the redirect lands without a full
+         page reload. #}
+      {% if show_override_button and document %}
+        <div id="override-modal" class="override-modal-backdrop"
+             style="display:none;position:fixed;inset:0;background:rgba(20,20,16,0.45);z-index:1000;align-items:center;justify-content:center"
+             data-test-id="override-modal">
+          <style>
+            .override-modal-backdrop:target { display:flex !important; }
+            .override-modal-body { background:#fafaf7; max-width:560px; width:90%; max-height:88vh; overflow-y:auto; padding:24px 28px; border:1px solid #d8d8d4; border-radius:6px; box-shadow:0 4px 32px rgba(0,0,0,0.18); }
+            .override-modal-body h3 { margin:0 0 8px; font-size:18px; }
+            .override-modal-body .muted { color:#6b6b66; font-size:12px; }
+            .override-modal-body label { display:block; margin-top:14px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#3d3d38; }
+            .override-modal-body input[type=radio] { margin-right:6px; }
+            .override-modal-body select, .override-modal-body textarea, .override-modal-body input[type=text] { width:100%; padding:8px; border:1px solid #d8d8d4; border-radius:4px; font:inherit; font-size:13px; box-sizing:border-box; margin-top:4px; }
+            .override-modal-body textarea { min-height:80px; resize:vertical; }
+            .override-modal-body .fp-list { margin-top:6px; padding:8px 12px; border:1px solid #d8d8d4; border-radius:4px; background:#fff; max-height:160px; overflow-y:auto; }
+            .override-modal-body .fp-list label { text-transform:none; letter-spacing:0; font-size:12px; color:#1d1d18; display:flex; gap:8px; align-items:center; margin-top:6px; }
+            .override-modal-body .fp-list label:first-child { margin-top:0; }
+            .override-modal-body .row-buttons { display:flex; gap:10px; justify-content:flex-end; margin-top:20px; }
+            .override-modal-body .row-buttons .btn-cancel { padding:8px 14px; border:1px solid #d8d8d4; border-radius:4px; color:#3d3d38; background:#fff; text-decoration:none; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
+            .override-modal-body .row-buttons button { padding:8px 16px; border:1px solid #1d1d18; border-radius:4px; background:#1d1d18; color:#fafaf7; cursor:pointer; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
+          </style>
+          <div class="override-modal-body">
+            <h3>Override recommendation</h3>
+            <p class="muted">
+              Current parse status: <strong>{{ document.parse_status }}</strong>.
+              Your decision will replace it.
+            </p>
+            <form method="post"
+                  action="/ui/merchants/{{ merchant.id }}/documents/{{ document.id }}/override"
+                  hx-post="/ui/merchants/{{ merchant.id }}/documents/{{ document.id }}/override"
+                  hx-swap="none">
+              <input type="hidden" name="original_recommendation" value="{{ document.parse_status }}">
+              {% if override_latest_decision_id %}
+                <input type="hidden" name="decision_id" value="{{ override_latest_decision_id }}">
+              {% endif %}
+
+              <label>Decision</label>
+              <div style="margin-top:6px">
+                <label style="display:inline; text-transform:none; letter-spacing:0; font-size:13px; color:#1d1d18">
+                  <input type="radio" name="operator_decision" value="approve" required> Approve
+                </label>
+                <label style="display:inline; margin-left:16px; text-transform:none; letter-spacing:0; font-size:13px; color:#1d1d18">
+                  <input type="radio" name="operator_decision" value="decline" required> Decline
+                </label>
+              </div>
+
+              <label for="override-reason-code">Reason</label>
+              <select name="reason_code" id="override-reason-code" required>
+                <option value="">— pick one —</option>
+                <option value="score_too_conservative">Score too conservative</option>
+                <option value="score_too_aggressive">Score too aggressive</option>
+                <option value="funder_specific_fit">Funder-specific fit</option>
+                <option value="merchant_context_external">External merchant context</option>
+                <option value="data_quality_concern">Data-quality concern</option>
+                <option value="pattern_false_positive">Pattern false positive</option>
+                <option value="pattern_false_negative">Pattern false negative</option>
+                <option value="gut">Gut call</option>
+              </select>
+
+              <label for="override-reason-detail">Note (optional)</label>
+              <textarea name="reason_detail" id="override-reason-detail" maxlength="2000" placeholder="What does AEGIS miss / get wrong here?"></textarea>
+
+              {% if override_pattern_codes %}
+                <label>Pattern false positives (mark detectors that fired wrongly)</label>
+                <div class="fp-list" data-test-id="override-pattern-fp-list">
+                  {% for code in override_pattern_codes %}
+                    <label>
+                      <input type="checkbox" name="pattern_false_positives" value="{{ code }}">
+                      <code>{{ code }}</code>
+                    </label>
+                  {% endfor %}
+                </div>
+              {% endif %}
+
+              <div class="row-buttons">
+                <a href="#" class="btn-cancel">Cancel</a>
+                <button type="submit" data-test-id="override-submit-btn">Record override</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      {% endif %}
 
       {% if score_result %}
         <div class="verdict">
