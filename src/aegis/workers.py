@@ -53,6 +53,9 @@ from aegis.close.field_map import (
     filename_is_non_statement,
     filename_matches_statement_filter,
 )
+from aegis.compliance.obligations import (
+    run_compliance_obligation_reminder_cron,
+)
 from aegis.config import get_settings
 from aegis.crypto import CryptoConfigError, current_key_version, encrypt_pdf
 from aegis.funder_note_submissions.repository import (
@@ -2483,6 +2486,20 @@ class WorkerSettings:
             run_track_a_regression_sentinel_cron,
             weekday="mon",
             hour=6,
+            minute=0,
+            run_at_startup=False,
+        ),
+        # 07:00 UTC Mondays — compliance-obligation reminder cron.
+        # Fires ``compliance.deadline_approaching`` audit rows at the
+        # 60 / 30 / 14-day thresholds before each obligation's
+        # ``next_due_date``. Dedupe key per (obligation, threshold,
+        # next_due_date) so a weekly cadence doesn't double-fire the
+        # same window. Mon 07:00 lands in the operator's morning
+        # queue alongside the other start-of-week reminders.
+        cron(
+            run_compliance_obligation_reminder_cron,
+            weekday="mon",
+            hour=7,
             minute=0,
             run_at_startup=False,
         ),

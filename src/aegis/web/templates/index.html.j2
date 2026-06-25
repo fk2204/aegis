@@ -55,7 +55,7 @@
   {# ── LEFT 40% · Attention queue ────────────────────────────────── #}
   <div class="today-col today-col--attention" data-test-id="today-attention-queue">
     {% set total_docs = attention|sum(attribute='doc_count') %}
-    {% set attn_section_total = attention|length + stale_deals_count + pending_funder_count %}
+    {% set attn_section_total = attention|length + stale_deals_count + pending_funder_count + compliance_count %}
     <header class="sect-head">
       <h2>Attention queue</h2>
       <div class="rule"></div>
@@ -162,7 +162,30 @@
       {% endif %}
     </div>
 
-    {# 3 — Pending submissions with no funder response after 5 days. #}
+    {# 3.5 — Compliance deadlines within 90-day horizon.
+       Red <=14 days, amber <=30, yellow <=60. Color buckets come from
+       UpcomingObligation.urgency on the server so the template stays
+       date-math-free, matching the rest of the obligations page. #}
+    <div class="attn-section" data-test-id="today-attn-compliance">
+      <h3 class="attn-section-head">Compliance deadlines · {{ compliance_count }}</h3>
+      {% if not compliance_cards %}
+        <div class="empty empty-mini">No compliance deadlines in the next 90 days.</div>
+      {% else %}
+        <ul class="attn-list">
+          {% for c in compliance_cards %}
+            <li class="attn-card urgency-{{ c.urgency }}" data-test-id="{{ c.test_id }}" data-urgency="{{ c.urgency }}">
+              <a class="attn-card-title" href="{{ c.href }}">{{ c.state_code }} {{ c.authority }}</a>
+              <span class="attn-card-needs">{{ c.needs }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+        {% if compliance_count > compliance_cards|length %}
+          <div class="attn-more">+ {{ compliance_count - compliance_cards|length }} more</div>
+        {% endif %}
+      {% endif %}
+    </div>
+
+    {# 4 — Pending submissions with no funder response after 5 days. #}
     <div class="attn-section" data-test-id="today-attn-pending-funders">
       <h3 class="attn-section-head">Awaiting funder · {{ pending_funder_count }}</h3>
       {% if not pending_funder_cards %}
