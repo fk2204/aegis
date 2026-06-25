@@ -96,6 +96,20 @@ def compute_integrity_verdict(
         ]
         # Surface ALL metadata flags as supporting evidence so the
         # underwriter sees what specifically tripped the score.
+        #
+        # F8 (INFO, docs/track_a_audit_2026-06-12.md): the
+        # ``signal="metadata_flag"`` token used for ``other_meta`` rows
+        # here is intentionally generic — strong-metadata branch 1 lumps
+        # every non-editor metadata flag under one filter class because
+        # the rationale already names the specific cause
+        # ("forged_author" / "structural"). Branches that fire on a
+        # specific signal (drift, editor) emit more granular tokens
+        # (``editor_detected``, ``reconciliation_failed_*``). Dossier
+        # filter "show me all editor_detected evidence" works on every
+        # branch (``extract_other_metadata_flags`` strips the editor
+        # prefix so it never doubles up); "show me all metadata_flag
+        # evidence" only surfaces non-editor metadata flags from
+        # branches 1 and 3, which is the intended behaviour.
         if editor_flag is not None:
             evidence.append(EvidenceItem(signal="editor_detected", detail=editor_flag))
         for f in other_meta:
@@ -233,6 +247,17 @@ def _drift_signal_token(failure: str) -> str:
     signal class (e.g. "show me all running-balance failures") works.
     Strips the persistence-time ``[MATH] `` / ``[META] `` etc. prefix
     if present so the token is the same regardless of input source.
+
+    F10 (INFO, docs/track_a_audit_2026-06-12.md): leading whitespace on
+    the input flag (e.g. ``" reconciliation_failed_period: …"``) is NOT
+    trimmed here. The current emitters always produce clean flags —
+    ``parser.pipeline._collect_flags`` writes ``f"[MATH] {f}"`` and
+    ``ValidationResult.failures`` arrives unprefixed — so the
+    ``.strip()`` defence-in-depth the audit suggested would never
+    actually trigger today. If a future admin-tool / hand-write path
+    introduces whitespace-leading flags, this is the spot to add
+    ``.strip()``; the persistence emitters being clean is the
+    invariant being relied on.
     """
     head = _strip_category_prefix(failure).split(":", 1)[0]
     return head
