@@ -269,6 +269,7 @@ def match_funder(
     historical_approval_rate: Decimal | None = None,
     merchant: MerchantRow | None = None,
     offer: OfferRecommendation | None = None,
+    bank_warning: str | None = None,
 ) -> FunderMatch | None:
     """Match a deal against a single funder. None if funder has no criteria configured.
 
@@ -599,16 +600,32 @@ def match_funder(
         for indicator in merchant.ucc_default_indicators or []:
             ucc_soft_concerns.append(f"Previous default indicator: {indicator}")
 
+    # Fintech bank-of-record warning (parser-emitted, warning-only).
+    # When the parser detected the merchant banks with a fintech /
+    # neobank (Mercury, Brex, Novo, etc.), the caller passes the
+    # pre-formatted warning string here and we attach it to EVERY
+    # match so the operator sees the same caveat on every funder card.
+    # See ``parser.fintech_banks`` for why this is warning-only.
+    fintech_soft_concerns: list[str] = []
+    if bank_warning is not None:
+        fintech_soft_concerns.append(bank_warning)
+
     return FunderMatch(
         funder_id=funder.id,
         funder_name=funder.name,
         match_score=likelihood,
         reasons=reasons,
         # Union of hard fails + soft concerns + per-merchant stip soft
-        # concerns + web-presence flags + UCC/default findings — caller
-        # wants the full picture.
+        # concerns + web-presence flags + UCC/default findings + the
+        # parser-emitted fintech-bank warning — caller wants the full
+        # picture.
         soft_concerns=(
-            hard + soft + stip_soft_concerns + web_presence_soft_concerns + ucc_soft_concerns
+            hard
+            + soft
+            + stip_soft_concerns
+            + web_presence_soft_concerns
+            + ucc_soft_concerns
+            + fintech_soft_concerns
         ),
         estimated_terms=estimated_terms,
         tier_matches=tier_matches,

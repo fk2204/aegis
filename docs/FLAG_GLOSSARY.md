@@ -397,6 +397,15 @@ These detectors emit `Pattern(severity=0)` into `PatternAnalysis.shadow_patterns
 - **Shadow mode:** Emits to `PatternAnalysis.shadow_patterns` only; `FRAUD_WEIGHTS["shadow_unreconciled_internal_transfer_v2"] == 0`. Does NOT contribute to `fraud_score`, does NOT change `parse_status`, does NOT alter hard-decline reasons. The pipeline surfaces each row as `[SHADOW] unreconciled_internal_transfer_v2:...` in `all_flags`. Operator validates false-positive rate against the corpus before a future config flip to live.
 - **Source:** `src/aegis/parser/patterns.py:detect_unreconciled_internal_transfers`.
 
+### `ai_generated_statement` — shadow, composite 40..100 (emit threshold = 40)
+
+- **Composite AI-generated-statement signal.** Fuses four orthogonal "too clean to be a real bank export" indicators into one 0..100 score: math perfection (weight 30 — zero reconciliation failures, no period-level errors, no transaction-level running-balance disagreement), description-uniformity (weight 25 — character-level Shannon entropy of all descriptions concatenated falls below 2.5 bits/char), round-number clustering (weight 25 — whole-dollar amount fraction; 0 below 20%, scaled linearly through 40%, capped at 25 above), and font uniformity (weight 20 — the document-level `FontConsistencyResult` from `forensic.font_consistency` ran successfully AND reported zero inconsistent pages).
+- **Detects:** Wholly-fabricated PDFs from LLM template generators (ChatGPT-export style, "fake bank statement template" sites, reportlab/jspdf scripts). The signature is the convergence of "no math noise" + "uniform descriptions" + "rounded amounts" + "single-font rendering" — each of which can occur singly on a real statement, but the four together produce a composite that real exports almost never reach. Threshold 40 means at least two strong signals (or one strong + two moderate) must converge before emit.
+- **Severity:** equal to the composite score (40..100). Source-ids is empty by design — this is a document-level judgment, not per-row.
+- **Shadow mode:** Emits to `PatternAnalysis.shadow_patterns` only; `FRAUD_WEIGHTS["shadow_ai_generated_statement"] == 0`. Does NOT contribute to `fraud_score`, does NOT change `parse_status`, does NOT alter hard-decline reasons. The pipeline surfaces each emit as `[SHADOW] ai_generated_statement: score=N/100 signals=[...]` in `all_flags`. Operator validates false-positive rate against the corpus before a future config flip to live.
+- **Composition vs. the existing `_ai_generated_statement_score` heuristic in `patterns.py`:** That heuristic is description-style only (uppercase fraction, digit-noise fraction, round-share). The composite here mixes those style signals with cross-layer evidence (validation failures, font-consistency analyzer). Kept separate because the composite reads from layers `patterns.py` does not have access to — moving it into `analyze_patterns()` would require plumbing `ValidationResult` and `FontConsistencyResult` down through the per-statement function signature.
+- **Source:** `src/aegis/parser/forensic/ai_statement.py:detect_ai_generated_statement`.
+
 ### `duplicate_pdf_upload:sha256_match_with_doc={uuid}:uploaded={iso}[:total_prior_copies={n}]` — shadow
 
 - **Duplicate PDF upload.** Same SHA-256 already uploaded for this merchant. The second parse re-computes aggregates against byte-identical data — the dashboard then shows 2x deposits for that period.
@@ -532,6 +541,20 @@ Cryptographic signature validation. Would require adding a new dependency (pyhan
 1. Signed + signature valid → no flag.
 2. Signed + signature invalid → flag at *higher* severity than the current `incremental_saves` (genuine tampering attempt; the actor signed it and then modified it).
 3. Unsigned + multi-EOF → flag at current severity (unchanged from v1).
+
+---
+
+## 11. WARN-prefixed flags (operator caveats, never decline)
+
+These detectors emit one entry into `PipelineResult.all_flags` with the `[WARN]` prefix. They are surface-only — `parse_status`, `fraud_score`, `FRAUD_WEIGHTS`, and Track A / Track B verdicts are unchanged. They exist so the operator + downstream UI (funder-match grid soft concerns, dossier flag list) see funder-dependent context that AEGIS does not have authority to act on unilaterally.
+
+### `fintech_bank_detected: <Name> — many funders decline fintech bank accounts` — WARN
+
+- **Detects:** Extracted `bank_name` matches a known fintech / neobank — Mercury, Brex, Bluevine, Novo, Relay, Lili, Found, Rho, Arc, Nearside, Oxygen, NorthOne. Case-insensitive substring match; the static list lives in `src/aegis/parser/fintech_banks.py:FINTECH_BANK_IDENTIFIERS`.
+- **Why it matters:** Funder appetite for fintech bank accounts varies. Some funders decline them outright because fintech banks lack the traditional ACH-debit controls / daily-remit guarantees that traditional banks provide; others accept them. The decision is per-funder, not per-deal — so AEGIS does not decline.
+- **Surface:** The funder-match grid attaches "Merchant banks with `<Name>`. Verify funder accepts fintech bank accounts before submitting." as a soft concern on every match card. Cards that are otherwise green become amber when the warning lands; cards that are otherwise red still hard-fail on the underwriting reason, with the bank caveat alongside.
+- **Adding entries:** New fintech banks land in `FINTECH_BANK_IDENTIFIERS` when the operator confirms an upstream merchant banks with them. Substring matching automatically captures sub-brands ("Mercury Treasury", "Brex Cash") without an explicit list entry.
+- **Source:** `src/aegis/parser/pipeline.py` (`detect_fintech_bank` call, appended after the tampering-persistence flag), `src/aegis/parser/fintech_banks.py`.
 
 ---
 

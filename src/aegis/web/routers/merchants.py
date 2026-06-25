@@ -467,6 +467,36 @@ def _load_latest_score_tier_per_merchant(
     return latest_tier
 
 
+_FINTECH_BANK_FLAG_PREFIX = "[WARN] fintech_bank_detected:"
+
+
+def _fintech_bank_warning_from_flags(all_flags: list[str] | None) -> str | None:
+    """Extract the per-merchant fintech-bank warning text from the
+    parser's ``all_flags`` so it can be attached to every funder match.
+
+    The parser writes one entry of the form
+    ``"[WARN] fintech_bank_detected: <Name> — <reason>"`` when the
+    extracted bank_name matches a known fintech / neobank (see
+    ``aegis.parser.fintech_banks``). We strip the prefix and rephrase
+    into the dossier-facing soft-concern copy the operator wants on
+    every funder card. Returns ``None`` when no fintech flag is
+    present, which is the common case.
+    """
+    if not all_flags:
+        return None
+    for raw in all_flags:
+        if raw.startswith(_FINTECH_BANK_FLAG_PREFIX):
+            # Format: "[WARN] fintech_bank_detected: Mercury — many ..."
+            tail = raw[len(_FINTECH_BANK_FLAG_PREFIX) :].strip()
+            canonical_name = tail.split("—", 1)[0].strip()
+            if canonical_name:
+                return (
+                    f"Merchant banks with {canonical_name}. Verify funder "
+                    f"accepts fintech bank accounts before submitting."
+                )
+    return None
+
+
 def _build_match_cards(
     *,
     merchant: MerchantRow,
@@ -478,6 +508,7 @@ def _build_match_cards(
     funder_note_subs: FunderNoteSubmissionRepository,
     snapshot: DecisionSnapshot,
     offer: OfferRecommendation | None = None,
+    bank_warning: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run the per-funder matcher and return ranked card dicts.
 
@@ -492,6 +523,13 @@ def _build_match_cards(
     sizing seed from ``offer.recommended_amount`` instead of the legacy
     ``score.suggested_max_advance``. Callers that don't have an offer
     handy can omit; behaviour is unchanged.
+
+    ``bank_warning`` is the parser-emitted fintech-bank warning text
+    (when the merchant banks with Mercury / Brex / Novo / etc.). When
+    supplied, it lands as a soft concern on every returned card so the
+    operator sees the same caveat regardless of which funder they're
+    eyeing. See ``_fintech_bank_warning_from_flags`` for how callers
+    derive the string from ``latest_doc.all_flags``.
     """
     historical_index = _build_historical_index_for_match(
         funder_note_subs=funder_note_subs,
@@ -516,6 +554,7 @@ def _build_match_cards(
             historical_approval_rate=historical_rate,
             merchant=merchant,
             offer=offer,
+            bank_warning=bank_warning,
         )
         if m is None:
             continue
@@ -650,6 +689,9 @@ async def merchant_match(
         funder_note_subs=funder_note_subs,
         snapshot=snapshot,
         offer=offer,
+        bank_warning=_fintech_bank_warning_from_flags(
+            list(_match_latest_doc.all_flags) if _match_latest_doc is not None else None
+        ),
     )
 
     # Preselect: pre-check the matching funder's checkbox unless the
@@ -807,6 +849,7 @@ async def merchant_matched_funders_csv(
         funder_note_subs=funder_note_subs,
         snapshot=snapshot,
         offer=offer,
+        bank_warning=_fintech_bank_warning_from_flags(list(latest_doc.all_flags)),
     )
 
     buffer = io.StringIO()
@@ -3110,6 +3153,9 @@ async def merchant_detail(
             funder_note_subs=funder_note_subs,
             snapshot=snapshot,
             offer=offer,
+            bank_warning=_fintech_bank_warning_from_flags(
+                list(latest_doc.all_flags) if latest_doc is not None else None
+            ),
         )
         if matched_funders_cards:
             top_matched_funder = funder_repo.get(UUID(matched_funders_cards[0]["funder_id"]))
