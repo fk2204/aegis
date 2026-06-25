@@ -277,7 +277,9 @@ class ComplianceObligationRepository(Protocol):
     semantics (audit-write failures FAIL the operation).
     """
 
-    def list_upcoming(self, days: int) -> list[UpcomingObligation]: ...
+    def list_upcoming(
+        self, days: int, *, today: date | None = None
+    ) -> list[UpcomingObligation]: ...
 
     def mark_status(
         self,
@@ -345,8 +347,8 @@ class InMemoryComplianceObligationRepository:
 class SupabaseComplianceObligationRepository:
     """Production tracker. Reads + writes ``compliance_obligations``."""
 
-    def list_upcoming(self, days: int) -> list[UpcomingObligation]:
-        today = datetime.now(UTC).date()
+    def list_upcoming(self, days: int, *, today: date | None = None) -> list[UpcomingObligation]:
+        today = today or datetime.now(UTC).date()
         cutoff = today + timedelta(days=max(0, days))
         try:
             result = (
@@ -587,7 +589,7 @@ def run_compliance_obligation_reminder_pass(
     """
     today = today or datetime.now(UTC).date()
     widest = max(thresholds) if thresholds else 0
-    rows = obligations.list_upcoming(widest)
+    rows = obligations.list_upcoming(widest, today=today)
 
     considered = 0
     fired = 0
