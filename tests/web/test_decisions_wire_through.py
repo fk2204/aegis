@@ -37,7 +37,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -287,7 +287,7 @@ def test_submit_to_funders_writes_decision_snapshot(
     assert decision_events[0]["subject_id"] == str(_latest_doc_id_uuid(merchant, docs))
 
 
-def _latest_doc_id_uuid(merchant: MerchantRow, docs: InMemoryDocumentRepository):
+def _latest_doc_id_uuid(merchant: MerchantRow, docs: InMemoryDocumentRepository) -> UUID:
     """UUID form of ``_latest_doc_id`` for comparing against audit
     subject_id (which the audit writer stringifies from UUID)."""
     return docs.list_documents(merchant_id=merchant.id)[0].id
