@@ -16,11 +16,25 @@ from uuid import UUID
 
 from fastapi import HTTPException, Request, UploadFile
 
-from aegis.audit import AuditLog
+from aegis.audit import AuditLog, AuditWriteError
+from aegis.compliance.router import router as compliance_router
+from aegis.compliance.snapshot import (
+    DecisionLiteral,
+    DecisionPayload,
+    DecisionSnapshot,
+    DecisionSnapshotError,
+    get_aegis_version,
+    get_rule_pack_version,
+    record_decision,
+)
+from aegis.compliance.state_matrix import StateMatrix
 from aegis.compliance.states import StateNotServed, validate_state_served
+from aegis.logger import get_logger
 from aegis.merchants.models import EntityType, MerchantRow
-from aegis.scoring.models import ScoreInput
+from aegis.scoring.models import ScoreInput, ScoreResult
 from aegis.storage import AnalysisRow, DocumentRepository, DocumentRow
+
+_log = get_logger(__name__)
 
 _AGGREGATE_LABELS: dict[str, str] = {
     "true_revenue": "True Revenue",
@@ -520,6 +534,96 @@ def _score_input_from_dashboard(
     )
 
 
+_RECOMMENDATION_TO_DECISION: dict[str, DecisionLiteral] = {
+    "approve": "approve",
+    "decline": "decline",
+    "refer": "manual_review",
+}
+
+
+def _record_decision_for_score(
+    *,
+    document_id: UUID,
+    deal: ScoreInput,
+    result: ScoreResult,
+    state_matrix: StateMatrix,
+    snapshot: DecisionSnapshot,
+    audit: AuditLog,
+    decided_by: str,
+    actor_email: str | None = None,
+) -> None:
+    """Write an immutable decisions row for a scored deal (mp Phase 2 §12 task 4).
+
+    Mirrors ``aegis.api.routes.deals._record_decision`` but lives in the
+    shared web helpers so the merchant-flow routes (submit-to-funders,
+    perform-submit-to-funder, prepare-renewal) all use the same builder.
+    Keeping ONE builder means a future change to the snapshot payload
+    shape (e.g., adding ``disclosure_template_sha256`` once the funder-
+    facing disclosure flow lands) touches one site, not seven.
+
+    Per CLAUDE.md compliance rule "Decisions are immutable once captured.
+    Audit-write failures FAIL the operation" — both
+    ``DecisionSnapshotError`` and ``AuditWriteError`` propagate as 503;
+    a decision without a snapshot is a regulator-defense gap and the
+    operation must abort rather than silently return.
+
+    ``document_id`` is the snapshot's ``deal_id`` per the existing
+    migration 015 convention (composite ``deal_id`` is reconstructible
+    from the joined ``documents.merchant_id``). ``decided_by`` is the
+    audit actor — e.g. ``'submit_to_funders'`` for the matched-CSV
+    flow, ``'submit_to_funder'`` for the per-funder dossier flow,
+    ``'prepare_renewal'`` for the renewal flow. ``actor_email`` is the
+    operator's resolved email (when available) — surfaced into the
+    audit row via the snapshot writer's pair-audit call.
+    """
+    route = compliance_router(
+        state_code=deal.state,
+        deal_amount=deal.requested_amount,
+        product_type="sales_based",
+        matrix=state_matrix,
+    )
+    apr_calculated: Decimal | None = result.apr if result.apr is not None else None
+    payload = DecisionPayload(
+        deal_id=document_id,
+        decided_by=decided_by,
+        decision=_RECOMMENDATION_TO_DECISION[result.recommendation],
+        decision_reason_codes=list(result.hard_decline_reasons),
+        score=Decimal(result.score),
+        score_factors={
+            "tier": result.tier,
+            "breakdown": result.breakdown,
+            "soft_concerns": list(result.soft_concerns),
+        },
+        state_code=deal.state.upper(),
+        cfdl_tier=route.tier,
+        apr_calculated=apr_calculated,
+        apr_method="reg_z_1026_22" if apr_calculated is not None else None,
+        aegis_version=get_aegis_version(),
+        rule_pack_version=get_rule_pack_version(),
+    )
+    try:
+        record_decision(payload, snapshot=snapshot, audit=audit)
+    except (DecisionSnapshotError, AuditWriteError) as exc:
+        # Per CLAUDE.md compliance rule: a decision without a snapshot
+        # is a regulator-defense gap. Surface as 503 so the operator can
+        # retry rather than silently returning a score with no audit trail.
+        _log.error(
+            "decision.snapshot_failed deal_id=%s decision=%s err=%s",
+            document_id,
+            result.recommendation,
+            exc,
+        )
+        # Avoid the FastAPI import at module load — keep this helper
+        # framework-light for the test path.
+        from fastapi import HTTPException
+        from fastapi import status as _http_status
+
+        raise HTTPException(
+            status_code=_http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"decision_snapshot_unavailable: {exc}",
+        ) from exc
+
+
 __all__ = [
     "_AGGREGATE_LABELS",
     "_AGGREGATE_SOURCE_FIELDS",
@@ -543,6 +647,7 @@ __all__ = [
     "_parse_bundle_query",
     "_persist_uploads",
     "_project_monthly",
+    "_record_decision_for_score",
     "_score_input_from_dashboard",
     "_select_default_bundle",
     "_sha256_hex",

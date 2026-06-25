@@ -563,6 +563,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='merchants' "
         "AND column_name='ucc_filings'"
     ),
+    "070_decisions_immutable.sql": (
+        # 070 re-asserts the immutability triggers from 015 and runs the
+        # cohort-2026_06 backfill. The trigger function ``block_decision_
+        # modification`` is the load-bearing object — its presence proves
+        # the migration's idempotent leg landed. The backfill rows
+        # themselves vary by environment (prod has thousands; an empty
+        # test DB has zero), so we probe the trigger function rather
+        # than COUNT(decisions WHERE decided_by='backfill_2026_06') > 0.
+        "SELECT 1 FROM pg_proc WHERE proname = 'block_decision_modification'"
+    ),
 }
 
 

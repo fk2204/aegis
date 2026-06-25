@@ -25,17 +25,23 @@ companion is a regulator-defense gap.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date, datetime
 from decimal import Decimal
+from functools import lru_cache
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Annotated, Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+import aegis
 from aegis.audit import AuditLog, AuditWriteError
 from aegis.db import get_supabase
 from aegis.logger import get_logger
+from aegis.parser.pipeline import FRAUD_WEIGHTS
 
 _log = get_logger(__name__)
 
@@ -207,9 +213,7 @@ class InMemoryDecisionSnapshot:
         if not deal_ids:
             return None
         deal_id_strs = {str(d) for d in deal_ids}
-        candidates = [
-            r for r in self._rows if r.get("deal_id") in deal_id_strs
-        ]
+        candidates = [r for r in self._rows if r.get("deal_id") in deal_id_strs]
         if not candidates:
             return None
         # Sort by decided_at desc; None decided_at sorts last (oldest).
@@ -372,9 +376,7 @@ def _serialize(row: dict[str, Any]) -> dict[str, Any]:
 
     Mirrors ``aegis.audit.SupabaseAuditLog.record``'s payload handling.
     """
-    return cast(
-        dict[str, Any], json.loads(json.dumps(row, default=_default_serializer))
-    )
+    return cast(dict[str, Any], json.loads(json.dumps(row, default=_default_serializer)))
 
 
 def _default_serializer(value: object) -> str:
@@ -410,6 +412,60 @@ def _row_to_stored_decision(row: dict[str, Any]) -> StoredDecision:
     )
 
 
+@lru_cache(maxsize=1)
+def get_aegis_version() -> str:
+    """Return the installed AEGIS package version.
+
+    Prefers ``importlib.metadata.version('aegis')`` (the canonical source
+    once the package is installed) and falls back to ``aegis.__version__``
+    for in-tree development where the metadata isn't populated. Cached
+    because every decision row writes this string; reading the package
+    metadata on each call would be a tight-loop allocation for nothing.
+    """
+    try:
+        return _pkg_version("aegis")
+    except PackageNotFoundError:
+        return aegis.__version__
+
+
+@lru_cache(maxsize=1)
+def get_rule_pack_version() -> str:
+    """Stable identifier for the active scoring rule pack.
+
+    Spec (master plan §9.2 + §12): the snapshot must pin "which rule pack
+    decided this deal" so a regulator-defense reconstruction six months
+    later can rerun scoring against frozen inputs and get the same result.
+
+    Implementation: ``sha256(json(FRAUD_WEIGHTS, sort_keys=True))[:16]``.
+    ``FRAUD_WEIGHTS`` is the canonical weighting dict in
+    ``aegis.parser.pipeline`` — the only set of numbers the scoring path
+    consumes that can quietly drift without a code review. Hashing the
+    canonical dict (not the entire scoring module) gives a stable
+    identifier that:
+
+      * Changes when the weights change (regulator: "the rule pack the
+        snapshot pinned doesn't match today's pack — escalate to
+        recompute").
+      * Does NOT churn on cosmetic edits elsewhere in the scorer
+        (docstrings, type hints, unrelated function bodies). Snapshots
+        pinned to the same weights stay reproducible across refactors.
+
+    Sixteen hex chars are enough collision space for this purpose and
+    keep audit-log rows short. Caller-side the value is opaque — never
+    parsed, only compared.
+
+    NOTE: this is intentionally NARROWER than "hash everything in
+    ``scoring/``". The broader scope would force a rule-pack bump on
+    every commit touching the module, which makes the field worthless
+    as a drift indicator. If a future change adds a second canonical
+    weights dict (e.g. a ``SCORING_WEIGHTS`` for the soft-score
+    breakdown deltas), extend this function to hash the concatenation —
+    but keep the surface to documented weights, not the entire module.
+    """
+    payload = json.dumps(FRAUD_WEIGHTS, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
 __all__ = [
     "BackfillQuality",
     "DecisionLiteral",
@@ -418,5 +474,7 @@ __all__ = [
     "DecisionSnapshotError",
     "InMemoryDecisionSnapshot",
     "SupabaseDecisionSnapshot",
+    "get_aegis_version",
+    "get_rule_pack_version",
     "record_decision",
 ]
