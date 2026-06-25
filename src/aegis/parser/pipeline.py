@@ -90,6 +90,18 @@ FRAUD_WEIGHTS: Final[dict[str, float]] = {
     "metadata": 0.35,
     "math": 0.40,
     "patterns": 0.25,
+    # Shadow-only carve-out: 0.0 weight makes the new bundle-scope
+    # unreconciled-internal-transfer v2 detector (operator spec
+    # 2026-06-24, ``patterns.detect_unreconciled_internal_transfers``,
+    # ``Pattern.code == "unreconciled_internal_transfer_v2"``)
+    # explicitly NON-CONTRIBUTING to ``fraud_score``. The sum-to-1
+    # invariant above intentionally excludes 0.0 entries — they
+    # document the shadow-mode discipline (CLAUDE.md "Decision-
+    # boundary changes — shadow-first") in the same constant that
+    # carries the live weights, so a future operator can flip the
+    # detector to live by changing this value plus the wiring in
+    # ``_fraud_score`` without grepping for a separate config.
+    "shadow_unreconciled_internal_transfer_v2": 0.0,
 }
 HARD_DECLINE_THRESHOLD: Final[int] = 65
 REVIEW_THRESHOLD: Final[int] = 35
@@ -540,6 +552,22 @@ def run_pipeline(
         period_end=extraction.statement.summary.period_end,
     )
     all_flags.extend(f"[SHADOW] {issue.flag_text}" for issue in nsf_issues)
+
+    # Shadow unreconciled-internal-transfer v2 (operator spec 2026-06-24).
+    # Surface each shadow Pattern with code
+    # ``unreconciled_internal_transfer_v2`` produced by
+    # ``patterns.detect_unreconciled_internal_transfers`` as a
+    # ``[SHADOW] unreconciled_internal_transfer_v2:...`` entry in
+    # ``all_flags``. The ``_v2`` suffix disambiguates this shadow detector
+    # from the live ``unreconciled_internal_transfer`` Pattern emitted by
+    # ``_unreconciled_internal_transfer`` — both can fire in parallel
+    # during shadow validation. Per CLAUDE.md decision-boundary discipline
+    # this is evidence-only — the parse_status branch is unchanged because
+    # the detector emits to ``patterns.shadow_patterns`` (not ``patterns``)
+    # and its FRAUD_WEIGHTS entry is 0.0.
+    for shadow_pat in patterns.shadow_patterns:
+        if shadow_pat.code == "unreconciled_internal_transfer_v2":
+            all_flags.append(f"[SHADOW] {shadow_pat.code}: {shadow_pat.detail}")
 
     # Plan 5.1 — Persist tampering evaluation on documents.all_flags.
     # Pure visibility extension; not a decision-boundary change. See
