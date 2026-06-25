@@ -8,7 +8,7 @@ Project-specific Claude Code instructions for AEGIS. Global rules live in `~/.cl
 
 AEGIS is an internal pre-screening tool for **Commera Capital, a pure ISO broker**. AEGIS parses merchant bank statements + processor statements, scores deal quality, captures operator override decisions, ingests funder replies, and syncs deal data with Close CRM. AEGIS **never extends financing, never generates merchant-facing disclosures, never charges merchant fees.** Funder partners own all regulator-facing compliance (CFDL disclosures, renewals, COJ / auto-debit / forum rules, §1071 reporting). AEGIS is built for mathematical accuracy and internal auditability.
 
-- **What it does:** Parse bank statements → score deals → capture operator overrides → ingest funder replies → sync with Close CRM (webhook-driven inbound on `/webhooks/close`; operator-triggered outbound on `/deals/{id}/sync-to-close`; n8n is the planned orchestrator)
+- **What it does:** Parse bank statements (vision-first for image-only PDFs) → score deals via Track A/B/C → forensic shadow review (font / creator / text-overlay / AI-statement composite + unreconciled-transfer + fintech-bank WARN) → capture operator overrides (with confusion-matrix flywheel) → ingest funder replies + outcome capture → track compliance obligations with weekly reminder cron → sync with Close CRM (webhook-driven inbound on `/webhooks/close`; operator-triggered outbound on `/deals/{id}/sync-to-close`; n8n is the planned orchestrator). Every operator decision lands in the immutable `decisions` table for auditable snapshot.
 - **Scale:** Solo operator, ~100 deals/month, internal-only
 - **Status:** Live deployment on Hetzner behind Cloudflare Access. Every push to `main` that passes the `test` workflow auto-deploys via `.github/workflows/deploy.yml` (Sprint 7 Track A; `uv sync --locked` + `uv run --no-sync` units, runner-side migrations, root SSH to the raw Hetzner IP). Manual `make deploy TARGET=prod` is the rollback / out-of-band escape hatch, not the primary path. To see current state, run `git log --oneline -10` and check `CORPUS_FINDINGS.md` for recent parser fixes.
 
@@ -38,8 +38,10 @@ AEGIS is an internal pre-screening tool for **Commera Capital, a pure ISO broker
 
 | Module | Responsibility |
 |---|---|
-| `parser/` | Two-pass parse pipeline (metadata → extract → validate → classify → patterns → aggregate). See `.claude/rules/architecture.md`. |
-| `scoring/` | Legacy single-axis scoring engine. Active scoring engine: `track_abc` (flipped 2026-06-23). Track A integrity verdict + Track B band drive live decline decisions. Legacy `fraud_score` is informational only. |
+| `parser/` | Two-pass parse pipeline (metadata → extract → validate → classify → patterns → aggregate). Vision-first routing for image-only PDFs (2026-06-24). See `.claude/rules/architecture.md`. |
+| `parser/forensic/` | Forensic-integrity detectors layered on parse output: `font_consistency.py` (per-row font drift), `creator_fingerprint.py` (per-bank `/Creator`+`/Producer` registry), `text_overlay.py` (Y-range overlay detection), `ai_statement.py` (4-signal composite — math perfection / description entropy / round-number clustering / font uniformity — shadow only). Fed into Track A integrity verdict + `[SHADOW] *` emissions on `documents.all_flags`. |
+| `parser/fintech_banks.py` | Fintech / neobank bank-of-record warning (Mercury / Brex / Bluevine / Novo / Relay / Lili / Found / Rho / Arc / Nearside / Oxygen / NorthOne). Emits `[WARN] fintech_bank_detected:*` on `all_flags` + a `FintechBankRisk` soft concern on every funder-match card. WARN only — parse_status, fraud_score, FRAUD_WEIGHTS unchanged. |
+| `scoring/` | Legacy single-axis scoring engine. Active scoring engine: `track_abc` (flipped 2026-06-23). Track A integrity verdict + Track B band drive live decline decisions. Legacy `fraud_score` is informational only at the scorer layer; parser-layer pre-scoring gate retirement still open (see REMAINING_WORK.md). |
 | `scoring_v2/` | Three-track redesign (Track A integrity / Track B business risk / Track C context). **Live decline path** as of 2026-06-23 (AEGIS_SCORING_ENGINE=track_abc set in `/etc/aegis/aegis.env`). Authoritative design: `docs/SCORING_REDESIGN_CONTINUATION.md`. |
 | `counterparty/` | Per-transaction counterparty classifier (processor / own-account / international / end-customer / card-paydown / unknown). Foundation that Tracks B and C both depend on. |
 | `business_intel/` | UCC filing + previous-default checker (Bedrock web search). Soft-signal layer surfaced on dossier as "Legal & UCC" chip. |
@@ -47,13 +49,16 @@ AEGIS is an internal pre-screening tool for **Commera Capital, a pure ISO broker
 | `bank_layouts/` | Operator-curated per-bank extraction hints. Pipeline records a layout fingerprint per parse; after a threshold of successful parses the operator can author hints that are injected into the Bedrock extraction prompt. |
 | `submissions/` | Durable per-funder CSV-submission rows (one per matched funder per bundle). Live source of truth for the portfolio funder-approval panel (U20). |
 | `funder_note_submissions/` | One row per "Submit to Funder" click from the dossier. Powers the dossier history block; mutated in place when the funder responds with terms. Distinct from `submissions/`. |
-| `compliance/` | Internal dossier hygiene, audit-log writes, state metadata. Funder-side regulatory enforcement lives outside AEGIS. See `.claude/rules/compliance.md`. |
+| `compliance/` | Internal dossier hygiene, audit-log writes, state metadata. Funder-side regulatory enforcement lives outside AEGIS. See `.claude/rules/compliance.md`. Sub-modules: |
+| `compliance/obligations.py` | Compliance-deadline tracker (migrations 018 + 069). `run_compliance_obligation_reminder_pass` + `_cron` (Mon 07:00 UTC) fire `compliance.deadline_approaching` audit rows at 60 / 30 / 14-day thresholds. `build_compliance_attention_section` powers the Today card. |
+| `compliance/snapshot.py` | Immutable decision snapshot writer (migrations 015 + 070). `record_decision` lands one row per scored deal; `get_aegis_version` + `get_rule_pack_version` pin the canonical sources so callers don't have to know them. UPDATE / DELETE triggers enforce immutability. |
+| `compliance/overrides.py` | Operator override capture — `record_override` (legacy `POST /ui/decisions/{id}/override`) and `record_dossier_override` (migration 072 dossier flow with `pattern_false_positives` checkboxes). Confusion-matrix endpoint at `GET /ui/overrides/summary`. |
 | `close/` | Close CRM client + field mapping + inbound webhook handler + outbound write-back. |
-| `funders/` | Funder catalog, criteria storage, matching logic. |
-| `deals/` | Derived merchant × document view. No `deals` table — `deal_id = "{merchant_id}:{document_id}"`. |
+| `funders/` | Funder catalog, criteria storage, matching logic. `replies.py` owns the email-parse path (`record_reply` + override stamping) AND the manual outcome capture (`record_outcome` writes to `funder_replies` with the migration-071 `outcome*` columns, anchored on `submission_id` via the anchor-XOR CHECK). |
+| `deals/` | Derived merchant × document view. No `deals` table — `deal_id = "{merchant_id}:{document_id}"`. Portfolio analytics (`portfolio_analytics.py`) splits `pending` from `no_response` based on the new outcome column. |
 | `merchants/` | Merchant identity + persistence. |
 | `pdf_store/` | In-Postgres AES-GCM ciphertext blob for original PDFs (migration 060). Supersedes the Supabase Storage chunk-B design. |
-| `ops/` | Production observability — alerting, cost accounting, rate-limit verification. Fails open in the alerting direction. |
+| `ops/` | Production observability — alerting, cost accounting, rate-limit verification (fail-open in the alerting direction). `shadow_review.py` adds the weekly aggregator: walks every `[SHADOW] *` flag in the trailing 7 days, writes one `shadow_signal.weekly_summary` audit row per (doc, code) + one `_complete` summary row carrying counts + `source_document_ids`. Cron runs Wed 06:00 UTC; surface at `GET /ui/shadow-review`. |
 | `zoho/` | Legacy Zoho integration (retained for historical sync, not active for new deals). |
 | `web/` | HTMX + Jinja2 operator dashboard mounted at `/ui`. |
 | `api/` | FastAPI app, route registration, webhook entrypoints (`/webhooks/close`). |
