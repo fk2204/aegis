@@ -27,6 +27,8 @@ from typing import Any, Final
 import pikepdf
 import pymupdf
 
+from aegis.parser.forensic.font_consistency import FontConsistencyResult
+
 # Editors / toolchains that show up in tampered PDFs more often than not.
 # `reportlab` is INTENTIONALLY excluded: AEGIS's synthetic corpus is built
 # with reportlab and the library leaks "ReportLab PDF Library - (opensource)"
@@ -142,6 +144,17 @@ class MetadataAnalysis:
     # flag, which compares one page's font set to OTHER pages' fonts.
     # See ``aegis.parser.forensic.font_consistency`` for the algorithm.
     font_inconsistency_detected: bool = False
+    # Full document-level rollup from ``forensic.font_consistency.analyze``.
+    # Stored alongside the boolean above so downstream detectors (the
+    # ``forensic.ai_statement`` composite, in particular) can read the
+    # modal-font / affected-page-count fields WITHOUT re-running font
+    # analysis. None on documents that never reached the metadata
+    # forensic pass (early-exit / synthetic paths) — those paths skip
+    # the composite detector too. Forward-imported below
+    # ``MetadataAnalysis`` to keep the field annotation strict-typed
+    # without a circular import — ``forensic.font_consistency``
+    # depends only on stdlib + pymupdf, so the import is safe.
+    font_consistency_result: FontConsistencyResult | None = None
     # Forensic layer #2 (2026-06-24). True when the PDF's /Creator
     # string matches a known editing-tool family AND does NOT match the
     # identified bank's known-good creator patterns (per
@@ -499,6 +512,7 @@ def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
         has_text_layer=has_text_layer,
         text_layer_char_count=text_layer_char_count,
         font_inconsistency_detected=font_consistency.inconsistency_detected,
+        font_consistency_result=font_consistency,
         text_overlay_detected=text_overlay_detected,
         flags=flags,
         fraud_score=min(100, score),

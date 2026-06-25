@@ -102,6 +102,14 @@ FRAUD_WEIGHTS: Final[dict[str, float]] = {
     # detector to live by changing this value plus the wiring in
     # ``_fraud_score`` without grepping for a separate config.
     "shadow_unreconciled_internal_transfer_v2": 0.0,
+    # Shadow-only carve-out (operator spec 2026-06-24, composite AI-
+    # generated-statement detector ``forensic.ai_statement.detect_ai_generated_statement``,
+    # ``Pattern.code == "ai_generated_statement"``). Same shadow-mode
+    # discipline as the v2 unreconciled-transfer detector above —
+    # explicit 0.0 entry documents the contract that this signal does
+    # NOT contribute to ``fraud_score`` and is reviewed via the
+    # ``[SHADOW] ai_generated_statement: ...`` entry in ``all_flags``.
+    "shadow_ai_generated_statement": 0.0,
 }
 HARD_DECLINE_THRESHOLD: Final[int] = 65
 REVIEW_THRESHOLD: Final[int] = 35
@@ -568,6 +576,29 @@ def run_pipeline(
     for shadow_pat in patterns.shadow_patterns:
         if shadow_pat.code == "unreconciled_internal_transfer_v2":
             all_flags.append(f"[SHADOW] {shadow_pat.code}: {shadow_pat.detail}")
+
+    # Shadow composite AI-generated-statement detector (operator spec
+    # 2026-06-24). Fuses math-perfection + description-uniformity +
+    # round-number clustering + font-uniformity into one 0..100
+    # composite score. Emits when composite >= 40. Reads the already-
+    # computed ``FontConsistencyResult`` off ``metadata`` so the PDF
+    # is NOT re-opened. Per CLAUDE.md decision-boundary discipline this
+    # is shadow-only: appended to ``patterns.shadow_patterns`` (not
+    # ``patterns``) and surfaced as ``[SHADOW] ai_generated_statement:``
+    # in ``all_flags``. ``FRAUD_WEIGHTS["shadow_ai_generated_statement"]``
+    # is 0.0 — the carve-out is documented next to the live weights.
+    from aegis.parser.forensic.ai_statement import detect_ai_generated_statement
+
+    ai_period_flags = [f for f in aggregate_result.flags if f.startswith("period_")]
+    ai_pattern = detect_ai_generated_statement(
+        classified,
+        math_flags=list(validation.failures),
+        font_result=metadata.font_consistency_result,
+        period_flags=ai_period_flags,
+    )
+    if ai_pattern is not None:
+        patterns.shadow_patterns.append(ai_pattern)
+        all_flags.append(f"[SHADOW] {ai_pattern.code}: {ai_pattern.detail}")
 
     # Plan 5.1 — Persist tampering evaluation on documents.all_flags.
     # Pure visibility extension; not a decision-boundary change. See
