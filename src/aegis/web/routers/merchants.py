@@ -3135,6 +3135,42 @@ async def merchant_detail(
     # many notes over time.
     operator_notes = merchants.list_notes(merchant_id=merchant_id, limit=50)
 
+    # Override-modal context (mp Phase 10 / migration 072). Per-document
+    # pattern codes power the "false-positive per pattern" checkbox set
+    # so the operator can mark exactly which detectors fired wrongly on
+    # this deal. Includes the live ``patterns`` list (decision-boundary
+    # inputs) and the shadow list (informational signals). Empty list
+    # for legacy docs without a cached pattern_analysis. Deduplicated
+    # while preserving first-seen order so the modal renders a
+    # deterministic ordering regardless of how the parser surfaced them.
+    override_pattern_codes: list[str] = []
+    _seen_codes: set[str] = set()
+    if pattern_analysis_for_view is not None:
+        for _p in list(pattern_analysis_for_view.patterns) + list(
+            pattern_analysis_for_view.shadow_patterns
+        ):
+            if _p.code not in _seen_codes:
+                _seen_codes.add(_p.code)
+                override_pattern_codes.append(_p.code)
+    # Latest decision_id for this merchant — the override row pins to
+    # it when present. None for docs without a decisions row (older
+    # parses, or never-scored docs). The modal includes a hidden
+    # decision_id field that the route accepts as optional.
+    override_latest_decision_id: str | None = None
+    if score_result is not None and latest_doc is not None:
+        latest_decision = snapshot.find_latest_for_merchant(
+            merchant_id, deal_ids=[d.id for d in all_docs]
+        )
+        if latest_decision is not None:
+            override_latest_decision_id = str(latest_decision.id)
+    # The button is gated on parse_status in {proceed, decline} per the
+    # task spec — manual_review is already operator-driven and pending /
+    # error / review don't have a recommendation to override yet.
+    show_override_button = latest_doc is not None and latest_doc.parse_status in {
+        "proceed",
+        "decline",
+    }
+
     # Plain-English deal summary card (2026-06-18 redesign). Rule-based,
     # no LLM call — produces the headline + body + flags the team reads
     # first at the top of the dossier. None when the deal isn't yet
@@ -3223,6 +3259,9 @@ async def merchant_detail(
             "matched_funders": matched_funders_cards,
             "matched_funder_responses": matched_funder_responses,
             "submitted_funder_ids": submitted_funder_ids,
+            "override_pattern_codes": override_pattern_codes,
+            "override_latest_decision_id": override_latest_decision_id,
+            "show_override_button": show_override_button,
         },
     )
 

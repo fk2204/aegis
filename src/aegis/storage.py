@@ -40,7 +40,7 @@ from aegis.parser.pipeline import PipelineResult
 
 _log = get_logger(__name__)
 
-ParseStatus = Literal["pending", "proceed", "review", "manual_review", "error"]
+ParseStatus = Literal["pending", "proceed", "review", "manual_review", "error", "decline"]
 """Document parse-pipeline status. Underwriting semantics per value:
 
 * ``pending``      — ingest accepted, parse not yet attempted. NOT scoreable.
@@ -237,9 +237,7 @@ class DocumentRepository(Protocol):
 
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None: ...
 
-    def get_analyses_by_document_ids(
-        self, document_ids: list[UUID]
-    ) -> dict[UUID, AnalysisRow]:
+    def get_analyses_by_document_ids(self, document_ids: list[UUID]) -> dict[UUID, AnalysisRow]:
         """Batch variant of ``get_analysis`` — returns a {document_id -> AnalysisRow}
         mapping for every id that has an analysis row. Missing ids are
         simply absent from the result (callers handle with ``.get(...)``).
@@ -278,9 +276,7 @@ class DocumentRepository(Protocol):
         outcome as a transient failure and quarantines the ciphertext.
         """
 
-    def list_retention_expired(
-        self, *, limit: int = 1000
-    ) -> list[DocumentRow]:
+    def list_retention_expired(self, *, limit: int = 1000) -> list[DocumentRow]:
         """Return docs whose ``retention_until < NOW()`` AND
         ``storage_path IS NOT NULL``, oldest-expiry first, bounded by
         ``limit``.
@@ -299,6 +295,20 @@ class DocumentRepository(Protocol):
         Supabase Storage AND ``confirm_absent`` returned True. The
         ``retention_until`` column is left as-is — preserved as a
         forensic record of what the retention basis was at sweep time.
+        """
+
+    def set_parse_status(self, document_id: UUID, status: ParseStatus) -> None:
+        """Operator-driven parse_status transition (Phase 10 / overrides).
+
+        The override write path calls this after the operator's decision
+        lands so the review queue / Today card / dossier reflect the
+        human disposition rather than the parser's autonomous output.
+        ``DocumentNotFoundError`` if the document_id is unknown — the
+        override write path validates the document exists before calling.
+
+        Distinct from ``persist_parse_result`` (parser-side bulk write)
+        and ``mark_error`` (worker failure path); this is the one
+        narrow API for in-place status mutation.
         """
 
 
@@ -330,8 +340,7 @@ class InMemoryDocumentRepository:
         for existing in self._docs.values():
             if existing.file_hash == file_hash:
                 raise DocumentExistsError(
-                    f"document with hash {file_hash[:12]}... already exists "
-                    f"as {existing.id}"
+                    f"document with hash {file_hash[:12]}... already exists as {existing.id}"
                 )
         row = DocumentRow(
             id=uuid4(),
@@ -414,13 +423,9 @@ class InMemoryDocumentRepository:
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None:
         return self._analyses.get(document_id)
 
-    def get_analyses_by_document_ids(
-        self, document_ids: list[UUID]
-    ) -> dict[UUID, AnalysisRow]:
+    def get_analyses_by_document_ids(self, document_ids: list[UUID]) -> dict[UUID, AnalysisRow]:
         return {
-            doc_id: self._analyses[doc_id]
-            for doc_id in document_ids
-            if doc_id in self._analyses
+            doc_id: self._analyses[doc_id] for doc_id in document_ids if doc_id in self._analyses
         }
 
     def count_by_parse_status(self) -> dict[str, int]:
@@ -434,6 +439,16 @@ class InMemoryDocumentRepository:
         doc = self.get_document(document_id)
         doc.parse_status = "error"
         doc.error_detail = detail
+        self._docs[document_id] = doc
+
+    def set_parse_status(self, document_id: UUID, status: ParseStatus) -> None:
+        """Operator-driven parse_status transition (Phase 10 / overrides).
+
+        Raises ``DocumentNotFoundError`` if the document_id is unknown
+        — mirrors the Supabase implementation's behavior.
+        """
+        doc = self.get_document(document_id)
+        doc.parse_status = status
         self._docs[document_id] = doc
 
     # PDF retention chunk B -------------------------------------------------
@@ -456,12 +471,11 @@ class InMemoryDocumentRepository:
         doc.retention_until = retention_until
         self._docs[document_id] = doc
 
-    def list_retention_expired(
-        self, *, limit: int = 1000
-    ) -> list[DocumentRow]:
+    def list_retention_expired(self, *, limit: int = 1000) -> list[DocumentRow]:
         now = datetime.now(UTC)
         candidates = [
-            d for d in self._docs.values()
+            d
+            for d in self._docs.values()
             if d.storage_path is not None
             and d.retention_until is not None
             and d.retention_until < now
@@ -501,17 +515,12 @@ class SupabaseDocumentRepository:
     ) -> DocumentRow:
         client = get_supabase()
         existing = (
-            client.table("documents")
-            .select("*")
-            .eq("file_hash", file_hash)
-            .limit(1)
-            .execute()
+            client.table("documents").select("*").eq("file_hash", file_hash).limit(1).execute()
         )
         if existing.data:
             row = cast(dict[str, Any], existing.data[0])
             raise DocumentExistsError(
-                f"document with hash {file_hash[:12]}... already exists "
-                f"as {row['id']}"
+                f"document with hash {file_hash[:12]}... already exists as {row['id']}"
             )
 
         payload: dict[str, Any] = {
@@ -563,8 +572,7 @@ class SupabaseDocumentRepository:
 
         if result.classified:
             tx_payload = [
-                _classified_to_db_row(t, document_id, merchant_id)
-                for t in result.classified
+                _classified_to_db_row(t, document_id, merchant_id) for t in result.classified
             ]
             client.table("transactions").insert(tx_payload).execute()
 
@@ -605,10 +613,7 @@ class SupabaseDocumentRepository:
         if category is not None:
             query = query.eq("category", category)
         result = query.execute()
-        return [
-            _db_row_to_classified(cast(dict[str, Any], r))
-            for r in (result.data or [])
-        ]
+        return [_db_row_to_classified(cast(dict[str, Any], r)) for r in (result.data or [])]
 
     def list_documents(
         self,
@@ -629,10 +634,7 @@ class SupabaseDocumentRepository:
         if merchant_id is not None:
             query = query.eq("merchant_id", str(merchant_id))
         result = query.execute()
-        return [
-            _row_to_document(cast(dict[str, Any], r))
-            for r in (result.data or [])
-        ]
+        return [_row_to_document(cast(dict[str, Any], r)) for r in (result.data or [])]
 
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None:
         result = (
@@ -647,9 +649,7 @@ class SupabaseDocumentRepository:
             return None
         return _db_row_to_analysis(cast(dict[str, Any], result.data[0]))
 
-    def get_analyses_by_document_ids(
-        self, document_ids: list[UUID]
-    ) -> dict[UUID, AnalysisRow]:
+    def get_analyses_by_document_ids(self, document_ids: list[UUID]) -> dict[UUID, AnalysisRow]:
         if not document_ids:
             return {}
         # PostgREST ``in.(…)`` operator — single query returns analyses
@@ -657,11 +657,7 @@ class SupabaseDocumentRepository:
         # simply absent from the response (no error).
         id_strings = [str(d) for d in document_ids]
         result = (
-            get_supabase()
-            .table("analyses")
-            .select("*")
-            .in_("document_id", id_strings)
-            .execute()
+            get_supabase().table("analyses").select("*").in_("document_id", id_strings).execute()
         )
         out: dict[UUID, AnalysisRow] = {}
         for row in cast(list[dict[str, Any]], result.data or []):
@@ -677,13 +673,7 @@ class SupabaseDocumentRepository:
         unexpected blow-out without paying for a Postgres-side GROUP BY.
         """
         try:
-            result = (
-                get_supabase()
-                .table("documents")
-                .select("parse_status")
-                .limit(10000)
-                .execute()
-            )
+            result = get_supabase().table("documents").select("parse_status").limit(10000).execute()
         except Exception:
             return {}
         counts: dict[str, int] = {}
@@ -709,6 +699,24 @@ class SupabaseDocumentRepository:
                 "parsed_at": datetime.now(UTC).isoformat(),
             }
         ).eq("id", str(document_id)).execute()
+
+    def set_parse_status(self, document_id: UUID, status: ParseStatus) -> None:
+        """Operator-driven parse_status transition (Phase 10 / overrides).
+
+        Single-column UPDATE. The CHECK constraint on ``parse_status``
+        (migration 072 widens the set to include ``decline``) is the
+        load-bearing validation; supabase-py surfaces the constraint
+        violation as a DB exception which the caller propagates.
+
+        Raises ``DocumentNotFoundError`` is NOT distinguished here —
+        Supabase's UPDATE silently no-ops on a missing row, which
+        matches the in-memory contract only when callers pre-validate
+        the document exists (the override route does, via
+        ``get_document`` before calling).
+        """
+        get_supabase().table("documents").update({"parse_status": status}).eq(
+            "id", str(document_id)
+        ).execute()
 
     # PDF retention chunk B (migration 033) ---------------------------------
 
@@ -741,9 +749,7 @@ class SupabaseDocumentRepository:
             }
         ).eq("id", str(document_id)).execute()
 
-    def list_retention_expired(
-        self, *, limit: int = 1000
-    ) -> list[DocumentRow]:
+    def list_retention_expired(self, *, limit: int = 1000) -> list[DocumentRow]:
         """Scan the partial index ``idx_documents_retention_until``
         for rows whose retention has passed. Oldest expiry first so
         the chunk-E sweep makes deterministic per-run progress on a
@@ -759,19 +765,16 @@ class SupabaseDocumentRepository:
             .limit(limit)
             .execute()
         )
-        return [
-            _row_to_document(row)
-            for row in cast(list[dict[str, Any]], result.data or [])
-        ]
+        return [_row_to_document(row) for row in cast(list[dict[str, Any]], result.data or [])]
 
     def clear_storage_path(self, document_id: UUID) -> None:
         """Single-UPDATE: ``storage_path = NULL``. ``retention_until``
         is intentionally NOT cleared — preserved as a forensic record
         of what triggered the deletion (the chunk-E sweep's audit row
         cites it)."""
-        get_supabase().table("documents").update(
-            {"storage_path": None}
-        ).eq("id", str(document_id)).execute()
+        get_supabase().table("documents").update({"storage_path": None}).eq(
+            "id", str(document_id)
+        ).execute()
 
 
 # Internal helpers -------------------------------------------------------------
@@ -912,9 +915,7 @@ def _row_to_document(row: dict[str, Any]) -> DocumentRow:
         storage_path=row.get("storage_path"),
         sha256_original=row.get("sha256_original"),
         encryption_key_version=row.get("encryption_key_version"),
-        retention_until=(
-            _parse_dt(row["retention_until"]) if row.get("retention_until") else None
-        ),
+        retention_until=(_parse_dt(row["retention_until"]) if row.get("retention_until") else None),
     )
 
 

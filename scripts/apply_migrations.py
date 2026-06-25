@@ -586,6 +586,18 @@ MIGRATION_PROBES: dict[str, str] = {
         # than COUNT(decisions WHERE decided_by='backfill_2026_06') > 0.
         "SELECT 1 FROM pg_proc WHERE proname = 'block_decision_modification'"
     ),
+    "072_overrides.sql": (
+        # 072 extends the overrides table (017) with merchant_id,
+        # document_id, pattern_false_positives, and relaxes decision_id
+        # nullability — plus widens documents.parse_status to include
+        # 'decline'. Probe the load-bearing new column on overrides
+        # (pattern_false_positives) — its presence proves the ADD
+        # COLUMN ran; the parse_status CHECK widening is paired in the
+        # same migration and lands or fails atomically.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='overrides' "
+        "AND column_name='pattern_false_positives'"
+    ),
 }
 
 
