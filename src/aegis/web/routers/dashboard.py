@@ -36,6 +36,10 @@ from aegis.api.deps import (
     get_repository,
 )
 from aegis.audit import AuditLog
+from aegis.compliance.obligations import (
+    build_compliance_attention_section,
+    get_compliance_obligation_repository,
+)
 from aegis.funder_note_submissions import FunderNoteSubmissionRepository
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import (
@@ -163,6 +167,17 @@ async def index(
         pending_funder_source_submission_ids,
         pending_funder_cards,
     ) = _compute_pending_funder_responses(funder_note_subs, merchants_repo, now=now_utc)
+    # Compliance deadlines attention card — obligations with
+    # next_due_date within the 90-day horizon. Color buckets: red <=14,
+    # amber <=30, yellow <=60. Sourced from the dedicated obligation
+    # tracker repository (memory/Supabase toggle from settings).
+    (
+        compliance_count,
+        compliance_source_obligation_ids,
+        compliance_cards,
+    ) = build_compliance_attention_section(
+        get_compliance_obligation_repository(),
+    )
     today_pipeline = _compute_today_pipeline(docs, funder_note_subs, now=now_utc)
     today_recent_activity = _build_today_recent_activity(recent_activity_rows)
 
@@ -210,6 +225,9 @@ async def index(
             "pending_funder_count": pending_funder_count,
             "pending_funder_source_submission_ids": (pending_funder_source_submission_ids),
             "pending_funder_cards": pending_funder_cards,
+            "compliance_count": compliance_count,
+            "compliance_source_obligation_ids": compliance_source_obligation_ids,
+            "compliance_cards": compliance_cards,
             "today_pipeline": today_pipeline,
             "today_recent_activity": today_recent_activity,
             "quick_actions": quick_actions,

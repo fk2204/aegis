@@ -563,6 +563,19 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='merchants' "
         "AND column_name='ucc_filings'"
     ),
+    "069_compliance_obligations.sql": (
+        # 069 is the second pass on ``compliance_obligations`` — re-
+        # asserts the table shape so a fresh bootstrap that never ran
+        # 018 still ends up with the canonical table, and seeds the
+        # 6 real obligations idempotently keyed on (state_code,
+        # obligation_type). Probe the seed presence (the TX OCCC row
+        # is the only one with a non-NULL next_due_date so it's a
+        # safe sentinel — proves both the table and the seed pass
+        # ran).
+        "SELECT 1 FROM compliance_obligations "
+        "WHERE state_code='TX' AND obligation_type='registration' "
+        "AND next_due_date IS NOT NULL"
+    ),
 }
 
 
