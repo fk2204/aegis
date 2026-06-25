@@ -103,6 +103,14 @@ FRAUD_WEIGHTS: Final[dict[str, float]] = {
     # detector to live by changing this value plus the wiring in
     # ``_fraud_score`` without grepping for a separate config.
     "shadow_unreconciled_internal_transfer_v2": 0.0,
+    # Shadow-only carve-out (operator spec 2026-06-24, composite AI-
+    # generated-statement detector ``forensic.ai_statement.detect_ai_generated_statement``,
+    # ``Pattern.code == "ai_generated_statement"``). Same shadow-mode
+    # discipline as the v2 unreconciled-transfer detector above —
+    # explicit 0.0 entry documents the contract that this signal does
+    # NOT contribute to ``fraud_score`` and is reviewed via the
+    # ``[SHADOW] ai_generated_statement: ...`` entry in ``all_flags``.
+    "shadow_ai_generated_statement": 0.0,
 }
 HARD_DECLINE_THRESHOLD: Final[int] = 65
 REVIEW_THRESHOLD: Final[int] = 35
@@ -554,23 +562,18 @@ def run_pipeline(
     )
     all_flags.extend(f"[SHADOW] {issue.flag_text}" for issue in nsf_issues)
 
-    # Shadow unreconciled-internal-transfer v2 (operator spec 2026-06-24).
-    # Surface each shadow Pattern with code
-    # ``unreconciled_internal_transfer_v2`` produced by
-    # ``patterns.detect_unreconciled_internal_transfers`` as a
-    # ``[SHADOW] unreconciled_internal_transfer_v2:...`` entry in
-    # ``all_flags``. The ``_v2`` suffix disambiguates this shadow detector
-    # from the live ``unreconciled_internal_transfer`` Pattern emitted by
-    # ``_unreconciled_internal_transfer`` — both can fire in parallel
-    # during shadow validation. Per CLAUDE.md decision-boundary discipline
-    # this is evidence-only — the parse_status branch is unchanged because
-    # the detector emits to ``patterns.shadow_patterns`` (not ``patterns``)
-    # and its FRAUD_WEIGHTS entry is 0.0.
-    for shadow_pat in patterns.shadow_patterns:
-        if shadow_pat.code == "unreconciled_internal_transfer_v2":
-            all_flags.append(f"[SHADOW] {shadow_pat.code}: {shadow_pat.detail}")
+    # ------------------------------------------------------------------
+    # Forensic + shadow-detector emit ladder. Ordering (operator spec):
+    #   1. tampering_flag                  — doc-level forensic
+    #   2. fintech_bank_detected           — bank-of-record forensic (WARN)
+    #   3. unreconciled_internal_transfer_v2 — txn-level shadow detector
+    #   4. ai_generated_statement          — composite forensic shadow
+    # All blocks are append-only on ``all_flags``; none consume another's
+    # output, so ordering is purely about the row order an operator sees
+    # in the dossier flags table. Bank-layout learning runs after.
+    # ------------------------------------------------------------------
 
-    # Plan 5.1 — Persist tampering evaluation on documents.all_flags.
+    # 1. Plan 5.1 — Persist tampering evaluation on documents.all_flags.
     # Pure visibility extension; not a decision-boundary change. See
     # ``_tampering_persistence_flag`` docstring for the prefix-vs-mode
     # rationale.
@@ -580,7 +583,7 @@ def run_pipeline(
     if tampering_flag is not None:
         all_flags.append(tampering_flag)
 
-    # Fintech bank-of-record detection (warning only). When the
+    # 2. Fintech bank-of-record detection (warning only). When the
     # extracted ``bank_name`` matches a known fintech / neobank
     # (Mercury, Brex, Novo, etc.), surface a ``[WARN]`` flag so the
     # operator + the per-funder match grid see the bank as a soft
@@ -596,6 +599,45 @@ def run_pipeline(
             f"[WARN] fintech_bank_detected: {canonical_name} — "
             f"many funders decline fintech bank accounts"
         )
+
+    # 3. Shadow unreconciled-internal-transfer v2 (operator spec 2026-06-24).
+    # Surface each shadow Pattern with code
+    # ``unreconciled_internal_transfer_v2`` produced by
+    # ``patterns.detect_unreconciled_internal_transfers`` as a
+    # ``[SHADOW] unreconciled_internal_transfer_v2:...`` entry in
+    # ``all_flags``. The ``_v2`` suffix disambiguates this shadow detector
+    # from the live ``unreconciled_internal_transfer`` Pattern emitted by
+    # ``_unreconciled_internal_transfer`` — both can fire in parallel
+    # during shadow validation. Per CLAUDE.md decision-boundary discipline
+    # this is evidence-only — the parse_status branch is unchanged because
+    # the detector emits to ``patterns.shadow_patterns`` (not ``patterns``)
+    # and its FRAUD_WEIGHTS entry is 0.0.
+    for shadow_pat in patterns.shadow_patterns:
+        if shadow_pat.code == "unreconciled_internal_transfer_v2":
+            all_flags.append(f"[SHADOW] {shadow_pat.code}: {shadow_pat.detail}")
+
+    # 4. Shadow composite AI-generated-statement detector (operator spec
+    # 2026-06-24). Fuses math-perfection + description-uniformity +
+    # round-number clustering + font-uniformity into one 0..100
+    # composite score. Emits when composite >= 40. Reads the already-
+    # computed ``FontConsistencyResult`` off ``metadata`` so the PDF
+    # is NOT re-opened. Per CLAUDE.md decision-boundary discipline this
+    # is shadow-only: appended to ``patterns.shadow_patterns`` (not
+    # ``patterns``) and surfaced as ``[SHADOW] ai_generated_statement:``
+    # in ``all_flags``. ``FRAUD_WEIGHTS["shadow_ai_generated_statement"]``
+    # is 0.0 — the carve-out is documented next to the live weights.
+    from aegis.parser.forensic.ai_statement import detect_ai_generated_statement
+
+    ai_period_flags = [f for f in aggregate_result.flags if f.startswith("period_")]
+    ai_pattern = detect_ai_generated_statement(
+        classified,
+        math_flags=list(validation.failures),
+        font_result=metadata.font_consistency_result,
+        period_flags=ai_period_flags,
+    )
+    if ai_pattern is not None:
+        patterns.shadow_patterns.append(ai_pattern)
+        all_flags.append(f"[SHADOW] {ai_pattern.code}: {ai_pattern.detail}")
 
     # Bank-layout learning: record the successful parse so the next
     # parse for the same bank can leverage operator-curated hints. Only

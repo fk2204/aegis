@@ -286,10 +286,18 @@ def _severity_band(severity: int) -> str:
 # walks the live ``patterns`` list, so the code is unreachable here by
 # design. Surfaced via the [SHADOW] flag and the dossier shadow-signals
 # panel instead.
+# ``ai_generated_statement`` is the same — emitted by
+# ``forensic.ai_statement.detect_ai_generated_statement`` and appended
+# to ``shadow_patterns`` by ``parser.pipeline``. Listed defensively
+# even though the source-file AST walker in
+# ``_emitted_pattern_codes_from_source`` only scans ``parser/patterns.py``
+# today; a future cleanup that consolidates the emit-call into
+# ``parser/patterns.py`` would otherwise fail the contract test.
 _RENDERED_ELSEWHERE: Final[frozenset[str]] = frozenset(
     {
         "mca_stacking",
         "unreconciled_internal_transfer_v2",
+        "ai_generated_statement",
     }
 )
 
