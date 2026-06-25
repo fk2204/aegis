@@ -135,10 +135,15 @@ def _fetch_portfolio_data(
                 .execute()
             )
             audit_rows = cast(list[dict[str, Any]], audit_result.data or [])
+            # ``outcome`` (migration 071) is selected alongside
+            # ``status`` so the funder approval panel can prefer the
+            # operator-confirmed outcome over the legacy auto-extracted
+            # status — see _compute_funder_table in
+            # portfolio_analytics.py.
             reply_result = (
                 get_supabase()
                 .table("funder_replies")
-                .select("funder_id,deal_id,status,received_at")
+                .select("funder_id,deal_id,status,outcome,received_at")
                 .gte("received_at", from_iso)
                 .lte("received_at", to_iso + "T23:59:59Z")
                 .limit(5000)

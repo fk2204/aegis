@@ -1,0 +1,146 @@
+{# Record-outcome modal — HTMX fragment served by
+   /ui/funder-replies/outcome-modal, swapped into the
+   #outcome-modal-host div on the merchant dossier.
+
+   Writes a row to funder_replies (migration 071 outcome columns).
+   The submission row in § 5½ is re-fetched + swapped after a
+   successful submit so the new outcome chip surfaces inline.
+
+   Conditional rendering of the offer fields (amount / factor / term)
+   uses HTMX out-of-band swap via name-keyed change handler — we
+   render all four fields up front but hide / show the offer fieldset
+   via inline data-attr toggling driven by a tiny inline script. This
+   keeps the modal HTML self-contained (no separate /ui/...field
+   endpoint to fetch per dropdown change). For 'declined' and
+   'no_response' the offer fields are visually disabled and their
+   values cleared before submit so the FunderReplyOutcomePayload
+   Pydantic validator does not reject the row. #}
+<div class="modal-backdrop"
+     onclick="if(event.target===this) document.getElementById('outcome-modal-host').innerHTML=''">
+  <div class="modal-dialog">
+    <header class="modal-head">
+      <h2>Record outcome — {{ funder_name }}</h2>
+      <button class="modal-close" type="button"
+              onclick="document.getElementById('outcome-modal-host').innerHTML=''"
+              title="Close" aria-label="Close">&times;</button>
+    </header>
+    <div class="modal-body">
+      <div class="modal-hint">
+        Capture what the funder said for this submission. Approved /
+        countered allow offer terms; declined and no-response leave them
+        blank.
+      </div>
+      <form id="outcome-form"
+            hx-post="/ui/funder-replies/outcome"
+            hx-target="#submission-row-{{ submission_id }}"
+            hx-swap="outerHTML"
+            data-test-id="record-outcome-form">
+        <input type="hidden" name="merchant_id" value="{{ merchant_id }}">
+        <input type="hidden" name="funder_id" value="{{ funder_id }}">
+        <input type="hidden" name="submission_id" value="{{ submission_id }}">
+
+        <div style="display:grid;grid-template-columns:120px 1fr;gap:10px 12px;align-items:center;font-size:12px">
+
+          <label for="outcome-select" style="font-weight:500">Outcome</label>
+          <select id="outcome-select"
+                  name="outcome"
+                  required
+                  onchange="(function(s){
+                    var withOffer = (s.value === 'approved' || s.value === 'countered');
+                    var fs = document.getElementById('offer-fieldset');
+                    fs.disabled = !withOffer;
+                    fs.style.opacity = withOffer ? '1' : '0.4';
+                    if(!withOffer) {
+                      ['outcome_amount','outcome_factor_rate','outcome_term_days']
+                        .forEach(function(n){
+                          var el = document.querySelector('[name=\"'+n+'\"]');
+                          if(el) el.value = '';
+                        });
+                    }
+                  })(this)"
+                  style="padding:4px 6px;font-size:12px"
+                  data-test-id="outcome-select">
+            <option value="" disabled selected>Pick one…</option>
+            <option value="approved">approved</option>
+            <option value="declined">declined</option>
+            <option value="countered">countered</option>
+            <option value="no_response">no response</option>
+          </select>
+
+          <fieldset id="offer-fieldset"
+                    disabled
+                    style="grid-column:1 / -1;display:grid;grid-template-columns:120px 1fr;gap:10px 12px;align-items:center;border:0;padding:0;margin:0;opacity:0.4">
+
+            <label for="outcome_amount" style="font-weight:500">Amount</label>
+            <input type="number"
+                   id="outcome_amount"
+                   name="outcome_amount"
+                   step="100"
+                   min="1"
+                   placeholder="50000"
+                   style="padding:4px 6px;font-size:12px;width:160px"
+                   data-test-id="outcome-amount">
+
+            <label for="outcome_factor_rate" style="font-weight:500">Factor rate</label>
+            <input type="number"
+                   id="outcome_factor_rate"
+                   name="outcome_factor_rate"
+                   step="0.001"
+                   min="1.001"
+                   max="2.000"
+                   placeholder="1.300"
+                   style="padding:4px 6px;font-size:12px;width:120px"
+                   data-test-id="outcome-factor">
+
+            <label for="outcome_term_days" style="font-weight:500">Term (days)</label>
+            <input type="number"
+                   id="outcome_term_days"
+                   name="outcome_term_days"
+                   step="1"
+                   min="1"
+                   max="730"
+                   placeholder="120"
+                   style="padding:4px 6px;font-size:12px;width:100px"
+                   data-test-id="outcome-term-days">
+          </fieldset>
+
+          <label for="outcome_notes" style="font-weight:500;align-self:flex-start;padding-top:4px">Notes</label>
+          <textarea id="outcome_notes"
+                    name="outcome_notes"
+                    rows="3"
+                    maxlength="1000"
+                    placeholder="Optional context — e.g. counter terms, decline reason."
+                    style="padding:4px 6px;font-size:12px;font-family:inherit;width:100%;box-sizing:border-box"
+                    data-test-id="outcome-notes"></textarea>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+          <button type="button"
+                  class="btn-cancel"
+                  onclick="document.getElementById('outcome-modal-host').innerHTML=''"
+                  style="padding:6px 14px;font-size:12px">Cancel</button>
+          <button type="submit"
+                  class="btn-primary"
+                  style="padding:6px 14px;font-size:12px"
+                  data-test-id="outcome-submit">Record outcome</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Close the modal once the row swap completes. HTMX fires
+  // htmx:afterSwap on the swap target; we listen on the form so the
+  // handler is scoped to this modal instance.
+  (function() {
+    var form = document.getElementById('outcome-form');
+    if(!form) return;
+    form.addEventListener('htmx:afterRequest', function(evt) {
+      if(evt.detail && evt.detail.successful) {
+        var host = document.getElementById('outcome-modal-host');
+        if(host) host.innerHTML = '';
+      }
+    });
+  })();
+</script>

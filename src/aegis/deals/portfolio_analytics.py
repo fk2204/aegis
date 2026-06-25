@@ -171,23 +171,32 @@ class PipelineCounts(_StrictModel):
     @property
     def total(self) -> int:
         return (
-            self.new
-            + self.in_review
-            + self.approved
-            + self.declined
-            + self.funded
-            + self.abandoned
+            self.new + self.in_review + self.approved + self.declined + self.funded + self.abandoned
         )
 
 
 class FunderApprovalRow(_StrictModel):
     """One row in the "approval rate by funder" panel.
 
-    ``no_response`` is computed as ``max(submitted - approved - declined
-    - countered, 0)`` — funders that received a submission but never
-    replied. The clamp guards against a reply rate higher than the
-    submission count, which can happen if a funder responded to a
-    submission older than the date window (mismatched join).
+    Counts are built from the manual-outcome path on ``funder_replies``
+    (migration 071 ``outcome`` column). The four enumerated outcomes are:
+
+      * ``approved`` — operator confirmed the funder approved
+      * ``declined`` — operator confirmed the funder declined
+      * ``countered`` — operator confirmed the funder countered
+      * ``no_response`` — operator confirmed the funder ghosted
+
+    ``pending`` is the residual: submissions for which no outcome row
+    exists yet. The distinction matters — "we haven't asked yet"
+    (pending) is operationally different from "we asked and got
+    nothing" (no_response).
+
+    For backwards compatibility the count also folds in legacy
+    ``funder_replies.status`` rows (the email-parse path that pre-dated
+    migration 071). Those rows are counted under their status bucket
+    (approved/declined/countered); a deal with both a status reply AND
+    a recorded outcome counts the outcome (the operator's
+    confirmation supersedes the auto-extracted reply).
     """
 
     funder_id: UUID
@@ -197,16 +206,22 @@ class FunderApprovalRow(_StrictModel):
     declined: int = Field(ge=0)
     countered: int = Field(ge=0)
     no_response: int = Field(ge=0)
+    pending: int = Field(ge=0)
+    """Submissions with NO outcome row yet. Distinct from no_response."""
 
     @property
     def approval_rate_pct(self) -> int | None:
         """Approved as a percentage of decided (approved + declined +
-        countered) replies. ``None`` when zero decided replies — the
-        template renders an em-dash rather than ``0%`` so the operator
-        doesn't read "0% approval rate" on a funder that simply hasn't
-        replied yet.
+        countered + no_response) outcomes. ``None`` when zero decided
+        outcomes — the template renders an em-dash rather than ``0%``
+        so the operator doesn't read "0% approval rate" on a funder
+        that simply hasn't responded yet.
+
+        ``no_response`` IS counted as a decided outcome — operator
+        confirmed the funder ghosted, which is a real signal. Pending
+        submissions are NOT counted (no operator confirmation).
         """
-        decided = self.approved + self.declined + self.countered
+        decided = self.approved + self.declined + self.countered + self.no_response
         if decided == 0:
             return None
         return round((self.approved / decided) * 100)
@@ -352,9 +367,7 @@ class DateRange:
 
     def __post_init__(self) -> None:
         if self.to_date < self.from_date:
-            raise ValueError(
-                f"to_date {self.to_date} is earlier than from_date {self.from_date}"
-            )
+            raise ValueError(f"to_date {self.to_date} is earlier than from_date {self.from_date}")
 
 
 def resolve_date_range(
@@ -381,15 +394,12 @@ def resolve_date_range(
     as_of = today or datetime.now(UTC).date()
     parsed_to = _parse_iso_date(to_str) if to_str else as_of
     parsed_from = (
-        _parse_iso_date(from_str)
-        if from_str
-        else parsed_to - timedelta(days=DEFAULT_WINDOW_DAYS)
+        _parse_iso_date(from_str) if from_str else parsed_to - timedelta(days=DEFAULT_WINDOW_DAYS)
     )
 
     if parsed_to < parsed_from:
         raise ValueError(
-            f"to_date {parsed_to.isoformat()} is earlier than from_date "
-            f"{parsed_from.isoformat()}"
+            f"to_date {parsed_to.isoformat()} is earlier than from_date {parsed_from.isoformat()}"
         )
 
     # Clamp window. timedelta.days yields an int.
@@ -465,18 +475,16 @@ def compute_portfolio_metrics(
     pipeline = _compute_pipeline_counts(merchants_list, docs_by_merchant, audit_list)
 
     submissions_list = list(submissions) if submissions is not None else []
-    funder_table = _compute_funder_table(
-        funders_list, submissions_list, replies_list
-    )
-    decided_total = sum(r.approved + r.declined + r.countered for r in funder_table)
+    funder_table = _compute_funder_table(funders_list, submissions_list, replies_list)
+    # Decided = approved + declined + countered + no_response. ``pending``
+    # is excluded — submissions awaiting an operator-recorded outcome
+    # don't belong in the denominator (matches FunderApprovalRow's own
+    # approval_rate_pct definition).
+    decided_total = sum(r.approved + r.declined + r.countered + r.no_response for r in funder_table)
     approved_total = sum(r.approved for r in funder_table)
     declined_total = sum(r.declined for r in funder_table)
-    approval_rate_pct = (
-        round((approved_total / decided_total) * 100) if decided_total > 0 else None
-    )
-    decline_rate_pct = (
-        round((declined_total / decided_total) * 100) if decided_total > 0 else None
-    )
+    approval_rate_pct = round((approved_total / decided_total) * 100) if decided_total > 0 else None
+    decline_rate_pct = round((declined_total / decided_total) * 100) if decided_total > 0 else None
 
     merchants_by_id = {m.id: m for m in merchants_list}
     docs_by_id = {d.id: d for d in documents_list if d.id is not None}
@@ -493,9 +501,7 @@ def compute_portfolio_metrics(
 
     fraud_catch_count, fraud_total_scored = _compute_fraud_counts(documents_list)
     fraud_catch_rate_pct = (
-        round((fraud_catch_count / fraud_total_scored) * 100)
-        if fraud_total_scored > 0
-        else None
+        round((fraud_catch_count / fraud_total_scored) * 100) if fraud_total_scored > 0 else None
     )
 
     render_queue = _compute_render_queue_counts_from_records(
@@ -674,7 +680,7 @@ def _compute_funder_table(
     submissions: list[SubmissionRow],
     reply_rows: list[dict[str, Any]],
 ) -> list[FunderApprovalRow]:
-    """Build the per-funder submission + reply counters.
+    """Build the per-funder submission + outcome counters.
 
     Submissions (U20): durable ``submissions`` table (migration 013).
     The U11 / U13 audit_log JSON-parsing fallback is gone — same
@@ -682,29 +688,56 @@ def _compute_funder_table(
     per (merchant, document, funder) tuple is one submission; counting
     the rows replaces parsing ``deal.submit_to_funders`` details.
 
-    Replies: ``funder_replies.funder_id`` + ``status`` aggregated per
-    funder. Sourced from migration 021. Kept as a separate signal —
-    a funder reply may land outside the date window when the operator
-    backfills, and the submissions row carries its own
-    ``funder_response_at`` lifecycle field for the eventual rewire.
+    Outcomes (migration 071): ``funder_replies.outcome`` is the
+    operator-confirmed result per submission. Values:
+    ``approved`` / ``declined`` / ``countered`` / ``no_response``.
+    ``pending`` is the residual — submissions with no outcome row.
+
+    Backwards compatibility: rows from the legacy email-parse path
+    (status in {approved,declined,countered}, no outcome) are folded
+    into the same buckets. If a row carries BOTH outcome and status
+    the outcome wins (the operator's confirmation supersedes the
+    auto-extracted email reply).
     """
     funder_by_id = {f.id: f for f in funders}
     submitted_per_funder: dict[UUID, int] = {}
     for s in submissions:
-        submitted_per_funder[s.funder_id] = (
-            submitted_per_funder.get(s.funder_id, 0) + 1
-        )
+        submitted_per_funder[s.funder_id] = submitted_per_funder.get(s.funder_id, 0) + 1
 
+    # Per-funder count of each outcome bucket. ``no_response`` is
+    # populated only by manual-outcome rows (outcome='no_response') —
+    # the email-parse path can never produce one by definition.
     replies_per_funder: dict[UUID, dict[str, int]] = {}
     for r in reply_rows:
         fid = _to_uuid(r.get("funder_id"))
+        if fid is None:
+            continue
+        # Prefer the operator-confirmed outcome over the auto-extracted
+        # status. Either column may be missing depending on which path
+        # wrote the row.
+        outcome = r.get("outcome")
         status = r.get("status")
-        if fid is None or status not in {"approved", "declined", "countered"}:
+        bucket_key: str | None = None
+        if isinstance(outcome, str) and outcome in {
+            "approved",
+            "declined",
+            "countered",
+            "no_response",
+        }:
+            bucket_key = outcome
+        elif isinstance(status, str) and status in {
+            "approved",
+            "declined",
+            "countered",
+        }:
+            bucket_key = status
+        if bucket_key is None:
             continue
         bucket = replies_per_funder.setdefault(
-            fid, {"approved": 0, "declined": 0, "countered": 0}
+            fid,
+            {"approved": 0, "declined": 0, "countered": 0, "no_response": 0},
         )
-        bucket[status] += 1
+        bucket[bucket_key] += 1
 
     rows: list[FunderApprovalRow] = []
     # Include every funder that has either a submission or a reply in
@@ -716,12 +749,19 @@ def _compute_funder_table(
         name = funder.name if funder is not None else f"funder {str(fid)[:8]}"
         submitted = submitted_per_funder.get(fid, 0)
         bucket = replies_per_funder.get(
-            fid, {"approved": 0, "declined": 0, "countered": 0}
+            fid,
+            {"approved": 0, "declined": 0, "countered": 0, "no_response": 0},
         )
         approved = bucket["approved"]
         declined = bucket["declined"]
         countered = bucket["countered"]
-        no_response = max(submitted - approved - declined - countered, 0)
+        no_response = bucket["no_response"]
+        # Pending = submissions for which no outcome row exists yet.
+        # Clamp at 0 because a reply may belong to a submission older
+        # than the date window (mismatched join), in which case the
+        # decided count can exceed ``submitted`` for this window.
+        decided = approved + declined + countered + no_response
+        pending = max(submitted - decided, 0)
         rows.append(
             FunderApprovalRow(
                 funder_id=fid,
@@ -731,6 +771,7 @@ def _compute_funder_table(
                 declined=declined,
                 countered=countered,
                 no_response=no_response,
+                pending=pending,
             )
         )
     rows.sort(key=lambda r: (-r.submitted, r.funder_name.lower()))
@@ -848,9 +889,7 @@ def _compute_tier_counts_from_decisions(
         tier = _decision_tier(r)
         if tier is not None:
             counts[tier] += 1
-    return TierCounts(
-        A=counts["A"], B=counts["B"], C=counts["C"], D=counts["D"], F=counts["F"]
-    )
+    return TierCounts(A=counts["A"], B=counts["B"], C=counts["C"], D=counts["D"], F=counts["F"])
 
 
 def _compute_state_counts_from_decisions(
@@ -883,7 +922,7 @@ def _compute_recent_activity_from_decisions(
     """
     sorted_rows = sorted(
         decision_rows,
-        key=lambda r: (_decision_decided_at(r) or datetime.min.replace(tzinfo=UTC)),
+        key=lambda r: _decision_decided_at(r) or datetime.min.replace(tzinfo=UTC),
         reverse=True,
     )
     out: list[RecentDeal] = []
@@ -897,9 +936,7 @@ def _compute_recent_activity_from_decisions(
         )
         decision_raw = r.get("decision")
         recommendation = (
-            _DECISION_TO_RECOMMENDATION.get(decision_raw)
-            if isinstance(decision_raw, str)
-            else None
+            _DECISION_TO_RECOMMENDATION.get(decision_raw) if isinstance(decision_raw, str) else None
         )
         out.append(
             RecentDeal(
@@ -907,11 +944,7 @@ def _compute_recent_activity_from_decisions(
                 business_name=(
                     merchant.business_name
                     if merchant is not None
-                    else (
-                        f"document {str(deal_uuid)[:8]}"
-                        if deal_uuid is not None
-                        else "—"
-                    )
+                    else (f"document {str(deal_uuid)[:8]}" if deal_uuid is not None else "—")
                 ),
                 tier=_decision_tier(r),
                 recommendation=recommendation,
@@ -1006,9 +1039,7 @@ def _compute_render_queue_counts(
     ``aegis.compliance.render_events.DisclosureRenderEventRepository``.
     """
     try:
-        records = render_events_repo.list_in_window(
-            from_date=from_date, to_date=to_date
-        )
+        records = render_events_repo.list_in_window(from_date=from_date, to_date=to_date)
     except Exception:
         # The route handler logs portfolio.fetch_failed for the broader
         # window; a render-queue fetch failure follows the same pattern
