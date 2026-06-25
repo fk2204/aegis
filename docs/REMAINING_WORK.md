@@ -1,21 +1,74 @@
 # AEGIS — Remaining work
 
-**Snapshot taken:** 2026-06-24 — overnight update. **Step 2 scoring
-cutover CLOSED** 2026-06-23 (commits c5c11fc + a80a388): track_abc
-now drives live decline decisions, legacy fraud_score informational at
-the scorer layer (parser-layer gate remains, separate retirement). H2
-+ H4 + H5 + H7 + H8 + H9 hygiene findings all CLOSED in the same
-session. Punch-list now centered on the new 2026-06-23 audit findings
-(operational + code/docs hygiene + cron wiring) — see section at the
-bottom. Earlier carryover: F3-F11 (Track A audit doc) still open.
-**Purpose:** durable list of what's queued, parked, or systemic. So nothing's
-lost between sessions.
+**Snapshot taken:** 2026-06-25 — 10 features shipped in a single session
+push (`39e3155` → `1a682c0` plus the `e3e00bf` shadow review surface):
+funder-reply outcome capture + immutable decisions + compliance
+obligations tracker + override flywheel + fintech bank warning +
+ai_generated_statement composite shadow detector + Track A F7-F11 audit
+findings + unreconciled_internal_transfer_v2 shadow detector +
+vision-first routing + offer-sizing wired into matching. Migrations
+069–072 all live on prod. See "2026-06-25 closure log" below for the
+full SHA-keyed index, and "2026-06-25 open items" for the new surface
+to triage. **Step 2 scoring cutover CLOSED** 2026-06-23
+(commits c5c11fc + a80a388): track_abc drives live decline decisions;
+parser-layer `fraud_score` gate retirement still open (see 2026-06-25
+items). **Purpose:** durable list of what's queued, parked, or systemic.
+So nothing's lost between sessions.
 
 Cross-references:
 - `CLAUDE.md` — guardrails (binding rules learned from the work below)
 - `docs/CLOSE_AUTOMATION_SPEC.md` — Option-A locked automation spec
 - `docs/SCORING_REDESIGN_CONTINUATION.md` — 3-track scoring redesign
 - `docs/audit-confirmed-bugs.md` — confirmed bugs awaiting decision-boundary fixes
+
+---
+
+## 2026-06-25 open items
+
+Surface from the 10-feature push and the post-push audit. Sized below.
+
+- 🔴 **Parser-layer `fraud_score` retirement** — the parser pipeline
+  still gates `manual_review` routing on `fraud_score >=
+  HARD_DECLINE_THRESHOLD` BEFORE the scorer ever runs (see
+  `src/aegis/parser/pipeline.py`, the "pre-scoring gate" call site
+  CLAUDE.md flags as the last split-brain). Track A/B/C has been the
+  live scorer since 2026-06-23 with no regression in the Mon 06:00
+  sentinel. The retirement is now safe to schedule — the path is
+  shadow-first (log what the parser gate WOULD route while the scorer
+  decides), corpus-validate, then flip a config flag. NOT a code
+  change at flip time.
+- 🟡 **Shadow signal review cadence** ✅ SHIPPED 2026-06-25
+  (`e3e00bf`) — Wed 06:00 UTC cron + Today card + `/ui/shadow-review`
+  surface. First fire next Wed; operator validates the audit-row
+  output before pointing any of the active shadow detectors
+  (`unreconciled_internal_transfer_v2`, `ai_generated_statement`,
+  `bank_statement_tampering_confirmed`) at the decline path.
+- 🟡 **`MIGRATIONS_DB_URL_PROD` stale on box** — `/etc/aegis/aegis.env`
+  on the Hetzner box has a stale Supabase pooler password (auth fails
+  on direct `apply_migrations.py` from the box, 2026-06-25 probe).
+  CI deploy workflow is unaffected — its DSN comes from the fresh
+  GitHub Actions secret. Hygiene only; rotation procedure documented
+  in `deploy/RUNBOOK.md` under "Secrets + key rotation".
+- 🟡 **CLAUDE.md modules table needs update** — new modules introduced
+  this session (`parser/forensic/`, `parser/fintech_banks.py`,
+  `compliance/obligations.py`, `compliance/snapshot.py`,
+  `compliance/overrides.py`, `ops/shadow_review.py`) are not yet in
+  the working-agreement modules table. Same-day refresh planned
+  alongside the closure log here.
+- 🟡 **`fix/close-note-attachments` branch is now active** — three
+  stash decisions resolved 2026-06-25: stash@{0} (submission reminder
+  cron) and stash@{1} (Track B + renewals pipeline) DROPPED as
+  superseded by what shipped on main; stash@{2} (note.pinned OR-gate)
+  APPLIED + committed (`726b19e` + `bd69c9a`) onto the still-parked
+  `fix/close-note-attachments` branch. Pin-vs-sort decision is the
+  one open item before the branch can un-park and merge.
+- 🟡 **Processor statement parser (Stripe / Square / Toast / Clover)**
+  — next major build. AEGIS currently parses bank statements only;
+  processor statements give a second, cleaner revenue signal for
+  matching the same merchant against funders who weight processor-
+  attached deals differently. Scope, fixtures, and the per-processor
+  PDF layout discovery (similar to the bank-layout learning surface
+  already shipped) need a dedicated session.
 
 ---
 
@@ -495,6 +548,86 @@ into funder matching, image-only banks auto-routed to vision mode.
 ### Tampering shadow review script ✅ SHIPPED 2026-06-12
 `scripts/tampering_shadow_review.py` — see the gating-conditions
 update under "Tampering rule shadow → live flip" above.
+
+---
+
+## 2026-06-25 closure log
+
+Single-session push — 10 features merged + deployed to prod. SHA-keyed
+index:
+
+- **Offer sizing wired into funder matching** — `f3825c5` —
+  `OfferRecommendation` now feeds the per-funder match grid so the
+  underwriter sees the recommended amount/factor/term alongside each
+  funder card.
+- **Vision-first routing for image-only PDFs** — `eadae5d` — parser
+  auto-routes image-only PDFs to the vision-first extraction path
+  rather than failing on the text-layer probe.
+- **`unreconciled_internal_transfer_v2` shadow detector** — `0af8b53`
+  (with monotonic-severity-ramp + proportional-tolerance + `_v2` flag
+  code fixup at `c374992`) — bundle-scope transfer-out detector with
+  `max($50, 0.1% * magnitude)` tolerance, 25/35/45/55/60 severity
+  ramp, `Pattern.code = "unreconciled_internal_transfer_v2"` to
+  disambiguate from the live `unreconciled_internal_transfer`. Shadow
+  only; `FRAUD_WEIGHTS["shadow_unreconciled_internal_transfer_v2"] ==
+  0`.
+- **Track A F7-F11 audit findings** — `f3a4816` — F7 dossier_panel
+  uploaded_at sort fallback, F8 metadata_flag signal-token scope, F9
+  Track A per-doc boundary on VU 7722 fixture, F10 `_drift_signal_
+  token` whitespace invariant, F11 evidence-hash `None` vs empty-dict
+  invariant. Doc-only annotations + one formatter refresh on
+  `scoring_v2/shadow_disagreements.py`.
+- **Immutable decisions table** — `c8aba8f` — migration 070
+  (re-asserts the 015 immutability triggers + cohort-2026_06
+  backfill), `aegis.compliance.snapshot` grows
+  `get_aegis_version()` + `get_rule_pack_version()`,
+  `_record_decision_for_score` shared payload builder used by every
+  merchant-flow decision site (including the missing-return-type fixup
+  in `a800693`).
+- **Compliance obligations tracker** — `1daad7f` (with off-by-one fix
+  in `0c80ca4`) — migration 069 +
+  `src/aegis/compliance/obligations.py` (`run_compliance_obligation_
+  reminder_pass` + `_cron`, repos, Today attention card). Threaded
+  `today` through `list_upcoming` so the cron isn't off-by-one across
+  UTC midnight.
+- **Funder reply ingestion + outcome capture** — `39e3155` (with
+  `submission_id` FK fix in `f38bee2`) — migration 071 adds outcome
+  columns to `funder_replies`, exclusive-or anchor CHECK between
+  `deal_id` (email-parse) and `submission_id` (manual outcome),
+  Pydantic + repo + HTMX modal on the dossier submission row,
+  portfolio analytics wire-through (`pending` distinct from
+  `no_response`, approval_rate denominator now includes
+  `no_response`).
+- **Operator override flywheel** — `ac5af49` — migration 072 extends
+  the 017 overrides table (merchant_id / document_id /
+  pattern_false_positives + decline parse_status enum widen), HTMX
+  override modal on the dossier, `record_dossier_override` writer,
+  `/ui/overrides/summary` confusion-matrix endpoint.
+- **Fintech bank detection** — `1a682c0` —
+  `src/aegis/parser/fintech_banks.py` (12-bank dict — Mercury / Brex /
+  Bluevine / Novo / Relay / Lili / Found / Rho / Arc / Nearside /
+  Oxygen / NorthOne), `[WARN] fintech_bank_detected:*` emit on
+  `all_flags`, `FintechBankRisk` soft concern on every funder-match
+  card. Warning only — parse_status, fraud_score, FRAUD_WEIGHTS
+  unchanged.
+- **AI-generated statement composite (shadow)** — `1a682c0` —
+  `src/aegis/parser/forensic/ai_statement.py` 4-signal composite
+  (math perfection 30 / description entropy 25 / round-amount
+  clustering 25 / font uniformity 20). Emits at composite >= 40 to
+  `[SHADOW] ai_generated_statement: score=N/100`. Shadow only;
+  `FRAUD_WEIGHTS["shadow_ai_generated_statement"] == 0`.
+- **Weekly shadow signal review surface** — `e3e00bf` — Wed 06:00 UTC
+  arq cron + Today attention card + `/ui/shadow-review` page.
+  Aggregates every `[SHADOW] *` flag fire from documents parsed in
+  the trailing 7 days, writes one `shadow_signal.weekly_summary`
+  audit row per (doc, code) + one `shadow_signal.weekly_summary_complete`
+  summary row carrying counts + `source_document_ids` per
+  flag code. Idempotent within window.
+
+Migrations 069 (compliance_obligations re-assert + seed), 070
+(decisions immutability triggers), 071 (funder_replies outcome), and
+072 (overrides extension) all applied via CI deploy workflow on
+prod (see `gh run view <deploy_id> --log` for each).
 
 ---
 
