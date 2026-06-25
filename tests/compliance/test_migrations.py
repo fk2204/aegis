@@ -394,3 +394,97 @@ def test_038_selects_from_scoring_shadow_disagreements() -> None:
         sql,
         re.IGNORECASE,
     )
+
+
+# --- 070 decisions immutability + backfill ----------------------------------
+
+
+def test_070_reasserts_block_decision_modification_function() -> None:
+    """Migration 070 idempotently re-installs the immutability trigger
+    function from migration 015 so a fresh project that lost the
+    triggers (manual ops / restored backup) gets them back without
+    depending on 015 having run first."""
+    sql = _read("070_decisions_immutable.sql")
+    assert re.search(
+        r"CREATE OR REPLACE FUNCTION\s+block_decision_modification",
+        sql,
+        re.IGNORECASE,
+    )
+    # The error message must match the 015 contract so existing
+    # callers / tests that check for the substring keep working.
+    assert "decisions table is append-only" in sql
+
+
+def test_070_installs_both_update_and_delete_triggers() -> None:
+    sql = _read("070_decisions_immutable.sql")
+    for trig in ("decisions_no_update", "decisions_no_delete"):
+        assert re.search(
+            rf"CREATE TRIGGER\s+{trig}\s+BEFORE\s+(UPDATE|DELETE)\s+ON\s+decisions",
+            sql,
+            re.IGNORECASE,
+        ), f"trigger {trig} missing"
+
+
+def test_070_extends_backfill_unique_index_to_2026_06_cohort() -> None:
+    """The partial unique index in migration 015 only covered the
+    ``backfill_2026_05`` cohort. Migration 070 extends the WHERE clause
+    to also cover ``backfill_2026_06`` so a re-run of the 070 backfill
+    after a partial failure stays idempotent."""
+    sql = _read("070_decisions_immutable.sql")
+    # DROP-and-CREATE to widen the WHERE clause.
+    assert re.search(
+        r"DROP INDEX IF EXISTS\s+uq_decisions_backfill_per_deal",
+        sql,
+        re.IGNORECASE,
+    )
+    assert re.search(
+        r"CREATE UNIQUE INDEX IF NOT EXISTS\s+uq_decisions_backfill_per_deal",
+        sql,
+        re.IGNORECASE,
+    )
+    assert "backfill_2026_05" in sql
+    assert "backfill_2026_06" in sql
+
+
+def test_070_backfill_inserts_against_real_schema_columns() -> None:
+    """The backfill SELECT must source columns that actually exist on
+    the analyses + documents tables — see 000_foundation.sql and
+    002_analyses_source_ids.sql + 033_documents_storage_and_retention.sql."""
+    sql = _read("070_decisions_immutable.sql")
+    # Real analyses _source_ids columns (per migration 002).
+    for col in (
+        "avg_daily_balance_source_ids",
+        "true_revenue_source_ids",
+        "num_nsf_source_ids",
+        "days_negative_source_ids",
+        "mca_daily_total_source_ids",
+    ):
+        assert col in sql, f"backfill should reference {col}"
+    # documents-side columns.
+    assert "fraud_score" in sql
+    assert "fraud_score_breakdown" in sql
+    assert "sha256_original" in sql
+    # And it must skip when a decisions row already exists for the doc.
+    assert re.search(
+        r"NOT EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+decisions",
+        sql,
+        re.IGNORECASE,
+    )
+
+
+def test_070_backfill_stamps_2026_06_cohort_label() -> None:
+    sql = _read("070_decisions_immutable.sql")
+    assert "'backfill_2026_06'" in sql
+
+
+def test_070_writes_audit_row_for_backfill_event() -> None:
+    """Phase 2 acceptance: every state change writes to audit_log. The
+    backfill itself is a state change; migration 070 must record it."""
+    sql = _read("070_decisions_immutable.sql")
+    assert re.search(
+        r"INSERT INTO audit_log",
+        sql,
+        re.IGNORECASE,
+    )
+    assert "decisions.backfilled" in sql
+    assert "migration_070" in sql

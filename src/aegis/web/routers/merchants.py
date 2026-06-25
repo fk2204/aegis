@@ -159,6 +159,7 @@ from aegis.web._router_helpers import (
     _form_dict_from_locals,
     _int_or_none,
     _parse_bundle_query,
+    _record_decision_for_score,
     _select_default_bundle,
     _sha256_hex,
     _validate_merchant_state,
@@ -877,6 +878,7 @@ async def merchant_matched_funders_csv(
 
 @router.post("/merchants/{merchant_id}/submit", response_model=None)
 async def merchant_submit_to_funders(
+    request: Request,
     merchant_id: UUID,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     docs: Annotated[DocumentRepository, Depends(get_repository)],
@@ -884,6 +886,7 @@ async def merchant_submit_to_funders(
     ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
     audit: Annotated[AuditLog, Depends(get_audit)],
     submissions_repo: Annotated[SubmissionRepository, Depends(get_submission_repository)],
+    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
     funder_ids: Annotated[list[str], Form()],
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> Response:
@@ -946,6 +949,22 @@ async def merchant_submit_to_funders(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"ofac_unavailable: {exc}",
         ) from exc
+
+    # mp Phase 2 §12 — immutable decisions row BEFORE the operation
+    # returns. Anchor doc is items[0][0] (most-recent analyzed doc,
+    # matches the submissions-row anchor below). Snapshot write
+    # failures raise 503 here so the operator can retry rather than
+    # silently shipping a submission with no audit trail.
+    _record_decision_for_score(
+        document_id=items[0][0].id,
+        deal=score_input,
+        result=score_result,
+        state_matrix=request.app.state.state_matrix,
+        snapshot=snapshot,
+        audit=audit,
+        decided_by="submit_to_funders",
+        actor_email=actor_email,
+    )
 
     # 2026-06-24 offer-sizing wire-through: the per-funder submission
     # CSVs include ``estimated_advance`` which funders read directly.
@@ -1146,6 +1165,7 @@ def _integrity_verdict_word(verdict: IntegrityVerdict | None) -> str | None:
 
 @router.post("/merchants/{merchant_id}/submit-to-funder", response_model=None)
 async def merchant_submit_to_funder(
+    request: Request,
     merchant_id: UUID,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     docs: Annotated[DocumentRepository, Depends(get_repository)],
@@ -1157,6 +1177,7 @@ async def merchant_submit_to_funder(
         FunderNoteSubmissionRepository,
         Depends(get_funder_note_submission_repository),
     ],
+    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> HTMLResponse:
     """Post the AEGIS funder-submission note to the Close Lead activity feed.
@@ -1178,6 +1199,7 @@ async def merchant_submit_to_funder(
          return the "Submitted ✓" swap HTML (HTMX outerHTML).
     """
     return await _perform_submit_to_funder(
+        request=request,
         merchant_id=merchant_id,
         target_funder_id=None,
         merchants=merchants,
@@ -1187,12 +1209,14 @@ async def merchant_submit_to_funder(
         audit=audit,
         close_client=close_client,
         funder_note_subs=funder_note_subs,
+        snapshot=snapshot,
         actor_email=actor_email,
     )
 
 
 @router.post("/merchants/{merchant_id}/submit-to-funder/{funder_id}", response_model=None)
 async def merchant_submit_to_specific_funder(
+    request: Request,
     merchant_id: UUID,
     funder_id: UUID,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
@@ -1205,6 +1229,7 @@ async def merchant_submit_to_specific_funder(
         FunderNoteSubmissionRepository,
         Depends(get_funder_note_submission_repository),
     ],
+    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> HTMLResponse:
     """Phase 7B per-funder submit (2026-06-19).
@@ -1218,6 +1243,7 @@ async def merchant_submit_to_specific_funder(
     swap HTML the global endpoint returns.
     """
     return await _perform_submit_to_funder(
+        request=request,
         merchant_id=merchant_id,
         target_funder_id=funder_id,
         merchants=merchants,
@@ -1227,12 +1253,14 @@ async def merchant_submit_to_specific_funder(
         audit=audit,
         close_client=close_client,
         funder_note_subs=funder_note_subs,
+        snapshot=snapshot,
         actor_email=actor_email,
     )
 
 
 async def _perform_submit_to_funder(
     *,
+    request: Request,
     merchant_id: UUID,
     target_funder_id: UUID | None,
     merchants: MerchantRepository,
@@ -1242,6 +1270,7 @@ async def _perform_submit_to_funder(
     audit: AuditLog,
     close_client: CloseClient,
     funder_note_subs: FunderNoteSubmissionRepository,
+    snapshot: DecisionSnapshot,
     actor_email: str | None,
 ) -> HTMLResponse:
     """Shared implementation for the global + per-funder Submit-to-Funder
@@ -1296,6 +1325,21 @@ async def _perform_submit_to_funder(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"ofac_unavailable: {exc}",
         ) from exc
+
+    # mp Phase 2 §12 — immutable decisions row BEFORE the operation
+    # returns. Anchor on the same most-recent analyzed document the
+    # downstream funder-note submission row will anchor on; that's the
+    # natural FK target for the snapshot.
+    _record_decision_for_score(
+        document_id=items[0][0].id,
+        deal=score_input,
+        result=score_result,
+        state_matrix=request.app.state.state_matrix,
+        snapshot=snapshot,
+        audit=audit,
+        decided_by="submit_to_funder",
+        actor_email=actor_email,
+    )
 
     latest_doc, latest_analysis = items[0]
     latest_transactions = docs.list_transactions(latest_doc.id)
@@ -1506,6 +1550,7 @@ _RENEWAL_DAYS_PER_MONTH: Final[int] = 30
 
 @router.post("/merchants/{merchant_id}/prepare-renewal", response_model=None)
 async def merchant_prepare_renewal(
+    request: Request,
     merchant_id: UUID,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
     docs: Annotated[DocumentRepository, Depends(get_repository)],
@@ -1517,6 +1562,7 @@ async def merchant_prepare_renewal(
         FunderNoteSubmissionRepository,
         Depends(get_funder_note_submission_repository),
     ],
+    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
     actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
 ) -> HTMLResponse:
     """Re-run scoring + post a renewal-flagged Close Note for the merchant.
@@ -1633,6 +1679,22 @@ async def merchant_prepare_renewal(
             continue
         matched.append(m)
     matched.sort(key=lambda fm: fm.match_score, reverse=True)
+
+    # mp Phase 2 §12 — immutable decisions row BEFORE the operation
+    # returns. Renewal scoring writes a fresh decisions snapshot so the
+    # audit trail captures the new score / tier / recommendation that
+    # drove the renewal note posted below, not just the original-
+    # funding-cycle decision row backfilled at first funding.
+    _record_decision_for_score(
+        document_id=items[0][0].id,
+        deal=score_input,
+        result=score_result,
+        state_matrix=request.app.state.state_matrix,
+        snapshot=snapshot,
+        audit=audit,
+        decided_by="prepare_renewal",
+        actor_email=actor_email,
+    )
 
     # Build the renewal-context header only when both halves are present.
     # Original_amount can be None even with a prior approved row if the
