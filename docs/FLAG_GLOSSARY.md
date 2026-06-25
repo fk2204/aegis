@@ -535,5 +535,19 @@ Cryptographic signature validation. Would require adding a new dependency (pyhan
 
 ---
 
+## 11. WARN-prefixed flags (operator caveats, never decline)
+
+These detectors emit one entry into `PipelineResult.all_flags` with the `[WARN]` prefix. They are surface-only — `parse_status`, `fraud_score`, `FRAUD_WEIGHTS`, and Track A / Track B verdicts are unchanged. They exist so the operator + downstream UI (funder-match grid soft concerns, dossier flag list) see funder-dependent context that AEGIS does not have authority to act on unilaterally.
+
+### `fintech_bank_detected: <Name> — many funders decline fintech bank accounts` — WARN
+
+- **Detects:** Extracted `bank_name` matches a known fintech / neobank — Mercury, Brex, Bluevine, Novo, Relay, Lili, Found, Rho, Arc, Nearside, Oxygen, NorthOne. Case-insensitive substring match; the static list lives in `src/aegis/parser/fintech_banks.py:FINTECH_BANK_IDENTIFIERS`.
+- **Why it matters:** Funder appetite for fintech bank accounts varies. Some funders decline them outright because fintech banks lack the traditional ACH-debit controls / daily-remit guarantees that traditional banks provide; others accept them. The decision is per-funder, not per-deal — so AEGIS does not decline.
+- **Surface:** The funder-match grid attaches "Merchant banks with `<Name>`. Verify funder accepts fintech bank accounts before submitting." as a soft concern on every match card. Cards that are otherwise green become amber when the warning lands; cards that are otherwise red still hard-fail on the underwriting reason, with the bank caveat alongside.
+- **Adding entries:** New fintech banks land in `FINTECH_BANK_IDENTIFIERS` when the operator confirms an upstream merchant banks with them. Substring matching automatically captures sub-brands ("Mercury Treasury", "Brex Cash") without an explicit list entry.
+- **Source:** `src/aegis/parser/pipeline.py` (`detect_fintech_bank` call, appended after the tampering-persistence flag), `src/aegis/parser/fintech_banks.py`.
+
+---
+
 **Last updated:** 2026-05-28
 **Maintainer:** Filip (with the AEGIS engineering process — re-verify against `patterns.py`, `metadata.py`, `aggregate.py` when those files change)

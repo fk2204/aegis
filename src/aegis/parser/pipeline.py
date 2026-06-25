@@ -58,6 +58,7 @@ from aegis.parser.extract import (
     extract_statement_per_page,
     extract_statement_via_vision,
 )
+from aegis.parser.fintech_banks import detect_fintech_bank
 from aegis.parser.metadata import MetadataAnalysis, analyze_metadata
 from aegis.parser.models import Aggregates, ClassifiedTransaction, ValidationResult
 from aegis.parser.nsf_secondary import secondary_validate_nsf
@@ -578,6 +579,23 @@ def run_pipeline(
     )
     if tampering_flag is not None:
         all_flags.append(tampering_flag)
+
+    # Fintech bank-of-record detection (warning only). When the
+    # extracted ``bank_name`` matches a known fintech / neobank
+    # (Mercury, Brex, Novo, etc.), surface a ``[WARN]`` flag so the
+    # operator + the per-funder match grid see the bank as a soft
+    # concern. This is NOT a decline path — funder appetite for
+    # fintech accounts varies (see ``parser.fintech_banks`` module
+    # docstring). parse_status, fraud_score, and FRAUD_WEIGHTS are
+    # unchanged; the only side effect is one new entry on all_flags.
+    fintech_bank_name = extraction.statement.summary.bank_name if extraction is not None else None
+    fintech_hit = detect_fintech_bank(fintech_bank_name)
+    if fintech_hit is not None:
+        canonical_name, _warning = fintech_hit
+        all_flags.append(
+            f"[WARN] fintech_bank_detected: {canonical_name} — "
+            f"many funders decline fintech bank accounts"
+        )
 
     # Bank-layout learning: record the successful parse so the next
     # parse for the same bank can leverage operator-curated hints. Only
