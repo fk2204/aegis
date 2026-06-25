@@ -184,7 +184,7 @@ def test_post_outcome_approved_persists_row_and_writes_audit(
     assert len(matching) == 1
     entry = matching[0]
     assert entry["actor_email"] == "filip@commerafunding.com"
-    assert entry["subject_type"] == "deal"
+    assert entry["subject_type"] == "funder_note_submission"
     assert entry["subject_id"] == str(submission.id)
     assert entry["details"]["outcome"] == "approved"
     assert entry["details"]["funder_id"] == str(funder.id)

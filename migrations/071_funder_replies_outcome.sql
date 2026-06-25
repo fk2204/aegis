@@ -46,14 +46,43 @@ ALTER TABLE funder_replies
   ADD COLUMN IF NOT EXISTS outcome_term_days INT,
   ADD COLUMN IF NOT EXISTS outcome_notes TEXT,
   ADD COLUMN IF NOT EXISTS outcome_recorded_at TIMESTAMPTZ,
-  ADD COLUMN IF NOT EXISTS outcome_recorded_by TEXT;
+  ADD COLUMN IF NOT EXISTS outcome_recorded_by TEXT,
+  -- Manual outcome rows record against a funder_note_submissions row,
+  -- not a documents row. The original 021 schema set deal_id NOT NULL
+  -- + FK to documents(id); operator-recorded outcomes on the dossier
+  -- have no document anchor (the submission is the natural anchor).
+  -- ON DELETE RESTRICT because a recorded outcome is an audit artifact
+  -- and must outlive submission soft-delete.
+  ADD COLUMN IF NOT EXISTS submission_id UUID
+    REFERENCES funder_note_submissions(id) ON DELETE RESTRICT;
 
 -- Relax status + raw_text NOT NULL to accommodate manual no_response
 -- captures. The existence-or-outcome CHECK below guarantees one or the
 -- other branch is populated; we never end up with both NULL.
 ALTER TABLE funder_replies
   ALTER COLUMN status DROP NOT NULL,
-  ALTER COLUMN raw_text DROP NOT NULL;
+  ALTER COLUMN raw_text DROP NOT NULL,
+  -- deal_id stays NOT NULL for legacy email-parse rows. Relaxed here so
+  -- a manual outcome row anchored on submission_id can omit deal_id.
+  -- The exactly-one CHECK below guarantees rows aren't anchorless.
+  ALTER COLUMN deal_id DROP NOT NULL;
+
+-- Anchor invariant: every row points to exactly one of deal_id
+-- (email-parse path, references documents) or submission_id (manual
+-- outcome path, references funder_note_submissions). Never both, never
+-- neither.
+ALTER TABLE funder_replies
+  DROP CONSTRAINT IF EXISTS funder_replies_anchor_xor_check;
+ALTER TABLE funder_replies
+  ADD CONSTRAINT funder_replies_anchor_xor_check
+  CHECK (
+    (deal_id IS NOT NULL AND submission_id IS NULL)
+    OR (deal_id IS NULL AND submission_id IS NOT NULL)
+  );
+
+CREATE INDEX IF NOT EXISTS idx_funder_replies_submission
+  ON funder_replies (submission_id)
+  WHERE submission_id IS NOT NULL;
 
 -- New outcome enum. Distinct from the existing status CHECK so the
 -- email-parse path (status in {approved,declined,countered}) does

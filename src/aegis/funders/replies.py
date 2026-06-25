@@ -192,7 +192,12 @@ class FunderReplyOutcomePayload(BaseModel):
         frozen=True,
     )
 
-    deal_id: UUID
+    # Anchored on the funder_note_submissions row the operator is
+    # recording the outcome against — NOT a documents.id. Migration 071
+    # added funder_replies.submission_id (FK -> funder_note_submissions)
+    # and relaxed deal_id NOT NULL; the email-parse path still uses
+    # deal_id, the manual-outcome path uses submission_id.
+    submission_id: UUID
     funder_id: UUID
     outcome: ReplyOutcome
     outcome_amount: _OutcomeAmount | None = None
@@ -422,7 +427,11 @@ class InMemoryFunderReplyRepository:
         self._replies.append(
             {
                 "id": str(row_id),
-                "deal_id": str(payload.deal_id),
+                # deal_id stays NULL on manual outcome rows; submission_id
+                # is the anchor. The DB exclusive-or CHECK in migration
+                # 071 (funder_replies_anchor_xor_check) enforces this.
+                "deal_id": None,
+                "submission_id": str(payload.submission_id),
                 "funder_id": str(payload.funder_id),
                 # status is NULL for manual no_response outcome rows.
                 # For approved/declined/countered we mirror the outcome
@@ -568,7 +577,9 @@ class SupabaseFunderReplyRepository:
         # round-trip. Mirrors the funder_note_submissions repo posture.
         body: dict[str, Any] = {
             "id": str(row_id),
-            "deal_id": str(payload.deal_id),
+            # deal_id omitted (NULL); submission_id is the anchor for
+            # manual outcome rows per migration 071 anchor-XOR CHECK.
+            "submission_id": str(payload.submission_id),
             "funder_id": str(payload.funder_id),
             "ingested_via": "operator_paste",
             "received_at": recorded_at.isoformat(),
@@ -597,13 +608,13 @@ class SupabaseFunderReplyRepository:
             get_supabase().table("funder_replies").insert(body).execute()
         except Exception as exc:
             _log.error(
-                "funder_replies.insert_outcome_failed deal_id=%s funder_id=%s outcome=%s",
-                payload.deal_id,
+                "funder_replies.insert_outcome_failed submission_id=%s funder_id=%s outcome=%s",
+                payload.submission_id,
                 payload.funder_id,
                 payload.outcome,
             )
             raise FunderReplyError(
-                f"failed to insert outcome row for deal {payload.deal_id}"
+                f"failed to insert outcome row for submission {payload.submission_id}"
             ) from exc
         return row_id
 
@@ -756,8 +767,10 @@ def record_outcome(
         actor="dashboard",
         actor_email=payload.outcome_recorded_by,
         action="funder_reply.outcome_recorded",
-        subject_type="deal",
-        subject_id=payload.deal_id,
+        # Subject is the funder_note_submission the outcome describes —
+        # not a document. Mirrors the FK on funder_replies.submission_id.
+        subject_type="funder_note_submission",
+        subject_id=payload.submission_id,
         details={
             "reply_id": str(reply_id),
             "funder_id": str(payload.funder_id),

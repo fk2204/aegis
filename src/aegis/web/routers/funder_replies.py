@@ -245,7 +245,7 @@ async def record_funder_reply_outcome(
 
     try:
         payload = FunderReplyOutcomePayload(
-            deal_id=submission_id,  # we record against the submission row
+            submission_id=submission_id,
             funder_id=funder_id,
             outcome=typed_outcome,
             outcome_amount=amount,

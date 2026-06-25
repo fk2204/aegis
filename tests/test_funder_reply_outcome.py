@@ -35,7 +35,7 @@ NOW = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
 
 def _payload(
     *,
-    deal_id: UUID | None = None,
+    submission_id: UUID | None = None,
     funder_id: UUID | None = None,
     outcome: str = "approved",
     outcome_amount: Decimal | None = Decimal("50000.00"),
@@ -45,7 +45,7 @@ def _payload(
     outcome_recorded_by: str = "filip@commerafunding.com",
 ) -> FunderReplyOutcomePayload:
     return FunderReplyOutcomePayload(
-        deal_id=deal_id or uuid4(),
+        submission_id=submission_id or uuid4(),
         funder_id=funder_id or uuid4(),
         outcome=outcome,
         outcome_amount=outcome_amount,
@@ -66,7 +66,7 @@ def test_declined_outcome_rejects_offer_fields() -> None:
     (mirrors the DB CHECK constraint from migration 071)."""
     with pytest.raises(ValueError, match="outcome='declined'"):
         FunderReplyOutcomePayload(
-            deal_id=uuid4(),
+            submission_id=uuid4(),
             funder_id=uuid4(),
             outcome="declined",
             outcome_amount=Decimal("50000.00"),
@@ -79,7 +79,7 @@ def test_no_response_outcome_rejects_offer_fields() -> None:
     so amount/factor/term make no sense."""
     with pytest.raises(ValueError, match="outcome='no_response'"):
         FunderReplyOutcomePayload(
-            deal_id=uuid4(),
+            submission_id=uuid4(),
             funder_id=uuid4(),
             outcome="no_response",
             outcome_factor_rate=Decimal("1.300"),
@@ -107,7 +107,7 @@ def test_declined_outcome_with_none_offer_fields_validates() -> None:
     """Declined outcome with offer fields explicitly None is the canonical
     declined shape — must validate."""
     p = FunderReplyOutcomePayload(
-        deal_id=uuid4(),
+        submission_id=uuid4(),
         funder_id=uuid4(),
         outcome="declined",
         outcome_recorded_by="filip@commerafunding.com",
@@ -133,10 +133,10 @@ def test_record_outcome_persists_all_fields() -> None:
     """
     repo = InMemoryFunderReplyRepository()
     audit = InMemoryAuditLog()
-    deal_id = uuid4()
+    submission_id = uuid4()
     funder_id = uuid4()
     payload = _payload(
-        deal_id=deal_id,
+        submission_id=submission_id,
         funder_id=funder_id,
         outcome="approved",
         outcome_amount=Decimal("75000.00"),
@@ -150,7 +150,10 @@ def test_record_outcome_persists_all_fields() -> None:
     assert len(rows) == 1
     row = rows[0]
     assert row["id"] == str(reply_id)
-    assert row["deal_id"] == str(deal_id)
+    # Manual outcome row: deal_id NULL, submission_id anchors per the
+    # mig 071 anchor-XOR CHECK.
+    assert row["deal_id"] is None
+    assert row["submission_id"] == str(submission_id)
     assert row["funder_id"] == str(funder_id)
     assert row["outcome"] == "approved"
     # Decimal preserved end-to-end.
@@ -172,7 +175,7 @@ def test_record_outcome_no_response_leaves_status_null() -> None:
     repo = InMemoryFunderReplyRepository()
     audit = InMemoryAuditLog()
     payload = FunderReplyOutcomePayload(
-        deal_id=uuid4(),
+        submission_id=uuid4(),
         funder_id=uuid4(),
         outcome="no_response",
         outcome_recorded_by="filip@commerafunding.com",
@@ -194,7 +197,7 @@ def test_record_outcome_mirrors_outcome_to_status_for_compat() -> None:
     audit = InMemoryAuditLog()
     for outcome in ("approved", "declined", "countered"):
         payload = FunderReplyOutcomePayload(
-            deal_id=uuid4(),
+            submission_id=uuid4(),
             funder_id=uuid4(),
             outcome=outcome,
             outcome_recorded_by="filip@commerafunding.com",
@@ -208,20 +211,21 @@ def test_record_outcome_mirrors_outcome_to_status_for_compat() -> None:
 
 def test_record_outcome_writes_audit_row_with_right_shape() -> None:
     """The audit row carries action=funder_reply.outcome_recorded,
-    subject_type=deal, subject_id=deal_id, and a details payload that
-    includes reply_id + funder_id + outcome + the offer fields."""
+    subject_type=funder_note_submission, subject_id=submission_id, and a
+    details payload that includes reply_id + funder_id + outcome + the
+    offer fields."""
     repo = InMemoryFunderReplyRepository()
     audit = InMemoryAuditLog()
-    deal_id = uuid4()
+    submission_id = uuid4()
     funder_id = uuid4()
-    payload = _payload(deal_id=deal_id, funder_id=funder_id, outcome="approved")
+    payload = _payload(submission_id=submission_id, funder_id=funder_id, outcome="approved")
     reply_id = record_outcome(payload, repo=repo, audit=audit, now=NOW)
 
     assert len(audit.entries) == 1
     entry = audit.entries[0]
     assert entry["action"] == "funder_reply.outcome_recorded"
-    assert entry["subject_type"] == "deal"
-    assert entry["subject_id"] == str(deal_id)
+    assert entry["subject_type"] == "funder_note_submission"
+    assert entry["subject_id"] == str(submission_id)
     assert entry["actor"] == "dashboard"
     assert entry["actor_email"] == "filip@commerafunding.com"
     details = entry["details"]
