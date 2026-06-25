@@ -1,16 +1,21 @@
 """Shadow-mode unreconciled-internal-transfer detector tests.
 
 Covers ``detect_unreconciled_internal_transfers`` added to
-``parser/patterns.py`` per operator spec 2026-06-24:
+``parser/patterns.py`` per operator spec 2026-06-24 (with same-day
+operator follow-up corrections):
 
 - Detects transfer-OUT rows (``own_account`` classification OR
   ``TRANSFER TO`` / ``WIRE TO`` / ``ACH TO`` / ``ZELLE TO`` description)
   with ``abs(amount) > $500`` that have no matching transfer-in within
-  ±$50 / ±5 days anywhere in the submitted bundle.
-- Severity: 25 per instance, compound to 40 at 3+ instances, cap 60.
+  ``max($50, 0.1% * magnitude)`` / ±5 days anywhere in the submitted
+  bundle.
+- Severity: monotonic ramp ``min(60, 25 + (n - 1) * 10)``. n=1 → 25;
+  n=2 → 35; n=3 → 45; n=4 → 55; n=5+ → 60 (cap). No drop at any n.
 - Shadow-mode: emits to ``PatternAnalysis.shadow_patterns``, code
-  ``unreconciled_internal_transfer``, severity-0 carve-out via
-  ``FRAUD_WEIGHTS["shadow_unreconciled_internal_transfer"] == 0``.
+  ``unreconciled_internal_transfer_v2`` (``_v2`` suffix disambiguates
+  from the live ``unreconciled_internal_transfer``), severity-0
+  carve-out via
+  ``FRAUD_WEIGHTS["shadow_unreconciled_internal_transfer_v2"] == 0``.
   Does NOT alter ``fraud_score`` / ``parse_status``.
 """
 
@@ -32,6 +37,9 @@ from aegis.parser.pipeline import FRAUD_WEIGHTS
 PERIOD_START = date(2026, 1, 1)
 PERIOD_END = date(2026, 1, 31)
 TODAY = date(2026, 2, 5)
+
+SHADOW_CODE = "unreconciled_internal_transfer_v2"
+SHADOW_WEIGHT_KEY = "shadow_unreconciled_internal_transfer_v2"
 
 
 def _txn(
@@ -56,7 +64,7 @@ def _txn(
 
 
 def _shadow_uit(pa: PatternAnalysis) -> list[Pattern]:
-    return [p for p in pa.shadow_patterns if p.code == "unreconciled_internal_transfer"]
+    return [p for p in pa.shadow_patterns if p.code == SHADOW_CODE]
 
 
 def _analyze(txns: list[ClassifiedTransaction]) -> PatternAnalysis:
@@ -106,7 +114,7 @@ def test_single_unmatched_transfer_out_severity_25() -> None:
     )
     hits = detect_unreconciled_internal_transfers([out, unrelated], [out, unrelated])
     assert len(hits) == 1
-    assert hits[0].code == "unreconciled_internal_transfer"
+    assert hits[0].code == SHADOW_CODE
     assert hits[0].severity == 25
     assert hits[0].source_ids == [out.id]
     # Detail surfaces counterparty + amount per spec.
@@ -115,11 +123,11 @@ def test_single_unmatched_transfer_out_severity_25() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Spec test 3 — 3+ unmatched -> severity 40 (compound)
+# Spec test 3 — 3 unmatched -> severity 45 (monotonic ramp, n=3)
 # ---------------------------------------------------------------------------
 
 
-def test_three_unmatched_transfer_outs_severity_40_compound() -> None:
+def test_three_unmatched_transfer_outs_severity_45_ramp() -> None:
     outs = [
         _txn(
             posted_date=date(2026, 1, day),
@@ -133,10 +141,8 @@ def test_three_unmatched_transfer_outs_severity_40_compound() -> None:
     hits = detect_unreconciled_internal_transfers(outs, outs)
     assert len(hits) == 3
     for h in hits:
-        assert h.severity == 40, (
-            f"3+ unmatched should bump severity to compound floor 40, got {h.severity}"
-        )
-        assert h.code == "unreconciled_internal_transfer"
+        assert h.severity == 45, f"3 unmatched should ramp to 25 + (3-1)*10 = 45, got {h.severity}"
+        assert h.code == SHADOW_CODE
         assert len(h.source_ids) == 1
 
 
@@ -176,11 +182,12 @@ def test_match_within_five_day_window_does_not_fire() -> None:
         amount=Decimal("-10000.00"),
         category="wire_out",
     )
-    # 5 days later (within the ±5d window) and amount within $50 tolerance.
+    # 5 days later (within the ±5d window). Tolerance on $10k is
+    # max($50, $10) = $50, so a $25 gap is well inside.
     inbound = _txn(
         posted_date=date(2026, 1, 15),
         description="WIRE FROM BROKERAGE",
-        amount=Decimal("9975.00"),  # $25 less, within ±$50
+        amount=Decimal("9975.00"),  # $25 less, within $50 floor
         category="wire_in",
     )
     hits = detect_unreconciled_internal_transfers([out, inbound], [out, inbound])
@@ -206,8 +213,11 @@ def test_match_outside_five_day_window_fires() -> None:
     assert hits[0].severity == 25
 
 
-def test_amount_outside_50_tolerance_fires() -> None:
-    """Boundary: $51 magnitude difference is OUTSIDE ±$50 — should fire."""
+def test_amount_outside_50_floor_fires_on_small_transfer() -> None:
+    """Floor branch: $5k transfer, tolerance = max($50, $5) = $50.
+
+    $51 gap is outside the floor — must fire.
+    """
     out = _txn(
         posted_date=date(2026, 1, 10),
         description="ACH TO SAVINGS",
@@ -217,26 +227,71 @@ def test_amount_outside_50_tolerance_fires() -> None:
     inbound = _txn(
         posted_date=date(2026, 1, 11),
         description="ACH FROM CHK",
-        amount=Decimal("4949.00"),  # $51 difference, just outside ±$50
+        amount=Decimal("4949.00"),  # $51 difference, just outside the $50 floor
         category="ach_credit",
     )
     hits = detect_unreconciled_internal_transfers([out, inbound], [out, inbound])
-    assert len(hits) == 1, "$51 magnitude gap is outside the ±$50 tolerance — must fire"
+    assert len(hits) == 1, "$51 magnitude gap is outside the $50 floor — must fire"
 
 
 # ---------------------------------------------------------------------------
-# Spec test 6 — compound + cap behavior holds
+# Proportional-tolerance branch (operator correction 2026-06-24)
 # ---------------------------------------------------------------------------
 
 
-def test_compound_floor_holds_for_many_unmatched() -> None:
-    """Many unmatched legs all stay at the compound severity (40).
+def test_large_wire_tolerance_scales_with_magnitude() -> None:
+    """0.1% branch: $100k transfer, tolerance = max($50, $100) = $100.
 
-    Cap is 60 — the compound floor 40 is well under it. Verify the
-    compound rule REPLACES per-instance scaling at the n>=3 threshold
-    rather than adding to it (otherwise we'd see 25*n quickly exceeding
-    60).
+    A $90 gap is INSIDE the proportional tolerance — must clear the flag.
+    With the previous fixed-$50 tolerance, this would have manufactured a
+    false positive on a routine wire fee.
     """
+    out = _txn(
+        posted_date=date(2026, 1, 10),
+        description="WIRE TO TREASURY SWEEP",
+        amount=Decimal("-100000.00"),
+        category="wire_out",
+    )
+    inbound = _txn(
+        posted_date=date(2026, 1, 11),
+        description="WIRE FROM TREASURY",
+        amount=Decimal("99910.00"),  # $90 less — inside the $100 proportional tolerance
+        category="wire_in",
+    )
+    hits = detect_unreconciled_internal_transfers([out, inbound], [out, inbound])
+    assert hits == [], "tolerance on a $100k transfer must scale to $100; $90 gap should clear"
+
+
+def test_large_wire_outside_proportional_tolerance_fires() -> None:
+    """Boundary on the proportional branch: $100k transfer, tolerance $100.
+
+    A $101 gap is outside the proportional tolerance — must fire.
+    """
+    out = _txn(
+        posted_date=date(2026, 1, 10),
+        description="WIRE TO TREASURY SWEEP",
+        amount=Decimal("-100000.00"),
+        category="wire_out",
+    )
+    inbound = _txn(
+        posted_date=date(2026, 1, 11),
+        description="WIRE FROM TREASURY",
+        amount=Decimal("99899.00"),  # $101 less — outside the $100 proportional tolerance
+        category="wire_in",
+    )
+    hits = detect_unreconciled_internal_transfers([out, inbound], [out, inbound])
+    assert len(hits) == 1, "$101 gap on a $100k wire is outside the proportional tolerance"
+    # Detail string should surface the per-row tolerance, not a global constant.
+    assert "$100.00" in hits[0].detail
+
+
+# ---------------------------------------------------------------------------
+# Severity ramp boundaries (monotonic, no drop at any n)
+# ---------------------------------------------------------------------------
+
+
+def test_severity_ramp_caps_at_60_for_many_unmatched() -> None:
+    """5+ unmatched legs cap at 60 (raw ramp would yield 65 at n=5)."""
     outs = [
         _txn(
             posted_date=date(2026, 1, day),
@@ -245,26 +300,18 @@ def test_compound_floor_holds_for_many_unmatched() -> None:
             category="transfer",
             source_line=i + 1,
         )
-        # 5 unmatched legs, well above the compound threshold
         for i, day in enumerate((3, 9, 15, 21, 27))
     ]
     hits = detect_unreconciled_internal_transfers(outs, outs)
     assert len(hits) == 5
     for h in hits:
-        assert h.severity == 40, (
-            "5 unmatched should stay at compound floor 40, not scale "
-            f"to 25*5=125 (cap 60); got {h.severity}"
+        assert h.severity == 60, (
+            f"5 unmatched at the cap: min(60, 25 + 4*10) = 60; got {h.severity}"
         )
-        # And never exceeds the cap.
-        assert h.severity <= 60
 
 
-def test_two_unmatched_uses_per_instance_scaling() -> None:
-    """Below the compound threshold, severity scales 25*n.
-
-    At n=2 the result is 50 — per-instance scaling, not yet at the
-    compound floor.
-    """
+def test_two_unmatched_uses_ramp_value_35() -> None:
+    """At n=2 the ramp yields 25 + (2-1)*10 = 35. No drop, no compound floor."""
     outs = [
         _txn(
             posted_date=date(2026, 1, day),
@@ -278,7 +325,21 @@ def test_two_unmatched_uses_per_instance_scaling() -> None:
     hits = detect_unreconciled_internal_transfers(outs, outs)
     assert len(hits) == 2
     for h in hits:
-        assert h.severity == 50, "2 unmatched should scale to 25*2=50, got {h.severity}"
+        assert h.severity == 35, f"2 unmatched ramps to 35, got {h.severity}"
+
+
+def test_severity_ramp_is_monotonic_across_counts() -> None:
+    """severity(n+1) >= severity(n) for every n in [1, 10] — the
+    invariant the ramp design exists to guarantee.
+    """
+    from aegis.parser.patterns import _unreconciled_transfer_severity
+
+    prev = -1
+    for n in range(1, 11):
+        s = _unreconciled_transfer_severity(n)
+        assert s >= prev, f"severity({n}) = {s} dropped below severity({n - 1}) = {prev}"
+        prev = s
+    assert _unreconciled_transfer_severity(10) == 60
 
 
 # ---------------------------------------------------------------------------
@@ -363,11 +424,11 @@ def test_no_own_account_id_and_no_token_match_does_not_fire() -> None:
 
 
 def test_shadow_weight_is_zero_in_fraud_weights() -> None:
-    """``FRAUD_WEIGHTS["shadow_unreconciled_internal_transfer"]`` must
+    """``FRAUD_WEIGHTS["shadow_unreconciled_internal_transfer_v2"]`` must
     be 0.0 so the detector cannot accidentally move ``fraud_score``.
     """
-    assert "shadow_unreconciled_internal_transfer" in FRAUD_WEIGHTS
-    assert FRAUD_WEIGHTS["shadow_unreconciled_internal_transfer"] == 0.0
+    assert SHADOW_WEIGHT_KEY in FRAUD_WEIGHTS
+    assert FRAUD_WEIGHTS[SHADOW_WEIGHT_KEY] == 0.0
 
 
 def test_shadow_detector_does_not_alter_fraud_score() -> None:
@@ -387,24 +448,22 @@ def test_shadow_detector_does_not_alter_fraud_score() -> None:
         for i, day in enumerate((5, 12, 20))
     ]
     pa = _analyze(outs)
-    # The new shadow detector fires (3 unmatched legs).
+    # The new shadow detector fires (3 unmatched legs, ramp value 45).
     shadow_hits = _shadow_uit(pa)
     assert len(shadow_hits) == 3
-    assert all(h.severity == 40 for h in shadow_hits)
+    assert all(h.severity == 45 for h in shadow_hits)
 
     # The fraud_score sums ONLY live patterns. The live
     # ``unreconciled_internal_transfer`` detector (different code path,
     # tighter tolerances) also fires on this fixture — that's expected
     # and orthogonal. What we assert here is the SHADOW detector's
-    # severity (3 * 40 = 120) is NOT in the score.
+    # severity (3 * 45 = 135) is NOT in the score.
     live_severity_sum = sum(p.severity for p in pa.patterns)
     assert pa.fraud_score == min(100, live_severity_sum), (
         "fraud_score must equal capped sum of LIVE pattern severities "
         "only — shadow patterns must not contribute"
     )
-    # Sanity: fraud_score cannot be inflated by the shadow severity.
+    # Sanity: shadow severity must not be in the score.
     shadow_severity_sum = sum(h.severity for h in shadow_hits)
-    assert shadow_severity_sum > 0  # 120
-    # If the shadow severity had leaked in, fraud_score would be higher
-    # than the live-only ceiling. Confirm it isn't.
+    assert shadow_severity_sum > 0  # 135
     assert pa.fraud_score <= live_severity_sum or pa.fraud_score == 100

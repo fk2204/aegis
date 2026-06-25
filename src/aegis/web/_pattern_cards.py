@@ -281,9 +281,17 @@ def _severity_band(severity: int) -> str:
 # evidence drill-down work, it now renders as a pattern card so the
 # operator playbook sits next to the flag instead of hiding inside the
 # score-breakdown panel only.
-_RENDERED_ELSEWHERE: Final[frozenset[str]] = frozenset({
-    "mca_stacking",
-})
+# ``unreconciled_internal_transfer_v2`` is a shadow detector (lives on
+# ``shadow_patterns``, not ``patterns``); ``build_pattern_cards`` only
+# walks the live ``patterns`` list, so the code is unreachable here by
+# design. Surfaced via the [SHADOW] flag and the dossier shadow-signals
+# panel instead.
+_RENDERED_ELSEWHERE: Final[frozenset[str]] = frozenset(
+    {
+        "mca_stacking",
+        "unreconciled_internal_transfer_v2",
+    }
+)
 
 
 # Pattern codes that ALSO surface as a hard-decline reason on the same
@@ -807,9 +815,7 @@ def humanize_soft_concern(raw: str) -> HumanReason:
     if prefix_match is not None:
         spec = SOFT_CONCERN_COPY[prefix_match]
         suffix = code[len(prefix_match) + 1 :]
-        merged_detail = (
-            f"{suffix}; {detail}".strip("; ") if detail else suffix
-        )
+        merged_detail = f"{suffix}; {detail}".strip("; ") if detail else suffix
         return HumanReason(
             code=spec.code,
             title=spec.title,
@@ -882,9 +888,7 @@ def _emitted_pattern_codes_from_source() -> frozenset[str]:
     import ast
     from pathlib import Path
 
-    source_path = (
-        Path(__file__).resolve().parent.parent / "parser" / "patterns.py"
-    )
+    source_path = Path(__file__).resolve().parent.parent / "parser" / "patterns.py"
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
 
     codes: set[str] = set()
@@ -897,8 +901,6 @@ def _emitted_pattern_codes_from_source() -> frozenset[str]:
         for kw in node.keywords:
             if kw.arg != "code":
                 continue
-            if isinstance(kw.value, ast.Constant) and isinstance(
-                kw.value.value, str
-            ):
+            if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
                 codes.add(kw.value.value)
     return frozenset(codes)

@@ -702,14 +702,15 @@ def analyze_patterns(
     # detector picks up rows whose category is ``deposit``,
     # ``ach_credit``, or ``wire_in`` per 31 USC § 5324 scope.
     shadow_patterns.extend(_detect_structured_deposit_cluster(transactions))
-    # Operator spec 2026-06-24 — shadow unreconciled internal transfer.
+    # Operator spec 2026-06-24 — shadow unreconciled internal transfer v2.
     # ``all_bundle_transactions`` defaults to the single-statement input
     # at parse time because ``analyze_patterns`` runs per-statement;
     # multi-statement callers pass the bundle explicitly. Distinct from
     # the live ``unreconciled_internal_transfer`` detector above — that
     # one is tighter (±$1, ±3d) and lives on ``patterns``; this one is
-    # looser (±$50, ±5d) and lives on ``shadow_patterns`` for
-    # corpus-validation per CLAUDE.md decision-boundary discipline.
+    # looser (floor $50, 0.1% of magnitude on larger transfers, ±5d) and
+    # lives on ``shadow_patterns`` with code ``unreconciled_internal_transfer_v2``
+    # for corpus-validation per CLAUDE.md decision-boundary discipline.
     shadow_patterns.extend(detect_unreconciled_internal_transfers(transactions, transactions))
 
     ai_score = _ai_generated_statement_score(transactions, deposits)
@@ -1622,39 +1623,50 @@ def _recent_account_opening(period_start: date, today: date) -> Pattern | None:
 # self-transfers (those have their own detectors).
 _TRANSFER_CATEGORIES: Final[frozenset[str]] = frozenset({"transfer", "wire_in", "wire_out"})
 
-# Shadow-mode unreconciled-internal-transfer detector (operator spec
-# 2026-06-24). Distinct from the LIVE ``_unreconciled_internal_transfer``
-# below — that one uses tighter pair tolerance (±$1, ±3 days), single-
-# statement scope, and feeds the live ``patterns`` list. The shadow
-# detector loosens pair tolerance to the operator's spec (±$50, ±5 days),
-# widens scope to the entire bundle, and emits to
+# Shadow-mode unreconciled-internal-transfer detector v2 (operator spec
+# 2026-06-24, with operator follow-up corrections same day). Distinct
+# from the LIVE ``_unreconciled_internal_transfer`` below — that one
+# uses tighter pair tolerance (±$1, ±3 days), single-statement scope,
+# and feeds the live ``patterns`` list. The shadow detector loosens
+# pair tolerance (floor $50, 0.1% of magnitude on larger transfers, ±5
+# days), widens scope to the entire bundle, and emits to
 # ``PatternAnalysis.shadow_patterns`` with code
-# ``unreconciled_internal_transfer`` so the pipeline can surface it as a
-# ``[SHADOW] unreconciled_internal_transfer:...`` flag without touching
-# ``fraud_score`` or ``parse_status``. Per CLAUDE.md "Decision-boundary
-# changes — shadow-first": ship the evidence path first, validate
-# false-positive rate against the corpus, THEN flip a config gate.
+# ``unreconciled_internal_transfer_v2`` so the pipeline can surface it
+# as a ``[SHADOW] unreconciled_internal_transfer_v2:...`` flag without
+# touching ``fraud_score`` or ``parse_status``. The ``_v2`` suffix
+# disambiguates this shadow detector from the live ``Pattern.code``
+# of the same root name produced by ``_unreconciled_internal_transfer``
+# — both can fire in parallel during the shadow-validation phase. Per
+# CLAUDE.md "Decision-boundary changes — shadow-first": ship the
+# evidence path first, validate false-positive rate against the corpus,
+# THEN flip a config gate.
 #
 # Threshold rationale:
 # - Amount floor $500 — below this, internal transfers are routine
 #   reimbursements / sweeps; the false-positive rate on a wider net is
 #   unworkable. $500 matches the live detector's floor.
-# - Amount tolerance ±$50 — broader than the live ±$1 because real
-#   internal sweeps occasionally embed fees / FX rounding on the inbound
-#   leg. Operator pick; corpus may suggest tightening to ±$10.
+# - Amount tolerance ``max($50, 0.1% * magnitude)`` — broader than the
+#   live ±$1 because real internal sweeps occasionally embed fees / FX
+#   rounding on the inbound leg. The $50 floor stays tight on small
+#   transfers; the 0.1% term scales up on large wires so a routine $50+
+#   wire fee on a $100k transfer no longer trips a false positive
+#   (operator correction 2026-06-24 — fixed $50 was wrong on large wires
+#   where FX/wire fees routinely exceed $50).
 # - Window ±5 days — same reason as the tolerance. Internal moves
 #   between e.g. a small-bank checking and a brokerage cash account can
 #   take 3-4 business days; ±5 covers a long weekend at either end.
-# - Severity 25 per instance / compound 40 at 3+ / cap 60 — operator
-#   spec. The compound floor is interpreted as REPLACING the per-instance
-#   scaling once n >= 3 (test asserts severity=40 at 3 unmatched, not
-#   25*3=75); below the compound threshold the severity scales 25*n.
+# - Severity curve: ``min(60, 25 + (n - 1) * 10)`` — monotonic non-
+#   decreasing ramp. n=1→25, n=2→35, n=3→45, n=4→55, n=5+→60 (cap).
+#   The previous compound-floor design (``40 if n>=3 else 25*n``) was
+#   non-monotonic (n=2→50, n=3→40 dropped 10 points); the ramp closes
+#   that gap so a worse pattern can never produce a lower severity than
+#   a milder one (operator correction 2026-06-24).
 _UNRECONCILED_TRANSFER_MIN_AMOUNT: Final[Decimal] = Decimal("500.00")
-_UNRECONCILED_TRANSFER_AMOUNT_TOLERANCE: Final[Decimal] = Decimal("50.00")
+_UNRECONCILED_TRANSFER_AMOUNT_TOLERANCE_FLOOR: Final[Decimal] = Decimal("50.00")
+_UNRECONCILED_TRANSFER_AMOUNT_TOLERANCE_FRACTION: Final[Decimal] = Decimal("0.001")
 _UNRECONCILED_TRANSFER_WINDOW_DAYS: Final[int] = 5
-_UNRECONCILED_TRANSFER_SEVERITY_PER: Final[int] = 25
-_UNRECONCILED_TRANSFER_COMPOUND_THRESHOLD: Final[int] = 3
-_UNRECONCILED_TRANSFER_SEVERITY_COMPOUND: Final[int] = 40
+_UNRECONCILED_TRANSFER_SEVERITY_BASE: Final[int] = 25
+_UNRECONCILED_TRANSFER_SEVERITY_STEP: Final[int] = 10
 _UNRECONCILED_TRANSFER_SEVERITY_CAP: Final[int] = 60
 # Anchored description tokens — case-insensitive substring match. The
 # operator listed "TRANSFER TO" / "WIRE TO" / "ACH TO" / "ZELLE TO"
@@ -1786,22 +1798,24 @@ def _is_unreconciled_transfer_out_candidate(
 def _unreconciled_transfer_severity(unmatched_count: int) -> int:
     """Operator-spec severity curve for the shadow detector.
 
-    - 1-2 unmatched legs:  ``25 * n`` (per-instance scaling)
-    - 3+ unmatched legs:   compound floor ``40``
-    - Hard cap:            ``60``
+    Monotonic non-decreasing ramp (operator correction 2026-06-24):
 
-    The compound rule REPLACES per-instance scaling at the 3+ threshold
-    rather than stacking on top of it. Verified against the operator's
-    test expectations (single -> 25, 3+ -> 40). The cap is a defensive
-    upper bound; with the current rules the highest reachable value is
-    50 (n=2) so the cap only matters if a future tuning raises the
-    per-instance unit above 30.
+    - ``severity = min(60, 25 + (n - 1) * 10)``
+    - n=1 → 25, n=2 → 35, n=3 → 45, n=4 → 55, n=5+ → 60 (cap)
+
+    The previous compound-floor design produced 50 at n=2 then dropped
+    to 40 at n=3 (non-monotonic — a worse pattern produced a lower
+    severity). The ramp guarantees ``severity(n+1) >= severity(n)``,
+    which is what the operator wants: more evidence never reduces
+    confidence.
     """
-    if unmatched_count >= _UNRECONCILED_TRANSFER_COMPOUND_THRESHOLD:
-        severity = _UNRECONCILED_TRANSFER_SEVERITY_COMPOUND
-    else:
-        severity = _UNRECONCILED_TRANSFER_SEVERITY_PER * unmatched_count
-    return min(_UNRECONCILED_TRANSFER_SEVERITY_CAP, severity)
+    if unmatched_count <= 0:
+        return 0
+    raw = (
+        _UNRECONCILED_TRANSFER_SEVERITY_BASE
+        + (unmatched_count - 1) * _UNRECONCILED_TRANSFER_SEVERITY_STEP
+    )
+    return min(_UNRECONCILED_TRANSFER_SEVERITY_CAP, raw)
 
 
 def detect_unreconciled_internal_transfers(
@@ -1809,20 +1823,28 @@ def detect_unreconciled_internal_transfers(
     all_bundle_transactions: list[ClassifiedTransaction] | None = None,
     own_account_ids: set[UUID] | None = None,
 ) -> list[Pattern]:
-    """Shadow-mode detector — transfer-out with no matching transfer-in.
+    """Shadow-mode detector v2 — transfer-out with no matching transfer-in.
 
-    Operator spec (2026-06-24): find transfer-out transactions
-    (counterparty ``own_account`` OR description matches
-    ``TRANSFER TO`` / ``WIRE TO`` / ``ACH TO`` / ``ZELLE TO``) with
-    ``abs(amount) > $500`` that have NO matching transfer-in anywhere
-    in the submitted bundle within a 5-day window (same amount ±$50,
-    opposite direction).
+    Operator spec (2026-06-24, with operator follow-up corrections same
+    day): find transfer-out transactions (counterparty ``own_account``
+    OR description matches ``TRANSFER TO`` / ``WIRE TO`` / ``ACH TO`` /
+    ``ZELLE TO``) with ``abs(amount) > $500`` that have NO matching
+    transfer-in anywhere in the submitted bundle within a 5-day window.
+
+    Match-amount tolerance is ``max($50, 0.1% * magnitude)`` so wire fees
+    and FX rounding on large transfers no longer manufacture false
+    positives. On a $100k transfer the tolerance grows to $100; on a
+    $5k transfer it stays at the $50 floor.
 
     Returns a list of ``Pattern`` rows with code
-    ``unreconciled_internal_transfer`` and severity per the compound
-    curve (``_unreconciled_transfer_severity``). The pipeline appends
-    these to ``PatternAnalysis.shadow_patterns`` and surfaces each one
-    as a ``[SHADOW] unreconciled_internal_transfer:...`` entry in
+    ``unreconciled_internal_transfer_v2`` and severity per the monotonic
+    ramp (``_unreconciled_transfer_severity``). The ``_v2`` suffix
+    disambiguates this shadow detector from the live
+    ``unreconciled_internal_transfer`` code emitted by
+    ``_unreconciled_internal_transfer`` — both can fire in parallel
+    during shadow validation. The pipeline appends shadow hits to
+    ``PatternAnalysis.shadow_patterns`` and surfaces each one as a
+    ``[SHADOW] unreconciled_internal_transfer_v2:...`` entry in
     ``PipelineResult.all_flags``.
 
     Bundle scope: ``all_bundle_transactions`` is the entire upload
@@ -1836,24 +1858,26 @@ def detect_unreconciled_internal_transfers(
 
     Match criterion (within bundle):
         ``other.amount > 0`` (opposite direction)
-        AND ``abs(other.amount - abs(out.amount)) <= $50``
+        AND ``abs(other.amount - abs(out.amount)) <= tolerance``
+            where ``tolerance = max($50, abs(out.amount) * 0.001)``
         AND ``abs((other.posted_date - out.posted_date).days) <= 5``
         AND ``other.id != out.id``
 
     Each unmatched transfer-out becomes its OWN ``Pattern`` row, with
-    severity computed from the running unmatched count. Per-instance
-    severity makes the per-flag drilldown render meaningfully — the
-    operator can click a single suspicious row rather than a list of
-    five UUIDs under one aggregate. The compound severity floor at 3+
-    instances is encoded by emitting each row at the SAME compound
-    severity (40) once the threshold is crossed.
+    severity computed from the running unmatched count via the
+    monotonic ramp. Per-row emission makes the per-flag drilldown
+    render meaningfully — the operator can click a single suspicious
+    row rather than a list of five UUIDs under one aggregate. All
+    emitted rows share the same severity value (the ramp's value at the
+    final unmatched count) so the per-row UI doesn't visually rank them
+    against each other.
 
     Shadow-mode discipline (CLAUDE.md "Decision-boundary changes"):
     - This detector does NOT contribute to ``fraud_score`` (lives on
       ``shadow_patterns``, not ``patterns``).
     - This detector does NOT change ``parse_status`` (no parse-status
       branch reads ``shadow_patterns``).
-    - ``FRAUD_WEIGHTS["shadow_unreconciled_internal_transfer"] == 0``
+    - ``FRAUD_WEIGHTS["shadow_unreconciled_internal_transfer_v2"] == 0``
       makes the scoring carve-out explicit.
     - The flip from shadow -> live is a config / env-var change in a
       future commit, after operator corpus validation.
@@ -1873,13 +1897,20 @@ def detect_unreconciled_internal_transfers(
     # The matching tolerances do the disambiguation.
     ins = [t for t in bundle if t.amount > 0]
 
-    tolerance = _UNRECONCILED_TRANSFER_AMOUNT_TOLERANCE
     window = _UNRECONCILED_TRANSFER_WINDOW_DAYS
 
-    unmatched: list[ClassifiedTransaction] = []
+    unmatched: list[tuple[ClassifiedTransaction, Decimal]] = []
     consumed_in_ids: set[UUID] = set()
     for out in outs:
         out_mag = abs(out.amount)
+        # Per-row tolerance: floor of $50, scaled by 0.1% of magnitude on
+        # larger transfers (operator correction 2026-06-24). On a $100k
+        # transfer the tolerance grows to $100 so a routine $50-100 wire
+        # fee on the inbound leg no longer manufactures a false positive.
+        tolerance = max(
+            _UNRECONCILED_TRANSFER_AMOUNT_TOLERANCE_FLOOR,
+            out_mag * _UNRECONCILED_TRANSFER_AMOUNT_TOLERANCE_FRACTION,
+        )
         match: ClassifiedTransaction | None = None
         for cand in ins:
             if cand.id == out.id or cand.id in consumed_in_ids:
@@ -1891,7 +1922,7 @@ def detect_unreconciled_internal_transfers(
             match = cand
             break
         if match is None:
-            unmatched.append(out)
+            unmatched.append((out, tolerance))
         else:
             consumed_in_ids.add(match.id)
 
@@ -1900,7 +1931,7 @@ def detect_unreconciled_internal_transfers(
 
     severity = _unreconciled_transfer_severity(len(unmatched))
     out_patterns: list[Pattern] = []
-    for u in unmatched:
+    for u, row_tolerance in unmatched:
         # Counterparty label: first 60 chars of the description with
         # leading "TRANSFER TO" / "WIRE TO" stripped where possible so
         # the rendered detail reads "to JOHN DOE CHK 7722" rather than
@@ -1918,16 +1949,17 @@ def detect_unreconciled_internal_transfers(
         # the counterparty when one is named.
         if len(counterparty) > 60:
             counterparty = counterparty[:60].rstrip()
+        out_mag = abs(u.amount)
         amount_str = f"${out_mag.quantize(Decimal('0.01'))}"
         detail = (
             f"unmatched transfer-out {amount_str} on "
             f"{u.posted_date.isoformat()} to {counterparty} — "
             f"no matching transfer-in in the bundle within "
-            f"±${tolerance.quantize(Decimal('0.01'))} / ±{window}d"
+            f"±${row_tolerance.quantize(Decimal('0.01'))} / ±{window}d"
         )
         out_patterns.append(
             Pattern(
-                code="unreconciled_internal_transfer",
+                code="unreconciled_internal_transfer_v2",
                 severity=severity,
                 detail=detail,
                 source_ids=[u.id],
