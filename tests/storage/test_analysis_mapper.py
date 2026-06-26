@@ -119,6 +119,19 @@ def _full_analysis_row() -> AnalysisRow:
             unauthorized_withdrawal_dispute=False,
             ai_generated_score=11,
         ),
+        narrator_summary={
+            "deal_summary": "Test merchant averaging $9,876/month with clean cashflow.",
+            "flag_explanations": [],
+            "recommended_action": {
+                "action": "submit_now",
+                "next_step": "Submit the package.",
+                "top_funder_match": "TestFunder",
+                "estimated_terms": "1.30 factor, 6 months, $50k advance",
+            },
+            "model_id": "us.anthropic.claude-sonnet-4-6",
+            "generated_at": "2026-06-26T17:00:00+00:00",
+            "version": 1,
+        },
     )
 
 

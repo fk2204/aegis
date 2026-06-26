@@ -619,6 +619,14 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='deal_outcomes'"
     ),
+    "075_analyses_narrator_summary.sql": (
+        # 075 adds a single nullable JSONB column to ``analyses`` for
+        # the cached Bedrock narrator output. ``information_schema.
+        # columns`` detects the column without parsing JSONB shape.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='analyses' "
+        "AND column_name='narrator_summary'"
+    ),
 }
 
 

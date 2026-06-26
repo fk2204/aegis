@@ -87,6 +87,16 @@ class LLMClient(Protocol):
         """Run a classification batch: instructions+payload in, classification JSON out."""
 
 
+# ``invoke_tool_json`` is INTENTIONALLY not on the ``LLMClient`` Protocol.
+# Adding it would force every test stub (~80 of them) to implement an
+# unrelated method. The narrator carries its own narrow Protocol
+# (``aegis.scoring_v2.narrator._NarratorClient``) and the route handler
+# at ``aegis.web.routers.merchants.merchant_detail`` runtime-narrows
+# ``get_llm()``'s ``LLMClient`` return to that Protocol with ``cast``;
+# the production ``BedrockClient`` implements both Protocols so the
+# narrowing is sound.
+
+
 class BedrockClient:
     """Production LLM client backed by AWS Bedrock.
 
@@ -218,6 +228,78 @@ class BedrockClient:
             messages=[{"role": "user", "content": prompt}],
         )
         return _text_blocks(response)
+
+    @retry(
+        retry=retry_if_exception(_is_retryable_bedrock_error),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
+    def invoke_tool_json(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        tool_name: str,
+        tool_schema: dict[str, Any],
+        max_tokens: int,
+        temperature: float,
+    ) -> tuple[dict[str, Any], str]:
+        """Forced tool-use call returning the model's structured JSON output.
+
+        The model is constrained by ``tool_choice={"type":"tool","name":...}``
+        so the response is guaranteed to be a single ``tool_use`` block whose
+        ``input`` matches ``tool_schema``. Returns ``(tool_input, model_id)``
+        — the second element is the exact model id the call used, persisted
+        on the consumer's audit trail (so a stored summary is self-describing
+        when the inference profile is later rotated).
+
+        Used by ``aegis.scoring_v2.narrator`` for the plain-English deal
+        summary. Tool-use envelope shape per Anthropic Messages API:
+        https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview
+
+        Same retry posture as ``classify_batch_json`` — 3 attempts on
+        429 / 5xx / network. Deterministic failures (BadRequest,
+        ValidationError) are NOT retried.
+
+        Raises ``ValueError`` when the model returns a response that
+        does not contain a single ``tool_use`` block (defensive — the
+        forced ``tool_choice`` makes this nearly impossible, but a
+        future SDK change could surface a different shape).
+        """
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_prompt,
+            tools=[
+                {
+                    "name": tool_name,
+                    "description": (
+                        "Emit the structured output for the deal-summary "
+                        "narrator. Required — do not respond outside this tool."
+                    ),
+                    "input_schema": tool_schema,
+                }
+            ],
+            tool_choice={"type": "tool", "name": tool_name},
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        tool_block: Any | None = None
+        for block in getattr(response, "content", []):
+            block_type = getattr(block, "type", None)
+            block_name = getattr(block, "name", None)
+            if block_type == "tool_use" and block_name == tool_name:
+                tool_block = block
+                break
+        if tool_block is None:
+            raise ValueError(
+                f"Bedrock response did not include expected tool_use block for tool '{tool_name}'"
+            )
+        tool_input = getattr(tool_block, "input", None)
+        if not isinstance(tool_input, dict):
+            raise ValueError(f"tool_use.input was not a dict (got {type(tool_input).__name__})")
+        return tool_input, self._model
 
     def invoke_with_web_search(self, prompt: str, *, max_uses: int = 5) -> str:
         """Send the prompt with the ``web_search_20250305`` server tool enabled.
