@@ -557,7 +557,6 @@ def test_webhook_enqueues_orchestration_after_merchant_upsert(
             "trigger": "webhook",
             "actor_email": None,
             "override_cap": False,
-            "ignore_pin": False,
         }
     ]
 
@@ -691,7 +690,6 @@ def test_lead_updated_with_existing_merchant_refreshes_and_enqueues(
             "trigger": "webhook_lead_updated",
             "actor_email": None,
             "override_cap": False,
-            "ignore_pin": False,
         }
     ]
 

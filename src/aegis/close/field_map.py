@@ -442,24 +442,39 @@ def filename_matches_statement_filter(filename: str, filters: tuple[str, ...]) -
 # the existing allow-list filter lives here — both are filename-shape
 # decisions about Close-attached files.
 NON_STATEMENT_FILENAME_TERMS: tuple[str, ...] = (
+    # Identity documents.
     "voided",
     "void check",
+    "vchk",
     "driver",
     "license",
+    "dl",
+    "id_card",
+    "passport",
+    "photo",
+    "selfie",
+    "headshot",
+    # MCA + merchant intake artifacts.
     "contract",
     "application",
+    "app_form",
+    "mca_app",
+    "agreement",
+    "addendum",
+    "amendment",
+    "signed",
     "bylaws",
+    # Financial-statement-shaped non-statements.
     "tax return",
+    "tax_return",
     "balance sheet",
     "p&l",
     "profit",
     "invoice",
     "w-2",
+    "w2",
     "1099",
-    "signed",
-    "agreement",
-    "addendum",
-    "amendment",
+    # Operator-curated specific filenames.
     "load-lift-enterprise-llc",
 )
 

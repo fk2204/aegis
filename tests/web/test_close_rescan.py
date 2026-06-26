@@ -96,7 +96,6 @@ def test_rescan_happy_path_enqueues_with_operator_email(
             "trigger": "rescan",
             "actor_email": "filip@commerafunding.com",
             "override_cap": False,
-            "ignore_pin": False,
         }
     ]
 
@@ -306,13 +305,15 @@ def test_close_lead_link_not_rendered_when_lead_id_missing(
 # ===================================================================
 
 
-def test_rescan_with_ignore_pin_threads_through(
+def test_rescan_no_longer_accepts_ignore_pin_param(
     client: TestClient,
     merchant_repo: InMemoryMerchantRepository,
     audit: InMemoryAuditLog,
 ) -> None:
-    """?ignore_pin=true is enqueued onto process_close_attachments and
-    the manual_rescan audit row captures it."""
+    """The ``ignore_pin`` query parameter was retired with the 2026-06-26
+    pin-gate removal. The route still 303s (FastAPI ignores unknown
+    query params), but the parameter does NOT appear on the enqueue
+    payload or the manual_rescan audit row anymore."""
     m = _seed_merchant(merchant_repo)
     resp = client.post(
         f"/ui/merchants/{m.id}/close-rescan?ignore_pin=true",
@@ -326,45 +327,24 @@ def test_rescan_with_ignore_pin_threads_through(
         "pending_close_orchestration_jobs",
         [],
     )
-    assert pending[0]["ignore_pin"] is True
-    assert pending[0]["override_cap"] is False
-    assert pending[0]["trigger"] == "rescan"
+    assert "ignore_pin" not in pending[0]
 
     manual = next(e for e in audit.entries if e["action"] == "close.orchestration.manual_rescan")
-    assert manual["details"]["ignore_pin"] is True
-    assert manual["details"]["override_cap"] is False
+    assert "ignore_pin" not in manual["details"]
 
 
-def test_rescan_with_both_overrides_threads_through(
-    client: TestClient,
-    merchant_repo: InMemoryMerchantRepository,
-) -> None:
-    """Both override_cap=true and ignore_pin=true on the same rescan."""
-    m = _seed_merchant(merchant_repo)
-    resp = client.post(
-        f"/ui/merchants/{m.id}/close-rescan?override_cap=true&ignore_pin=true",
-        follow_redirects=False,
-    )
-    assert resp.status_code == 303
-    pending = getattr(
-        client.app.state,  # type: ignore[attr-defined]
-        "pending_close_orchestration_jobs",
-        [],
-    )
-    assert pending[0]["override_cap"] is True
-    assert pending[0]["ignore_pin"] is True
-
-
-def test_ignore_pin_button_visible_when_latest_run_had_unpinned_pdfs(
+def test_unpinned_rescan_button_no_longer_rendered(
     client: TestClient,
     merchant_repo: InMemoryMerchantRepository,
     audit: InMemoryAuditLog,
 ) -> None:
-    """A 'close.attachment.skipped' with reason=not_pinned in the latest
-    orchestration window → '⚡ Rescan all unpinned PDFs (ignore pin)'
-    button visible."""
+    """The '⚡ Rescan all unpinned PDFs (ignore pin)' button + the
+    'Pin the bank-statement files in Close, then click Rescan' empty
+    state were retired with the pin gate. Even when the audit history
+    shows the legacy signals from before the deploy, the merchant
+    detail page now omits both surfaces."""
     m = _seed_merchant(merchant_repo)
-    # Simulate a prior orchestration: a not_pinned skip then complete.
+    # Legacy audit rows from a pre-2026-06-26 orchestration run.
     audit.record(
         actor="worker",
         action="close.attachment.skipped",
@@ -372,84 +352,6 @@ def test_ignore_pin_button_visible_when_latest_run_had_unpinned_pdfs(
         subject_id=m.id,
         details={"reason": "not_pinned", "filename": "voided_check.pdf"},
     )
-    audit.record(
-        actor="worker",
-        action="close.orchestration.complete",
-        subject_type="merchant",
-        subject_id=m.id,
-        details={"trigger": "webhook", "capped": False, "fetched": 0},
-    )
-    resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
-    assert resp.status_code == 200
-    assert "Rescan all unpinned PDFs (ignore pin)" in resp.text
-
-
-def test_ignore_pin_button_visible_after_no_pinned_files_signal(
-    client: TestClient,
-    merchant_repo: InMemoryMerchantRepository,
-    audit: InMemoryAuditLog,
-) -> None:
-    """close.orchestration.no_pinned_files in the latest window also
-    triggers the ignore-pin button."""
-    m = _seed_merchant(merchant_repo)
-    audit.record(
-        actor="worker",
-        action="close.orchestration.no_pinned_files",
-        subject_type="merchant",
-        subject_id=m.id,
-        details={
-            "close_lead_id": "lead_abc",
-            "total_pdfs_seen": 3,
-            "unpinned_pdfs": [],
-        },
-    )
-    audit.record(
-        actor="worker",
-        action="close.orchestration.complete",
-        subject_type="merchant",
-        subject_id=m.id,
-        details={"trigger": "webhook", "capped": False, "fetched": 0},
-    )
-    resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
-    assert "Rescan all unpinned PDFs (ignore pin)" in resp.text
-
-
-def test_ignore_pin_button_hidden_when_latest_run_had_no_unpinned(
-    client: TestClient,
-    merchant_repo: InMemoryMerchantRepository,
-    audit: InMemoryAuditLog,
-) -> None:
-    """Latest run had no not_pinned skips and no no_pinned_files → no
-    ignore-pin button. Just the default rescan."""
-    m = _seed_merchant(merchant_repo)
-    audit.record(
-        actor="worker",
-        action="close.attachment.fetched",
-        subject_type="document",
-        subject_id=m.id,
-        details={"close_lead_id": "lead_abc", "duplicate": False},
-    )
-    audit.record(
-        actor="worker",
-        action="close.orchestration.complete",
-        subject_type="merchant",
-        subject_id=m.id,
-        details={"trigger": "webhook", "capped": False, "fetched": 1},
-    )
-    resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
-    assert "Rescan all unpinned PDFs (ignore pin)" not in resp.text
-    # Default button is still there
-    assert "Rescan Close attachments" in resp.text
-
-
-def test_empty_state_message_shown_after_no_pinned_files(
-    client: TestClient,
-    merchant_repo: InMemoryMerchantRepository,
-    audit: InMemoryAuditLog,
-) -> None:
-    """Latest orchestration audited no_pinned_files → merchant detail
-    surfaces the 'Pin the bank-statement files...' message."""
-    m = _seed_merchant(merchant_repo)
     audit.record(
         actor="worker",
         action="close.orchestration.no_pinned_files",
@@ -465,37 +367,11 @@ def test_empty_state_message_shown_after_no_pinned_files(
         details={"trigger": "webhook", "capped": False, "fetched": 0},
     )
     resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
-    assert "No statements imported." in resp.text
-    assert "Pin the bank-statement files in Close" in resp.text
-
-
-def test_empty_state_message_hidden_when_not_pinned_skips_only(
-    client: TestClient,
-    merchant_repo: InMemoryMerchantRepository,
-    audit: InMemoryAuditLog,
-) -> None:
-    """Latest run had not_pinned skips (some PDFs unpinned) but ALSO
-    pinned PDFs that got processed → empty-state message NOT shown
-    (only fires on the all-unpinned case). The ignore-pin button IS
-    shown because there were unpinned PDFs."""
-    m = _seed_merchant(merchant_repo)
-    audit.record(
-        actor="worker",
-        action="close.attachment.skipped",
-        subject_type="merchant",
-        subject_id=m.id,
-        details={"reason": "not_pinned"},
-    )
-    audit.record(
-        actor="worker",
-        action="close.orchestration.complete",
-        subject_type="merchant",
-        subject_id=m.id,
-        details={"trigger": "webhook", "capped": False, "fetched": 2},
-    )
-    resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
-    assert "No statements imported." not in resp.text
-    assert "Rescan all unpinned PDFs (ignore pin)" in resp.text
+    assert resp.status_code == 200
+    assert "Rescan all unpinned PDFs (ignore pin)" not in resp.text
+    assert "Pin the bank-statement files in Close" not in resp.text
+    # Default rescan button still rendered.
+    assert "Rescan Close attachments" in resp.text
 
 
 def test_latest_window_helper_stops_at_prior_complete(

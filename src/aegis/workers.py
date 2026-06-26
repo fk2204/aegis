@@ -49,10 +49,7 @@ from aegis.close.client import (
     CloseClient,
     CloseError,
 )
-from aegis.close.field_map import (
-    filename_is_non_statement,
-    filename_matches_statement_filter,
-)
+from aegis.close.field_map import filename_is_non_statement
 from aegis.compliance.obligations import (
     run_compliance_obligation_reminder_cron,
 )
@@ -1907,7 +1904,6 @@ async def process_close_attachments(
     *,
     actor_email: str | None = None,
     override_cap: bool = False,
-    ignore_pin: bool = False,
 ) -> dict[str, Any]:
     """List attachments on a Close Lead, filter, persist each statement
     through :func:`persist_pdf_upload`.
@@ -1916,23 +1912,16 @@ async def process_close_attachments(
 
       1. ``content_type == 'application/pdf'`` — strict. Kills the
          PNG-named-statement case and every non-PDF surface.
-      2. Pin gate (default ``ignore_pin=False``):
-
-           * Pin-only path: keep PDFs with ``is_pinned=True``; skipped
-             unpinned PDFs audit ``reason='not_pinned'``. The
-             operator's pin IS the "this is a statement" confirmation
-             — filename filter is bypassed so an operator pinning
-             ``april_KYC.pdf`` (an oddly-named statement) processes it.
-           * ``ignore_pin=True`` path: skip the pin check; apply the
-             filename-substring filter as the remaining signal. The
-             rescan-with-``ignore_pin`` UI button (chunk 5) sets this
-             for Leads where the operator knows everything is a
-             statement (e.g. fresh inbound web-form leads).
-
+      2. Filename deny list (``filename_is_non_statement``). 2026-06-26:
+         the operator pin gate was retired — every PDF on the Lead is
+         a statement candidate unless its filename obviously identifies
+         a non-statement (driver's license, voided check, contract,
+         tax return, photo, etc.). The parser's validation gate is the
+         backstop for anything that slips through (a Word-doc converted
+         to PDF, an MCA application that the deny list didn't catch).
       3. MD5 ``checksum`` dedup — same file attached twice (Note +
          Lead-direct, say) downloads once. Cheap, the checksum is
          already in the unified Lead Files response.
-
       4. Warn at ``close_attachment_warn_threshold`` candidates,
          hard-cap at ``close_attachment_hard_cap`` (bypassed by
          ``override_cap=True``). SHA256 dedup in ``persist_pdf_upload``
@@ -1947,19 +1936,11 @@ async def process_close_attachments(
     the cap protects against the "wrong-folder, 47 PDFs" mistake
     burning a Bedrock call per file.
 
-    ``ignore_pin`` is set by the rescan-with-``ignore_pin`` UI button.
-    Audits ``close.orchestration.pin_ignored`` once when set.
-
-    Empty-state signal: if the pin-only path finds ≥1 PDF but none
-    pinned, write ``close.orchestration.no_pinned_files`` so the
-    merchant detail UI (chunk 5) can surface "Pin the bank-statement
-    files in Close, then click Rescan." Better than a silent no-op.
-
     Per-attachment errors (download_failed, pydantic validation, etc.)
     are isolated and logged via audit rows; the loop walks the full
     list before returning a summary dict. The summary lands in arq's
-    job log and (for ``trigger='rescan'``) drives the cap-override +
-    pin-override UI buttons.
+    job log and (for ``trigger='rescan'``) drives the cap-override
+    UI button.
 
     Idempotency: the SHA256 dedup inside ``persist_pdf_upload`` short-
     circuits before any parse enqueue or Bedrock cost. A redelivered
@@ -1973,7 +1954,6 @@ async def process_close_attachments(
     close_client: CloseClient = ctx.get("close_client") or get_close_client()
     enqueue_parse = _orchestrator_enqueue(ctx)
     settings = get_settings()
-    filename_filters = settings.close_attachment_filename_filters
     warn_threshold = settings.close_attachment_warn_threshold
     hard_cap = settings.close_attachment_hard_cap
 
@@ -2018,7 +1998,6 @@ async def process_close_attachments(
         raise
 
     summary["total"] = len(attachments)
-    summary["ignore_pin"] = ignore_pin
 
     # Filter 1 — content_type must be application/pdf. Strict, by MIME
     # not filename, so a PNG named "april_bank_statement.png" doesn't
@@ -2044,105 +2023,32 @@ async def process_close_attachments(
             },
         )
 
-    # Filter 2 — pin gate (default) OR filename filter (ignore_pin path).
-    # Pin and filename are mutually exclusive signals: when the operator
-    # has pinned, their intent overrides the filename heuristic;
-    # when they've explicitly bypassed pin, the filename is the only
-    # remaining signal.
+    # Filter 2 — filename deny list. 2026-06-26: pin gate removed; the
+    # filename heuristic is now the only gate before download + parse.
+    # ``filename_is_non_statement`` is intentionally narrow — false
+    # positives waste real statements. Everything else passes through
+    # to the parser, whose validation gate catches whatever the deny
+    # list missed (e.g. a Word-doc-to-PDF with no clear filename hint).
     statement_candidates: list[CloseAttachment] = []
-    if ignore_pin:
-        if pdf_attachments:
-            audit.record(
-                actor="worker",
-                actor_email=actor_email,
-                action="close.orchestration.pin_ignored",
-                subject_type="merchant",
-                subject_id=merchant.id,
-                details={
-                    "close_lead_id": close_lead_id,
-                    "trigger": trigger,
-                    "candidate_count": len(pdf_attachments),
-                },
-            )
-        for att in pdf_attachments:
-            if not filename_matches_statement_filter(att.name, filename_filters):
-                summary["skipped"] += 1
-                audit.record(
-                    actor="worker",
-                    actor_email=actor_email,
-                    action="close.attachment.skipped",
-                    subject_type="merchant",
-                    subject_id=merchant.id,
-                    details={
-                        "attachment_id": att.id,
-                        "filename": att.name,
-                        "reason": "filename_prefix_mismatch",
-                        "close_lead_id": close_lead_id,
-                    },
-                )
-                continue
-
-            deny_term = filename_is_non_statement(att.name)
-            if deny_term is not None:
-                summary["skipped"] += 1
-                audit.record(
-                    actor="worker",
-                    actor_email=actor_email,
-                    action="close.attachment.skipped_non_statement",
-                    subject_type="merchant",
-                    subject_id=merchant.id,
-                    details={
-                        "attachment_id": att.id,
-                        "filename": att.name,
-                        "matched_deny_term": deny_term,
-                        "close_lead_id": close_lead_id,
-                    },
-                )
-                continue
-
-            statement_candidates.append(att)
-    else:
-        for att in pdf_attachments:
-            # Operator confirmed via EITHER signal — file pin (Files tab)
-            # OR note pin (activity-feed pin on the wrapping Note). The
-            # natural Close UX is note-feed pinning; file pin remains
-            # supported for files attached without a note wrapper.
-            if att.is_pinned or att.note_pinned:
-                statement_candidates.append(att)
-                continue
+    for att in pdf_attachments:
+        deny_term = filename_is_non_statement(att.name)
+        if deny_term is not None:
             summary["skipped"] += 1
             audit.record(
                 actor="worker",
                 actor_email=actor_email,
-                action="close.attachment.skipped",
+                action="close.attachment.skipped_non_statement",
                 subject_type="merchant",
                 subject_id=merchant.id,
                 details={
                     "attachment_id": att.id,
                     "filename": att.name,
-                    "reason": "not_pinned",
+                    "matched_deny_term": deny_term,
                     "close_lead_id": close_lead_id,
-                    "file_pinned": att.is_pinned,
-                    "note_pinned": att.note_pinned,
                 },
             )
-        # Empty-state signal: ≥1 PDF on the Lead but none pinned. The
-        # merchant detail UI (chunk 5) reads this audit row to show
-        # "Pin the bank-statement files in Close, then click Rescan."
-        if not statement_candidates and pdf_attachments:
-            audit.record(
-                actor="worker",
-                actor_email=actor_email,
-                action="close.orchestration.no_pinned_files",
-                subject_type="merchant",
-                subject_id=merchant.id,
-                details={
-                    "close_lead_id": close_lead_id,
-                    "trigger": trigger,
-                    "total_pdfs_seen": len(pdf_attachments),
-                    "unpinned_pdfs": [{"id": a.id, "name": a.name} for a in pdf_attachments],
-                },
-            )
+            continue
+        statement_candidates.append(att)
 
     # Filter 3 — MD5 checksum dedup. Same file attached twice (Note
     # plus direct Lead drop, say) downloads once. ``att.id`` fallback

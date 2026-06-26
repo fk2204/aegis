@@ -41,7 +41,6 @@ async def enqueue_close_orchestration(
     trigger: str,
     actor_email: str | None = None,
     override_cap: bool = False,
-    ignore_pin: bool = False,
 ) -> bool:
     """Fire-and-forget enqueue. Returns True on success, False on failure.
 
@@ -52,9 +51,10 @@ async def enqueue_close_orchestration(
     Never raises. The boolean return lets the manual rescan route flash
     a user-visible message; the webhook route ignores it.
 
-    ``ignore_pin=True`` bypasses the orchestrator's pin gate — operator
-    explicitly chose to process unpinned PDFs (subject to filename
-    filter). Only set by the rescan-with-``ignore_pin`` UI button.
+    2026-06-26: the ``ignore_pin`` kwarg was removed alongside the
+    operator pin gate retirement. Every PDF on a Lead is now a
+    candidate; the filename deny list is the only gate before the
+    parser. See ``aegis.workers.process_close_attachments``.
     """
     if trigger not in _VALID_TRIGGERS:
         raise ValueError(f"trigger must be one of {sorted(_VALID_TRIGGERS)}; got {trigger!r}")
@@ -69,7 +69,6 @@ async def enqueue_close_orchestration(
                 trigger,
                 actor_email=actor_email,
                 override_cap=override_cap,
-                ignore_pin=ignore_pin,
             )
         else:
             pending = getattr(request.app.state, "pending_close_orchestration_jobs", None)
@@ -82,7 +81,6 @@ async def enqueue_close_orchestration(
                     "trigger": trigger,
                     "actor_email": actor_email,
                     "override_cap": override_cap,
-                    "ignore_pin": ignore_pin,
                 }
             )
     except Exception as exc:
@@ -96,7 +94,6 @@ async def enqueue_close_orchestration(
                 "close_lead_id": close_lead_id,
                 "trigger": trigger,
                 "override_cap": override_cap,
-                "ignore_pin": ignore_pin,
                 "error": type(exc).__name__,
                 "message": str(exc)[:500],
             },
@@ -120,7 +117,6 @@ async def enqueue_close_orchestration(
             "close_lead_id": close_lead_id,
             "trigger": trigger,
             "override_cap": override_cap,
-            "ignore_pin": ignore_pin,
         },
     )
     return True

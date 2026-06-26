@@ -716,6 +716,14 @@ class CloseClient:
                 "GET",
                 path,
                 params={
+                    # 2026-06-26 regression fix: without ``lead_id`` the
+                    # Close activity endpoints return the ORG-WIDE activity
+                    # feed, not the per-lead one. Symptom was every lead
+                    # returning the identical ~1416 attachments (the org's
+                    # first 1000 activities, capped). The sibling
+                    # ``_fetch_note_pinned_map`` always passed lead_id; this
+                    # path quietly never did.
+                    "lead_id": lead_id,
                     "_limit": page_size,
                     "_skip": skip,
                 },

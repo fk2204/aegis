@@ -2759,19 +2759,6 @@ async def merchant_close_rescan(
             ),
         ),
     ] = False,
-    ignore_pin: Annotated[
-        bool,
-        Query(
-            description=(
-                "Set true to bypass the operator pin gate. Default behavior "
-                "(``ignore_pin=false``) only ingests files the operator has "
-                "pinned in Close (file pin OR wrapping-note pin). When "
-                "``ignore_pin=true`` the filename allow + deny list takes "
-                "over as the sole signal — used by the 'Rescan all unpinned "
-                "PDFs' button after the dossier surfaces unpinned candidates."
-            ),
-        ),
-    ] = False,
 ) -> RedirectResponse:
     """Operator-clicked manual rescan of a merchant's Close attachments.
 
@@ -2806,7 +2793,6 @@ async def merchant_close_rescan(
         trigger="rescan",
         actor_email=actor_email,
         override_cap=override_cap,
-        ignore_pin=ignore_pin,
     )
 
     audit.record(
@@ -2818,7 +2804,6 @@ async def merchant_close_rescan(
         details={
             "close_lead_id": merchant.close_lead_id,
             "override_cap": override_cap,
-            "ignore_pin": ignore_pin,
         },
     )
 
@@ -2855,10 +2840,10 @@ def _close_orchestration_latest_window(
 
     Orchestration runs write a final ``close.orchestration.complete``
     row, preceded (in chronological order) by per-attachment skip /
-    fetch rows + batch-level signals (``no_pinned_files``,
-    ``pin_ignored``, ``capped`` etc.). In newest-first history the
-    ``complete`` row appears first, then the earlier audit rows from
-    the same run, then ``complete`` from the previous run, and so on.
+    fetch rows + batch-level signals (``capped`` etc.). In newest-first
+    history the ``complete`` row appears first, then the earlier audit
+    rows from the same run, then ``complete`` from the previous run,
+    and so on.
 
     Walks newest-first: includes the first ``complete`` row, then
     every row up to (but not including) the next ``complete``. Returns
@@ -2878,48 +2863,6 @@ def _close_orchestration_latest_window(
         if seen_first_complete:
             window.append(row)
     return window
-
-
-def _close_orchestration_last_no_pinned_files(
-    history: list[dict[str, Any]],
-) -> bool:
-    """True iff the most recent orchestration audited ``no_pinned_files``.
-
-    Means: pin-only mode ran and found >=1 PDF but none pinned.
-    Drives the empty-state message on the merchant detail template
-    ("Pin the bank-statement files in Close, then click Rescan.").
-
-    Returns False when ignore_pin was set (that run wrote
-    ``pin_ignored`` instead) — the empty-state message is specifically
-    for "operator forgot to pin" not "operator chose ignore_pin and
-    no statements matched."
-    """
-    window = _close_orchestration_latest_window(history)
-    return any(row.get("action") == "close.orchestration.no_pinned_files" for row in window)
-
-
-def _close_orchestration_last_had_unpinned_pdfs(
-    history: list[dict[str, Any]],
-) -> bool:
-    """True iff the most recent orchestration encountered unpinned PDFs.
-
-    Captured via either signal in the latest orchestration window:
-      - ``close.orchestration.no_pinned_files`` (all PDFs unpinned), OR
-      - ``close.attachment.skipped`` with ``reason='not_pinned'``
-        (some PDFs were unpinned even if some were pinned too).
-
-    Drives the "Rescan all unpinned PDFs (ignore pin)" button visibility.
-    """
-    window = _close_orchestration_latest_window(history)
-    for row in window:
-        action = row.get("action") or ""
-        if action == "close.orchestration.no_pinned_files":
-            return True
-        if action == "close.attachment.skipped":
-            reason = (row.get("details") or {}).get("reason")
-            if reason == "not_pinned":
-                return True
-    return False
 
 
 def _latest_funder_responses(audit: AuditLog, merchant_id: UUID) -> dict[str, dict[str, Any]]:
@@ -3531,8 +3474,6 @@ async def merchant_detail(
     trend = _compute_trend(all_docs, docs)
     history = audit.list_for_subject(subject_type="merchant", subject_id=merchant_id, limit=20)
     close_last_orchestration_capped = _close_orchestration_last_capped(history)
-    close_last_no_pinned_files = _close_orchestration_last_no_pinned_files(history)
-    close_last_had_unpinned_pdfs = _close_orchestration_last_had_unpinned_pdfs(history)
 
     # Dossier is the only merchant-detail surface. The legacy v2 panel
     # template was retired when the whole app was unified on the dossier
@@ -3804,8 +3745,6 @@ async def merchant_detail(
             "trend": trend,
             "history": history,
             "close_last_orchestration_capped": close_last_orchestration_capped,
-            "close_last_no_pinned_files": close_last_no_pinned_files,
-            "close_last_had_unpinned_pdfs": close_last_had_unpinned_pdfs,
             "unified_tracks": unified_tracks,
             "shadow_signals": shadow_signals,
             "merchant_shadow_signals": merchant_shadow_signals,

@@ -1132,6 +1132,23 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--all-merchants",
+        action="store_true",
+        help=(
+            "Scan every merchant with a ``close_lead_id`` (regardless of "
+            "current backlog status) and pull their Close attachments "
+            "through the standard SHA-dedup + filename-deny-list + parse "
+            "+ pdf_store-seal pipeline. Processes merchants in batches "
+            "of 10 with a 1-second sleep between batches to stay under "
+            "Close's per-minute rate ceiling. Dry-run by default: lists "
+            "which merchants would scan + how many new attachments would "
+            "ingest. Pass --apply to execute. Reports: merchants_scanned, "
+            "new_docs_ingested, skipped, issues. Used post-pin-gate "
+            "removal (2026-06-26) to retroactively ingest every PDF that "
+            "was skipped under the old pin-only contract."
+        ),
+    )
+    p.add_argument(
         "--all-leads",
         action="store_true",
         help=(
@@ -2507,6 +2524,89 @@ def main() -> int:
             f"skipped_non_statement={skipped_non_statement} issues={issues}",
             file=sys.stderr,
         )
+        return EXIT_ISSUES_FOUND if issues > 0 else EXIT_OK
+
+    # --all-merchants: scan every merchant with a close_lead_id, regardless
+    # of backlog status. Batches of 10 with a 1-second sleep between to
+    # respect Close rate limits. Used post-pin-gate removal (2026-06-26)
+    # to retroactively pull every PDF that was previously skipped.
+    if args.all_merchants:
+        import time
+
+        try:
+            all_merchants = [m for m in merchants_repo.list_all() if m.close_lead_id is not None]
+        except Exception as exc:
+            print(f"ERROR: --all-merchants enumeration failed: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            close_client.close()
+            return EXIT_RUNTIME_ERROR
+
+        if args.limit is not None:
+            all_merchants = all_merchants[: args.limit]
+
+        print(
+            f"# --all-merchants: {len(all_merchants)} merchants to scan",
+            file=sys.stderr,
+        )
+
+        batch_size = 10
+        sleep_between_batches_s = 1.0
+        all_rows: list[MerchantOutcome] = []
+        try:
+            for batch_start in range(0, len(all_merchants), batch_size):
+                batch = all_merchants[batch_start : batch_start + batch_size]
+                for merchant in batch:
+                    all_rows.append(
+                        process_merchant(
+                            merchant,
+                            close_client=close_client,
+                            document_repo=document_repo,
+                            pdf_store=pdf_store,
+                            audit=audit,
+                            llm=llm,
+                            upload_dir=upload_dir,
+                            max_upload_bytes=max_upload_bytes,
+                            apply_writes=args.apply,
+                            backfill_sha_matches=args.backfill_sha_matches,
+                        )
+                    )
+                # Sleep between batches (skip after the final batch).
+                if batch_start + batch_size < len(all_merchants):
+                    time.sleep(sleep_between_batches_s)
+        finally:
+            close_client.close()
+
+        stream = _open_output_stream(args.output)
+        try:
+            write_csv(all_rows, stream)
+        finally:
+            if stream is not sys.stdout:
+                stream.close()  # type: ignore[attr-defined]
+
+        merchants_scanned = len(all_rows)
+        new_docs_ingested = sum(r.attachments_reingested for r in all_rows)
+        skipped = sum(r.attachments_skipped for r in all_rows) + sum(
+            r.attachments_skipped_non_statement for r in all_rows
+        )
+        issues = sum(1 for r in all_rows if r.is_issue)
+        mode = "APPLY" if args.apply else "DRY-RUN"
+
+        # Top-N merchants by new docs ingested.
+        sorted_rows = sorted(all_rows, key=lambda r: r.attachments_reingested, reverse=True)
+        top_rows = [r for r in sorted_rows[:10] if r.attachments_reingested > 0]
+        print(
+            f"# mode={mode} +all-merchants merchants_scanned={merchants_scanned} "
+            f"new_docs_ingested={new_docs_ingested} skipped={skipped} "
+            f"issues={issues}",
+            file=sys.stderr,
+        )
+        if top_rows:
+            print("# top merchants by new_docs_ingested:", file=sys.stderr)
+            for r in top_rows:
+                print(
+                    f"#   {r.merchant_name[:50]:50s} new={r.attachments_reingested}",
+                    file=sys.stderr,
+                )
         return EXIT_ISSUES_FOUND if issues > 0 else EXIT_OK
 
     if args.merchant is not None:
