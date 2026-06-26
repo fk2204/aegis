@@ -1,0 +1,11 @@
+id,Type,Source,Amount,Fee,Net,Currency,Created (UTC),Available On (UTC),Description,Customer Description,Customer Email,Transfer
+txn_001,charge,ch_test_001,500.00,14.80,485.20,usd,2026-03-01 10:14:00,2026-03-03 00:00:00,Subscription invoice,,,
+txn_002,charge,ch_test_002,1250.00,36.55,1213.45,usd,2026-03-02 09:01:00,2026-03-04 00:00:00,Subscription invoice,,,
+txn_003,refund,re_test_001,75.00,0.00,-75.00,usd,2026-03-03 18:22:00,2026-03-05 00:00:00,Customer refund,,,
+txn_004,charge,ch_test_003,800.00,23.50,776.50,usd,2026-03-05 11:45:00,2026-03-07 00:00:00,Subscription invoice,,,
+txn_005,dispute,du_test_001,200.00,15.00,-215.00,usd,2026-03-08 14:30:00,2026-03-10 00:00:00,Customer dispute,,,
+txn_006,charge,ch_test_004,650.00,19.15,630.85,usd,2026-03-12 08:00:00,2026-03-14 00:00:00,One-time charge,,,
+txn_007,charge,ch_test_005,1100.00,32.20,1067.80,usd,2026-03-18 13:12:00,2026-03-20 00:00:00,Subscription invoice,,,
+txn_008,payout,po_test_001,-2459.45,0.00,-2459.45,usd,2026-03-15 00:00:00,2026-03-15 00:00:00,STRIPE PAYOUT,,,tr_test_001
+txn_009,refund,re_test_002,50.00,0.00,-50.00,usd,2026-03-22 16:00:00,2026-03-24 00:00:00,Customer refund,,,
+txn_010,payout,po_test_002,-1374.35,0.00,-1374.35,usd,2026-03-25 00:00:00,2026-03-25 00:00:00,STRIPE PAYOUT,,,tr_test_002

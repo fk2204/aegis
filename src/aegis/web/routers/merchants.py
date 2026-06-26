@@ -148,6 +148,7 @@ from aegis.web._pattern_cards import (
     build_pattern_cards,
     pattern_has_customer_concentration,
 )
+from aegis.web._processor_section import build_processor_section
 from aegis.web._router_helpers import (
     _AGGREGATE_LABELS,
     _AGGREGATE_UNIT_KIND,
@@ -3256,6 +3257,18 @@ async def merchant_detail(
             close_context=_close_ctx,
         )
 
+    # Processor revenue section (Stripe — Square / Toast / Clover later).
+    # Returns None when the merchant has no Stripe statement on file. Until
+    # the processor_statements persistence layer ships (see
+    # ``aegis.workers._run_processor_branch`` docstring), this is always
+    # None on the production path; the template gates on its truthiness so
+    # the dossier section stays hidden. Tests inject a fixture-shape
+    # ``stripe_results_by_doc`` to verify the rendering.
+    processor_section = build_processor_section(
+        documents=all_docs,
+        stripe_results_by_doc=None,
+    )
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -3270,6 +3283,7 @@ async def merchant_detail(
             "latest_transactions": latest_transactions,
             "soft_signals": soft_signals,
             "has_concentration_pattern": _has_concentration_pattern,
+            "processor_section": processor_section,
             "from_intake": from_intake,
             "intake_docs_uploaded": intake_docs_uploaded,
             "intake_docs_failed": intake_docs_failed,

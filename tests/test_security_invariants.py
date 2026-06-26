@@ -40,7 +40,7 @@ _BANNED_EMAIL_IMPORTS: tuple[str, ...] = (
     "sendgrid",
     "mailgun",
     "boto3.client('ses')",  # AWS SES
-    "boto3.client(\"ses\")",
+    'boto3.client("ses")',
 )
 
 
@@ -54,33 +54,35 @@ _BANNED_EMAIL_IMPORTS: tuple[str, ...] = (
 #   citation    — state regulation URL stored as data in compliance/states.py
 _ALLOWED_OUTBOUND_HOSTS: dict[str, str] = {
     # --- runtime endpoints --------------------------------------------------
-    "api.close.com":                 "endpoint — Close CRM API (operator's CRM, not a funder)",
-    "app.close.com":                 (
+    "api.close.com": "endpoint — Close CRM API (operator's CRM, not a funder)",
+    "app.close.com": (
         "endpoint — source host for Close attachment URLs that "
         "download_attachment rewrites to api.close.com (app.close.com "
         "refuses API-key Basic auth, returns 400 'use api.close.com')"
     ),
-    "treas.gov":                     "endpoint — Treasury OFAC SDN list (sanctions check)",
-    "ntfy.sh":                       "endpoint — ops push notifications",
-    "hc-ping.com":                   "endpoint — healthchecks.io heartbeat pings",
-    "127.0.0.1":                     "endpoint — localhost healthcheck (heartbeat_cli)",
+    "treas.gov": "endpoint — Treasury OFAC SDN list (sanctions check)",
+    "ntfy.sh": "endpoint — ops push notifications",
+    "hc-ping.com": "endpoint — healthchecks.io heartbeat pings",
+    "127.0.0.1": "endpoint — localhost healthcheck (heartbeat_cli)",
     # --- documentation references (no runtime call) -------------------------
-    "developer.close.com":           "docref — Close auth docs cited in close/client.py",
-    "developers.cloudflare.com":     "docref — Cloudflare Access docs cited in ops/operators.py",
-    "consumerfinance.gov":           "docref — CFPB Regulation Z citation in compliance/apr.py",
-    "github.com":                    "docref — AEGIS repo URL on /ui/admin/health service_info",
+    "developer.close.com": "docref — Close auth docs cited in close/client.py",
+    "developers.cloudflare.com": "docref — Cloudflare Access docs cited in ops/operators.py",
+    "consumerfinance.gov": "docref — CFPB Regulation Z citation in compliance/apr.py",
+    "github.com": "docref — AEGIS repo URL on /ui/admin/health service_info",
+    "docs.stripe.com": "docref — Stripe balance-txn format (csv_stripe.py)",
+    "support.stripe.com": "docref — Stripe balance-txn format (test docstrings)",
     # --- state regulation citations (data, not callers) ---------------------
-    "leginfo.legislature.ca.gov":    "citation — CA statute reference (compliance/states.py)",
-    "law.cornell.edu":               "citation — Cornell LII statute references",
-    "law.justia.com":                "citation — Justia statute references",
-    "dfpi.ca.gov":                   "citation — California DFPI regulation",
-    "dfs.ny.gov":                    "citation — NY DFS regulation",
-    "nysenate.gov":                  "citation — NY Senate bill text",
-    "flsenate.gov":                  "citation — FL Senate statute",
-    "legis.ga.gov":                  "citation — GA legislature bill text",
-    "codes.findlaw.com":             "citation — FindLaw code references",
-    "legiscan.com":                  "citation — Legiscan bill tracking",
-    "ilga.gov":                      "citation — IL General Assembly",
+    "leginfo.legislature.ca.gov": "citation — CA statute reference (compliance/states.py)",
+    "law.cornell.edu": "citation — Cornell LII statute references",
+    "law.justia.com": "citation — Justia statute references",
+    "dfpi.ca.gov": "citation — California DFPI regulation",
+    "dfs.ny.gov": "citation — NY DFS regulation",
+    "nysenate.gov": "citation — NY Senate bill text",
+    "flsenate.gov": "citation — FL Senate statute",
+    "legis.ga.gov": "citation — GA legislature bill text",
+    "codes.findlaw.com": "citation — FindLaw code references",
+    "legiscan.com": "citation — Legiscan bill tracking",
+    "ilga.gov": "citation — IL General Assembly",
     # Add new outbound hosts here. Each gets a one-line justification.
 }
 

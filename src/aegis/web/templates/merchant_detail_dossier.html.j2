@@ -1122,6 +1122,12 @@
       </section>
     {% endif %}
 
+    {# ============== § 2b PROCESSOR REVENUE ==============
+       Renders only when a Stripe statement is present for the merchant.
+       Sits alongside (not replacing) the bank-statement § 2 — card-heavy
+       merchants will have both. #}
+    {% include "_processor_revenue.html.j2" %}
+
     {# ============== § 3 PATTERN FINDINGS ============== #}
     {% if stacking or pattern_cards or (soft_signals and not soft_signals.is_empty) %}
       <section id="findings" class="section">

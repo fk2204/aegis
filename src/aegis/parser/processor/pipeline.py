@@ -52,7 +52,16 @@ _CHARGEBACK_RATIO_HARD = "0.02"
 
 @dataclass
 class ProcessorPipelineResult:
-    """Output of the processor parser run."""
+    """Output of the processor parser run.
+
+    ``processor_type`` is the public discriminator surfaced on the
+    document / dossier: ``"stripe"`` or ``"square"``. It's a string
+    rather than the narrower ``ProcessorBrand`` literal so downstream
+    code that only cares about "is this a processor statement?" can
+    do ``result.processor_type is not None`` without importing the
+    literal. ``brand`` (the ``ProcessorBrand`` literal) stays around
+    as the internal routing discriminator the worker uses.
+    """
 
     parse_status: ProcessorParseStatus
     brand: ProcessorBrand
@@ -60,6 +69,7 @@ class ProcessorPipelineResult:
     validation: ProcessorValidationResult
     aggregates: ProcessorAggregates | None = None
     flags: list[str] = field(default_factory=list)
+    processor_type: str | None = None
 
 
 def run_processor_pipeline(
@@ -121,6 +131,7 @@ def run_processor_pipeline(
             validation=validation,
             aggregates=None,
             flags=flags,
+            processor_type=brand,
         )
 
     aggregates = aggregate_processor(extraction.transactions)
@@ -131,15 +142,11 @@ def run_processor_pipeline(
         # >=2% chargebacks: industry watch-list territory. Operator
         # routes to review; downstream scoring penalizes.
         parse_status = "review"
-        flags.append(
-            f"[RISK] chargeback_ratio_high: {ratio:.4f} >= {_CHARGEBACK_RATIO_HARD}"
-        )
+        flags.append(f"[RISK] chargeback_ratio_high: {ratio:.4f} >= {_CHARGEBACK_RATIO_HARD}")
     elif str(ratio) > _CHARGEBACK_RATIO_SOFT:
         # >=1% chargebacks: elevated but not catastrophic. Soft flag.
         parse_status = "review"
-        flags.append(
-            f"[RISK] chargeback_ratio_elevated: {ratio:.4f} >= {_CHARGEBACK_RATIO_SOFT}"
-        )
+        flags.append(f"[RISK] chargeback_ratio_elevated: {ratio:.4f} >= {_CHARGEBACK_RATIO_SOFT}")
 
     return ProcessorPipelineResult(
         parse_status=parse_status,
@@ -148,6 +155,7 @@ def run_processor_pipeline(
         validation=validation,
         aggregates=aggregates,
         flags=flags,
+        processor_type=brand,
     )
 
 

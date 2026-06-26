@@ -70,6 +70,9 @@ from aegis.parser.page_router import (
     summarize,
 )
 from aegis.parser.patterns import Pattern, PatternAnalysis, analyze_patterns
+from aegis.parser.processor.stripe_router import (
+    processor_type_for_document as determine_processor_type,
+)
 from aegis.parser.tampering import TamperingEvaluation, evaluate_tampering
 from aegis.parser.validate import validate_extraction
 
@@ -225,6 +228,15 @@ class PipelineResult:
     fraud_score: int = 0
     fraud_score_breakdown: dict[str, int] = field(default_factory=dict)
     all_flags: list[str] = field(default_factory=list)
+    # Processor brand discriminator. Always ``None`` on the bank
+    # pipeline result — the bank pipeline never produces a processor
+    # statement. The worker decides processor routing UPSTREAM of
+    # ``run_pipeline`` (see ``aegis.workers._run_processor_branch``);
+    # the field exists here so downstream code can read a uniform
+    # ``result.processor_type`` regardless of which pipeline ran.
+    # See ``aegis.parser.processor.processor_type_for_document`` for the
+    # public routing decision helper.
+    processor_type: str | None = None
     # Average classification confidence across all classified rows
     # (100 when no rows were classified — e.g. validation failed). Used
     # by the parse_status gate and surfaced on the merchant detail page.
@@ -1029,6 +1041,12 @@ def _collect_flags(
     return out
 
 
+# Public routing helper re-exported above (top-level import for E402).
+# ``determine_processor_type`` is the public name callers spell as
+# ``aegis.parser.pipeline.determine_processor_type``. None means
+# "route to bank pipeline"; "stripe" / "square" means "route to
+# processor pipeline".
+
 __all__ = [
     "ADB_COVERAGE_THIN_RATIO_THRESHOLD",
     "CLASSIFICATION_CONFIDENCE_FLOOR",
@@ -1042,5 +1060,6 @@ __all__ = [
     "REVIEW_THRESHOLD",
     "MerchantContext",
     "PipelineResult",
+    "determine_processor_type",
     "run_pipeline",
 ]

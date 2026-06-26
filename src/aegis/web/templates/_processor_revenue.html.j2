@@ -1,0 +1,79 @@
+{# Processor Revenue panel — Stripe (and later Square / Toast / Clover).
+
+   Renders alongside the bank-statement Cashflow Evidence section
+   when a Stripe statement is present for the merchant. Card-heavy
+   merchants will have BOTH — the bank statement shows the net
+   payout in, this section shows the gross volume + fee load +
+   chargebacks behind that payout.
+
+   Context expected:
+   - processor_section: {
+       "processor_type": "stripe",
+       "parse_method": "csv" | "pdf_vision",
+       "aggregates": StripeDossierAggregates,
+       "document_id": str,                      (for drill-down links)
+     }
+#}
+{% if processor_section %}
+  {% set ps = processor_section %}
+  {% set agg = ps.aggregates %}
+  <section id="processor-revenue" class="section">
+    <header>
+      <span class="n">§ 2b</span>
+      <h2>Processor <em>revenue</em></h2>
+      <span class="footnote">
+        {{ ps.processor_type | capitalize }} ·
+        {{ agg.period_start }} → {{ agg.period_end }} ·
+        {{ agg.period_days }} day{{ '' if agg.period_days == 1 else 's' }} ·
+        parsed via {{ 'CSV export' if ps.parse_method == 'csv' else 'PDF (vision)' }}
+      </span>
+    </header>
+
+    <div class="spread">
+      <div>
+        <span class="k">Gross Volume</span>
+        <span class="v">${{ "{:,.2f}".format(agg.total_gross_volume.value) }}</span>
+        <span class="qual">sum of customer charges, before fees</span>
+      </div>
+      <div>
+        <span class="k">Total Fees</span>
+        <span class="v neg">${{ "{:,.2f}".format(agg.total_fees.value) }}</span>
+        <span class="qual">processor + Stripe per-transaction fees</span>
+      </div>
+      <div>
+        <span class="k">Net Volume</span>
+        <span class="v">${{ "{:,.2f}".format(agg.total_net_volume.value) }}</span>
+        <span class="qual">gross − refunds − chargebacks − fees</span>
+      </div>
+      <div>
+        <span class="k">Avg Daily Volume</span>
+        <span class="v">${{ "{:,.2f}".format(agg.avg_daily_volume) }}</span>
+        <span class="qual">gross ÷ {{ agg.period_days }} day{{ '' if agg.period_days == 1 else 's' }}</span>
+      </div>
+      <div>
+        <span class="k">Payouts</span>
+        <span class="v">${{ "{:,.2f}".format(agg.total_payouts.value) }}</span>
+        <span class="qual">{{ agg.payout_count }} payout{{ '' if agg.payout_count == 1 else 's' }} to bank</span>
+      </div>
+      <div class="{% if agg.chargeback_count > 0 %}warn{% endif %}">
+        <span class="k">Chargebacks</span>
+        <span class="v">{{ agg.chargeback_count }}</span>
+        <span class="qual">disputes clawed back in period</span>
+      </div>
+      <div>
+        <span class="k">Refund Rate</span>
+        {# refund_rate is Decimal; format as percent to 2dp. #}
+        <span class="v">{{ "{:.2%}".format(agg.refund_rate) }}</span>
+        <span class="qual">{{ agg.refund_count }} refund{{ '' if agg.refund_count == 1 else 's' }} of {{ agg.charge_count }} charge{{ '' if agg.charge_count == 1 else 's' }}</span>
+      </div>
+    </div>
+
+    <div class="citation-strip">
+      <strong>Source —</strong> processor-statement aggregates are
+      derived deterministically from the {{ 'CSV export' if ps.parse_method == 'csv' else 'PDF (vision-extracted)' }}
+      line items. Each aggregate stores a list of contributing line-item
+      IDs traceable to <code>source_page</code> + <code>source_line</code>
+      on the original document.
+    </div>
+  </section>
+{% endif %}

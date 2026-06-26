@@ -18,10 +18,18 @@ as in the bank parser:
 from __future__ import annotations
 
 from aegis.parser.processor.aggregate import ProcessorAggregates, aggregate_processor
+from aegis.parser.processor.csv_stripe import StripeCsvError, extract_stripe_csv
 from aegis.parser.processor.detect import (
     ProcessorBrand,
     ProcessorDetection,
     detect_processor,
+    detect_processor_from_filename,
+)
+from aegis.parser.processor.dossier_aggregates import (
+    ParseMethod,
+    StripeDossierAggregates,
+    StripeParseResult,
+    build_stripe_dossier_aggregates,
 )
 from aegis.parser.processor.models import (
     ExtractedProcessorStatement,
@@ -30,10 +38,17 @@ from aegis.parser.processor.models import (
     ProcessorSummary,
 )
 from aegis.parser.processor.pipeline import ProcessorPipelineResult, run_processor_pipeline
+from aegis.parser.processor.stripe_router import (
+    StripeRouterError,
+    detect_stripe,
+    processor_type_for_document,
+    route_stripe_document,
+)
 from aegis.parser.processor.validate import ProcessorValidationResult, validate_processor
 
 __all__ = [
     "ExtractedProcessorStatement",
+    "ParseMethod",
     "ProcessorAggregates",
     "ProcessorBrand",
     "ProcessorDetection",
@@ -42,8 +57,18 @@ __all__ = [
     "ProcessorPipelineResult",
     "ProcessorSummary",
     "ProcessorValidationResult",
+    "StripeCsvError",
+    "StripeDossierAggregates",
+    "StripeParseResult",
+    "StripeRouterError",
     "aggregate_processor",
+    "build_stripe_dossier_aggregates",
     "detect_processor",
+    "detect_processor_from_filename",
+    "detect_stripe",
+    "extract_stripe_csv",
+    "processor_type_for_document",
+    "route_stripe_document",
     "run_processor_pipeline",
     "validate_processor",
 ]

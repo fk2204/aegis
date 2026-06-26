@@ -18,6 +18,18 @@ Three outcomes:
 
 The hit list lives in this module so signature drift is one place to
 update, not scattered across the codebase.
+
+Filename-only routing
+---------------------
+``detect_processor_from_filename`` complements the content detector
+for the CSV path. Stripe Dashboard exports the balance-transactions
+CSV with a predictable filename shape (``balance_transactions_2026-03.csv``,
+``stripe-payouts-Q1.csv`` etc.); the upload route uses the filename
+hit to skip the content sniff entirely for CSVs (where pymupdf
+wouldn't work anyway). The token list is intentionally small and
+case-insensitive — broad enough to catch the common shapes, narrow
+enough that a random bank statement named "Stripe Mall - Mar.pdf"
+doesn't accidentally route to the processor pipeline.
 """
 
 from __future__ import annotations
@@ -118,6 +130,56 @@ def detect_processor(pdf_path: str | Path) -> ProcessorDetection:
     )
 
 
+# Filename tokens that mark a Stripe export. Case-insensitive substring
+# match against the basename. Conservative on purpose — single-word
+# matches against common nouns like "stripe" alone would false-positive
+# on a merchant called "Stripe Mall Inc". The two-token requirement
+# (``stripe`` plus one of the structural words ``balance``, ``payout``,
+# ``transactions``) is the load-bearing combination.
+_STRIPE_FILENAME_TOKENS: Final[tuple[str, ...]] = (
+    "stripe",
+    "balance_transaction",
+    "balance-transaction",
+    "payouts_",
+    "payouts-",
+    "stripe_payout",
+    "stripe-payout",
+)
+
+# Filename tokens that explicitly carry Square (kept here for parity,
+# wired for the future Square CSV path). NOT used by routing yet.
+_SQUARE_FILENAME_TOKENS: Final[tuple[str, ...]] = (
+    "square",
+    "squareup",
+)
+
+
+def detect_processor_from_filename(filename: str | Path) -> ProcessorBrand:
+    """Return the processor brand suggested by a filename, or ``"bank"``.
+
+    Pure-string check; no I/O. Matches case-insensitive substrings
+    against the basename only (path components ignored). The CSV
+    upload route uses this for the filename-first routing path the
+    operator spec calls for; the content sniff (``detect_processor``)
+    still runs on PDFs as a second confirmation.
+
+    "bank" means "the filename does NOT carry a processor signature";
+    the caller should fall back to ``detect_processor`` (PDF) or fail
+    closed (CSV without a processor signature in the filename — we
+    don't know what to do with a CSV that isn't tagged).
+    """
+    basename = Path(str(filename)).name.lower()
+    stripe_hit = any(token in basename for token in _STRIPE_FILENAME_TOKENS)
+    square_hit = any(token in basename for token in _SQUARE_FILENAME_TOKENS)
+    if stripe_hit and square_hit:
+        return "ambiguous"
+    if stripe_hit:
+        return "stripe"
+    if square_hit:
+        return "square"
+    return "bank"
+
+
 def _extract_probe_text(pdf_path: str | Path) -> str:
     """Concatenate the first ``_DETECTION_PROBE_PAGES`` pages' text.
 
@@ -132,9 +194,7 @@ def _extract_probe_text(pdf_path: str | Path) -> str:
                 chunks.append(doc.load_page(i).get_text("text") or "")
             return "\n".join(chunks)
     except Exception:
-        _log.warning(
-            "processor.detect.read_failed", extra={"pdf_path": str(pdf_path)}
-        )
+        _log.warning("processor.detect.read_failed", extra={"pdf_path": str(pdf_path)})
         return ""
 
 
@@ -142,4 +202,5 @@ __all__ = [
     "ProcessorBrand",
     "ProcessorDetection",
     "detect_processor",
+    "detect_processor_from_filename",
 ]
