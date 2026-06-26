@@ -183,6 +183,16 @@ class AnalysisRow(_StrictModel):
     # always recomputes from current transactions.
     pattern_analysis: PatternAnalysisDTO | None = None
 
+    # Cached NarratorSummary from migration 075 — the Bedrock-driven
+    # plain-English deal summary surfaced at the top of the dossier.
+    # NULL on rows analyzed before 075 ships OR when Bedrock has not
+    # yet been successfully called for this deal. The dossier opens
+    # the raw-analysis details block open-by-default when this is None
+    # so legacy deals don't lose visibility on the underlying numbers.
+    # NEVER a source of truth — flags, scores, aggregates remain
+    # canonical; this column is a presentation cache only.
+    narrator_summary: dict[str, Any] | None = None
+
 
 # Protocol ---------------------------------------------------------------------
 
@@ -309,6 +319,20 @@ class DocumentRepository(Protocol):
         Distinct from ``persist_parse_result`` (parser-side bulk write)
         and ``mark_error`` (worker failure path); this is the one
         narrow API for in-place status mutation.
+        """
+
+    def set_narrator_summary(self, document_id: UUID, payload: dict[str, Any] | None) -> None:
+        """Upsert the ``analyses.narrator_summary`` jsonb column.
+
+        Migration 075. ``payload`` is the JSON-serialized
+        ``NarratorSummary`` from ``aegis.scoring_v2.narrator`` (already
+        Decimal-stringified by Pydantic's ``mode='json'`` dump). ``None``
+        clears the column.
+
+        No-op (without raising) when the document has no analyses row
+        yet — narrator output for a not-yet-aggregated document is
+        meaningless. Callers that need to assert a write landed should
+        re-read the AnalysisRow.
         """
 
 
@@ -489,6 +513,20 @@ class InMemoryDocumentRepository:
         # retention_until preserved per the sweep design — forensic
         # record of what triggered the deletion.
         self._docs[document_id] = doc
+
+    def set_narrator_summary(self, document_id: UUID, payload: dict[str, Any] | None) -> None:
+        """Cache the Bedrock-generated narrator output on the analyses row.
+
+        No-op when no analyses row exists yet — narrator output for an
+        un-aggregated doc is meaningless, and the dossier route never
+        calls this in that branch (it only renders the narrator when an
+        AnalysisRow is present).
+        """
+        analysis = self._analyses.get(document_id)
+        if analysis is None:
+            return
+        analysis.narrator_summary = payload
+        self._analyses[document_id] = analysis
 
 
 # Supabase implementation ------------------------------------------------------
@@ -716,6 +754,18 @@ class SupabaseDocumentRepository:
         """
         get_supabase().table("documents").update({"parse_status": status}).eq(
             "id", str(document_id)
+        ).execute()
+
+    def set_narrator_summary(self, document_id: UUID, payload: dict[str, Any] | None) -> None:
+        """Update ``analyses.narrator_summary`` (migration 075).
+
+        Single-column UPDATE keyed on ``document_id``. No-op (without
+        raising) when no analyses row exists — supabase-py's UPDATE
+        silently affects zero rows in that case, matching the in-memory
+        contract.
+        """
+        get_supabase().table("analyses").update({"narrator_summary": payload}).eq(
+            "document_id", str(document_id)
         ).execute()
 
     # PDF retention chunk B (migration 033) ---------------------------------
@@ -1000,6 +1050,11 @@ def _analysis_to_db_row(analysis: AnalysisRow) -> dict[str, Any]:
             if analysis.pattern_analysis is not None
             else None
         ),
+        # Migration 075 — Bedrock narrator output. Inserted as None on
+        # the parse-time write; populated separately via
+        # ``set_narrator_summary`` once the dossier render successfully
+        # produces a summary.
+        "narrator_summary": analysis.narrator_summary,
     }
 
 
@@ -1040,6 +1095,7 @@ def _db_row_to_analysis(row: dict[str, Any]) -> AnalysisRow:
             if row.get("pattern_analysis") is not None
             else None
         ),
+        narrator_summary=row.get("narrator_summary"),
     )
 
 

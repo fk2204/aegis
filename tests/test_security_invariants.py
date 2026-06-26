@@ -71,6 +71,7 @@ _ALLOWED_OUTBOUND_HOSTS: dict[str, str] = {
     "github.com": "docref — AEGIS repo URL on /ui/admin/health service_info",
     "docs.stripe.com": "docref — Stripe balance-txn format (csv_stripe.py)",
     "support.stripe.com": "docref — Stripe balance-txn format (test docstrings)",
+    "docs.anthropic.com": "docref — Anthropic tool-use envelope shape (llm.py invoke_tool_json)",
     # --- state regulation citations (data, not callers) ---------------------
     "leginfo.legislature.ca.gov": "citation — CA statute reference (compliance/states.py)",
     "law.cornell.edu": "citation — Cornell LII statute references",

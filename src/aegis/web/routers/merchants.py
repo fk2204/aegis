@@ -123,6 +123,11 @@ from aegis.scoring.submission_package import build_submission_files
 from aegis.scoring_v2.balance_health import compute_balance_health
 from aegis.scoring_v2.industry import IndustryTier, industry_risk_tier
 from aegis.scoring_v2.mca_stack import aggregate_mca_stack
+from aegis.scoring_v2.narrator import (
+    NarratorContext,
+    NarratorError,
+    narrate_deal,
+)
 from aegis.scoring_v2.offer import OfferRecommendation, compute_offer
 from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
 from aegis.scoring_v2.score_for_sync import (
@@ -2266,6 +2271,163 @@ async def merchant_refresh_web_presence(
     )
 
 
+@router.post(
+    "/merchants/{merchant_id}/documents/{document_id}/narrator/refresh",
+    response_model=None,
+)
+async def merchant_narrator_refresh(
+    merchant_id: UUID,
+    document_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> Response:
+    """Re-run the Bedrock narrator for the named document.
+
+    Migration 075. The dossier "Refresh summary" button posts here; on
+    success the new ``NarratorSummary`` lands on
+    ``analyses.narrator_summary`` and the route redirects back to the
+    merchant dossier so the operator sees the refreshed copy.
+
+    On Bedrock failure (network, malformed tool-use envelope, model
+    timeout): returns 503 with a short "Try again" body. The previously
+    persisted ``narrator_summary`` is NEVER overwritten by a failed
+    call — the persistence helper is only invoked on a successful
+    ``NarratorSummary`` return.
+
+    Auth: ``resolve_operator_email`` (the same Cloudflare Access SSO
+    dependency the rest of the dossier mutations use). Returns 404 when
+    the merchant or analysis row is missing.
+    """
+    from aegis.api.deps import get_llm
+
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    try:
+        document = docs.get_document(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    if document.merchant_id != merchant_id:
+        # Cross-merchant URL tampering — refuse rather than narrate an
+        # unrelated deal under the wrong merchant's audit trail.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="document not found for this merchant",
+        )
+
+    analysis = docs.get_analysis(document_id)
+    if analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no analysis row for document",
+        )
+
+    # The narrator needs a ScoreResult / Track A / Track B / MCA stack /
+    # balance health view. We rebuild only the subset the prompt reads;
+    # full re-scoring (with funder match) belongs to the dossier route.
+    items = _collect_analyzed_for_merchant(docs, merchant_id, bundle=None)
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no analyzed items for merchant",
+        )
+    pattern_analysis = _dossier_pattern_analysis(analysis, docs.list_transactions(document_id))
+    score_input = _score_input_multi_month(merchant, items, pattern_analysis=pattern_analysis)
+
+    from aegis.api.deps import get_ofac_client as _get_ofac
+
+    ofac_client = _get_ofac()
+    track_a_verdict, track_b_band = compute_score_deal_track_inputs(
+        documents=[d for d, _ in items],
+        list_transactions=docs.list_transactions,
+        analyses_by_doc={d.id: a for d, a in items},
+        merchant_id=merchant_id,
+        industry_tier=industry_risk_tier(merchant.industry_choice),
+    )
+    try:
+        score_result = score_deal(
+            score_input,
+            ofac=ofac_client,
+            track_a_verdict=track_a_verdict,
+            track_b_band=track_b_band,
+        )
+    except OFACStaleError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OFAC stale — refresh OFAC then retry",
+        ) from None
+
+    latest_transactions = docs.list_transactions(document_id)
+    mca_stack = aggregate_mca_stack(
+        transactions=latest_transactions,
+        monthly_revenue=analysis.monthly_revenue,
+        period_days=analysis.statement_days,
+    )
+    balance_health = compute_balance_health(
+        transactions=latest_transactions,
+        period_days=analysis.statement_days,
+    )
+
+    ctx = NarratorContext(
+        merchant=merchant,
+        document_id=document_id,
+        analysis=analysis,
+        score_result=score_result,
+        track_a_verdict=track_a_verdict,
+        track_b_band=track_b_band,
+        mca_stack=mca_stack,
+        balance_health=balance_health,
+        all_flags=tuple(document.all_flags or ()),
+        top_funder_name=None,
+        top_funder_factor=None,
+        top_funder_advance=None,
+        top_funder_term_days=None,
+        voided_check_on_file=merchant.voided_check_on_file,
+        drivers_license_on_file=merchant.drivers_license_on_file,
+        bank_statements_months=merchant.bank_statements_months,
+    )
+
+    try:
+        # ``invoke_tool_json`` lives on ``BedrockClient`` but NOT on the
+        # narrower ``LLMClient`` Protocol (see comment in ``aegis.llm``);
+        # the production object satisfies both Protocols, so the cast is
+        # a runtime-correct narrowing for mypy's benefit only.
+        summary = narrate_deal(ctx, bedrock=cast("Any", get_llm()))
+    except NarratorError:
+        # Persisted column is left unchanged — caller can try again.
+        return Response(
+            content="Narrator refresh failed — try again in a moment.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            media_type="text/plain; charset=utf-8",
+        )
+
+    payload = summary.model_dump(mode="json")
+    docs.set_narrator_summary(document_id, payload)
+
+    audit.record(
+        actor=actor_email or "system",
+        action="narrator.refreshed",
+        subject_type="document",
+        subject_id=document_id,
+        details={
+            "merchant_id": str(merchant_id),
+            "model_id": summary.model_id,
+            "recommended_action": summary.recommended_action.action,
+            "flag_count": len(summary.flag_explanations),
+        },
+    )
+
+    return RedirectResponse(
+        url=f"/ui/merchants/{merchant_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 _FUNDER_RESPONSE_STATUSES = frozenset({"approved", "declined", "countered", "pending"})
 
 
@@ -3243,6 +3405,11 @@ async def merchant_detail(
     # Held for the post-template ``has_concentration_pattern`` check so
     # the suppression doesn't re-walk the AnalysisRow cache.
     pattern_analysis_for_view: Any = None
+    # Initialised here so the narrator's structured context build (later
+    # in this function) can read them safely even when the scoring
+    # branch (gated on ``items and merchant.is_finalized``) didn't fire.
+    track_a_verdict: IntegrityVerdict | None = None
+    track_b_band: Any = None
     if latest_doc is not None and latest_analysis is not None:
         all_items = _collect_analyzed_for_merchant(docs, merchant_id, window=999, bundle=None)
         bundle_options = _bundle_keys_for_merchant(all_items)
@@ -3591,6 +3758,21 @@ async def merchant_detail(
         stripe_results_by_doc=None,
     )
 
+    # Plain-English narrator summary (migration 075). Cached on
+    # ``analyses.narrator_summary``; when present we render it verbatim
+    # and skip the Bedrock call. When NULL we attempt to generate; a
+    # Bedrock failure leaves the column NULL and the dossier shows the
+    # raw-analysis details block open-by-default (configured in the
+    # template on ``narrator_summary is none``).
+    narrator_summary: dict[str, Any] | None = (
+        latest_analysis.narrator_summary if latest_analysis is not None else None
+    )
+    # Dossier render uses ``narrator_summary`` directly when cached. The
+    # operator clicks "Refresh summary" to generate one — that path runs
+    # through ``merchant_narrator_refresh`` above so the Bedrock call
+    # stays explicit and out of the hot render path (preserves dossier
+    # latency + avoids per-pageview Bedrock cost).
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -3633,6 +3815,12 @@ async def merchant_detail(
             "operator_note_max_chars": MERCHANT_NOTE_MAX_CHARS,
             "deal_summary": deal_summary,
             "funder_narrative": funder_narrative,
+            # Bedrock-driven plain-English narrator (migration 075).
+            # JSON dict matching ``NarratorSummary.model_dump`` when
+            # generation has succeeded for this doc; ``None`` when the
+            # call has never succeeded yet (the template uses None to
+            # open the raw-analysis details block by default).
+            "narrator_summary": narrator_summary,
             "doc_checklist": {
                 "voided_check_on_file": merchant.voided_check_on_file,
                 "drivers_license_on_file": merchant.drivers_license_on_file,

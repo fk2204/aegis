@@ -174,6 +174,52 @@
    verdict → cashflow → routing → submissions → operator notes, with
    the operator-curated notes as the closing block. #}
 
+{# ============== Bedrock narrator summary (migration 075) ============== #}
+{# Plain-English senior-underwriter handoff. Sits at the very top of the
+   dossier so the operator reads the verbal summary first, then drills
+   into the raw numbers as needed. Rendered from cached
+   ``analyses.narrator_summary`` JSON; absent rows (legacy deals + first
+   visit on a new deal) silently skip the block and the raw-analysis
+   `<details>` lower on the page opens by default. #}
+{% if narrator_summary %}
+  <section class="narrator-summary"
+           data-test-id="narrator-summary"
+           data-action="{{ narrator_summary.recommended_action.action }}">
+    <div class="narrator-deal-summary" data-test-id="narrator-deal-summary">
+      {{ narrator_summary.deal_summary }}
+    </div>
+    {% if narrator_summary.flag_explanations %}
+      <ul class="narrator-flags" data-test-id="narrator-flags">
+        {% for flag in narrator_summary.flag_explanations %}
+          <li class="narrator-flag-item narrator-flag-{{ flag.severity }}"
+              data-flag-code="{{ flag.flag_code }}"
+              data-severity="{{ flag.severity }}">
+            {{ flag.explanation }}
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    <div class="narrator-action narrator-action--{{ narrator_summary.recommended_action.action }}"
+         data-test-id="narrator-action">
+      <strong>{{ narrator_summary.recommended_action.next_step }}</strong>
+      {% if narrator_summary.recommended_action.top_funder_match %}
+        <div class="narrator-action-funder">
+          Top match: {{ narrator_summary.recommended_action.top_funder_match }}{% if narrator_summary.recommended_action.estimated_terms %} — {{ narrator_summary.recommended_action.estimated_terms }}{% endif %}
+        </div>
+      {% endif %}
+    </div>
+    <form method="post"
+          action="/ui/merchants/{{ merchant.id }}/documents/{{ document.id }}/narrator/refresh"
+          class="narrator-refresh-form">
+      <button type="submit"
+              class="narrator-refresh-button"
+              data-test-id="narrator-refresh-button">
+        Refresh summary
+      </button>
+    </form>
+  </section>
+{% endif %}
+
 {# ============== Plain-English deal summary card (2026-06-18) ============== #}
 {# Sits ABOVE the sheet so it's the first thing the team reads, before
    any chips. Background colour is driven by ``deal_summary.verdict``:
