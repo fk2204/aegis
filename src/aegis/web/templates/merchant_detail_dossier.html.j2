@@ -1684,6 +1684,46 @@
        button in the row partial targets this host. #}
     <div id="outcome-modal-host"></div>
 
+    <!-- BEGIN: record-outcome -->
+    {# Post-fund outcome capture (migration 074 deal_outcomes — outcome
+       feedback loop). Sibling to the per-row pre-fund "Record outcome"
+       button in § 5½: that one writes to funder_replies (pre-fund);
+       this writes to deal_outcomes (post-fund — paying / paid_in_full /
+       charged_off / etc). Shows only when the merchant has a recorded
+       decision (override_latest_decision_id is the deepest signal we
+       have today for "scored + decision snapshot exists"). #}
+    {% if override_latest_decision_id %}
+      <section id="post-fund-outcome"
+               class="section"
+               data-test-id="post-fund-outcome-section"
+               style="margin-top:1.5rem">
+        <header>
+          <span class="n">§ 5¾</span>
+          <h2>Post-fund <em>outcome</em></h2>
+          <span class="footnote">record what happened after this deal funded</span>
+        </header>
+        <div style="display:flex;gap:10px;align-items:center;padding:8px 0">
+          <button type="button"
+                  class="record-deal-outcome-btn"
+                  style="font-size:12px;padding:6px 12px"
+                  hx-get="/ui/merchants/{{ merchant.id }}/decisions/{{ override_latest_decision_id }}/outcome-modal"
+                  hx-target="#deal-outcome-modal-host"
+                  hx-swap="innerHTML"
+                  data-test-id="record-deal-outcome-btn">
+            Record outcome
+          </button>
+          <span style="font-size:11px;color:#777">
+            Captures paying / paid_in_full / charged_off / defaulted /
+            renewed for the calibration feedback loop. The pre-fund
+            "Record outcome" buttons in § 5½ are distinct — those capture
+            the funder's reply.
+          </span>
+        </div>
+      </section>
+      <div id="deal-outcome-modal-host"></div>
+    {% endif %}
+    <!-- END: record-outcome -->
+
     {# ============== § 6 OPERATOR NOTES ============== #}
     {# Moved from the top-of-dossier slot (above the chips) to the
        bottom of main on 2026-06-18, replacing the audit-log section.

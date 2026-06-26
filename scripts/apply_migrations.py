@@ -608,6 +608,17 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='overrides' "
         "AND column_name='pattern_false_positives'"
     ),
+    "074_deal_outcomes_and_weight_calibration.sql": (
+        # 074 adds two new top-level tables: deal_outcomes (post-fund
+        # outcome capture) + weight_calibration_log (operator review
+        # ledger for the weight-drift report). Both land in the same
+        # BEGIN/COMMIT — probing either table proves the migration
+        # body executed. We probe deal_outcomes because the calibration
+        # engine fails fast without it, while the operator-review
+        # surface only fires when there's a report to review.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='deal_outcomes'"
+    ),
 }
 
 

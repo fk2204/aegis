@@ -1,0 +1,154 @@
+{# Post-fund "Record outcome" modal (migration 074 deal_outcomes).
+
+   Distinct from _funder_reply_outcome_modal: this captures what
+   happened POST-fund (paying / charged_off / paid_in_full / etc).
+   That one captures the PRE-fund reply.
+
+   Surface contract: route populates ``merchant`` (MerchantRow),
+   ``decision_id`` (UUID), and ``funders`` (list[FunderRow]).
+#}
+<div class="modal-backdrop"
+     onclick="if(event.target===this) document.getElementById('deal-outcome-modal-host').innerHTML=''">
+  <div class="modal-dialog">
+    <header class="modal-head">
+      <h2>Record outcome — post-fund</h2>
+      <button class="modal-close" type="button"
+              onclick="document.getElementById('deal-outcome-modal-host').innerHTML=''"
+              title="Close" aria-label="Close">&times;</button>
+    </header>
+    <div class="modal-body">
+      <div class="modal-hint" style="font-size:12px;color:#555;margin-bottom:8px">
+        What happened to this deal after funding? Charge-off / defaulted
+        require a dollar amount; everything else leaves it blank.
+      </div>
+      <form id="deal-outcome-form"
+            hx-post="/ui/merchants/{{ merchant.id }}/decisions/{{ decision_id }}/outcome"
+            hx-target="#deal-outcome-modal-host"
+            hx-swap="innerHTML"
+            data-test-id="deal-outcome-form">
+        <input type="hidden" name="decision_id" value="{{ decision_id }}">
+
+        <div style="display:grid;grid-template-columns:160px 1fr;gap:10px 12px;align-items:center;font-size:12px">
+
+          <label for="funder-decision-select" style="font-weight:500">Funder decision</label>
+          <select id="funder-decision-select"
+                  name="funder_decision"
+                  required
+                  style="padding:4px 6px;font-size:12px"
+                  data-test-id="funder-decision-select">
+            <option value="" disabled selected>Pick one…</option>
+            <option value="approved">approved</option>
+            <option value="declined">declined</option>
+            <option value="countered">countered</option>
+          </select>
+
+          <label for="outcome-select" style="font-weight:500">Outcome</label>
+          <select id="outcome-select"
+                  name="outcome"
+                  required
+                  onchange="(function(s){
+                    var needsAmount = (s.value === 'charged_off' || s.value === 'defaulted');
+                    var coField = document.getElementById('charge-off-row');
+                    var coInput = document.querySelector('[name=\&quot;charge_off_amount\&quot;]');
+                    if (coField) coField.style.display = needsAmount ? 'contents' : 'none';
+                    if (coInput) {
+                      coInput.required = needsAmount;
+                      if (!needsAmount) coInput.value = '';
+                    }
+                  })(this)"
+                  style="padding:4px 6px;font-size:12px"
+                  data-test-id="outcome-select">
+            <option value="" disabled selected>Pick one…</option>
+            <option value="pending">pending</option>
+            <option value="paying">paying</option>
+            <option value="paid_in_full">paid in full</option>
+            <option value="charged_off">charged off</option>
+            <option value="defaulted">defaulted</option>
+            <option value="renewed">renewed</option>
+          </select>
+
+          <label for="funder-select" style="font-weight:500">Funder</label>
+          <select id="funder-select"
+                  name="funder_id"
+                  style="padding:4px 6px;font-size:12px"
+                  data-test-id="funder-select">
+            <option value="">— pick a funder (optional) —</option>
+            {% for f in funders %}
+              <option value="{{ f.id }}">{{ f.name }}</option>
+            {% endfor %}
+          </select>
+
+          <label for="funded-amount" style="font-weight:500">Funded amount</label>
+          <input type="number"
+                 id="funded-amount"
+                 name="funded_amount"
+                 step="100"
+                 min="0"
+                 placeholder="50000"
+                 style="padding:4px 6px;font-size:12px"
+                 data-test-id="funded-amount">
+
+          <label for="factor-rate" style="font-weight:500">Factor rate</label>
+          <input type="number"
+                 id="factor-rate"
+                 name="factor_rate"
+                 step="0.001"
+                 min="1.000"
+                 max="2.000"
+                 placeholder="1.350"
+                 style="padding:4px 6px;font-size:12px"
+                 data-test-id="factor-rate">
+
+          <label for="term-days" style="font-weight:500">Term (days)</label>
+          <input type="number"
+                 id="term-days"
+                 name="term_days"
+                 min="1"
+                 max="720"
+                 placeholder="180"
+                 style="padding:4px 6px;font-size:12px"
+                 data-test-id="term-days">
+
+          <label for="first-payment-date" style="font-weight:500">First payment</label>
+          <input type="date"
+                 id="first-payment-date"
+                 name="first_payment_date"
+                 style="padding:4px 6px;font-size:12px"
+                 data-test-id="first-payment-date">
+
+          <div id="charge-off-row" style="display:none;grid-column:1 / -1;display:none">
+            <div style="display:grid;grid-template-columns:160px 1fr;gap:10px 12px;align-items:center">
+              <label for="charge-off-amount" style="font-weight:500">Charge-off amount</label>
+              <input type="number"
+                     id="charge-off-amount"
+                     name="charge_off_amount"
+                     step="100"
+                     min="0"
+                     placeholder="dollar amount written off"
+                     style="padding:4px 6px;font-size:12px"
+                     data-test-id="charge-off-amount">
+            </div>
+          </div>
+
+          <label for="outcome-notes" style="font-weight:500">Notes</label>
+          <input type="text"
+                 id="outcome-notes"
+                 name="notes"
+                 maxlength="500"
+                 placeholder="optional"
+                 style="padding:4px 6px;font-size:12px"
+                 data-test-id="outcome-notes">
+        </div>
+
+        <footer style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+          <button type="button"
+                  onclick="document.getElementById('deal-outcome-modal-host').innerHTML=''"
+                  style="font-size:12px;padding:4px 10px">cancel</button>
+          <button type="submit"
+                  data-test-id="deal-outcome-submit"
+                  style="font-size:12px;padding:4px 10px;font-weight:500">save outcome</button>
+        </footer>
+      </form>
+    </div>
+  </div>
+</div>
