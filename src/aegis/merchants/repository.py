@@ -343,7 +343,12 @@ def list_upcoming_renewals(
 
 class MerchantRepository(Protocol):
     def get(self, merchant_id: UUID) -> MerchantRow: ...
-    def find_by_close_lead_id(self, close_lead_id: str) -> MerchantRow | None: ...
+    def find_by_close_lead_id(
+        self,
+        close_lead_id: str,
+        *,
+        include_deleted: bool = False,
+    ) -> MerchantRow | None: ...
     def find_by_close_opportunity_id(self, close_opportunity_id: str) -> MerchantRow | None: ...
     def find_by_email(self, email: str) -> MerchantRow | None: ...
     def list_all(self, *, state: str | None = None) -> list[MerchantRow]: ...
@@ -493,9 +498,14 @@ class InMemoryMerchantRepository:
             raise MerchantNotFoundError(str(merchant_id))
         return row
 
-    def find_by_close_lead_id(self, close_lead_id: str) -> MerchantRow | None:
+    def find_by_close_lead_id(
+        self,
+        close_lead_id: str,
+        *,
+        include_deleted: bool = False,
+    ) -> MerchantRow | None:
         for m in self._by_id.values():
-            if m.deleted_at is not None:
+            if not include_deleted and m.deleted_at is not None:
                 continue
             if m.close_lead_id == close_lead_id:
                 return m
@@ -724,16 +734,22 @@ class SupabaseMerchantRepository:
             raise MerchantNotFoundError(str(merchant_id))
         return _row_to_merchant(cast(dict[str, Any], result.data[0]))
 
-    def find_by_close_lead_id(self, close_lead_id: str) -> MerchantRow | None:
-        result = (
-            get_supabase()
-            .table("merchants")
-            .select("*")
-            .eq("close_lead_id", close_lead_id)
-            .is_("deleted_at", "null")
-            .limit(1)
-            .execute()
-        )
+    def find_by_close_lead_id(
+        self,
+        close_lead_id: str,
+        *,
+        include_deleted: bool = False,
+    ) -> MerchantRow | None:
+        # ``include_deleted=True`` is used by the Close webhook handler's
+        # soft-delete suppression check: the partial unique index on
+        # ``close_lead_id`` includes soft-deleted rows, so an operator-
+        # soft-deleted merchant blocks INSERTs that the active-row filter
+        # can't see. The handler ACKs Close silently when the matching
+        # row turns out to be soft-deleted.
+        query = get_supabase().table("merchants").select("*").eq("close_lead_id", close_lead_id)
+        if not include_deleted:
+            query = query.is_("deleted_at", "null")
+        result = query.limit(1).execute()
         if not result.data:
             return None
         return _row_to_merchant(cast(dict[str, Any], result.data[0]))

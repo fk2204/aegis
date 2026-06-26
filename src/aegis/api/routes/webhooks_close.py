@@ -761,6 +761,38 @@ async def _handle_lead_updated(
     )
 
 
+def _suppress_for_soft_deleted_merchant(
+    *,
+    close_lead_id: str,
+    merchants: MerchantRepository,
+    audit: AuditLog,
+    race_path: bool = False,
+) -> bool:
+    """If a soft-deleted merchant exists for this ``close_lead_id``, write
+    a ``close.webhook.suppressed_soft_deleted_merchant`` audit row and
+    return ``True``. Caller short-circuits to a 204 ACK so Close stops
+    retrying. Returns ``False`` when no row matches OR the matched row
+    is still active.
+    """
+    soft_deleted = merchants.find_by_close_lead_id(close_lead_id, include_deleted=True)
+    if soft_deleted is None or soft_deleted.deleted_at is None:
+        return False
+    details: dict[str, Any] = {
+        "close_lead_id": close_lead_id,
+        "deleted_at": soft_deleted.deleted_at.isoformat(),
+    }
+    if race_path:
+        details["race_path"] = True
+    audit.record(
+        actor="close_webhook",
+        action="close.webhook.suppressed_soft_deleted_merchant",
+        subject_type="merchant",
+        subject_id=soft_deleted.id,
+        details=details,
+    )
+    return True
+
+
 def _upsert_merchant_from_lead(
     *,
     lead: dict[str, Any],
@@ -792,6 +824,20 @@ def _upsert_merchant_from_lead(
     existing = merchants.find_by_close_lead_id(close_lead_id)
 
     if existing is None:
+        # Soft-delete suppression: the partial unique index on
+        # ``close_lead_id`` includes soft-deleted rows, so a Close
+        # webhook for a lead whose merchant the operator already
+        # soft-deleted would otherwise: (1) miss the active-row
+        # lookup above, (2) fail the INSERT on the index, and
+        # (3) leave Close storming us with retries. ACK silently
+        # and respect the operator's delete intent.
+        if _suppress_for_soft_deleted_merchant(
+            close_lead_id=close_lead_id,
+            merchants=merchants,
+            audit=audit,
+        ):
+            return
+
         new_merchant = MerchantRow(
             id=uuid4(),
             close_lead_id=close_lead_id,
@@ -806,12 +852,25 @@ def _upsert_merchant_from_lead(
             # The partial unique index on ``close_lead_id`` blocked the
             # second writer; resolve by re-reading and falling through
             # to the diff-then-update branch the same way a non-racing
-            # redelivery would.
+            # redelivery would. If the index fired against a row that's
+            # not visible to the active lookup, the soft-delete
+            # suppression also covers the case where an operator
+            # soft-deleted the merchant between the pre-check and the
+            # INSERT.
             race_winner = merchants.find_by_close_lead_id(close_lead_id)
-            if race_winner is None:
-                # Constraint fired but no row reads back — unrecoverable.
+            if race_winner is not None:
+                existing = race_winner
+            elif _suppress_for_soft_deleted_merchant(
+                close_lead_id=close_lead_id,
+                merchants=merchants,
+                audit=audit,
+                race_path=True,
+            ):
+                return
+            else:
+                # Constraint fired but no row reads back, active or
+                # deleted — unrecoverable.
                 raise
-            existing = race_winner
         else:
             audit.record(
                 actor="close_webhook",

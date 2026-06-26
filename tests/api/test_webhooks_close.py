@@ -813,11 +813,21 @@ def test_lead_updated_race_with_concurrent_redelivery_resolves(
     original_find = repo.find_by_close_lead_id
     calls = {"count": 0}
 
-    def patched_find(close_lead_id_arg: str) -> MerchantRow | None:
-        calls["count"] += 1
-        if calls["count"] == 1 and close_lead_id_arg == lead_id:
-            return None
-        return original_find(close_lead_id_arg)
+    def patched_find(
+        close_lead_id_arg: str,
+        *,
+        include_deleted: bool = False,
+    ) -> MerchantRow | None:
+        # The handler issues two active-row lookups around the race
+        # (the initial pre-INSERT check and the post-conflict re-read)
+        # plus one ``include_deleted=True`` pre-check for soft-delete
+        # suppression. Only the FIRST active-row lookup masks the
+        # race-winner; everything else delegates to the real repo.
+        if not include_deleted:
+            calls["count"] += 1
+            if calls["count"] == 1 and close_lead_id_arg == lead_id:
+                return None
+        return original_find(close_lead_id_arg, include_deleted=include_deleted)
 
     monkeypatch.setattr(repo, "find_by_close_lead_id", patched_find)
 
@@ -832,6 +842,59 @@ def test_lead_updated_race_with_concurrent_redelivery_resolves(
     # close.merchant.created row — the row already existed.
     actions = [e["action"] for e in audit.entries]
     assert "close.merchant.created" not in actions
+
+
+def test_lead_updated_for_soft_deleted_merchant_suppresses_with_audit(
+    client: TestClient,
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+) -> None:
+    """An operator-soft-deleted merchant blocks the partial unique
+    index on ``close_lead_id`` but is invisible to the active-row
+    lookup. Without the suppression check the handler would attempt
+    INSERT, hit 23505, raise ``MerchantConflictError`` from the retry
+    path's ``find_by_close_lead_id is None`` guard, and return 500 to
+    Close in a tight retry loop (the original 2026-06-26 storm on
+    leads ``Mq0…``, ``wxp…``, ``jU71…``).
+
+    Expected behaviour: 204 ACK to Close, ``close.webhook.suppressed_
+    soft_deleted_merchant`` audit row written, no new merchant created.
+    """
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from aegis.merchants.models import MerchantRow
+
+    lead_id = "lead_soft_deleted_merchant"
+    deleted_at = datetime(2026, 6, 20, 12, 0, 0, tzinfo=UTC)
+
+    soft_deleted = MerchantRow(
+        id=uuid4(),
+        close_lead_id=lead_id,
+        business_name="Operator-Removed Inc",
+        deleted_at=deleted_at,
+    )
+    repo.upsert(soft_deleted)
+
+    resp = _post_signed(client, _lead_updated_event(lead_id=lead_id))
+    assert resp.status_code == 204, resp.text
+
+    # The soft-deleted row is the ONLY row with that close_lead_id.
+    matched = [r for r in repo._by_id.values() if r.close_lead_id == lead_id]
+    assert len(matched) == 1
+    assert matched[0].id == soft_deleted.id
+    assert matched[0].deleted_at == deleted_at
+
+    actions = [e["action"] for e in audit.entries]
+    assert "close.webhook.suppressed_soft_deleted_merchant" in actions
+    assert "close.merchant.created" not in actions
+
+    suppressed = next(
+        e for e in audit.entries if e["action"] == "close.webhook.suppressed_soft_deleted_merchant"
+    )
+    assert suppressed["details"]["close_lead_id"] == lead_id
+    assert suppressed["details"]["deleted_at"] == deleted_at.isoformat()
+    assert "race_path" not in suppressed["details"]
 
 
 # ----------------------------------------------------------------------
