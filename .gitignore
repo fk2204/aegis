@@ -103,3 +103,10 @@ CLAUDE.local.md
 *.swp
 *~
 .aider*
+
+# Real-statement test corpus (2026-06-26). Generated from sealed prod
+# pdf_store blobs by ``scripts/build_real_corpus.py``. Even after PII
+# canary + redaction, real bank-statement layouts are too sensitive
+# to live in git. CI runs synthetic corpus only; the real corpus is
+# the operator's pre-push gate.
+tests/corpus/real/

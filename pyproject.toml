@@ -97,6 +97,8 @@ module = [
     "tests.parser.test_processor_routing",
     "tests.web.test_dossier_pdf",
     "scripts.generate_image_only_corpus",
+    "scripts.build_real_corpus",
+    "tests.corpus.test_real_corpus",
 ]
 disable_error_code = ["no-untyped-call"]
 
