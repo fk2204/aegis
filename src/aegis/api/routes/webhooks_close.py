@@ -74,7 +74,7 @@ from aegis.funders.repository import FunderNotFoundError, FunderRepository
 from aegis.logger import get_logger
 from aegis.merchants.close_context import refresh_close_context_for_merchant
 from aegis.merchants.models import MerchantRow
-from aegis.merchants.repository import MerchantRepository
+from aegis.merchants.repository import MerchantConflictError, MerchantRepository
 
 router = APIRouter(prefix="/webhooks/close", tags=["webhooks"])
 
@@ -798,18 +798,32 @@ def _upsert_merchant_from_lead(
             close_opportunity_id=close_opportunity_id,
             **new_fields,
         )
-        merchants.upsert(new_merchant, on_conflict="close_lead_id")
-        audit.record(
-            actor="close_webhook",
-            action="close.merchant.created",
-            subject_type="merchant",
-            subject_id=new_merchant.id,
-            details={
-                "close_lead_id": close_lead_id,
-                "business_name": new_merchant.business_name,
-            },
-        )
-        return
+        try:
+            merchants.upsert(new_merchant)
+        except MerchantConflictError:
+            # A concurrent webhook redelivery raced us between the
+            # ``find_by_close_lead_id`` None-check above and our INSERT.
+            # The partial unique index on ``close_lead_id`` blocked the
+            # second writer; resolve by re-reading and falling through
+            # to the diff-then-update branch the same way a non-racing
+            # redelivery would.
+            race_winner = merchants.find_by_close_lead_id(close_lead_id)
+            if race_winner is None:
+                # Constraint fired but no row reads back — unrecoverable.
+                raise
+            existing = race_winner
+        else:
+            audit.record(
+                actor="close_webhook",
+                action="close.merchant.created",
+                subject_type="merchant",
+                subject_id=new_merchant.id,
+                details={
+                    "close_lead_id": close_lead_id,
+                    "business_name": new_merchant.business_name,
+                },
+            )
+            return
 
     # Read-before-write diff. If nothing changed, skip the write.
     diff: dict[str, Any] = {
@@ -826,7 +840,7 @@ def _upsert_merchant_from_lead(
         return
 
     updated = existing.model_copy(update=diff)
-    merchants.upsert(updated, on_conflict="close_lead_id")
+    merchants.upsert(updated)
     audit.record(
         actor="close_webhook",
         action="close.merchant.updated",

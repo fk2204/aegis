@@ -17,10 +17,27 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import UUID, uuid4
 
+from postgrest.exceptions import APIError
 from pydantic import BaseModel, ConfigDict
 
 from aegis.db import get_supabase
 from aegis.merchants.models import MerchantNoteRow, MerchantRow
+
+
+def _is_close_lead_id_unique_violation(exc: APIError) -> bool:
+    """``True`` for the partial-unique-index race on ``close_lead_id``.
+
+    Postgres SQLSTATE 23505 plus the index name in ``details`` is the
+    signal — anything else (a different unique constraint, a different
+    error class) re-raises unchanged.
+    """
+    code = getattr(exc, "code", None)
+    if code != "23505":
+        return False
+    details = getattr(exc, "details", None) or ""
+    message = getattr(exc, "message", None) or ""
+    return "close_lead_id" in details or "close_lead_id" in message
+
 
 if TYPE_CHECKING:
     from aegis.merchants.renewal_attestations import (
@@ -331,7 +348,7 @@ class MerchantRepository(Protocol):
     def find_by_email(self, email: str) -> MerchantRow | None: ...
     def list_all(self, *, state: str | None = None) -> list[MerchantRow]: ...
     def count_total(self) -> int: ...
-    def upsert(self, merchant: MerchantRow, *, on_conflict: str = "id") -> MerchantRow: ...
+    def upsert(self, merchant: MerchantRow) -> MerchantRow: ...
     def delete(self, merchant_id: UUID) -> None: ...
 
     # Migration 065 — operator-initiated soft-delete ----------------------------
@@ -517,12 +534,7 @@ class InMemoryMerchantRepository:
     def count_total(self) -> int:
         return sum(1 for m in self._by_id.values() if m.deleted_at is None)
 
-    def upsert(self, merchant: MerchantRow, *, on_conflict: str = "id") -> MerchantRow:
-        # ``on_conflict`` is accepted to match the Supabase impl signature;
-        # the in-memory store keys by id but enforces the close_lead_id
-        # uniqueness invariant below regardless of which conflict target
-        # the caller passed.
-        del on_conflict
+    def upsert(self, merchant: MerchantRow) -> MerchantRow:
         # Enforce uniqueness on close_lead_id (DB partial-UNIQUE index
         # enforces this at the storage layer; raise early in-memory too).
         if merchant.close_lead_id is not None:
@@ -784,17 +796,24 @@ class SupabaseMerchantRepository:
             return 0
         return len(result.data or [])
 
-    def upsert(self, merchant: MerchantRow, *, on_conflict: str = "id") -> MerchantRow:
+    def upsert(self, merchant: MerchantRow) -> MerchantRow:
         payload = _merchant_to_payload(merchant)
-        # ``ON CONFLICT (<col>) DO UPDATE`` semantics via supabase-py upsert().
-        # Callers writing through a non-PK unique index (e.g. the Close
-        # webhook handler keys on ``close_lead_id`` so concurrent
-        # redeliveries collapse to UPDATE instead of racing two INSERTs
-        # into the ``idx_merchants_close_lead_id`` constraint) pass the
-        # alternative conflict target explicitly.
-        result = (
-            get_supabase().table("merchants").upsert(payload, on_conflict=on_conflict).execute()
-        )
+        # ``ON CONFLICT (id) DO UPDATE`` semantics via supabase-py upsert().
+        # The ``close_lead_id`` uniqueness is enforced by a PARTIAL unique
+        # index (migration 026, ``WHERE close_lead_id IS NOT NULL``), which
+        # Postgres ON CONFLICT can't target through supabase-py — so we
+        # translate the resulting 23505 from a concurrent Close webhook
+        # redelivery into :class:`MerchantConflictError` and let the
+        # caller resolve the race with a read-and-retry.
+        try:
+            result = get_supabase().table("merchants").upsert(payload, on_conflict="id").execute()
+        except APIError as exc:
+            if _is_close_lead_id_unique_violation(exc):
+                raise MerchantConflictError(
+                    f"close_lead_id {merchant.close_lead_id!r} already present "
+                    "(race against concurrent webhook redelivery)"
+                ) from exc
+            raise
         if not result.data:
             raise RuntimeError("supabase.upsert returned no row")
         return _row_to_merchant(cast(dict[str, Any], result.data[0]))

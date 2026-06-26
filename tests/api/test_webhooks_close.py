@@ -777,6 +777,63 @@ def test_lead_updated_idempotent_redelivery_dedups_attachment_path(
     assert len(matched) == 1
 
 
+def test_lead_updated_race_with_concurrent_redelivery_resolves(
+    client: TestClient,
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent Close redeliveries for the SAME lead racing the INSERT.
+
+    Pre-2026-06-26: handler called ``find_by_close_lead_id`` → None, INSERT,
+    second writer's INSERT raised 23505 on the partial unique index, 500
+    returned to Close, Close retried, storm. The 4231227 commit tried an
+    ``ON CONFLICT (close_lead_id)`` upsert; Postgres rejected it (42P10)
+    because the index is partial. Final fix translates the 23505 to
+    ``MerchantConflictError`` and the handler re-reads + folds into the
+    existing-merchant diff branch.
+    """
+    from uuid import uuid4
+
+    from aegis.merchants.models import MerchantRow
+
+    lead_id = "lead_concurrent_race"
+
+    # Pre-seed the "race-winner" row that the concurrent INSERT landed.
+    winner = MerchantRow(
+        id=uuid4(),
+        close_lead_id=lead_id,
+        business_name="Race Winner Inc",
+    )
+    repo.upsert(winner)
+
+    # Hide the winner from the FIRST find_by_close_lead_id call so the
+    # handler enters the new-merchant branch; subsequent lookups return
+    # the winner so the re-read after MerchantConflictError resolves.
+    original_find = repo.find_by_close_lead_id
+    calls = {"count": 0}
+
+    def patched_find(close_lead_id_arg: str) -> MerchantRow | None:
+        calls["count"] += 1
+        if calls["count"] == 1 and close_lead_id_arg == lead_id:
+            return None
+        return original_find(close_lead_id_arg)
+
+    monkeypatch.setattr(repo, "find_by_close_lead_id", patched_find)
+
+    resp = _post_signed(client, _lead_updated_event(lead_id=lead_id))
+    assert resp.status_code == 204, resp.text
+
+    matched = [r for r in repo._by_id.values() if r.close_lead_id == lead_id]
+    assert len(matched) == 1, "race resolution duplicated the merchant row"
+    assert matched[0].id == winner.id
+
+    # The race-loser's audit trail does NOT carry a spurious
+    # close.merchant.created row — the row already existed.
+    actions = [e["action"] for e in audit.entries]
+    assert "close.merchant.created" not in actions
+
+
 # ----------------------------------------------------------------------
 # Empty / invalid custom-field guards on _lead_to_merchant_fields
 # (regression for the 2026-06-19 syslog flood — leads with no operator-
