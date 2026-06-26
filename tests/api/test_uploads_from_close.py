@@ -136,10 +136,7 @@ def close_client(
                             "attachments": [
                                 {
                                     "id": "att_xyz",
-                                    "url": (
-                                        "https://app.close.com/test/"
-                                        "att_xyz.pdf"
-                                    ),
+                                    "url": ("https://app.close.com/test/att_xyz.pdf"),
                                     "filename": close_content["filename"],
                                     "content_type": "application/pdf",
                                 }
@@ -155,21 +152,52 @@ def close_client(
         # app.close.com → api.close.com host rewrite). Return the canned
         # bytes or the configured error code.
         code = close_get_status["code"]
-        if code == 200:
+        # The route makes two calls: list lead files, then download the
+        # resolved attachment. The list always succeeds in this fixture
+        # (returns a single canned entry for "att_xyz"); the `code`
+        # knob applies only to the download path so tests that set
+        # code=4xx/5xx test the download-error branch.
+        path = request.url.path
+        if path.startswith("/api/v1/lead/") and path.endswith("/files/"):
             return httpx.Response(
                 200,
-                content=close_content["bytes"],
-                headers={
-                    "content-disposition": (
-                        f'attachment; filename="{close_content["filename"]}"'
-                    ),
+                json={
+                    "has_more": False,
+                    "data": [
+                        {
+                            "id": "att_xyz",
+                            "name": close_content["filename"],
+                            "content_type": "application/pdf",
+                            "size": len(close_content["bytes"]),
+                            "checksum": "deadbeef",
+                            "download_url": (
+                                "https://app.close.com/go/file/persisted/"
+                                "orga_xyz/activity.note/acti_xyz/tok/"
+                                f"{close_content['filename']}/"
+                            ),
+                            "is_pinned": True,
+                            "last_object_type": "activity.note",
+                            "last_object_id": "acti_xyz",
+                        },
+                    ],
                 },
             )
+        # Notes endpoint — list_lead_attachments fetches this to enrich
+        # note-provenanced files with their parent note's pinned state.
+        # The from-close download path doesn't depend on note pin, so
+        # an empty payload (no pin info) is fine for these tests.
+        if path == "/api/v1/activity/note/":
+            return httpx.Response(200, json={"has_more": False, "data": []})
+        # Download path — api.close.com after host rewrite. The code
+        # knob applies here only.
+        if request.url.host == "api.close.com":
+            if code == 200:
+                return httpx.Response(200, content=close_content["bytes"])
+            return httpx.Response(code, text=f"close-error-{code}")
+        # Unknown path / host — fall through to error code.
         return httpx.Response(code, text=f"close-error-{code}")
 
-    return CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
-    )
+    return CloseClient(http_client=httpx.Client(transport=httpx.MockTransport(transport)))
 
 
 @pytest.fixture
@@ -214,23 +242,23 @@ def _post_from_close(
     close_lead_id: str = "lead_abc",
     attachment_id: str = "att_xyz",
 ) -> Any:
-    return client.post(
-        "/uploads/from-close",
-        headers={"Authorization": f"Bearer {_BEARER}"},
-        content=json.dumps(
-            {"close_lead_id": close_lead_id, "attachment_id": attachment_id}
-        ),
-        # FastAPI's TestClient honors the explicit content + content-type.
-        headers_override=None,
-    ) if False else client.post(  # tooling-friendly form below
-        "/uploads/from-close",
-        headers={
-            "Authorization": f"Bearer {_BEARER}",
-            "content-type": "application/json",
-        },
-        content=json.dumps(
-            {"close_lead_id": close_lead_id, "attachment_id": attachment_id}
-        ),
+    return (
+        client.post(
+            "/uploads/from-close",
+            headers={"Authorization": f"Bearer {_BEARER}"},
+            content=json.dumps({"close_lead_id": close_lead_id, "attachment_id": attachment_id}),
+            # FastAPI's TestClient honors the explicit content + content-type.
+            headers_override=None,
+        )
+        if False
+        else client.post(  # tooling-friendly form below
+            "/uploads/from-close",
+            headers={
+                "Authorization": f"Bearer {_BEARER}",
+                "content-type": "application/json",
+            },
+            content=json.dumps({"close_lead_id": close_lead_id, "attachment_id": attachment_id}),
+        )
     )
 
 
@@ -320,8 +348,7 @@ def test_from_close_happy_path_persists_and_enqueues(
     assert "/api/v1/activity/email/" in paths
     # Plus a download call against the rewritten host.
     assert any(
-        r.url.host == "api.close.com" and "att_xyz" in str(r.url)
-        for r in close_transport_requests
+        r.url.host == "api.close.com" and "att_xyz" in str(r.url) for r in close_transport_requests
     )
 
     # Audit row.
@@ -362,7 +389,8 @@ def test_from_close_sha256_dedup_returns_existing_no_reparse(
     # activity endpoints + downloads once, so the transport sees the
     # full sequence twice.
     download_calls = [
-        r for r in close_transport_requests
+        r
+        for r in close_transport_requests
         if r.url.host == "api.close.com" and "att_xyz" in str(r.url)
     ]
     assert len(download_calls) == 2
@@ -463,9 +491,7 @@ def test_from_close_400_on_empty_attachment_id(
             "Authorization": f"Bearer {_BEARER}",
             "content-type": "application/json",
         },
-        content=json.dumps(
-            {"close_lead_id": "lead_abc", "attachment_id": ""}
-        ),
+        content=json.dumps({"close_lead_id": "lead_abc", "attachment_id": ""}),
     )
     assert resp.status_code == 422  # Pydantic validation (min_length=1)
 
@@ -479,8 +505,6 @@ def test_from_close_400_on_empty_close_lead_id(
             "Authorization": f"Bearer {_BEARER}",
             "content-type": "application/json",
         },
-        content=json.dumps(
-            {"close_lead_id": "", "attachment_id": "att_xyz"}
-        ),
+        content=json.dumps({"close_lead_id": "", "attachment_id": "att_xyz"}),
     )
     assert resp.status_code == 422

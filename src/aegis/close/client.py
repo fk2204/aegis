@@ -136,10 +136,11 @@ class CloseAuthError(CloseError):
 class CloseAttachment(BaseModel):
     """One PDF attachment on a Close Note or Email activity for a Lead.
 
-    Returned by :meth:`CloseClient.list_lead_attachments`. Used by the
-    attachment-orchestration arq job (``process_close_attachments``)
-    to decide which attachments to pull through the parser and which
-    to skip (filename-prefix filter).
+    Source: ``GET /api/v1/lead/{lead_id}/files/`` — the unified index that
+    Close's UI uses for the "Files" tab. Aggregates files from every
+    activity type (Notes, Emails, SMS/MMS, custom activities) AND files
+    attached directly to the Lead with no activity wrapper. The provenance
+    is carried on ``last_object_type`` / ``last_object_id``.
 
     Close's API does not expose a standalone /files/ resource — files
     live on activities (Note, Email) as ``attachments[]`` items. Confirmed
@@ -171,6 +172,16 @@ class CloseAttachment(BaseModel):
     ``inline_only``, organization metadata, etc.). ``extra="ignore"``
     keeps the model robust to upstream additions without forcing a
     schema change here.
+
+    Filtering pipeline applied in the orchestrator
+    (``process_close_attachments`` worker):
+
+      1. ``content_type == 'application/pdf'`` (strict — kills the
+         PNG-named-statement case).
+      2. ``is_pinned`` OR ``note_pinned`` (operator-confirmed gate).
+         Bypassed by the rescan-with-``ignore_pin`` path.
+      3. ``checksum`` (MD5) dedup before download — same file attached
+         twice (once to a Note, once direct to Lead) downloads once.
     """
 
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, populate_by_name=True)
@@ -179,6 +190,56 @@ class CloseAttachment(BaseModel):
     name: str = Field(min_length=1, alias="filename")
     content_type: str | None = None
     size: int | None = None
+
+    # MD5 checksum Close computes server-side. Used by the orchestrator
+    # for cheap dedup before fetching bytes — same file attached twice
+    # (e.g. via a Note AND as a direct Lead drop) downloads once.
+    checksum: str | None = None
+
+    # The persisted URL the file lives at. Always points at
+    # ``app.close.com/go/file/persisted/...`` in responses; the
+    # download path rewrites the host to ``api.close.com`` before
+    # fetching (``app.close.com`` rejects API-key auth with HTTP 400).
+    # Optional only to keep the model parseable when a future Close
+    # response omits it; callers downloading bytes must check non-None.
+    download_url: str | None = None
+
+    # Operator-set pin flag on the leadfile itself (Close "Files" tab
+    # pin icon). Set via Close UI only — the public API exposes the
+    # field read-only. When True, signals "operator confirms this
+    # file is a bank statement."
+    is_pinned: bool = False
+
+    # Note-level pin flag, lifted from ``activity.note.pinned`` when
+    # the file is attached via a Note (``last_object_type='activity.note'``).
+    # The 2026-05-28 real-data test surfaced that the natural Close UX
+    # — the pin icon in the activity feed — sets pin on the wrapping
+    # Note, not on the file directly. Operators rarely navigate to the
+    # Files tab to pin individually. Orchestrator gates on
+    # ``is_pinned OR note_pinned`` so either surface confirms "this is
+    # a statement."
+    #
+    # Always False for non-note provenance variants (lead-direct,
+    # email, sms, custom_activity) — only ``activity.note`` has a
+    # pin concept in this codebase today.
+    note_pinned: bool = False
+
+    # Provenance — which activity (if any) the file was attached
+    # through. Observed values:
+    #   - "activity.note"  — Notes carrying attachments (web form, Close
+    #                        "Add note" with file)
+    #   - "activity.email" — Email attachments (inbound or composed)
+    #   - "activity.sms"   — MMS attachments (none in our org currently)
+    #   - "lead"           — File attached directly to the Lead via
+    #                        Close UI drag-drop without a note wrapper
+    # Drives the note_pinned join in list_lead_attachments.
+    last_object_type: str | None = None
+    last_object_id: str | None = None
+
+    # Legacy field kept for backwards compatibility with chunk-1 tests
+    # (the prior ``/api/v1/files/?lead_id=`` response shape included it
+    # under different keys). The Lead Files endpoint does NOT return
+    # this field; it will always be None going forward.
     created_by_name: str | None = None
     date_created: str | None = None
     url: str | None = None
@@ -595,17 +656,38 @@ class CloseClient:
         consumes that cache instead of refetching the activity, which
         keeps the worker's per-attachment cost to one network call.
 
+        For Note-attached PDFs, the note's ``pinned`` flag is lifted
+        onto :attr:`CloseAttachment.note_pinned` so the orchestrator can
+        gate on ``is_pinned OR note_pinned`` — operators most commonly
+        pin the wrapping Note in the activity feed rather than the file
+        itself in the Files tab.
+
         Pagination: Close uses ``{"has_more": bool, "data": [...]}``
         envelopes with ``_limit`` + ``_skip``. We follow ``has_more``
         on both endpoints until exhausted. A defensive cap of
         ``_MAX_ACTIVITIES_PER_LEAD`` aborts loops on a misbehaving lead
         rather than spinning forever.
 
-        Same auth + retry semantics as the other methods — each page
-        call goes through :meth:`request`, which has its own tenacity
-        decorator. 401 → CloseAuthError (no retry); 429 → CloseRateLimitError
-        (sleeps + retried inside ``request``); 5xx → retried; other 4xx
-        → CloseError raised.
+        Returns ``list[CloseAttachment]`` carrying ``id``, ``name``,
+        ``content_type``, ``size``, ``checksum`` (MD5), ``download_url``,
+        ``is_pinned``, and provenance backrefs.
+
+        Previously this method called ``/api/v1/files/?lead_id=...``
+        which 404s in our Close org (the org-level Files API isn't
+        available in our plan/version); every Feature-2 run silently
+        no-op'd. Confirmed against a live web-form lead on 2026-05-28
+        that the unified Lead-Files endpoint returns the 7 real files
+        the form uploaded.
+
+        Pagination: same Close convention — ``{"has_more": bool,
+        "data": [...]}`` with ``_limit`` (capped at 100) and ``_skip``.
+        Verified pagination behavior live with ``_limit=2`` against the
+        7-file test lead.
+
+        Same auth + retry semantics as siblings — each page goes
+        through :meth:`request` with its own tenacity decorator.
+        401 → CloseAuthError; 429 → CloseRateLimitError (retried);
+        5xx → retried; other 4xx → CloseError raised.
 
         Returns an empty list if neither endpoint has activities with
         PDF attachments.
@@ -634,7 +716,6 @@ class CloseClient:
                 "GET",
                 path,
                 params={
-                    "lead_id": lead_id,
                     "_limit": page_size,
                     "_skip": skip,
                 },
@@ -680,7 +761,58 @@ class CloseClient:
                 )
                 return items
             if not page.get("has_more"):
-                return items
+                break
+            skip += page_size
+
+        # Join activity.note.pinned onto note-provenanced files. The
+        # operator's natural Close UX is pinning notes in the activity
+        # feed (one-click action on the visible row); pinning files in
+        # the Files tab is a less-visited UI surface. Reading both
+        # signals lets either route confirm "this is a statement."
+        # Fixed cost: at most one extra paginated call per lead,
+        # regardless of how many note-attached files exist.
+        if any(it.last_object_type == "activity.note" for it in items):
+            pinned_map = self._fetch_note_pinned_map(lead_id)
+            for it in items:
+                if it.last_object_type == "activity.note" and it.last_object_id is not None:
+                    it.note_pinned = pinned_map.get(it.last_object_id, False)
+
+        return items
+
+    def _fetch_note_pinned_map(self, lead_id: str) -> dict[str, bool]:
+        """Return ``{note_id: pinned}`` for every Note on the Lead.
+
+        Used by :meth:`list_lead_attachments` to enrich note-attached
+        files with their parent note's pin state. Paginated via the
+        same ``_limit`` (capped at 100) / ``_skip`` / ``has_more``
+        convention as siblings.
+
+        A non-list ``data`` payload raises CloseError so a future Close
+        API shape change fails loud rather than silently dropping pins.
+        """
+        result: dict[str, bool] = {}
+        skip = 0
+        page_size = 100
+        while True:
+            page = self.request(
+                "GET",
+                "/api/v1/activity/note/",
+                params={
+                    "lead_id": lead_id,
+                    "_limit": page_size,
+                    "_skip": skip,
+                },
+            )
+            notes = page.get("data", [])
+            if not isinstance(notes, list):
+                raise CloseError(
+                    f"close /api/v1/activity/note/ returned non-list data: {type(notes).__name__}"
+                )
+            for n in notes:
+                if isinstance(n, dict) and isinstance(n.get("id"), str):
+                    result[n["id"]] = bool(n.get("pinned", False))
+            if not page.get("has_more"):
+                return result
             skip += page_size
 
     @retry(
