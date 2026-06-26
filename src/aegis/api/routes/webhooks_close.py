@@ -798,7 +798,7 @@ def _upsert_merchant_from_lead(
             close_opportunity_id=close_opportunity_id,
             **new_fields,
         )
-        merchants.upsert(new_merchant)
+        merchants.upsert(new_merchant, on_conflict="close_lead_id")
         audit.record(
             actor="close_webhook",
             action="close.merchant.created",
@@ -826,7 +826,7 @@ def _upsert_merchant_from_lead(
         return
 
     updated = existing.model_copy(update=diff)
-    merchants.upsert(updated)
+    merchants.upsert(updated, on_conflict="close_lead_id")
     audit.record(
         actor="close_webhook",
         action="close.merchant.updated",

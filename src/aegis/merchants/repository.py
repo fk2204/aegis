@@ -331,7 +331,7 @@ class MerchantRepository(Protocol):
     def find_by_email(self, email: str) -> MerchantRow | None: ...
     def list_all(self, *, state: str | None = None) -> list[MerchantRow]: ...
     def count_total(self) -> int: ...
-    def upsert(self, merchant: MerchantRow) -> MerchantRow: ...
+    def upsert(self, merchant: MerchantRow, *, on_conflict: str = "id") -> MerchantRow: ...
     def delete(self, merchant_id: UUID) -> None: ...
 
     # Migration 065 — operator-initiated soft-delete ----------------------------
@@ -517,7 +517,12 @@ class InMemoryMerchantRepository:
     def count_total(self) -> int:
         return sum(1 for m in self._by_id.values() if m.deleted_at is None)
 
-    def upsert(self, merchant: MerchantRow) -> MerchantRow:
+    def upsert(self, merchant: MerchantRow, *, on_conflict: str = "id") -> MerchantRow:
+        # ``on_conflict`` is accepted to match the Supabase impl signature;
+        # the in-memory store keys by id but enforces the close_lead_id
+        # uniqueness invariant below regardless of which conflict target
+        # the caller passed.
+        del on_conflict
         # Enforce uniqueness on close_lead_id (DB partial-UNIQUE index
         # enforces this at the storage layer; raise early in-memory too).
         if merchant.close_lead_id is not None:
@@ -779,10 +784,17 @@ class SupabaseMerchantRepository:
             return 0
         return len(result.data or [])
 
-    def upsert(self, merchant: MerchantRow) -> MerchantRow:
+    def upsert(self, merchant: MerchantRow, *, on_conflict: str = "id") -> MerchantRow:
         payload = _merchant_to_payload(merchant)
-        # ``ON CONFLICT (id) DO UPDATE`` semantics via supabase-py upsert().
-        result = get_supabase().table("merchants").upsert(payload, on_conflict="id").execute()
+        # ``ON CONFLICT (<col>) DO UPDATE`` semantics via supabase-py upsert().
+        # Callers writing through a non-PK unique index (e.g. the Close
+        # webhook handler keys on ``close_lead_id`` so concurrent
+        # redeliveries collapse to UPDATE instead of racing two INSERTs
+        # into the ``idx_merchants_close_lead_id`` constraint) pass the
+        # alternative conflict target explicitly.
+        result = (
+            get_supabase().table("merchants").upsert(payload, on_conflict=on_conflict).execute()
+        )
         if not result.data:
             raise RuntimeError("supabase.upsert returned no row")
         return _row_to_merchant(cast(dict[str, Any], result.data[0]))

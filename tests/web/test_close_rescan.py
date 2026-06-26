@@ -86,9 +86,9 @@ def test_rescan_happy_path_enqueues_with_operator_email(
     assert resp.headers["location"] == f"/ui/merchants/{m.id}"
 
     pending = getattr(
-        client.app.state,
+        client.app.state,  # type: ignore[attr-defined]
         "pending_close_orchestration_jobs",
-        [],  # type: ignore[attr-defined]
+        [],
     )
     assert pending == [
         {
@@ -124,9 +124,9 @@ def test_rescan_with_override_cap_threads_through(
     assert resp.status_code == 303
 
     pending = getattr(
-        client.app.state,
+        client.app.state,  # type: ignore[attr-defined]
         "pending_close_orchestration_jobs",
-        [],  # type: ignore[attr-defined]
+        [],
     )
     assert pending[0]["override_cap"] is True
     assert pending[0]["actor_email"] == "dima@commerafunding.com"
@@ -322,9 +322,9 @@ def test_rescan_with_ignore_pin_threads_through(
     assert resp.status_code == 303
 
     pending = getattr(
-        client.app.state,
+        client.app.state,  # type: ignore[attr-defined]
         "pending_close_orchestration_jobs",
-        [],  # type: ignore[attr-defined]
+        [],
     )
     assert pending[0]["ignore_pin"] is True
     assert pending[0]["override_cap"] is False
@@ -347,9 +347,9 @@ def test_rescan_with_both_overrides_threads_through(
     )
     assert resp.status_code == 303
     pending = getattr(
-        client.app.state,
+        client.app.state,  # type: ignore[attr-defined]
         "pending_close_orchestration_jobs",
-        [],  # type: ignore[attr-defined]
+        [],
     )
     assert pending[0]["override_cap"] is True
     assert pending[0]["ignore_pin"] is True
