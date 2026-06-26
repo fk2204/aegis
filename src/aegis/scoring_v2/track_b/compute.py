@@ -47,6 +47,7 @@ from aegis.scoring_v2.track_b.models import (
 )
 from aegis.scoring_v2.track_b.signals import (
     compute_international_share_pct,
+    compute_mca_position_breakdown,
     compute_mca_position_count,
     compute_monthly_revenue,
     compute_nsf_count,
@@ -144,6 +145,7 @@ def compute_risk_band(
     adb, lowest, neg_days = compute_running_balance_stats(transactions_by_doc)
     nsf = compute_nsf_count(transactions_by_doc)
     mca = compute_mca_position_count(transactions_by_doc)
+    mca_confirmed, mca_pattern = compute_mca_position_breakdown(transactions_by_doc)
     intl_share = compute_international_share_pct(agg)
 
     cashflow = CashflowSignals(
@@ -155,6 +157,8 @@ def compute_risk_band(
         negative_days=neg_days,
         nsf_count=nsf,
         mca_position_count=mca,
+        mca_confirmed_count=mca_confirmed,
+        mca_pattern_count=mca_pattern,
         international_client_share_pct=intl_share,
     )
 
@@ -174,9 +178,19 @@ def compute_risk_band(
     reasons.append(frame_nsf(nsf, period_days, nsf_sev))
 
     # MCA is always computable.
+    # Severity stays driven by the total mca_debit count (the existing
+    # banding contract). The split feeds the reason text — confirmed
+    # vs pattern visibility — without changing the band's input.
     mca_sev = severity_for_mca_positions(mca)
     severities.append(mca_sev)
-    reasons.append(frame_mca_positions(mca, mca_sev))
+    reasons.append(
+        frame_mca_positions(
+            mca,
+            mca_sev,
+            confirmed_count=mca_confirmed,
+            pattern_count=mca_pattern,
+        )
+    )
 
     # Balance-derived signals: only when running_balance coverage
     # was high enough for the stats to be returned.

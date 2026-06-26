@@ -28,7 +28,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-01",
       "running_balance": "7750.00",
       "source_line": 1,
@@ -37,7 +37,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-01",
       "running_balance": "7570.00",
       "source_line": 2,
@@ -46,7 +46,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-02",
       "running_balance": "7320.00",
       "source_line": 3,
@@ -55,7 +55,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-02",
       "running_balance": "7140.00",
       "source_line": 4,
@@ -64,7 +64,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-03",
       "running_balance": "6890.00",
       "source_line": 5,
@@ -73,7 +73,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-03",
       "running_balance": "6710.00",
       "source_line": 6,
@@ -82,7 +82,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-06",
       "running_balance": "6460.00",
       "source_line": 7,
@@ -91,7 +91,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-06",
       "running_balance": "6280.00",
       "source_line": 8,
@@ -109,7 +109,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-07",
       "running_balance": "8728.00",
       "source_line": 10,
@@ -118,7 +118,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-07",
       "running_balance": "8548.00",
       "source_line": 11,
@@ -127,7 +127,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-08",
       "running_balance": "8298.00",
       "source_line": 12,
@@ -136,7 +136,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-08",
       "running_balance": "8118.00",
       "source_line": 13,
@@ -145,7 +145,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-09",
       "running_balance": "7868.00",
       "source_line": 14,
@@ -154,7 +154,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-09",
       "running_balance": "7688.00",
       "source_line": 15,
@@ -163,7 +163,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-10",
       "running_balance": "7438.00",
       "source_line": 16,
@@ -172,7 +172,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-10",
       "running_balance": "7258.00",
       "source_line": 17,
@@ -181,7 +181,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-13",
       "running_balance": "7008.00",
       "source_line": 18,
@@ -190,7 +190,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-13",
       "running_balance": "6828.00",
       "source_line": 19,
@@ -208,7 +208,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-14",
       "running_balance": "9179.00",
       "source_line": 21,
@@ -217,7 +217,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-14",
       "running_balance": "8999.00",
       "source_line": 22,
@@ -226,7 +226,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-15",
       "running_balance": "8749.00",
       "source_line": 23,
@@ -235,7 +235,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-15",
       "running_balance": "8569.00",
       "source_line": 24,
@@ -244,7 +244,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-16",
       "running_balance": "8319.00",
       "source_line": 25,
@@ -253,7 +253,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-16",
       "running_balance": "8139.00",
       "source_line": 26,
@@ -262,7 +262,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-17",
       "running_balance": "7889.00",
       "source_line": 27,
@@ -271,7 +271,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-17",
       "running_balance": "7709.00",
       "source_line": 28,
@@ -280,7 +280,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-20",
       "running_balance": "7459.00",
       "source_line": 29,
@@ -289,7 +289,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-20",
       "running_balance": "7279.00",
       "source_line": 30,
@@ -307,7 +307,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-21",
       "running_balance": "11472.00",
       "source_line": 32,
@@ -316,7 +316,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-21",
       "running_balance": "11292.00",
       "source_line": 33,
@@ -325,7 +325,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-22",
       "running_balance": "11042.00",
       "source_line": 34,
@@ -334,7 +334,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-22",
       "running_balance": "10862.00",
       "source_line": 35,
@@ -343,7 +343,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-23",
       "running_balance": "10612.00",
       "source_line": 36,
@@ -352,7 +352,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-23",
       "running_balance": "10432.00",
       "source_line": 37,
@@ -361,7 +361,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-24",
       "running_balance": "10182.00",
       "source_line": 38,
@@ -370,7 +370,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-24",
       "running_balance": "10002.00",
       "source_line": 39,
@@ -379,7 +379,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-27",
       "running_balance": "9752.00",
       "source_line": 40,
@@ -388,7 +388,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-27",
       "running_balance": "9572.00",
       "source_line": 41,
@@ -406,7 +406,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-28",
       "running_balance": "12983.00",
       "source_line": 1,
@@ -415,7 +415,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-28",
       "running_balance": "12803.00",
       "source_line": 2,
@@ -424,7 +424,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-29",
       "running_balance": "12553.00",
       "source_line": 3,
@@ -433,7 +433,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-29",
       "running_balance": "12373.00",
       "source_line": 4,
@@ -442,7 +442,7 @@
     {
       "amount": "-250.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER ALPHA",
+      "description": "ACH DEBIT ONDECK DAILY PMT",
       "posted_date": "2026-04-30",
       "running_balance": "12123.00",
       "source_line": 5,
@@ -451,7 +451,7 @@
     {
       "amount": "-180.00",
       "category": "mca_debit",
-      "description": "ACH DEBIT MCA FUNDER BETA",
+      "description": "ACH DEBIT KAPITUS DAILY REMIT",
       "posted_date": "2026-04-30",
       "running_balance": "11943.00",
       "source_line": 6,

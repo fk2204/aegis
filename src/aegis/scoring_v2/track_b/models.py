@@ -56,8 +56,8 @@ SignalSeverity = Literal[
 # reasons list for the full picture.
 SEVERITY_TO_BAND: dict[SignalSeverity, BandLevel] = {
     "positive": "low",
-    "neutral":  "low",
-    "concern":  "moderate",
+    "neutral": "low",
+    "concern": "moderate",
     "elevated": "elevated",
     "critical": "high",
 }
@@ -65,10 +65,10 @@ SEVERITY_TO_BAND: dict[SignalSeverity, BandLevel] = {
 
 # Map from band to operator action.
 BAND_TO_ACTION: dict[BandLevel, BandAction] = {
-    "low":      "auto_forward",
+    "low": "auto_forward",
     "moderate": "review_neutral",
     "elevated": "review_neutral",
-    "high":     "review_decline_default",
+    "high": "review_decline_default",
 }
 
 
@@ -155,6 +155,31 @@ class CashflowSignals(_StrictModel):
             "Each represents an active MCA position; stacking is the "
             "load-bearing default-risk signal (~40% of defaults link "
             "to stacking per the operator's underwriting research)."
+        ),
+    )
+    # 2026-06-26 split. ``mca_position_count == mca_confirmed_count +
+    # mca_pattern_count`` — exhaustive partition of mca_debit rows by
+    # description bucket so the dossier renders "N confirmed; M possible
+    # via payment pattern (verify)" instead of one combined number.
+    # Default 0/0 keeps the model backward-compatible with callers
+    # constructed before the split landed; ``compute_risk_band`` always
+    # populates them.
+    mca_confirmed_count: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Subset of ``mca_position_count`` whose description carries "
+            "a ``KNOWN_FUNDERS`` substring — named funder recognized, "
+            "high confidence."
+        ),
+    )
+    mca_pattern_count: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Subset of ``mca_position_count`` with no ``KNOWN_FUNDERS`` "
+            "match — classified by the LLM via the description but "
+            "without a named funder. Renders as 'possible — verify'."
         ),
     )
     international_client_share_pct: Decimal | None = Field(

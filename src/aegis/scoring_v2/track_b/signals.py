@@ -66,9 +66,7 @@ def compute_period_days(
     return (max(dates) - min(dates)).days + 1  # inclusive both ends
 
 
-def compute_monthly_revenue(
-    revenue_total: Money, period_days: int
-) -> Money:
+def compute_monthly_revenue(revenue_total: Money, period_days: int) -> Money:
     """Normalise total revenue to a 30-day-equivalent figure.
 
     Zero when ``period_days`` is zero (empty bundle). Uses
@@ -76,11 +74,7 @@ def compute_monthly_revenue(
     """
     if period_days <= 0:
         return Money(Decimal("0"))
-    raw = (
-        Decimal(str(revenue_total))
-        * Decimal("30")
-        / Decimal(period_days)
-    )
+    raw = Decimal(str(revenue_total)) * Decimal("30") / Decimal(period_days)
     return Money(raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
@@ -98,11 +92,7 @@ def compute_running_balance_stats(
     if not flat:
         return None, None, 0
     with_balance = [t for t in flat if t.running_balance is not None]
-    coverage = (
-        Decimal(len(with_balance)) / Decimal(len(flat))
-        if flat
-        else Decimal("0")
-    )
+    coverage = Decimal(len(with_balance)) / Decimal(len(flat)) if flat else Decimal("0")
 
     # Negative days are always counted from the rows we DO have.
     neg_days: set[date] = set()
@@ -140,11 +130,7 @@ def compute_nsf_count(
     transactions_by_doc: Mapping[str, list[ClassifiedTransaction]],
 ) -> int:
     """Count transactions classified as ``nsf_fee`` by the parser."""
-    return sum(
-        1
-        for t in _flatten(transactions_by_doc)
-        if t.category == "nsf_fee"
-    )
+    return sum(1 for t in _flatten(transactions_by_doc) if t.category == "nsf_fee")
 
 
 def compute_mca_position_count(
@@ -159,11 +145,42 @@ def compute_mca_position_count(
     raw count; the band logic treats anything >= 1 as a concern and
     >= 3 as elevated.
     """
-    return sum(
-        1
-        for t in _flatten(transactions_by_doc)
-        if t.category == "mca_debit"
-    )
+    return sum(1 for t in _flatten(transactions_by_doc) if t.category == "mca_debit")
+
+
+def compute_mca_position_breakdown(
+    transactions_by_doc: Mapping[str, list[ClassifiedTransaction]],
+) -> tuple[int, int]:
+    """Split the MCA-debit count into ``(confirmed, pattern)``.
+
+    Walks every ``mca_debit`` row; ``confirmed`` counts those whose
+    description contains a ``KNOWN_FUNDERS`` substring (named funder
+    recognized — high confidence). ``pattern`` counts the rest — the
+    LLM classified them as MCA but no named funder string is present,
+    so the operator should verify before treating them as stacking.
+
+    Total returned by ``compute_mca_position_count`` is the sum of the
+    two; the buckets are exhaustive across ``mca_debit`` rows.
+
+    Imported lazily from :mod:`aegis.parser.patterns` so the Track B
+    layer doesn't take a hard dependency on the parser package at
+    import time.
+    """
+    # Local import keeps the module dependency direction one-way
+    # (track_b → parser at call time, not import time).
+    from aegis.parser.patterns import KNOWN_FUNDERS
+
+    confirmed = 0
+    pattern = 0
+    for t in _flatten(transactions_by_doc):
+        if t.category != "mca_debit":
+            continue
+        desc_lower = t.description.lower()
+        if any(f in desc_lower for f in KNOWN_FUNDERS):
+            confirmed += 1
+        else:
+            pattern += 1
+    return confirmed, pattern
 
 
 def compute_international_share_pct(
@@ -193,6 +210,7 @@ def compute_international_share_pct(
 
 __all__ = [
     "compute_international_share_pct",
+    "compute_mca_position_breakdown",
     "compute_mca_position_count",
     "compute_monthly_revenue",
     "compute_nsf_count",

@@ -109,7 +109,10 @@
           true revenue ${{ "{:,.0f}".format(cf.true_revenue_total) }}
           · {{ "${:,.0f}".format(cf.monthly_revenue_estimate) }}/mo
           · NSF {{ cf.nsf_count }}
-          · MCA {{ cf.mca_position_count }}
+          {# 2026-06-26: render confirmed (named-funder) and pattern
+             (no named funder — verify) buckets separately. Never
+             collapse into a single MCA count. #}
+          · MCA {{ cf.mca_confirmed_count }} confirmed{% if cf.mca_pattern_count %} · {{ cf.mca_pattern_count }} possible (verify){% endif %}
           {% if cf.international_client_share_pct is not none %}
             · intl client {{ cf.international_client_share_pct }}%
           {% endif %}

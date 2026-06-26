@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from difflib import SequenceMatcher
-from typing import Final
+from typing import Final, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -105,26 +105,32 @@ KNOWN_FUNDERS: Final[tuple[str, ...]] = (
 )
 
 # Behavioral terms — only count when frequency confirms (TS-review fix).
+#
+# 2026-06-26 tightening: removed single-word generic terms ("advance",
+# "remit", "factor", "holdback", "receivables", "merchant svc") that
+# appear in countless legitimate transactions (e.g. "Adobe Creative
+# CLOUD" / "merchant svc fee" / "investment advance"). Even with the
+# 10-occurrence + daily-cadence guard, these were producing 16-96
+# false-positive position counts on merchants with 0-1 real MCA
+# positions because routine merchant-service or fee streams hit the
+# cadence threshold. Live list is multi-word and MCA-specific only.
+#
+# Single words are NEVER added to this list — every entry must be a
+# phrase or token that does not appear in non-MCA banking descriptors.
 GENERIC_MCA_TERMS: Final[tuple[str, ...]] = (
     "daily pmt",
     "daily payment",
     "daily business pmt",
-    "merchant svc",
-    "biz advance",
-    "rcvbl",
     "daily remittance",
     "ach daily",
     "daily debit",
     "business daily",
     "daily withdrawal",
     "future receipts",
-    "advance",
-    "remit",
-    "factor",
-    "holdback",
-    "receivables",
     "daily ach",
     "receivable purchase",
+    "biz advance",
+    "rcvbl",
 )
 
 # R1.1: Disguise descriptors used by funders / brokers to hide an MCA
@@ -326,12 +332,24 @@ class Pattern:
     source_ids: list[UUID] = field(default_factory=list)
 
 
+McaPositionMatchSource = Literal["known_funder", "pattern"]
+
+
 @dataclass
 class McaPosition:
     funder_label: str
     daily_equivalent: Decimal
     occurrences: int
     source_ids: list[UUID]
+    # ``known_funder`` — a KNOWN_FUNDERS substring matched the
+    # description (high confidence; named funder recognized).
+    # ``pattern`` — only GENERIC_MCA_TERMS matched (with the daily-
+    # cadence + occurrence guard); confidence is lower and the dossier
+    # surfaces these as "possible — verify" rather than "confirmed".
+    # Default keeps legacy persisted rows (pre-2026-06-26) hydrating
+    # under the conservative ``known_funder`` bucket; new parses always
+    # set this explicitly via ``_detect_mca_positions``.
+    match_source: McaPositionMatchSource = "known_funder"
 
 
 @dataclass
@@ -429,6 +447,11 @@ class McaPositionDTO(_StrictDTO):
     daily_equivalent: Decimal
     occurrences: int
     source_ids: list[UUID]
+    # See ``McaPosition.match_source`` for semantics. ``Field(default=...)``
+    # keeps the DTO backward-compatible — pattern_analysis rows persisted
+    # before 2026-06-26 lack this key and rehydrate as ``"known_funder"``
+    # (conservative; the dossier renders them as confirmed positions).
+    match_source: McaPositionMatchSource = Field(default="known_funder")
 
 
 class CounterpartySignalsDTO(_StrictDTO):
@@ -509,6 +532,7 @@ def pattern_analysis_to_dto(pa: PatternAnalysis) -> PatternAnalysisDTO:
                 daily_equivalent=m.daily_equivalent,
                 occurrences=m.occurrences,
                 source_ids=list(m.source_ids),
+                match_source=m.match_source,
             )
             for m in pa.mca_positions
         ],
@@ -564,6 +588,7 @@ def pattern_analysis_from_dto(dto: PatternAnalysisDTO) -> PatternAnalysis:
                 daily_equivalent=m.daily_equivalent,
                 occurrences=m.occurrences,
                 source_ids=list(m.source_ids),
+                match_source=m.match_source,
             )
             for m in dto.mca_positions
         ],
@@ -766,15 +791,37 @@ def _detect_mca_positions(
             continue
         total = sum((-r.amount for r in rows), Decimal("0"))
         daily_equivalent = (total / Decimal(period_days)).quantize(Decimal("0.01"))
+        # ``is_funder`` wins the bucketing — a named funder match is
+        # higher confidence than a daily-cadence-only match. The
+        # display layer renders these two buckets separately so a
+        # merchant with one named-funder match + one cadence-only
+        # match shows "1 confirmed, 1 possible" instead of "2 stacking".
+        match_source: McaPositionMatchSource = "known_funder" if is_funder else "pattern"
         positions.append(
             McaPosition(
                 funder_label=key[:30],
                 daily_equivalent=daily_equivalent,
                 occurrences=len(rows),
                 source_ids=[r.id for r in rows],
+                match_source=match_source,
             )
         )
     return positions
+
+
+def count_confirmed_positions(positions: list[McaPosition]) -> int:
+    """Number of MCA positions matched via a named funder.
+
+    Surfaced separately from ``count_pattern_positions`` so the dossier
+    can render "N confirmed (funder name detected); M possible via
+    payment pattern (verify)" without re-walking the descriptor lists.
+    """
+    return sum(1 for p in positions if p.match_source == "known_funder")
+
+
+def count_pattern_positions(positions: list[McaPosition]) -> int:
+    """Number of MCA positions matched via GENERIC_MCA_TERMS + cadence."""
+    return sum(1 for p in positions if p.match_source == "pattern")
 
 
 def _looks_daily_cadence(rows: list[ClassifiedTransaction]) -> bool:
