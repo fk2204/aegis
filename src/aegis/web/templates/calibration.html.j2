@@ -1,0 +1,112 @@
+{% extends "base.html.j2" %}
+{% set active = 'Portfolio' %}
+{% block title %}Weight calibration — AEGIS{% endblock %}
+
+{# Weight-drift calibration surface (migration 074 outcome feedback loop).
+
+   Per-FRAUD_WEIGHTS-key empirical comparison: did this bucket fire on
+   deals that charged off more often than on deals that paid in full?
+   Suggested weights are SHADOW only — operator reviews, then edits
+   FRAUD_WEIGHTS in code. No auto-tuning.
+
+   Surface contract: route populates ``report`` (WeightDriftReport with
+   ``generated_at``, ``lookback_days``, ``total_outcomes``, ``entries``)
+   and ``fraud_weights`` (the raw FRAUD_WEIGHTS dict, used for the
+   empty-state preamble).
+#}
+
+{% block deck %}
+{% set title = "Weight calibration" %}
+{% set subtitle = "· empirical drift vs current FRAUD_WEIGHTS · shadow only" %}
+{% set meta %}
+  {{ report.total_outcomes }} terminal outcome{{ '' if report.total_outcomes == 1 else 's' }}
+  in the last {{ report.lookback_days }} days
+{% endset %}
+{% set actions = [
+    {"label": "Shadow review", "href": "/ui/shadow-review"},
+    {"label": "Today", "href": "/ui/"},
+] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1" data-test-id="calibration-page">
+  <div class="hint" style="margin-bottom:1rem;font-size:13px;color:#555">
+    Suggested weights are <strong>shadow</strong> — recording a review here
+    writes to <code>weight_calibration_log</code> only. The
+    <code>FRAUD_WEIGHTS</code> constant is edited by hand after you review
+    the full report. Same shadow-first discipline that ships every other
+    scoring change.
+  </div>
+
+  {% if not report.entries %}
+    <div class="empty" role="note" data-test-id="calibration-empty">
+      <strong>No outcomes in the calibration window.</strong>
+      <span class="copy">
+        Record outcomes on dossiers as they reach terminal status
+        (paid in full / charged off / defaulted / renewed) and they will
+        appear here. Pending and paying outcomes are excluded.
+      </span>
+    </div>
+  {% else %}
+    <table data-test-id="calibration-table" class="audit-ledger">
+      <thead>
+        <tr>
+          <th scope="col" style="width:180px">Flag code</th>
+          <th scope="col" style="width:90px;text-align:right">Current</th>
+          <th scope="col" style="width:90px;text-align:right">Sample</th>
+          <th scope="col" style="width:140px;text-align:right">Charge-off rate (fired)</th>
+          <th scope="col" style="width:160px;text-align:right">Charge-off rate (not fired)</th>
+          <th scope="col" style="width:100px;text-align:right">Suggested</th>
+          <th scope="col" style="width:90px">Confidence</th>
+          <th scope="col">Review</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in report.entries %}
+        <tr data-test-id="calibration-row" data-flag-code="{{ e.flag_code }}">
+          <td><code>{{ e.flag_code }}</code></td>
+          <td style="text-align:right">{{ e.current_weight }}</td>
+          <td style="text-align:right">{{ e.sample_size }}</td>
+          <td style="text-align:right" data-test-id="fired-rate">{{ e.fired_charged_off_rate }}</td>
+          <td style="text-align:right" data-test-id="not-fired-rate">{{ e.not_fired_charged_off_rate }}</td>
+          <td style="text-align:right" data-test-id="suggested-weight">{{ e.suggested_weight }}</td>
+          <td>
+            <span class="confidence-{{ e.confidence }}" data-test-id="confidence-band">
+              {{ e.confidence }}
+            </span>
+          </td>
+          <td>
+            <form hx-post="/ui/calibration/{{ e.flag_code }}/review"
+                  hx-target="closest td"
+                  hx-swap="innerHTML"
+                  style="display:flex;gap:6px;font-size:11px"
+                  data-test-id="calibration-review-form">
+              <input type="hidden" name="suggested_weight" value="{{ e.suggested_weight }}">
+              <input type="hidden" name="sample_size" value="{{ e.sample_size }}">
+              <input type="hidden" name="confidence" value="{{ e.confidence }}">
+              <select name="decision" required style="font-size:11px">
+                <option value="" disabled selected>Pick…</option>
+                <option value="accepted">accept</option>
+                <option value="rejected">reject</option>
+                <option value="deferred">defer</option>
+              </select>
+              <input type="text"
+                     name="notes"
+                     maxlength="240"
+                     placeholder="notes"
+                     style="flex:1;min-width:120px;font-size:11px">
+              <button type="submit" style="font-size:11px;padding:2px 8px">save</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <footer style="margin-top:1rem;font-size:11px;color:#888">
+      Generated <time datetime="{{ report.generated_at.isoformat() }}">{{ report.generated_at.strftime("%Y-%m-%d %H:%M UTC") }}</time>
+      · lookback {{ report.lookback_days }} days
+    </footer>
+  {% endif %}
+</section>
+{% endblock %}

@@ -2344,6 +2344,237 @@ async def merchant_funder_response(
 
 
 # ---------------------------------------------------------------------------
+# Post-fund outcome capture (migration 074 — outcome feedback loop).
+# ---------------------------------------------------------------------------
+
+
+_VALID_DEAL_OUTCOMES: frozenset[str] = frozenset(
+    {
+        "paying",
+        "paid_in_full",
+        "charged_off",
+        "defaulted",
+        "renewed",
+        "pending",
+    }
+)
+_VALID_FUNDER_DECISIONS: frozenset[str] = frozenset(
+    {
+        "approved",
+        "declined",
+        "countered",
+    }
+)
+# Outcomes for which ``charge_off_amount`` is mandatory. Only the
+# loss-side terminal outcomes carry a charge-off amount; everything else
+# (paying / paid_in_full / renewed / pending) leaves the field blank.
+_CHARGE_OFF_OUTCOMES: frozenset[str] = frozenset({"charged_off", "defaulted"})
+
+
+@router.get(
+    "/merchants/{merchant_id}/decisions/{decision_id}/outcome-modal",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+async def deal_outcome_modal(
+    request: Request,
+    merchant_id: UUID,
+    decision_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+) -> HTMLResponse:
+    """Render the post-fund "Record outcome" HTMX modal.
+
+    Distinct from ``/ui/funder-replies/outcome-modal`` — that path
+    captures the PRE-fund reply (terms came back / declined). This one
+    captures what happened POST-fund (paying / paid_in_full /
+    charged_off / defaulted / renewed). Sibling tables: migration 074
+    ``deal_outcomes`` vs migration 071 ``funder_replies``.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    funders = sorted(funder_repo.list_active(), key=lambda f: f.name.lower())
+    return templates.TemplateResponse(
+        request,
+        "_deal_outcome_modal.html.j2",
+        {
+            "merchant": merchant,
+            "decision_id": decision_id,
+            "funders": funders,
+        },
+    )
+
+
+@router.post(
+    "/merchants/{merchant_id}/decisions/{decision_id}/outcome",
+    response_model=None,
+)
+async def record_deal_outcome(
+    request: Request,
+    merchant_id: UUID,
+    decision_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    funder_decision: Annotated[str, Form()],
+    outcome: Annotated[str, Form()],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+    funder_id: Annotated[str, Form()] = "",
+    funded_amount: Annotated[str, Form()] = "",
+    factor_rate: Annotated[str, Form()] = "",
+    term_days: Annotated[str, Form()] = "",
+    first_payment_date: Annotated[str, Form()] = "",
+    charge_off_amount: Annotated[str, Form()] = "",
+    notes: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Persist one ``deal_outcomes`` row and return a confirmation fragment.
+
+    Validation:
+      * ``funder_decision`` ∈ {approved, declined, countered}.
+      * ``outcome`` ∈ {paying, paid_in_full, charged_off, defaulted,
+        renewed, pending}.
+      * ``charge_off_amount`` required when ``outcome`` ∈
+        {charged_off, defaulted}.
+      * Money fields parsed via ``Decimal(str)`` — never ``float``
+        (CLAUDE.md money-math discipline).
+
+    Identity:
+      * ``created_by`` falls back to ``"dashboard"`` when no CF-Access
+        email header is present (local dev / test client).
+
+    Audit:
+      * Writes ``deal.outcome_recorded`` row keyed on the merchant. The
+        outcome's own table is mutable; the audit row is the immutable
+        history of how the outcome changed.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    funder_decision_n = funder_decision.strip().lower()
+    if funder_decision_n not in _VALID_FUNDER_DECISIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"funder_decision must be one of {sorted(_VALID_FUNDER_DECISIONS)}",
+        )
+    outcome_n = outcome.strip().lower()
+    if outcome_n not in _VALID_DEAL_OUTCOMES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"outcome must be one of {sorted(_VALID_DEAL_OUTCOMES)}",
+        )
+
+    try:
+        funded = _decimal_or_none(funded_amount)
+        factor = _decimal_or_none(factor_rate)
+        term = _int_or_none(term_days)
+        charge_off = _decimal_or_none(charge_off_amount)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # charge_off_amount is REQUIRED when the outcome is a loss event.
+    if outcome_n in _CHARGE_OFF_OUTCOMES and charge_off is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"charge_off_amount is required when outcome is {outcome_n!r};"
+                " supply the dollar amount written off"
+            ),
+        )
+    # For non-loss outcomes, drop any client-side charge_off value so a
+    # stale modal can't leak a number into a paid_in_full row.
+    if outcome_n not in _CHARGE_OFF_OUTCOMES:
+        charge_off = None
+
+    funder_uuid: UUID | None = None
+    if funder_id.strip():
+        try:
+            funder_uuid = UUID(funder_id.strip())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"invalid funder_id: {funder_id!r}",
+            ) from exc
+
+    first_payment: date | None = None
+    if first_payment_date.strip():
+        try:
+            first_payment = date.fromisoformat(first_payment_date.strip())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"invalid first_payment_date: {first_payment_date!r}",
+            ) from exc
+
+    created_by = (actor_email or "dashboard").strip() or "dashboard"
+    submitted_at_iso = datetime.now(UTC).isoformat()
+
+    row: dict[str, Any] = {
+        "merchant_id": str(merchant.id),
+        "decision_id": str(decision_id),
+        "submitted_at": submitted_at_iso,
+        "funder_id": str(funder_uuid) if funder_uuid is not None else None,
+        "funder_decision": funder_decision_n,
+        "funded_amount": str(funded) if funded is not None else None,
+        "factor_rate": str(factor) if factor is not None else None,
+        "term_days": term,
+        "first_payment_date": first_payment.isoformat() if first_payment is not None else None,
+        "outcome": outcome_n,
+        "charge_off_amount": str(charge_off) if charge_off is not None else None,
+        "notes": notes.strip() or None,
+        "created_by": created_by,
+    }
+
+    # Persist. Wrap in try/except so a Supabase outage surfaces as a 503
+    # rather than a 500 (mirrors the funder-replies route).
+    try:
+        from aegis.db import get_supabase as _get_supabase
+
+        _get_supabase().table("deal_outcomes").insert(row).execute()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"deal_outcome_persist_unavailable: {type(exc).__name__}",
+        ) from exc
+
+    # Audit row — the deal_outcomes table is mutable, so the audit_log
+    # is the immutable history of "what changed when." Failures here
+    # MUST fail the operation per CLAUDE.md audit-write discipline.
+    audit.record(
+        actor="dashboard",
+        actor_email=actor_email,
+        action="deal.outcome_recorded",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={
+            "decision_id": str(decision_id),
+            "funder_id": str(funder_uuid) if funder_uuid is not None else None,
+            "funder_decision": funder_decision_n,
+            "outcome": outcome_n,
+            "funded_amount": str(funded) if funded is not None else None,
+            "factor_rate": str(factor) if factor is not None else None,
+            "term_days": term,
+            "charge_off_amount": str(charge_off) if charge_off is not None else None,
+        },
+    )
+
+    # Return a small swap fragment confirming the write. The dossier
+    # surface picks up the new row on the next reload — full HTMX swap
+    # back into the section is out of scope here (the section depends
+    # on multiple loaders) and the operator can refresh.
+    return HTMLResponse(
+        content=(
+            '<div class="deal-outcome-recorded" data-test-id="deal-outcome-recorded">'
+            f"Outcome <strong>{outcome_n}</strong> recorded for this deal."
+            " Refresh the dossier to see it in the post-fund history."
+            "</div>"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Close attachment rescan (Feature 2, chunk 5).
 # ---------------------------------------------------------------------------
 
