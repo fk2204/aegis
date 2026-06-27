@@ -73,6 +73,11 @@ from aegis.merchants.shadow_signals import (
     MerchantShadowSignalRepository,
     SupabaseMerchantShadowSignalRepository,
 )
+from aegis.ops.llm_cost_repository import (
+    InMemoryLLMCostRepository,
+    LLMCostRepository,
+    SupabaseLLMCostRepository,
+)
 from aegis.ops.webhook_circuit import (
     InMemoryCircuitBackend,
     WebhookCircuit,
@@ -199,6 +204,19 @@ def get_deal_repository() -> DealRepository:
 def get_llm() -> LLMClient:
     """Production LLM client. Tests override with a fake via dependency_overrides."""
     return BedrockClient()
+
+
+@lru_cache(maxsize=1)
+def get_llm_cost_repository() -> LLMCostRepository:
+    """Process-wide LLMCostRepository (migration 078).
+
+    Powers the dual-write inside ``CostTrackingBedrockClient`` so every
+    Bedrock call lands a row in ``llm_costs`` alongside the existing
+    ``audit_log`` bedrock.usage row.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryLLMCostRepository()
+    return SupabaseLLMCostRepository()
 
 
 @lru_cache(maxsize=1)
@@ -381,6 +399,7 @@ def reset_dependency_caches() -> None:
     get_pdf_store_repository.cache_clear()
     get_schema_migrations_reader.cache_clear()
     get_llm.cache_clear()
+    get_llm_cost_repository.cache_clear()
     get_ofac_client.cache_clear()
     get_close_client.cache_clear()
     get_webhook_circuit.cache_clear()
@@ -397,6 +416,7 @@ __all__ = [
     "get_funder_reply_repository",
     "get_funder_repository",
     "get_llm",
+    "get_llm_cost_repository",
     "get_merchant_repository",
     "get_merchant_shadow_signal_repository",
     "get_ofac_client",

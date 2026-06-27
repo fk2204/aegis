@@ -627,6 +627,15 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='analyses' "
         "AND column_name='narrator_summary'"
     ),
+    "078_llm_costs.sql": (
+        # 078 creates the dedicated per-call Bedrock cost ledger. The
+        # ``CostTrackingBedrockClient`` dual-writes audit_log +
+        # llm_costs from every Bedrock call. Probe the table's
+        # existence — the indexes + CHECK constraint land in the same
+        # BEGIN/COMMIT.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='llm_costs'"
+    ),
 }
 
 

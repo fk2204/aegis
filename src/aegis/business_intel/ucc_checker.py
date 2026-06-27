@@ -114,9 +114,9 @@ def check_ucc_and_defaults(
 
     if client is None:
         try:
-            from aegis.llm import BedrockClient
+            from aegis.ops.cost_tracking import build_cost_tracking_client
 
-            client = BedrockClient()
+            client = build_cost_tracking_client(call_type="business_intel")
         except Exception:
             _log.warning("ucc_checker.client_init_failed business_name=%s", name, exc_info=True)
             return UCCResult()

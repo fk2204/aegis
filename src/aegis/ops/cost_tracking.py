@@ -56,8 +56,20 @@ from aegis.audit import AuditLog, AuditWriteError
 from aegis.config import get_settings
 from aegis.llm import BedrockClient
 from aegis.logger import get_logger
+from aegis.ops.llm_cost_repository import CallType, LLMCostRepository
 
 _log = get_logger(__name__)
+
+
+# Method-name → CallType inference used when the wrapper isn't given an
+# explicit call_type. The non-Protocol methods (generate_text /
+# invoke_with_web_search / invoke_tool_json) DO require explicit
+# call_type because they have no single canonical category.
+_DEFAULT_CALL_TYPE_BY_OPERATION: dict[str, CallType] = {
+    "extract": "extraction",
+    "extract_vision": "extraction",
+    "classify": "classification",
+}
 
 
 # --- pricing (env-tunable) -------------------------------------------------
@@ -132,17 +144,27 @@ class CostTrackingBedrockClient:
         *,
         audit: AuditLog,
         document_id: UUID | None = None,
+        merchant_id: UUID | None = None,
+        cost_repo: LLMCostRepository | None = None,
+        call_type: CallType | None = None,
     ) -> None:
         self._inner = inner if inner is not None else BedrockClient()
         self._audit = audit
         self._model_id = get_settings().bedrock_model_id
         self._document_id = document_id
+        self._merchant_id = merchant_id
+        self._cost_repo = cost_repo
+        # ``call_type`` is the *override* — when set it wins over the
+        # method-name inference in ``_resolve_call_type``. Callers that
+        # invoke a single category of work pass it at construction
+        # (web-presence scanner, ucc checker, deal-summary narrator).
+        # Workers that flow extract + classify through the same wrapper
+        # leave it None so the per-method default kicks in.
+        self._call_type_override = call_type
 
     # ----- LLMClient Protocol surface --------------------------------------
 
-    def extract_raw_json(
-        self, pdf_bytes: bytes, prompt: str
-    ) -> tuple[dict[str, Any], bool]:
+    def extract_raw_json(self, pdf_bytes: bytes, prompt: str) -> tuple[dict[str, Any], bool]:
         # We re-issue the streaming call here so we can capture
         # ``response.usage`` after the stream completes; the inner
         # ``BedrockClient.extract_raw_json`` doesn't return usage.
@@ -210,6 +232,20 @@ class CostTrackingBedrockClient:
         truncated = getattr(response, "stop_reason", None) == "max_tokens"
         return _first_json_object(_text_blocks(response)), truncated
 
+    def _resolve_call_type(self, operation: str) -> CallType | None:
+        """Pick the CallType used for the llm_costs row.
+
+        Explicit override wins. Otherwise fall back to the per-method
+        default. ``invoke_with_web_search`` + ``invoke_tool_json`` + the
+        plain ``generate_text`` have NO inferable default — those
+        callers must construct with ``call_type=...`` set. Returns
+        ``None`` when no resolution is possible; the dual-write skips
+        the llm_costs insert in that case (audit_log row still lands).
+        """
+        if self._call_type_override is not None:
+            return self._call_type_override
+        return _DEFAULT_CALL_TYPE_BY_OPERATION.get(operation)
+
     def _audit_usage(self, operation: str, response: object) -> None:
         usage = getattr(response, "usage", None)
         if usage is None:
@@ -221,22 +257,20 @@ class CostTrackingBedrockClient:
             return
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-        cost = compute_cost_usd(
-            input_tokens=input_tokens, output_tokens=output_tokens
-        )
+        cost = compute_cost_usd(input_tokens=input_tokens, output_tokens=output_tokens)
         details = {
             "operation": operation,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "input_cost_usd": str(
-                (
-                    Decimal(input_tokens) * _input_price() / Decimal(1_000_000)
-                ).quantize(Decimal("0.000001"))
+                (Decimal(input_tokens) * _input_price() / Decimal(1_000_000)).quantize(
+                    Decimal("0.000001")
+                )
             ),
             "output_cost_usd": str(
-                (
-                    Decimal(output_tokens) * _output_price() / Decimal(1_000_000)
-                ).quantize(Decimal("0.000001"))
+                (Decimal(output_tokens) * _output_price() / Decimal(1_000_000)).quantize(
+                    Decimal("0.000001")
+                )
             ),
             "total_cost_usd": str(cost),
             "model_id": self._model_id,
@@ -252,6 +286,118 @@ class CostTrackingBedrockClient:
             )
         except AuditWriteError:
             _log.warning("bedrock.usage.audit_failed operation=%s", operation)
+
+        # Dual-write: also persist into llm_costs when the repo is
+        # wired AND we can resolve a CallType. The Bedrock cost is
+        # already incurred; a failed insert must NOT propagate (the
+        # audit_log row is the canonical record either way).
+        if self._cost_repo is None:
+            return
+        call_type = self._resolve_call_type(operation)
+        if call_type is None:
+            _log.warning(
+                "bedrock.usage.call_type_unresolved operation=%s — "
+                "llm_costs row skipped (audit_log row still written)",
+                operation,
+            )
+            return
+        try:
+            self._cost_repo.insert(
+                merchant_id=self._merchant_id,
+                document_id=self._document_id,
+                model_id=self._model_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                estimated_cost_usd=cost,
+                call_type=call_type,
+            )
+        except Exception:
+            _log.warning("bedrock.usage.cost_repo_failed operation=%s", operation, exc_info=True)
+
+    # ----- non-Protocol surface --------------------------------------------
+    #
+    # The 3 methods below let callers that today instantiate ``BedrockClient``
+    # directly (``web_presence/scanner.py``, ``business_intel/ucc_checker.py``,
+    # ``scoring_v2/deal_summary.py``, narrator's tool-use path) flow through
+    # the same cost-tracking decorator. They forward to the inner client and
+    # then call ``_audit_usage`` so the dual-write happens uniformly.
+
+    def generate_text(self, prompt: str, *, max_tokens: int = 512) -> str:
+        """Mirror :meth:`BedrockClient.generate_text` with cost recording."""
+        response = self._inner._client.messages.create(
+            model=self._inner._model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        self._audit_usage("generate_text", response)
+        from aegis.llm import _text_blocks
+
+        return _text_blocks(response)
+
+    def invoke_with_web_search(self, prompt: str, *, max_uses: int = 5) -> str:
+        """Mirror :meth:`BedrockClient.invoke_with_web_search` with cost recording."""
+        response = self._inner._client.messages.create(
+            model=self._inner._model,
+            max_tokens=2048,
+            tools=[
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": max_uses,
+                }
+            ],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        self._audit_usage("invoke_with_web_search", response)
+        from aegis.llm import _text_blocks
+
+        return _text_blocks(response)
+
+    def invoke_tool_json(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        tool_name: str,
+        tool_schema: dict[str, Any],
+        max_tokens: int,
+        temperature: float,
+    ) -> tuple[dict[str, Any], str]:
+        """Mirror :meth:`BedrockClient.invoke_tool_json` with cost recording."""
+        response = self._inner._client.messages.create(
+            model=self._inner._model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_prompt,
+            tools=[
+                {
+                    "name": tool_name,
+                    "description": (
+                        "Emit the structured output for the deal-summary "
+                        "narrator. Required — do not respond outside this tool."
+                    ),
+                    "input_schema": tool_schema,
+                }
+            ],
+            tool_choice={"type": "tool", "name": tool_name},
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        self._audit_usage("invoke_tool_json", response)
+        tool_block: Any | None = None
+        for block in getattr(response, "content", []):
+            block_type = getattr(block, "type", None)
+            block_name = getattr(block, "name", None)
+            if block_type == "tool_use" and block_name == tool_name:
+                tool_block = block
+                break
+        if tool_block is None:
+            raise ValueError(
+                f"Bedrock response did not include expected tool_use block for tool '{tool_name}'"
+            )
+        tool_input = getattr(tool_block, "input", None)
+        if not isinstance(tool_input, dict):
+            raise ValueError(f"tool_use.input was not a dict (got {type(tool_input).__name__})")
+        return tool_input, self._inner._model
 
 
 def _b64(data: bytes) -> str:
@@ -324,14 +470,10 @@ class WeeklyDigest:
         funded deals in the window. None when no funded deal carries
         revenue info.
         """
-        funded_with_rev = [
-            d for d in self.deals if d.funded and d.revenue is not None
-        ]
+        funded_with_rev = [d for d in self.deals if d.funded and d.revenue is not None]
         if not funded_with_rev:
             return None
-        total_cost = sum(
-            (d.total_cost_usd for d in funded_with_rev), Decimal("0")
-        )
+        total_cost = sum((d.total_cost_usd for d in funded_with_rev), Decimal("0"))
         # ``d.revenue is not None`` is narrowed by the comprehension above
         # but mypy can't track that — guard once more for the type checker.
         total_revenue = sum(
@@ -340,9 +482,7 @@ class WeeklyDigest:
         )
         if total_revenue == 0:
             return None
-        return (Decimal("100") * total_cost / total_revenue).quantize(
-            Decimal("0.0001")
-        )
+        return (Decimal("100") * total_cost / total_revenue).quantize(Decimal("0.0001"))
 
 
 def build_weekly_digest(
@@ -443,10 +583,41 @@ class _DealAccumulator:
     call_count: int = 0
 
 
+def build_cost_tracking_client(
+    *,
+    call_type: CallType,
+    document_id: UUID | None = None,
+    merchant_id: UUID | None = None,
+) -> CostTrackingBedrockClient:
+    """Wire a :class:`CostTrackingBedrockClient` against the process-wide
+    audit + llm_costs singletons.
+
+    Convenience for callers that don't want to thread DI through their
+    own signature — used by the lazy fallbacks in
+    :mod:`aegis.web_presence.scanner`,
+    :mod:`aegis.business_intel.ucc_checker`, and
+    :mod:`aegis.scoring_v2.deal_summary` when no client is injected.
+    Tests that need a wrapped client without the singletons construct
+    ``CostTrackingBedrockClient`` directly with their own ``audit`` /
+    ``cost_repo``.
+    """
+    # Imported lazily so this module stays importable without FastAPI.
+    from aegis.api.deps import get_audit, get_llm_cost_repository
+
+    return CostTrackingBedrockClient(
+        audit=get_audit(),
+        cost_repo=get_llm_cost_repository(),
+        document_id=document_id,
+        merchant_id=merchant_id,
+        call_type=call_type,
+    )
+
+
 __all__ = [
     "CostTrackingBedrockClient",
     "PerDealCost",
     "WeeklyDigest",
+    "build_cost_tracking_client",
     "build_weekly_digest",
     "compute_cost_usd",
 ]

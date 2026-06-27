@@ -1,0 +1,194 @@
+{% extends "base.html.j2" %}
+{% set active = 'Admin' %}
+{% block title %}Bedrock costs — AEGIS{% endblock %}
+
+{# Bedrock per-call cost dashboard (migration 078).
+
+   Three tables on one page:
+   - per-merchant: merchant_id, name (when known), call types, total cost
+   - per-document: document_id, merchant name, model, call types, total cost
+   - monthly trend: last 6 months by total cost
+
+   Top banner shows total cost / tokens / call count for the selected
+   month. Default month = current UTC month.
+
+   Surface contract: route populates ``selected_month``,
+   ``total_cost_usd_display`` (string ``"123.45"``),
+   ``total_input_tokens``, ``total_output_tokens``, ``call_count``,
+   ``per_merchant_rows`` (list[PerMerchantCost]),
+   ``per_document_rows`` (list[PerDocumentCost]),
+   ``monthly_trend`` (list[MonthlyCost]), ``merchant_name_by_id``
+   (dict str→str lookup of merchant business names).
+#}
+
+{% block deck %}
+{% set title = "Bedrock costs" %}
+{% set subtitle = "· " ~ selected_month %}
+{% set meta %}
+  ${{ total_cost_usd_display }} · {{ call_count }} call{{ '' if call_count == 1 else 's' }}
+{% endset %}
+{% set actions = [
+    {"label": "Audit log", "href": "/ui/admin/audit-log"},
+    {"label": "Today", "href": "/ui/"},
+] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1" data-test-id="costs-page">
+
+  <form method="get" action="/ui/costs" class="row" data-test-id="costs-month-form">
+    <label for="cost-month">Month</label>
+    <input type="month"
+           id="cost-month"
+           name="month"
+           value="{{ selected_month }}"
+           data-test-id="costs-month-input">
+    <button type="submit" class="btn">Show</button>
+  </form>
+
+  <div class="cards" data-test-id="costs-summary">
+    <div class="card">
+      <div class="card-label">Total cost</div>
+      <div class="card-value" data-test-id="costs-total-cost">${{ total_cost_usd_display }}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Input tokens</div>
+      <div class="card-value" data-test-id="costs-input-tokens">{{ "{:,}".format(total_input_tokens) }}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Output tokens</div>
+      <div class="card-value" data-test-id="costs-output-tokens">{{ "{:,}".format(total_output_tokens) }}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Calls</div>
+      <div class="card-value" data-test-id="costs-call-count">{{ "{:,}".format(call_count) }}</div>
+    </div>
+  </div>
+
+  <h2 style="margin-top:2rem">Per merchant — {{ selected_month }}</h2>
+  {% if not per_merchant_rows %}
+    <div class="empty" data-test-id="costs-per-merchant-empty">
+      <strong>No Bedrock calls recorded for this month.</strong>
+    </div>
+  {% else %}
+    <table class="queue" data-test-id="costs-per-merchant-table">
+      <thead>
+        <tr>
+          <th scope="col">Merchant</th>
+          <th scope="col">Calls</th>
+          <th scope="col">Call types</th>
+          <th scope="col" style="text-align:right">Cost (USD)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in per_merchant_rows %}
+          <tr data-test-id="costs-per-merchant-row" data-merchant-id="{{ row.merchant_id or '' }}">
+            <td>
+              {% if row.merchant_id %}
+                {% set merchant_label = merchant_name_by_id.get(row.merchant_id|string) %}
+                {% if merchant_label %}
+                  <a href="/ui/merchants/{{ row.merchant_id }}">{{ merchant_label }}</a>
+                {% else %}
+                  <span class="mono-cell">{{ row.merchant_id }}</span>
+                {% endif %}
+              {% else %}
+                <span class="muted">(no merchant)</span>
+              {% endif %}
+            </td>
+            <td>{{ row.call_count }}</td>
+            <td>
+              {% for call_type, count in row.counts_by_type.items() %}
+                <span class="chip">{{ call_type }} × {{ count }}</span>
+              {% endfor %}
+            </td>
+            <td style="text-align:right" class="mono-cell">${{ "%.2f"|format(row.total_cost_usd) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+  <h2 style="margin-top:2rem">Per document — {{ selected_month }}</h2>
+  {% if not per_document_rows %}
+    <div class="empty" data-test-id="costs-per-document-empty">
+      <strong>No per-document calls recorded for this month.</strong>
+    </div>
+  {% else %}
+    <table class="queue" data-test-id="costs-per-document-table">
+      <thead>
+        <tr>
+          <th scope="col">Document</th>
+          <th scope="col">Merchant</th>
+          <th scope="col">Model</th>
+          <th scope="col">Call types</th>
+          <th scope="col">Calls</th>
+          <th scope="col" style="text-align:right">Cost (USD)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in per_document_rows %}
+          <tr data-test-id="costs-per-document-row" data-document-id="{{ row.document_id or '' }}">
+            <td>
+              {% if row.document_id %}
+                <a href="/ui/documents/{{ row.document_id }}" class="mono-cell">
+                  {{ row.document_id|string|truncate(8, True, "") }}
+                </a>
+              {% else %}
+                <span class="muted">(no document)</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.merchant_id %}
+                {% set merchant_label = merchant_name_by_id.get(row.merchant_id|string) %}
+                {% if merchant_label %}
+                  <a href="/ui/merchants/{{ row.merchant_id }}">{{ merchant_label }}</a>
+                {% else %}
+                  <span class="mono-cell">{{ row.merchant_id|string|truncate(8, True, "") }}</span>
+                {% endif %}
+              {% else %}
+                <span class="muted">—</span>
+              {% endif %}
+            </td>
+            <td class="mono-cell">{{ row.model_id }}</td>
+            <td>
+              {% for ct in row.call_types %}
+                <span class="chip">{{ ct }}</span>
+              {% endfor %}
+            </td>
+            <td>{{ row.call_count }}</td>
+            <td style="text-align:right" class="mono-cell">${{ "%.2f"|format(row.total_cost_usd) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+  <h2 style="margin-top:2rem">Monthly trend — last 6 months</h2>
+  {% if not monthly_trend %}
+    <div class="empty" data-test-id="costs-monthly-trend-empty">
+      <strong>No cost history yet.</strong>
+    </div>
+  {% else %}
+    <table class="queue" data-test-id="costs-monthly-trend-table">
+      <thead>
+        <tr>
+          <th scope="col">Month</th>
+          <th scope="col">Calls</th>
+          <th scope="col" style="text-align:right">Cost (USD)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in monthly_trend %}
+          <tr data-test-id="costs-monthly-row" data-month="{{ m.month_iso }}">
+            <td>{{ m.month_iso }}</td>
+            <td>{{ m.call_count }}</td>
+            <td style="text-align:right" class="mono-cell">${{ "%.2f"|format(m.total_cost_usd) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+</section>
+{% endblock %}
