@@ -41,10 +41,65 @@ webhook-killer.
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Final
 
 from aegis.logger import get_logger
+
+# Broker-typed "Requested Amount" strings on Close commonly arrive as
+# ranges with k/K shorthand: ``30k-75k`` / ``75k-150k`` / ``110-150K``
+# (the last form has the suffix only on one side). The 2026-06-27 prod
+# audit pull showed 16 of 16 ``close.field_parse_warning`` rows in 24h
+# were range strings for the ``requested_amount`` field — the graceful
+# parser was returning None on every one, silently dropping the field
+# on every new lead. Conservative interpretation: take the LOW end of
+# the range (matches how MCA brokers quote — the merchant sees the low
+# number before underwriting trims).
+_RANGE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?P<low>\d+(?:[.]\d+)?)\s*(?P<low_k>[kKmM]?)\s*-\s*"
+    r"\d+(?:[.]\d+)?\s*(?P<high_k>[kKmM]?)\s*$"
+)
+_K_SUFFIX_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?P<n>\d+(?:[.]\d+)?)\s*(?P<unit>[kKmM])\s*$"
+)
+
+
+def _apply_unit(value: Decimal, unit: str) -> Decimal:
+    """Apply the k/m suffix multiplier (case-insensitive). Empty unit
+    returns the value unchanged."""
+    u = unit.lower()
+    if u == "k":
+        return value * Decimal("1000")
+    if u == "m":
+        return value * Decimal("1000000")
+    return value
+
+
+def _try_parse_range(cleaned: str) -> Decimal | None:
+    """Match cleaned text against the range pattern; on success return
+    the LOW end as a Decimal with the appropriate k/m multiplier
+    applied. ``30-75K`` and ``110-150K`` (suffix only on the high side)
+    inherit the unit on the low side too — the operator-intended
+    semantics. Returns None when the pattern doesn't match."""
+    m = _RANGE_PATTERN.match(cleaned)
+    if m is None:
+        return None
+    low = Decimal(m.group("low"))
+    # If either side carries a unit, both sides inherit it (operator
+    # writes ``30-75K`` and means ``30K-75K``).
+    unit = m.group("low_k") or m.group("high_k") or ""
+    return _apply_unit(low, unit)
+
+
+def _try_parse_k_suffix(cleaned: str) -> Decimal | None:
+    """Match cleaned text against the ``30k`` / ``1.5m`` single-value
+    suffix pattern. Returns the parsed Decimal or None on no match."""
+    m = _K_SUFFIX_PATTERN.match(cleaned)
+    if m is None:
+        return None
+    return _apply_unit(Decimal(m.group("n")), m.group("unit"))
+
 
 if TYPE_CHECKING:
     from aegis.audit import AuditLog
@@ -311,6 +366,15 @@ def parse_money(value: str | int | float | None) -> Decimal | None:
     cleaned = text.replace("$", "").replace(",", "").strip()
     if cleaned == "":
         raise FieldMapError(f"money value collapsed to empty after $ / comma strip: {value!r}")
+    # Broker-shorthand: ``30k-75k`` range → low end; ``30k`` suffix →
+    # 30000. Both are operator-intentional formats; raising would lose
+    # the field.
+    ranged = _try_parse_range(cleaned)
+    if ranged is not None:
+        return ranged
+    suffixed = _try_parse_k_suffix(cleaned)
+    if suffixed is not None:
+        return suffixed
     try:
         return Decimal(cleaned)
     except InvalidOperation as exc:
@@ -342,6 +406,15 @@ def parse_money_safe(
     cleaned = text.replace("$", "").replace(",", "").strip()
     if cleaned == "":
         return (None, text)
+    # Broker-shorthand ranges + k/m suffix (see parse_money for the
+    # rationale). These count as successful parses — the merchant row
+    # keeps a real number and no warning is written.
+    ranged = _try_parse_range(cleaned)
+    if ranged is not None:
+        return (ranged, None)
+    suffixed = _try_parse_k_suffix(cleaned)
+    if suffixed is not None:
+        return (suffixed, None)
     try:
         return (Decimal(cleaned), None)
     except InvalidOperation:
