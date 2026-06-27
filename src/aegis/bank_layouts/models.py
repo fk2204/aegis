@@ -9,10 +9,15 @@ the fingerprint-content contract.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# ``hints_source`` provenance (migration 079). See repository.py for
+# threshold-by-source semantics — 'auto' threshold is 1, 'manual' /
+# 'mixed' threshold is 3.
+HintsSource = Literal["auto", "manual", "mixed"]
 
 
 class _StrictModel(BaseModel):
@@ -44,10 +49,18 @@ class BankLayoutRow(_StrictModel):
     layout_fingerprint: dict[str, Any] = Field(default_factory=dict)
     successful_parses: int = Field(default=0, ge=0)
     extraction_hints: str | None = None
+    # 'auto' hints come from src/aegis/bank_layouts/auto_hints.py at the
+    # tail of every successful parse; 'manual' hints come from the
+    # operator UI or scripts/seed_bank_hints.py; 'mixed' is the upgrade
+    # the repository writes when both writers have contributed. Default
+    # 'auto' matches the migration column default — empty rows are safe
+    # because the gate also checks for non-empty hint text.
+    hints_source: HintsSource = "auto"
     last_seen: datetime | None = None
     created_at: datetime | None = None
 
 
 __all__ = [
     "BankLayoutRow",
+    "HintsSource",
 ]

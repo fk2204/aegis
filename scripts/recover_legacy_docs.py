@@ -94,7 +94,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, Final, Literal, cast
 from uuid import UUID
 
 from aegis.audit import AuditLog, SupabaseAuditLog
@@ -303,6 +303,11 @@ class _RetryHintBankLayouts:
     def get_hints(self, bank_name: str) -> str | None:
         return self._hint
 
+    def get_raw_hints(self, bank_name: str) -> str | None:
+        # Mirrors get_hints — the synthetic stub has only one hint and
+        # no threshold gate to bypass. Required by the protocol.
+        return self._hint
+
     def upsert_success(self, *, bank_name: str, fingerprint: dict[str, Any]) -> BankLayoutRow:
         # No-op: the synthetic row never leaves this object. We still
         # return a BankLayoutRow so the protocol shape matches.
@@ -315,7 +320,13 @@ class _RetryHintBankLayouts:
     def find_by_bank_name(self, bank_name: str) -> BankLayoutRow | None:
         return None
 
-    def set_hints(self, *, bank_name: str, hints: str) -> BankLayoutRow:
+    def set_hints(
+        self,
+        *,
+        bank_name: str,
+        hints: str,
+        source: Literal["auto", "manual"] = "manual",
+    ) -> BankLayoutRow:
         raise NotImplementedError("_RetryHintBankLayouts is read-only by design")
 
     def list_all(self) -> list[BankLayoutRow]:
