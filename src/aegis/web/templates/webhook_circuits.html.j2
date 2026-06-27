@@ -1,0 +1,95 @@
+{% extends "base.html.j2" %}
+{% set active = 'Admin' %}
+{% block title %}Close webhook circuits — AEGIS{% endblock %}
+
+{# Operator visibility — Close webhook circuit-breaker state.
+
+   Lists every Close lead whose consecutive-failure counter is at or
+   above ``OPEN_THRESHOLD`` (5). While open, incoming webhooks for
+   that lead are 204'd without processing so Close stops retrying.
+   The reset button clears the counter immediately and writes a
+   ``close.webhook.circuit_reset`` audit row.
+
+   Surface contract: the route populates ``rows`` (list of
+   ``(lead_id, count)`` tuples sorted by count desc), ``threshold``
+   (int — the OPEN_THRESHOLD constant), and ``redis_error`` (string
+   or None). When ``redis_error`` is set the table is empty and the
+   error banner explains.
+#}
+
+{% block deck %}
+{% set title = "Webhook circuits" %}
+{% set subtitle = "· Close webhook breaker · open at " ~ threshold ~ " consecutive failures" %}
+{% set meta %}
+  {{ rows|length }} open circuit{{ '' if rows|length == 1 else 's' }}
+{% endset %}
+{% set actions = [
+    {"label": "Audit log", "href": "/ui/admin/audit-log"},
+    {"label": "Today", "href": "/ui/"},
+] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1" data-test-id="webhook-circuits-page">
+
+  <div class="empty" role="note" style="margin-bottom:1rem">
+    <strong>Operator visibility — Close webhook circuit breaker state.</strong>
+    <span class="copy">
+      Each open circuit is a Close lead whose webhook processing has
+      failed <code>{{ threshold }}</code> times in a row. While open,
+      AEGIS short-circuits incoming receptions with <code>204</code>
+      (so Close stops the retry storm) and writes a
+      <code>close.webhook.circuit_open</code> audit row per blocked
+      reception. Resets clear the counter immediately and let the
+      next reception process normally.
+    </span>
+  </div>
+
+  {% if redis_error %}
+    <div class="empty" role="alert" data-test-id="webhook-circuits-redis-error">
+      <strong>Redis read failed.</strong>
+      <span class="copy">
+        Could not list open circuits — Redis returned
+        <code>{{ redis_error }}</code>. Operator action: verify
+        <code>systemctl is-active redis-server</code> on the box.
+      </span>
+    </div>
+  {% elif not rows %}
+    <div class="empty" data-test-id="webhook-circuits-empty">
+      <strong>No open circuits.</strong>
+      <span class="copy">
+        No Close lead has reached <code>{{ threshold }}</code>
+        consecutive webhook failures in the current retention window
+        (TTL: 1 hour from the last failure). Nothing to do.
+      </span>
+    </div>
+  {% else %}
+    <table class="queue" data-test-id="webhook-circuits-table">
+      <thead>
+        <tr>
+          <th scope="col">Close lead</th>
+          <th scope="col">Failure count</th>
+          <th scope="col" style="width:8rem">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for lead_id, count in rows %}
+          <tr data-test-id="webhook-circuit-row" data-lead-id="{{ lead_id }}">
+            <td class="mono-cell">{{ lead_id }}</td>
+            <td>{{ count }}</td>
+            <td>
+              <form method="post"
+                    action="/ui/webhooks/circuits/{{ lead_id }}/reset"
+                    data-test-id="webhook-circuit-reset-form">
+                <button type="submit" class="btn">Reset</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+</section>
+{% endblock %}

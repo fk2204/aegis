@@ -107,9 +107,9 @@ def scan_web_presence(
 
     if client is None:
         try:
-            from aegis.llm import BedrockClient
+            from aegis.ops.cost_tracking import build_cost_tracking_client
 
-            client = BedrockClient()
+            client = build_cost_tracking_client(call_type="web_presence")
         except Exception:
             _log.warning("web_presence.client_init_failed business_name=%s", name, exc_info=True)
             return WebPresenceResult()

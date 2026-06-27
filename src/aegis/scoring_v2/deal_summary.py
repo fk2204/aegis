@@ -424,9 +424,9 @@ def generate_funder_narrative(
 
     if client is None:
         try:
-            from aegis.llm import BedrockClient
+            from aegis.ops.cost_tracking import build_cost_tracking_client
 
-            client = BedrockClient()
+            client = build_cost_tracking_client(call_type="narrator")
         except Exception:
             return ""
 

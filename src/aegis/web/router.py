@@ -73,6 +73,7 @@ from aegis.web.routers import bank_layouts as _bank_layouts_routes
 from aegis.web.routers import calibration as _calibration_routes
 from aegis.web.routers import close_queue as _close_queue_routes
 from aegis.web.routers import compliance as _compliance_routes
+from aegis.web.routers import costs as _costs_routes
 from aegis.web.routers import dashboard as _dashboard_routes
 from aegis.web.routers import disclosure_events as _disclosure_events_routes
 from aegis.web.routers import documents as _documents_routes
@@ -86,6 +87,7 @@ from aegis.web.routers import shadow_review as _shadow_review_routes
 from aegis.web.routers import submissions as _submissions_routes
 from aegis.web.routers import triage as _triage_routes
 from aegis.web.routers import upload as _upload_routes
+from aegis.web.routers import webhook_circuits as _webhook_circuits_routes
 
 # Re-export so tests/test_close_queue.py keeps its
 # ``from aegis.web.router import _classify_close_pipeline_state`` import path.
@@ -121,6 +123,7 @@ router.include_router(_bank_layouts_routes.router)
 router.include_router(_calibration_routes.router)
 router.include_router(_close_queue_routes.router)
 router.include_router(_compliance_routes.router)
+router.include_router(_costs_routes.router)
 router.include_router(_dashboard_routes.router)
 router.include_router(_documents_routes.router)
 router.include_router(_funder_replies_routes.router)
@@ -134,6 +137,7 @@ router.include_router(_submissions_routes.router)
 router.include_router(_disclosure_events_routes.router)
 router.include_router(_triage_routes.router)
 router.include_router(_upload_routes.router)
+router.include_router(_webhook_circuits_routes.router)
 
 
 # R4.1 — re-exports required for `from aegis.web.router import X` callers

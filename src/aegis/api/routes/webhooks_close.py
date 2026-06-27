@@ -51,6 +51,7 @@ from aegis.api.deps import (
     get_funder_note_submission_repository,
     get_funder_repository,
     get_merchant_repository,
+    get_webhook_circuit,
 )
 from aegis.audit import AuditLog
 from aegis.close.client import CloseClient, CloseError
@@ -75,6 +76,7 @@ from aegis.logger import get_logger
 from aegis.merchants.close_context import refresh_close_context_for_merchant
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import MerchantConflictError, MerchantRepository
+from aegis.ops.webhook_circuit import WebhookCircuit
 
 router = APIRouter(prefix="/webhooks/close", tags=["webhooks"])
 
@@ -94,11 +96,16 @@ async def close_webhook(
         Depends(get_funder_note_submission_repository),
     ],
     funders: Annotated[FunderRepository, Depends(get_funder_repository)],
+    circuit: Annotated[WebhookCircuit, Depends(get_webhook_circuit)],
 ) -> None:
     raw_body = await request.body()
 
     # Stage 1 — verify signature + freshness. 401 on either fail. No body
     # parsing before this point; HMAC must compute over the raw bytes.
+    # Signature failures DO NOT trip the circuit — they indicate a key
+    # mismatch / replay, not a payload Close keeps redelivering against a
+    # lead. Lead-keyed breaker semantics depend on knowing the lead id,
+    # which we don't have yet at this stage.
     _verify_signature(request.headers, raw_body)
 
     # Stage 2 — parse JSON. 400 on malformed.
@@ -122,6 +129,32 @@ async def close_webhook(
             detail="webhook body missing 'event' object",
         )
 
+    # Stage 2.5 — circuit breaker check. After OPEN_THRESHOLD consecutive
+    # failed processings against the same Close lead the breaker opens
+    # for one hour (TTL) and short-circuits subsequent receptions with
+    # 204 so Close stops retrying. The operator clears the breaker from
+    # ``GET /ui/webhooks/circuits``. Audit row PER reception so the
+    # frequency of suppressed retries is visible in the audit feed.
+    breaker_lead_id_raw = event.get("lead_id")
+    breaker_lead_id = (
+        breaker_lead_id_raw
+        if isinstance(breaker_lead_id_raw, str) and breaker_lead_id_raw
+        else None
+    )
+    if breaker_lead_id is not None and circuit.is_open(breaker_lead_id):
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.circuit_open",
+            details={
+                "event_id": event.get("id"),
+                "subscription_id": payload.get("subscription_id"),
+                "lead_id": breaker_lead_id,
+                "object_type": event.get("object_type"),
+                "action": event.get("action"),
+            },
+        )
+        return None
+
     settings = get_settings()
     trigger_status_id = settings.close_docs_in_pre_uw_status_id
 
@@ -139,6 +172,53 @@ async def close_webhook(
         action="close.webhook.received",
         details=receipt_details,
     )
+
+    # Wrap the remaining processing so the breaker observes the result.
+    # HTTPException raised after this point counts as a failure for the
+    # lead; clean completion counts as success and resets the streak.
+    # Signature / JSON parse failures earlier are not lead-attributable
+    # and stay outside the wrap.
+    try:
+        await _process_after_receipt(
+            event=event,
+            payload=payload,
+            request=request,
+            settings=settings,
+            matches=matches,
+            merchants=merchants,
+            audit=audit,
+            close_client=close_client,
+            funder_note_subs=funder_note_subs,
+            funders=funders,
+        )
+    except HTTPException:
+        if breaker_lead_id is not None:
+            circuit.record_failure(breaker_lead_id)
+        raise
+    if breaker_lead_id is not None:
+        circuit.record_success(breaker_lead_id)
+    return None
+
+
+async def _process_after_receipt(
+    *,
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    request: Request,
+    settings: Settings,
+    matches: bool,
+    merchants: MerchantRepository,
+    audit: AuditLog,
+    close_client: CloseClient,
+    funder_note_subs: FunderNoteSubmissionRepository,
+    funders: FunderRepository,
+) -> None:
+    """Post-receipt processing — pulled out so the circuit-breaker
+    wrapper can observe normal-vs-exceptional return cleanly.
+
+    Body is the original handler from the lifecycle audit through the
+    attachment orchestration enqueue. Behavior unchanged.
+    """
 
     # Sprint 4 F3 — Close lifecycle audit + submission sync. Runs
     # alongside the Pre-UW trigger and is independent of ``matches``:
