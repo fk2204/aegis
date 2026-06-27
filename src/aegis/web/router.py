@@ -76,6 +76,7 @@ from aegis.web.routers import calibration as _calibration_routes
 from aegis.web.routers import close_queue as _close_queue_routes
 from aegis.web.routers import compliance as _compliance_routes
 from aegis.web.routers import dashboard as _dashboard_routes
+from aegis.web.routers import deal_assignments as _deal_assignment_routes
 from aegis.web.routers import disclosure_events as _disclosure_events_routes
 from aegis.web.routers import documents as _documents_routes
 from aegis.web.routers import funder_replies as _funder_replies_routes
@@ -133,6 +134,7 @@ router.include_router(_calibration_routes.router)
 router.include_router(_close_queue_routes.router)
 router.include_router(_compliance_routes.router)
 router.include_router(_dashboard_routes.router)
+router.include_router(_deal_assignment_routes.router)
 router.include_router(_documents_routes.router)
 router.include_router(_funder_replies_routes.router)
 router.include_router(_funders_routes.router)

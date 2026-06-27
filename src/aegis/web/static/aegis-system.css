@@ -855,4 +855,133 @@
 .assignment-chip:hover {
   background: color-mix(in oklch, var(--sage) 18%, var(--paper-2));
 }
+.assignment-chip--unassigned {
+  background: var(--paper-2);
+  color: var(--ink-3);
+  font-style: italic;
+  cursor: pointer;
+  border: 1px dashed var(--rule);
+}
+.assignment-chip--assigned {
+  background: color-mix(in oklch, var(--sage) 12%, var(--paper-2));
+}
+.assignment-chip__icon { opacity: 0.7; }
+.assignment-chip__name { font-weight: 500; }
+.assignment-chip__edit {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--ink-3);
+  font-size: 12px;
+  padding: 0 2px;
+}
+.assignment-chip__edit:hover { color: var(--ink-1); }
+
+/* --- ASSIGNMENT MODAL -------------------------------------------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 50;
+}
+.modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md, 6px);
+  z-index: 51;
+  min-width: 320px;
+  max-width: 480px;
+  box-shadow: 0 10px 32px rgba(0,0,0,0.18);
+}
+.modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.modal__head h3 { margin: 0; font-size: 14px; }
+.modal__close {
+  background: transparent;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: var(--ink-3);
+}
+.modal__body { padding: 12px 16px; max-height: 60vh; overflow-y: auto; }
+.modal__foot {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 10px 16px;
+  border-top: 1px solid var(--rule);
+}
+.assignment-modal__list { list-style: none; padding: 0; margin: 0; }
+.assignment-modal__row { margin-bottom: 4px; }
+.assignment-modal__pick {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  font-size: 12.5px;
+}
+.assignment-modal__pick:hover:not(:disabled) {
+  background: var(--paper-2);
+  border-color: var(--rule);
+}
+.assignment-modal__pick:disabled { opacity: 0.6; cursor: not-allowed; }
+.assignment-modal__name { font-weight: 500; }
+.assignment-modal__role { color: var(--ink-3); font-family: var(--mono); font-size: 11px; }
+.assignment-modal__current {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--sage);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* --- FILTER CHIP (merchants list "My deals") --------------------- */
+.merchants-filters { display: flex; gap: 6px; align-items: center; }
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+.filter-chip:hover { background: color-mix(in oklch, var(--sage) 8%, var(--paper-2)); }
+.filter-chip--active {
+  background: color-mix(in oklch, var(--sage) 18%, var(--paper-2));
+  border-color: var(--sage);
+  color: var(--ink-1);
+}
+.filter-chip__clear { font-size: 14px; line-height: 1; opacity: 0.7; }
+
+/* --- ASSIGNEE PILL (merchants list column) ----------------------- */
+.assignee-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: color-mix(in oklch, var(--sage) 10%, var(--paper-2));
+  color: var(--ink-2);
+  border: 1px solid var(--rule);
+}
 

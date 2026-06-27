@@ -73,6 +73,11 @@ from aegis.merchants.shadow_signals import (
     MerchantShadowSignalRepository,
     SupabaseMerchantShadowSignalRepository,
 )
+from aegis.ops.deal_assignment_repository import (
+    DealAssignmentRepository,
+    InMemoryDealAssignmentRepository,
+    SupabaseDealAssignmentRepository,
+)
 from aegis.ops.operator_repository import (
     InMemoryOperatorRepository,
     OperatorRepository,
@@ -338,6 +343,19 @@ def get_operator_repository() -> OperatorRepository:
 
 
 @lru_cache(maxsize=1)
+def get_deal_assignment_repository() -> DealAssignmentRepository:
+    """Process-wide DealAssignmentRepository (migration 076).
+
+    Powers the per-merchant assignment chip on the dossier, the
+    "My deals" filter on Today + the merchant list, and the Assignee
+    column. Same memory / supabase toggle as the other repositories.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryDealAssignmentRepository()
+    return SupabaseDealAssignmentRepository()
+
+
+@lru_cache(maxsize=1)
 def get_schema_migrations_reader() -> SchemaMigrationsReader:
     """Process-wide SchemaMigrationsReader (U32 — operator visibility).
 
@@ -379,6 +397,7 @@ def reset_dependency_caches() -> None:
     get_bank_layout_repository.cache_clear()
     get_pdf_store_repository.cache_clear()
     get_operator_repository.cache_clear()
+    get_deal_assignment_repository.cache_clear()
     get_schema_migrations_reader.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
@@ -389,6 +408,7 @@ __all__ = [
     "get_audit",
     "get_bank_layout_repository",
     "get_close_client",
+    "get_deal_assignment_repository",
     "get_deal_repository",
     "get_decision_snapshot",
     "get_disclosure_render_event_repository",

@@ -130,6 +130,15 @@
   {# split business name across two lines if it contains an obvious break word #}
   <h1 class="title">{{ merchant.business_name }}</h1>
 
+  {# Assignment chip + mount for the HTMX-injected modal. The chip is
+     rendered server-side using the `assignment_chip_assignee` context
+     value populated by the merchants router; the modal mount is empty
+     until the operator clicks the chip. #}
+  <div class="dossier-assignment-row" data-test-id="dossier-assignment-row">
+    {% include "_assignment_chip.html.j2" with context %}
+  </div>
+  <div id="assignment-modal-mount"></div>
+
   <div class="subtitle">
     {% if documents and analysis %}
       An MCA underwriting brief — {{ documents|length }} statement{{ '' if documents|length == 1 else 's' }} ({{ analysis.statement_period_start }} → {{ analysis.statement_period_end }}), {{ pattern_cards|length }} pattern finding{{ '' if pattern_cards|length == 1 else 's' }}, prepared with full source-row traceability to the underlying PDFs.

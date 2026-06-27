@@ -21,10 +21,35 @@
       <h2>All merchants</h2>
       <div class="rule"></div>
       <div class="meta">n = {{ merchants|length }}</div>
+      <div class="merchants-filters" style="margin-left:auto">
+        {# "My deals" filter chip — toggle via ?mine=1. The bare /ui/merchants
+           link clears the filter; the &mine=1 link shows only the current
+           operator's assignments. #}
+        {% if mine_only %}
+          <a href="/ui/merchants"
+             class="filter-chip filter-chip--active"
+             data-test-id="merchants-filter-clear">
+            ✓ My deals
+            <span class="filter-chip__clear" aria-label="Clear filter">×</span>
+          </a>
+        {% else %}
+          <a href="/ui/merchants?mine=1"
+             class="filter-chip"
+             data-test-id="merchants-filter-mine">
+            My deals
+          </a>
+        {% endif %}
+      </div>
     </header>
 
     {% if not merchants %}
-      <div class="empty">No merchants yet. Create one to get started.<span class="copy"><a class="btn primary" href="/ui/intake">Create</a></span></div>
+      <div class="empty">
+        {% if mine_only %}
+          No merchants assigned to you yet.<span class="copy"><a class="btn" href="/ui/merchants">See all</a></span>
+        {% else %}
+          No merchants yet. Create one to get started.<span class="copy"><a class="btn primary" href="/ui/intake">Create</a></span>
+        {% endif %}
+      </div>
     {% else %}
       <table class="queue">
         <thead>
@@ -36,6 +61,7 @@
             <th>Industry</th>
             <th class="num">FICO</th>
             <th class="num">TIB · mo</th>
+            <th>Assignee</th>
             <th>Close</th>
           </tr>
         </thead>
@@ -60,6 +86,22 @@
               <td>{{ m.industry_naics or '—' }}</td>
               <td class="mono-cell" style="text-align:right">{{ m.credit_score or '—' }}</td>
               <td class="mono-cell" style="text-align:right">{{ m.time_in_business_months or '—' }}</td>
+              <td data-test-id="merchants-list-assignee">
+                {% set assigned = assignment_map.get(m.id) %}
+                {% if assigned %}
+                  {% set assignee_op = assignee_by_id.get(assigned.operator_id) %}
+                  {% if assignee_op %}
+                    <span class="assignee-pill"
+                          title="Assigned to {{ assignee_op.display_name }}">
+                      {{ assignee_op.display_name }}
+                    </span>
+                  {% else %}
+                    <span class="mono-cell">—</span>
+                  {% endif %}
+                {% else %}
+                  <span class="mono-cell">—</span>
+                {% endif %}
+              </td>
               <td>
                 {% if m.close_lead_id %}
                   <span class="chip info">lead</span>

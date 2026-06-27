@@ -1,0 +1,34 @@
+{# Assignment chip — shown on dossier header + bulk-rendered in the
+   merchant-list Assignee column.
+
+   Context:
+     merchant_id : UUID — required (for the assign button hx-get target)
+     assignee    : Operator | None — None ⇒ "Unassigned" pill
+#}
+{% if assignee %}
+  <span class="assignment-chip assignment-chip--assigned"
+        data-test-id="assignment-chip"
+        data-operator-id="{{ assignee.id }}"
+        title="Assigned to {{ assignee.display_name }} ({{ assignee.role.value }})">
+    <span class="assignment-chip__icon" aria-hidden="true">👤</span>
+    <span class="assignment-chip__name">{{ assignee.display_name }}</span>
+    <button type="button"
+            class="assignment-chip__edit"
+            hx-get="/ui/merchants/{{ merchant_id }}/assignment-modal"
+            hx-target="#assignment-modal-mount"
+            hx-swap="innerHTML"
+            title="Reassign">
+      ⇆
+    </button>
+  </span>
+{% else %}
+  <button type="button"
+          class="assignment-chip assignment-chip--unassigned"
+          data-test-id="assignment-chip"
+          hx-get="/ui/merchants/{{ merchant_id }}/assignment-modal"
+          hx-target="#assignment-modal-mount"
+          hx-swap="innerHTML">
+    <span class="assignment-chip__icon" aria-hidden="true">+</span>
+    <span class="assignment-chip__name">Unassigned</span>
+  </button>
+{% endif %}

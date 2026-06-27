@@ -57,9 +57,7 @@ class _StubDocRepo:
     def get_analysis(self, *_: object, **__: object) -> object | None:
         return None
 
-    def get_analyses_by_document_ids(
-        self, document_ids: list[object]
-    ) -> dict[object, object]:
+    def get_analyses_by_document_ids(self, document_ids: list[object]) -> dict[object, object]:
         return {}
 
     def list_transactions(self, *_: object, **__: object) -> list[object]:
@@ -167,7 +165,10 @@ def test_flags_categorized_per_doc_not_aggregated() -> None:
         flags=["[PATTERN] wash_deposit_suspected: 2 round-trip pairs within 5 days"],
     )
     cards = _build_review_queue_cards(
-        [doc_a, doc_b], repo, _StubDocRepo(), None  # type: ignore[arg-type]
+        [doc_a, doc_b],
+        repo,
+        _StubDocRepo(),  # type: ignore[arg-type]
+        None,
     )
 
     # doc_a's card holds only stacking; doc_b's card holds only the
