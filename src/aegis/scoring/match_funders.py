@@ -68,6 +68,7 @@ from aegis.compliance.broker_compensation import (
 )
 from aegis.funders.models import FunderRow, FunderTier
 from aegis.merchants.models import MerchantRow
+from aegis.product_types import coerce_product_type
 from aegis.scoring.models import (
     EstimatedTerms,
     FunderMatch,
@@ -78,6 +79,55 @@ from aegis.scoring.models import (
 from aegis.scoring.pricing import estimate_tier_pricing
 from aegis.scoring_v2.offer import OfferRecommendation
 from aegis.scoring_v2.stips import evaluate_stips
+
+# Map free-form ``deal_types_accepted`` tokens (operator-curated, see
+# `funders.repository.py`) to the canonical ``ProductType`` literal.
+# Funders predate the Phase A product-type expansion, so the existing
+# token vocabulary is preserved verbatim; a funder qualifies for a
+# given product iff ANY of its tokens maps to that product.
+#
+# Multiple tokens can map to the same product (``term_loan`` and ``sba``
+# both → business_loan). ``mca`` is treated as ``revenue_based`` — the
+# product type Commera shipped originally.
+_DEAL_TYPE_TO_PRODUCT: Final[dict[str, str]] = {
+    "mca": "revenue_based",
+    "revenue_based": "revenue_based",
+    "rbf": "revenue_based",
+    "term_loan": "business_loan",
+    "loan": "business_loan",
+    "sba": "business_loan",
+    "business_line_of_credit": "line_of_credit",
+    "loc": "line_of_credit",
+    "line_of_credit": "line_of_credit",
+    "equipment_financing": "equipment",
+    "equipment": "equipment",
+    "invoice_factoring": "receivables",
+    "factoring": "receivables",
+    "receivables": "receivables",
+    "real_estate": "asset_based",
+    "asset_based": "asset_based",
+    "abl": "asset_based",
+}
+
+
+def _supports_product(
+    deal_types_accepted: tuple[str, ...],
+    product_type: str,
+) -> bool:
+    """Return True iff any of the funder's ``deal_types_accepted`` tokens
+    maps to ``product_type`` via ``_DEAL_TYPE_TO_PRODUCT``.
+
+    Unknown tokens contribute nothing — they don't accidentally grant
+    eligibility for a product they don't name. Empty input returns
+    False, but the caller is expected to short-circuit ``if
+    funder.deal_types_accepted:`` before calling this helper, so the
+    empty case is the "no constraint" default handled upstream.
+    """
+    for token in deal_types_accepted:
+        if _DEAL_TYPE_TO_PRODUCT.get(token.lower().strip()) == product_type:
+            return True
+    return False
+
 
 # Tier → position along the funder's pricing range, 0.0 = best end (low
 # factor / low holdback, merchant-favorable), 1.0 = worst end (high
@@ -310,6 +360,27 @@ def match_funder(
     """
     if not funder.active:
         return None
+
+    # Product-type filter (no new column — uses existing
+    # ``deal_types_accepted``). When the merchant has an EXPLICIT
+    # ``product_type`` AND the funder has a non-empty
+    # ``deal_types_accepted``, hard-exit if no token maps to the
+    # merchant's product per ``_DEAL_TYPE_TO_PRODUCT``. Skip BEFORE
+    # criteria evaluation so an Equipment funder never surfaces on a
+    # revenue-based dossier even with a high score.
+    #
+    # IMPORTANT: legacy callers (merchant=None OR no product_type
+    # attribute) get NO new filtering — the existing criteria-level
+    # ``deal_types_accepted`` hard-fail (further down) is the
+    # backwards-compatible path. Only merchants with an
+    # operator-or-Close-set product_type opt into the early-exit
+    # filter. This avoids regressing every existing call site that
+    # passes ``deal.deal_type`` through the criteria path.
+    explicit_product_type = getattr(merchant, "product_type", None)
+    if explicit_product_type and funder.deal_types_accepted:
+        product_type = coerce_product_type(explicit_product_type)
+        if not _supports_product(funder.deal_types_accepted, product_type):
+            return None
 
     hard: list[str] = []
     soft: list[str] = []

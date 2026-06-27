@@ -171,6 +171,13 @@ class FunderRow(_StrictModel):
     funding_velocity_days: Annotated[int, Field(ge=0)] | None = None
     preferred_states: tuple[str, ...] = ()
 
+    # Note: product-type filtering for the multi-product (Phase A) work
+    # reads from ``deal_types_accepted`` above — see
+    # ``aegis.scoring.match_funders._supports_product`` for the mapping
+    # from existing free-form tokens (``mca``, ``term_loan``,
+    # ``equipment_financing``, etc) to the ``ProductType`` literal.
+    # No separate ``supported_products`` column is needed.
+
     # Provenance — when did the latest guideline extraction run, and
     # against which PDF? Lets us re-run extraction only when the funder
     # publishes a new criteria sheet.

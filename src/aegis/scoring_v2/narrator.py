@@ -46,13 +46,14 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Literal, Protocol
+from typing import Any, Final, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from aegis.logger import get_logger
 from aegis.merchants.models import MerchantRow
+from aegis.product_types import ProductType, coerce_product_type
 from aegis.scoring.models import ScoreResult
 from aegis.scoring_v2.balance_health import BalanceHealthAggregation
 from aegis.scoring_v2.mca_stack import MCAStackAggregation
@@ -248,7 +249,58 @@ class _NarratorClient(Protocol):
 # ---------------------------------------------------------------------------
 # Prompt construction.
 
-_SYSTEM_PROMPT = """You are writing a senior underwriter's verbal handoff for the operator at Commera Capital, an MCA broker. The operator already saw the raw numbers; your job is to translate them into "should I submit this."
+# Product-specific framing appended to ``_SYSTEM_PROMPT_BASE`` per
+# merchant.product_type. Each block tells the narrator which financial
+# levers to emphasise so the operator-facing summary lines up with the
+# actual product being underwritten. Frames are instructions to the
+# narrator — they do NOT change the routing decision or the structured
+# output schema; the existing tool_use envelope is unchanged.
+#
+# Keys are exhaustive over ``ProductType``. Unknown product types fall
+# back to ``revenue_based`` via ``coerce_product_type`` so the operator
+# always sees an explicit framing block.
+_PRODUCT_FRAMING: Final[dict[ProductType, str]] = {
+    "revenue_based": (
+        "# Revenue-based financing\n"
+        "Standard MCA framing — holdback %, factor rate, payback days, "
+        "true revenue coverage. Operator is shopping the deal to MCA "
+        "funders."
+    ),
+    "business_loan": (
+        "# Term business loan\n"
+        "Focus on DSCR (debt service coverage ratio), monthly payment "
+        "coverage relative to true revenue, credit profile, and time in "
+        "business. Avoid MCA-specific language like 'holdback' or "
+        "'factor'. Use 'monthly payment' and 'APR' terminology."
+    ),
+    "line_of_credit": (
+        "# Line of credit\n"
+        "Focus on revolving utilization patterns, seasonal cash flow "
+        "swings, and available capacity for draw-and-paydown cycles. "
+        "Frame as a working-capital tool, not a lump-sum advance."
+    ),
+    "equipment": (
+        "# Equipment finance\n"
+        "Focus on asset coverage ratio (financed amount vs collateral "
+        "value), useful-life match between term and equipment, and "
+        "monthly payment affordability. Mention the down payment "
+        "requirement and collateral attachment."
+    ),
+    "asset_based": (
+        "# Asset-based lending\n"
+        "Focus on collateral quality (A/R + inventory), accounts-"
+        "receivable concentration risk, debtor mix, and advance-rate "
+        "sustainability. Mention borrowing-base mechanics."
+    ),
+    "receivables": (
+        "# Receivables factoring\n"
+        "Focus on invoice quality, debtor creditworthiness (factor's "
+        "true credit risk), aging distribution (90+ day pile), and "
+        "dispute rate. Mention notification-style factoring posture."
+    ),
+}
+
+_SYSTEM_PROMPT_BASE = """You are writing a senior underwriter's verbal handoff for the operator at Commera Capital, an MCA broker. The operator already saw the raw numbers; your job is to translate them into "should I submit this."
 
 You are writing for the operator, NOT for the merchant, NOT for the funder. Internal-only.
 
@@ -268,6 +320,30 @@ Action selection logic (apply in order):
 - Track A integrity verdict in {clean} AND Track B band in {low, moderate} AND no missing docs → submit_now. next_step references the top funder match and the suggested terms.
 - Track B band == "elevated" or any unresolved concern → call_first.
 """
+
+
+def _build_system_prompt(product_type: ProductType) -> str:
+    """Compose the system prompt with product-specific framing appended.
+
+    The base prompt is product-agnostic (action selection logic, the
+    "no hedging" rules, the tool-use directive). The framing block tells
+    the narrator which axes to emphasise for the merchant's actual
+    product. Single Bedrock call shape — no schema change, no extra
+    round-trip; the narrator just emphasises the right financial levers
+    in the prose output.
+
+    ``product_type`` is coerced via ``coerce_product_type`` so callers
+    that pass an unknown string (the field is wired through PA A7;
+    legacy rows pre-migration 080 may carry NULL) land on the
+    ``revenue_based`` framing rather than a missing block.
+    """
+    framing = _PRODUCT_FRAMING[coerce_product_type(product_type)]
+    return f"{_SYSTEM_PROMPT_BASE}\n\n{framing}\n"
+
+
+# Kept for backwards-compat with any test or call site that imports the
+# constant directly. New code should call ``_build_system_prompt``.
+_SYSTEM_PROMPT = _build_system_prompt("revenue_based")
 
 
 def _money(value: Decimal | None) -> str | None:
@@ -479,9 +555,16 @@ def narrate_deal(
         + json.dumps(user_payload, sort_keys=True)
     )
 
+    # Read product_type defensively — PA A7 ships the canonical field
+    # on ``MerchantRow``; until that merges, legacy rows return None
+    # via ``getattr`` and ``coerce_product_type`` lands on
+    # ``revenue_based`` (Commera's default, the historical assumption).
+    product_type = coerce_product_type(getattr(ctx.merchant, "product_type", None))
+    system_prompt = _build_system_prompt(product_type)
+
     try:
         tool_input, model_id = bedrock.invoke_tool_json(
-            system_prompt=_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_prompt,
             tool_name=_NARRATOR_TOOL_NAME,
             tool_schema=_NARRATOR_TOOL_SCHEMA,

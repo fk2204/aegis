@@ -1536,10 +1536,24 @@
        direct linking. Each card carries its own Submit button posting
        to /submit-to-funder with the funder_id form field; an HTMX swap
        converts the button to a "Submitted ✓" chip on success. #}
+    {# PA A9 — product chip. Reads ``merchant.product_type``
+       defensively via Jinja's missing-attr-is-falsy semantics; legacy
+       rows pre-PA-A7 land on "revenue_based" and render the default
+       label. The chip uses the existing system-chip CSS class. #}
+    {% set _product_labels = {
+      "revenue_based": "Revenue-based",
+      "business_loan": "Business loan",
+      "line_of_credit": "Line of credit",
+      "equipment": "Equipment finance",
+      "asset_based": "Asset-based",
+      "receivables": "Receivables factoring",
+    } %}
+    {% set _product_type = (merchant.product_type|string) if merchant.product_type else "revenue_based" %}
     <section id="routing" class="section" data-test-id="dossier-funder-matching">
       <header>
         <span class="n">§ 4</span>
         <h2>Funder <em>matching</em></h2>
+        <span class="chip" data-test-id="dossier-funder-matching-product-chip">Product: {{ _product_labels.get(_product_type, "Revenue-based") }}</span>
         <span class="footnote">
           {% if matched_funders %}{{ matched_funders|length }} active funder{{ '' if matched_funders|length == 1 else 's' }} considered{% else %}no matches yet{% endif %}
           &middot;
