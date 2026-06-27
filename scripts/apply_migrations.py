@@ -675,6 +675,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='bank_layouts' "
         "AND column_name='hints_source'"
     ),
+    "082_decisions_analysis_fk_cascade.sql": (
+        # 082 swaps ``decisions_analysis_id_fkey`` from RESTRICT to
+        # CASCADE so reparse-driven analyses upserts no longer abort
+        # on the FK. Probe ``pg_constraint`` directly — the
+        # ``information_schema`` view doesn't expose ON DELETE
+        # semantics, so we read ``confdeltype`` (``'c'`` = CASCADE,
+        # ``'r'`` = RESTRICT). Migration 082 succeeded iff the value
+        # is ``'c'``.
+        "SELECT 1 FROM pg_constraint WHERE conname='decisions_analysis_id_fkey' AND confdeltype='c'"
+    ),
 }
 
 
