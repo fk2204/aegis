@@ -54,6 +54,45 @@ sudo systemctl stop aegis-worker
 sudo systemctl start aegis-worker
 ```
 
+### Redis AOF persistence (one-time setup)
+
+AEGIS uses Redis for arq queue state (parse jobs, cron schedules, webhook
+circuit-breaker state). Without AOF persistence, a Redis OOM-kill or
+`systemctl restart redis` drops the entire queue + cron schedule —
+in-flight jobs disappear and the next firing slot resets to "whenever
+the cron's normal schedule next lands."
+
+AOF (`appendonly yes` + `appendfsync everysec`) brings the worst-case
+data loss on a Redis crash down to ~1 second of writes. The cost is
+trivial for AEGIS's workload (low write rate, small AOF file).
+
+One-time setup on the prod box:
+
+```bash
+ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 \
+  "redis-cli config set appendonly yes && \
+   redis-cli config set appendfsync everysec && \
+   redis-cli config rewrite"
+```
+
+`config rewrite` persists the change to `/etc/redis/redis.conf` so it
+survives `systemctl restart redis` and host reboots.
+
+Verify after the run:
+
+```bash
+redis-cli config get appendonly   # → "appendonly\nyes"
+redis-cli config get appendfsync  # → "appendfsync\neverysec"
+```
+
+If a future Redis upgrade or fresh provisioning loses the setting,
+re-run the same `config set` + `config rewrite` sequence — idempotent.
+
+(Cost rationale: enabled 2026-06-27 after the cron audit discovered
+the next-firing-slot reset would have been masked by Redis outages.
+See `tests/workers/test_cron_registrations.py` for the registration
+regression guard that catches the inverse failure mode.)
+
 ### One-time: sync `SuccessExitStatus=143` after this commit lands
 
 The repo's `deploy/aegis-web.service` + `deploy/aegis-worker.service`
