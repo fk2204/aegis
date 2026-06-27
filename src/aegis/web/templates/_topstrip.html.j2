@@ -38,6 +38,7 @@
   <div class="links">
     {% set _active = active|default('') %}
     <a href="/ui/" {% if _active == 'Today' %}class="is-active"{% endif %}>Today</a>
+    <a href="/ui/pipeline" {% if _active == 'Pipeline' %}class="is-active"{% endif %} data-test-id="nav-pipeline">Pipeline</a>
 
     <div class="nav-group">
       <a href="/ui/deals" {% if _active == 'Deals' %}class="is-active"{% endif %} aria-haspopup="true">Deals</a>

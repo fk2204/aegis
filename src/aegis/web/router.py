@@ -86,6 +86,7 @@ from aegis.web.routers import funders as _funders_routes
 from aegis.web.routers import intake as _intake_routes
 from aegis.web.routers import merchants as _merchants_routes
 from aegis.web.routers import notifications as _notification_routes
+from aegis.web.routers import pipeline as _pipeline_routes
 from aegis.web.routers import portfolio as _portfolio_routes
 from aegis.web.routers import renewals as _renewals_routes
 from aegis.web.routers import shadow_review as _shadow_review_routes
@@ -147,6 +148,7 @@ router.include_router(_funders_routes.router)
 router.include_router(_intake_routes.router)
 router.include_router(_merchants_routes.router)
 router.include_router(_notification_routes.router)
+router.include_router(_pipeline_routes.router)
 router.include_router(_renewals_routes.router)
 router.include_router(_portfolio_routes.router)
 router.include_router(_shadow_review_routes.router)

@@ -1,0 +1,19 @@
+{% extends "base.html.j2" %}
+{% set active = "Pipeline" %}
+
+{% block title %}Pipeline — AEGIS{% endblock %}
+
+{% block deck %}
+<div class="deck" style="padding:16px 24px 0">
+  <h1 style="margin:0;font-size:20px">Deal pipeline</h1>
+  <p class="muted" style="margin:4px 0 0;font-size:12px">
+    4-stage view of merchants moving from upload to outcome. Auto-refreshes every 60 seconds.
+  </p>
+</div>
+{% endblock %}
+
+{% block body %}
+<main style="padding:0 24px 24px" data-test-id="pipeline-page">
+  {% include "_pipeline_column.html.j2" %}
+</main>
+{% endblock %}
