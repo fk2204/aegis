@@ -58,6 +58,10 @@ from typing import Any, Final, cast
 from uuid import UUID
 
 from aegis.audit import AuditLog, SupabaseAuditLog
+from aegis.bank_layouts.auto_hints import (
+    generate_hints_from_parse_result,
+    merge_hints,
+)
 from aegis.bank_layouts.repository import (
     HINTS_AVAILABLE_THRESHOLD,
     BankLayoutWriteError,
@@ -475,6 +479,197 @@ def _bump_parse_count_one(
     )
 
 
+def _generate_from_existing(
+    *,
+    repo: SupabaseBankLayoutRepository,
+    audit: AuditLog,
+    apply_writes: bool,
+    batch_size: int = 5,
+    sleep_between_batches_s: float = 1.0,
+) -> list[SeedOutcome]:
+    """Retroactive auto-hint generation across the proceed-doc corpus.
+
+    Walks every doc at ``parse_status='proceed'`` with a non-null
+    ``storage_path`` (sealed pdf_store blob present), decrypts page 1
+    via ``SupabasePdfStoreRepository.fetch_plaintext``, calls
+    ``generate_hints_from_parse_result``, and writes auto hints (merged
+    with any existing hints) for the doc's bank.
+
+    Doc-side caveats:
+      * Multi-doc-per-bank: the first doc seen per bank yields the
+        initial hint. Subsequent docs MERGE — ``merge_hints``
+        deduplicates so repeated observations don't bloat the row.
+      * ``parse_result`` shim — the script doesn't re-run the pipeline
+        on each doc (too expensive), so the ``running_balance`` signal
+        is inferred from the analyses table's per-doc transaction count
+        instead. When that signal isn't available the auto-hint just
+        omits the running-balance sentence.
+      * Banks without any proceed doc never appear here. That's
+        intentional — a bank with only failed parses has no
+        confirmed-correct extraction to derive hints from.
+
+    Returns one SeedOutcome per bank (not per doc) so the operator-
+    facing summary is bank-level. Batching paces the pdf_store fetch
+    path; we throttle by docs-processed not banks.
+    """
+    import asyncio
+
+    import pymupdf
+
+    from aegis.pdf_store import SupabasePdfStoreRepository
+
+    pdf_store = SupabasePdfStoreRepository()
+
+    # Pull docs in id order so the batching is deterministic; LIMIT
+    # high enough to cover the current prod corpus (≤500 docs).
+    rows_resp = (
+        get_supabase()
+        .table("documents")
+        .select("id,merchant_id,original_filename,storage_path,parse_status")
+        .eq("parse_status", "proceed")
+        .not_.is_("storage_path", "null")
+        .order("id")
+        .execute()
+    )
+    docs = cast(list[dict[str, Any]], rows_resp.data or [])
+    if not docs:
+        return [
+            SeedOutcome(
+                bank_name="(no proceed docs found)",
+                hint_excerpt="",
+                action="set",
+                detail="DRY-RUN — no candidates to process",
+            )
+        ]
+
+    # Bank-name lookup is via the analyses table since documents has no
+    # bank_name column (confirmed on prod 2026-06-27).
+    analysis_resp = get_supabase().table("analyses").select("document_id,bank_name").execute()
+    doc_to_bank: dict[str, str] = {}
+    for a in cast(list[dict[str, Any]], analysis_resp.data or []):
+        bank = a.get("bank_name")
+        doc_id = a.get("document_id")
+        if isinstance(bank, str) and bank.strip() and isinstance(doc_id, str):
+            doc_to_bank[doc_id] = bank.strip()
+
+    # Per-bank accumulator: hint text built by merging every successive
+    # observation. Audit one row per bank when we actually write.
+    bank_pending_hint: dict[str, str] = {}
+    bank_doc_count: dict[str, int] = {}
+
+    for batch_idx in range(0, len(docs), batch_size):
+        batch = docs[batch_idx : batch_idx + batch_size]
+        print(
+            f"# generate-from-existing batch {batch_idx // batch_size + 1} ({len(batch)} docs)",
+            file=sys.stderr,
+        )
+        for doc in batch:
+            doc_id = str(doc.get("id") or "")
+            bank_name = doc_to_bank.get(doc_id)
+            if not bank_name:
+                continue  # no analysis / no bank name → skip
+            try:
+                plaintext = asyncio.run(asyncio.to_thread(pdf_store.fetch_plaintext, UUID(doc_id)))
+            except Exception as exc:
+                print(
+                    f"  doc={doc_id[:8]} pdf_store fetch failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            try:
+                with pymupdf.open(  # type: ignore[no-untyped-call]
+                    stream=plaintext, filetype="pdf"
+                ) as pdf:
+                    first_page_text = pdf.load_page(0).get_text("text") or ""
+            except Exception as exc:
+                print(
+                    f"  doc={doc_id[:8]} page-1 extraction failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            # Minimal parse_result shim: no classified transactions
+            # available retroactively (we don't re-run the pipeline),
+            # so the running-balance signal is dropped — the generator
+            # gracefully omits that sentence when no transactions are
+            # found in the shim.
+            from types import SimpleNamespace
+
+            shim = SimpleNamespace(
+                classified=SimpleNamespace(transactions=[]),
+                extraction=None,
+            )
+            new_hint = generate_hints_from_parse_result(
+                bank_name=bank_name,
+                first_page_text=first_page_text,
+                parse_result=shim,
+            )
+            if not new_hint:
+                continue
+            current = bank_pending_hint.get(bank_name)
+            bank_pending_hint[bank_name] = merge_hints(current, new_hint)
+            bank_doc_count[bank_name] = bank_doc_count.get(bank_name, 0) + 1
+        # Inter-batch pause unless we're on the last batch.
+        if batch_idx + batch_size < len(docs):
+            import time
+
+            time.sleep(sleep_between_batches_s)
+
+    # Convert per-bank accumulator into SeedOutcomes — one per bank.
+    outcomes: list[SeedOutcome] = []
+    for bank_name, hint_text in sorted(bank_pending_hint.items()):
+        excerpt = _excerpt(hint_text)
+        doc_count = bank_doc_count.get(bank_name, 0)
+        if not apply_writes:
+            outcomes.append(
+                SeedOutcome(
+                    bank_name=bank_name,
+                    hint_excerpt=excerpt,
+                    action="would_set",
+                    detail=(
+                        f"DRY-RUN — would set source='auto' hints from {doc_count} doc(s), merged"
+                    ),
+                )
+            )
+            continue
+        try:
+            row = repo.set_hints(bank_name=bank_name, hints=hint_text, source="auto")
+        except BankLayoutWriteError as exc:
+            outcomes.append(
+                SeedOutcome(
+                    bank_name=bank_name,
+                    hint_excerpt=excerpt,
+                    action="error",
+                    detail=f"set_hints failed: {type(exc).__name__}: {exc}",
+                )
+            )
+            continue
+        audit.record(
+            actor=_ACTOR,
+            action="bank_layouts.auto_hints_generated",
+            subject_type="bank_layout",
+            subject_id=row.id,
+            details={
+                "bank_name": bank_name,
+                "source_doc_count": doc_count,
+                "hint_length": len(hint_text),
+                "hint_excerpt": excerpt,
+                "post_write_source": row.hints_source,
+            },
+        )
+        outcomes.append(
+            SeedOutcome(
+                bank_name=bank_name,
+                hint_excerpt=excerpt,
+                action="set",
+                detail=(
+                    f"auto-hints written from {doc_count} doc(s); "
+                    f"row id={row.id} source={row.hints_source}"
+                ),
+            )
+        )
+    return outcomes
+
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
@@ -524,11 +719,29 @@ def _parse_args() -> argparse.Namespace:
             "target) — never lowers an already-higher count."
         ),
     )
+    p.add_argument(
+        "--generate-from-existing",
+        action="store_true",
+        help=(
+            "Retroactive auto-hint generation: scan every doc at "
+            "parse_status='proceed' with a sealed pdf_store blob, "
+            "decrypt page 1, derive auto-hints via "
+            "aegis.bank_layouts.auto_hints, and write source='auto' hints "
+            "for any bank that lacks them. Batched 5 docs per round with "
+            "1s sleep between rounds to spare the pdf_store fetch path. "
+            "DRY-RUN unless --apply is also passed. Banks with existing "
+            "manual hints have the auto observations MERGED in "
+            "(upgrades the row's hints_source to 'mixed' under the "
+            "repository's normal promotion rules)."
+        ),
+    )
     args = p.parse_args()
     if args.bump_parse_count and not args.bank_name:
         p.error("--bump-parse-count requires --bank-name")
     if args.bump_parse_count and args.target_count < 1:
         p.error("--target-count must be a positive integer")
+    if args.bump_parse_count and args.generate_from_existing:
+        p.error("--bump-parse-count and --generate-from-existing are mutually exclusive")
     return args
 
 
@@ -551,6 +764,14 @@ def main() -> int:
             _bump_parse_count_one(
                 bank_name=args.bank_name,
                 target_count=args.target_count,
+                repo=repo,
+                audit=audit,
+                apply_writes=args.apply,
+            )
+        )
+    elif args.generate_from_existing:
+        outcomes.extend(
+            _generate_from_existing(
                 repo=repo,
                 audit=audit,
                 apply_writes=args.apply,

@@ -29,21 +29,31 @@ than failing the parse: learning is best-effort, not a parse gate.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, Literal, Protocol, cast
 from uuid import UUID
 
-from aegis.bank_layouts.models import BankLayoutRow
+from aegis.bank_layouts.models import BankLayoutRow, HintsSource
 from aegis.db import get_supabase
 from aegis.logger import get_logger
 
 _log = get_logger(__name__)
 
 
-# Threshold for ``get_hints``: a bank needs at least this many successful
-# parses before its operator-authored hints feed the extraction prompt.
-# Defined as a module constant so a future tune (e.g. operator wants
-# hints to take effect after 5 parses) is one edit, not a code search.
+# Threshold for ``get_hints`` when ``hints_source`` is 'manual' or 'mixed'
+# (operator-authored content present). A bank needs at least this many
+# successful parses before its hints feed the extraction prompt. Higher
+# than the auto threshold because manual hints are the operator's
+# considered take on a bank's layout — we want a few successful parses
+# of evidence before they steer Bedrock's prompt.
 HINTS_AVAILABLE_THRESHOLD: Final[int] = 3
+
+# Threshold for ``get_hints`` when ``hints_source`` is 'auto'. Auto hints
+# are derived deterministically from a single successful parse by
+# ``auto_hints.generate_hints_from_parse_result`` — there is no
+# operator-judgment risk to amortise across multiple parses. Injecting
+# on the second-ever parse of a new bank is the whole point: the first
+# parse pays the no-hints tax, every subsequent parse benefits.
+AUTO_HINTS_AVAILABLE_THRESHOLD: Final[int] = 1
 
 
 class BankLayoutWriteError(RuntimeError):
@@ -62,9 +72,30 @@ class BankLayoutRepository(Protocol):
 
     def get_hints(self, bank_name: str) -> str | None: ...
 
-    def set_hints(self, *, bank_name: str, hints: str) -> BankLayoutRow: ...
+    def get_raw_hints(self, bank_name: str) -> str | None: ...
+
+    def set_hints(
+        self,
+        *,
+        bank_name: str,
+        hints: str,
+        source: Literal["auto", "manual"] = "manual",
+    ) -> BankLayoutRow: ...
 
     def list_all(self) -> list[BankLayoutRow]: ...
+
+
+def _threshold_for_source(source: HintsSource) -> int:
+    """Return the successful-parses threshold for a given hints source.
+
+    'auto' hints inject on the second parse (threshold 1); 'manual' and
+    'mixed' hints inject only after ``HINTS_AVAILABLE_THRESHOLD`` parses
+    so a stale or wrong manual edit doesn't immediately steer the
+    extraction prompt on a sparse-evidence bank.
+    """
+    if source == "auto":
+        return AUTO_HINTS_AVAILABLE_THRESHOLD
+    return HINTS_AVAILABLE_THRESHOLD
 
 
 def _hints_available(row: BankLayoutRow) -> bool:
@@ -75,13 +106,30 @@ def _hints_available(row: BankLayoutRow) -> bool:
     Empty / whitespace-only hints are treated as absent regardless of
     parse count — a primed row with parses=0 trivially fails the gate;
     a parsed row with empty hints would otherwise inject a useless
-    header into the prompt.
+    header into the prompt. The threshold depends on ``hints_source``
+    per the docstring on the threshold constants above.
     """
-    if row.successful_parses < HINTS_AVAILABLE_THRESHOLD:
+    if row.successful_parses < _threshold_for_source(row.hints_source):
         return False
     if row.extraction_hints is None:
         return False
     return bool(row.extraction_hints.strip())
+
+
+def _upgrade_source(existing: HintsSource, incoming: Literal["auto", "manual"]) -> HintsSource:
+    """Compute the new ``hints_source`` value after a ``set_hints`` write.
+
+    When both writers have contributed to a row (auto followed by
+    manual, or manual followed by auto), the row's source upgrades to
+    'mixed' so the conservative (manual) threshold gates the read. The
+    fresh-row case (existing == incoming) preserves the incoming source.
+    """
+    if existing == incoming:
+        return existing
+    if existing == "mixed":
+        return "mixed"
+    # existing != incoming and existing is not 'mixed' → promote.
+    return "mixed"
 
 
 class InMemoryBankLayoutRepository:
@@ -140,7 +188,26 @@ class InMemoryBankLayoutRepository:
         # branching on a state the gate has already eliminated.
         return row.extraction_hints or None
 
-    def set_hints(self, *, bank_name: str, hints: str) -> BankLayoutRow:
+    def get_raw_hints(self, bank_name: str) -> str | None:
+        """Return ``extraction_hints`` regardless of threshold.
+
+        Used by the auto-hint merge path in ``parser/pipeline.py``: the
+        merger needs the current text to deduplicate against, even when
+        the threshold gate hasn't tripped yet (e.g. a brand-new bank on
+        its first parse).
+        """
+        row = self.find_by_bank_name(bank_name)
+        if row is None:
+            return None
+        return row.extraction_hints
+
+    def set_hints(
+        self,
+        *,
+        bank_name: str,
+        hints: str,
+        source: Literal["auto", "manual"] = "manual",
+    ) -> BankLayoutRow:
         key = bank_name.strip().lower()
         # Empty string clears the hints; mirror the Supabase backend.
         normalized = hints.strip() or None
@@ -150,12 +217,16 @@ class InMemoryBankLayoutRepository:
             row = BankLayoutRow(
                 bank_name=bank_name.strip(),
                 extraction_hints=normalized,
+                hints_source=source,
                 successful_parses=0,
                 created_at=now,
             )
             self._by_lower[key] = row
             return row
-        updated = current.model_copy(update={"extraction_hints": normalized})
+        new_source = _upgrade_source(current.hints_source, source)
+        updated = current.model_copy(
+            update={"extraction_hints": normalized, "hints_source": new_source}
+        )
         self._by_lower[key] = updated
         return updated
 
@@ -268,13 +339,31 @@ class SupabaseBankLayoutRepository:
         # ``_hints_available`` already verified non-None + non-empty.
         return row.extraction_hints or None
 
-    def set_hints(self, *, bank_name: str, hints: str) -> BankLayoutRow:
+    def get_raw_hints(self, bank_name: str) -> str | None:
+        """Return ``extraction_hints`` regardless of threshold.
+
+        Counterpart to ``InMemoryBankLayoutRepository.get_raw_hints``;
+        see that method's docstring for the use case.
+        """
+        row = self.find_by_bank_name(bank_name)
+        if row is None:
+            return None
+        return row.extraction_hints
+
+    def set_hints(
+        self,
+        *,
+        bank_name: str,
+        hints: str,
+        source: Literal["auto", "manual"] = "manual",
+    ) -> BankLayoutRow:
         normalized: str | None = hints.strip() or None
         existing = self.find_by_bank_name(bank_name)
         if existing is None:
             payload: dict[str, Any] = {
                 "bank_name": bank_name.strip(),
                 "extraction_hints": normalized,
+                "hints_source": source,
                 "successful_parses": 0,
             }
             try:
@@ -292,11 +381,12 @@ class SupabaseBankLayoutRepository:
                 raise BankLayoutWriteError("supabase insert returned no row for bank_layouts")
             return _row_to_bank_layout(inserted[0])
 
+        new_source = _upgrade_source(existing.hints_source, source)
         try:
             result = (
                 get_supabase()
                 .table("bank_layouts")
-                .update({"extraction_hints": normalized})
+                .update({"extraction_hints": normalized, "hints_source": new_source})
                 .eq("id", str(existing.id))
                 .execute()
             )
@@ -351,12 +441,22 @@ def _row_to_bank_layout(row: dict[str, Any]) -> BankLayoutRow:
         raise BankLayoutWriteError(
             f"bank_layouts row has non-dict layout_fingerprint: {type(fingerprint_raw).__name__}"
         )
+    # ``hints_source`` defaults to 'auto' for pre-mig-079 rows that
+    # somehow land here mid-deploy (the migration backfill catches all
+    # of them; this default is defence-in-depth).
+    raw_source = row.get("hints_source") or "auto"
+    if raw_source not in ("auto", "manual", "mixed"):
+        raise BankLayoutWriteError(
+            f"bank_layouts row has unrecognised hints_source: {raw_source!r}"
+        )
+    hints_source: HintsSource = cast(HintsSource, raw_source)
     return BankLayoutRow(
         id=UUID(row["id"]),
         bank_name=row["bank_name"],
         layout_fingerprint=dict(fingerprint_raw),
         successful_parses=int(row.get("successful_parses") or 0),
         extraction_hints=row.get("extraction_hints"),
+        hints_source=hints_source,
         last_seen=_parse_dt(row.get("last_seen")),
         created_at=_parse_dt(row.get("created_at")),
     )
@@ -374,6 +474,7 @@ def _parse_dt(value: object) -> datetime | None:
 
 
 __all__ = [
+    "AUTO_HINTS_AVAILABLE_THRESHOLD",
     "HINTS_AVAILABLE_THRESHOLD",
     "BankLayoutRepository",
     "BankLayoutWriteError",

@@ -39,9 +39,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from aegis.bank_layouts import BankLayoutRepository, BankLayoutWriteError
+from aegis.bank_layouts.auto_hints import (
+    generate_hints_from_parse_result,
+    merge_hints,
+)
 from aegis.config import get_settings
 from aegis.llm import LLMClient
 from aegis.logger import get_logger
@@ -673,6 +677,50 @@ def run_pipeline(
                     "parser.bank_layout.upsert_failed bank_name=%s",
                     parsed_bank_name,
                 )
+            # Auto-hint generation — runs after upsert_success so the
+            # bumped successful_parses count is visible to any caller
+            # querying mid-flight. Best-effort: a generator exception or
+            # a set_hints failure does NOT fail the parse (the learning
+            # surface is opportunistic, not load-bearing). Deliberately
+            # skipped when the LLM extracted no bank name; merging into
+            # an unkeyed row is meaningless.
+            try:
+                first_page_text = _extract_first_page_text(pdf_path)
+                # Duck-typed parse_result shim — ``auto_hints`` consumes
+                # ``parse_result.classified.transactions`` via attribute
+                # walk so any object with that path works. Avoids the
+                # circular import of ``PipelineResult`` here.
+                from types import SimpleNamespace
+
+                parse_result_shim = SimpleNamespace(
+                    extraction=extraction,
+                    classified=SimpleNamespace(transactions=classified),
+                )
+                auto_hint = generate_hints_from_parse_result(
+                    bank_name=parsed_bank_name,
+                    first_page_text=first_page_text,
+                    parse_result=parse_result_shim,
+                )
+                if auto_hint:
+                    existing_raw = bank_layouts.get_raw_hints(parsed_bank_name)
+                    merged = merge_hints(existing_raw, auto_hint)
+                    if merged != (existing_raw or ""):
+                        bank_layouts.set_hints(
+                            bank_name=parsed_bank_name,
+                            hints=merged,
+                            source="auto",
+                        )
+            except Exception as exc:
+                # Auto-hint write failures are best-effort — log + move
+                # on. The next parse will retry the generation. Broad
+                # except is intentional: a regex compilation issue, a
+                # pymupdf decode error, or a Supabase write failure all
+                # land here without breaking the parse.
+                _log.warning(
+                    "parser.bank_layout.auto_hint_failed bank_name=%s error=%s",
+                    parsed_bank_name,
+                    type(exc).__name__,
+                )
 
     return PipelineResult(
         parse_status=parse_status,
@@ -812,6 +860,30 @@ def _read_pdf(pdf_path: str) -> bytes:
     from pathlib import Path
 
     return Path(pdf_path).read_bytes()
+
+
+def _extract_first_page_text(pdf_path: str) -> str:
+    """Return the first-page text layer (empty string on any failure).
+
+    Used by the auto-hint generator at the tail of every successful
+    parse. The vision-routed branch (image-only PDFs) returns empty
+    string here too — auto-hints describe text-layer structure that
+    the vision model doesn't surface the same way, so returning empty
+    correctly short-circuits the auto-hint generator's pattern probes.
+    Best-effort: any pymupdf exception (encrypted PDF, malformed
+    stream) returns empty string. The caller (auto-hint generation
+    block in ``run_pipeline``) wraps this in its own try/except too.
+    """
+    try:
+        import pymupdf
+
+        with pymupdf.open(pdf_path) as doc:  # type: ignore[no-untyped-call]
+            if doc.page_count == 0:
+                return ""
+            text = doc.load_page(0).get_text("text") or ""
+            return cast(str, text)
+    except Exception:
+        return ""
 
 
 def _math_score(validation: ValidationResult) -> int:
