@@ -21,6 +21,7 @@ Bucket is read from ``AEGIS_DOCUMENT_BUCKET`` (default ``documents``).
 Per-env separation: prod / staging / dev each get their own bucket so
 a cross-env Supabase read can't reach the wrong corpus.
 """
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -55,9 +56,7 @@ class _StorageBackend(Protocol):
     def download(self, path: str) -> bytes: ...
     def delete(self, path: str) -> None: ...
     def confirm_absent(self, path: str) -> bool: ...
-    def assert_bucket_private(
-        self, bucket: str, audit: AuditLog | None = None
-    ) -> None: ...
+    def assert_bucket_private(self, bucket: str, audit: AuditLog | None = None) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -87,9 +86,7 @@ class _InMemoryStorageBackend:
     def confirm_absent(self, path: str) -> bool:
         return path not in self._blobs
 
-    def assert_bucket_private(
-        self, bucket: str, audit: AuditLog | None = None
-    ) -> None:
+    def assert_bucket_private(self, bucket: str, audit: AuditLog | None = None) -> None:
         # Tests opt in; default is "private". Real backend asserts
         # against Supabase ACL.
         # ``audit`` is accepted to satisfy the Protocol; the in-memory
@@ -130,15 +127,31 @@ class _SupabaseStorageBackend:
     def _api(self) -> Any:  # noqa: ANN401  # supabase-py types are version-inconsistent; Any is intentional
         if self._client is None:
             from aegis.db import get_supabase
+
             self._client = get_supabase()
         return self._client
 
     def upload(self, path: str, data: bytes) -> None:
+        # ``upsert: "true"`` makes the upload overwrite an existing blob
+        # at ``path`` instead of failing with a 409 "Duplicate" error
+        # from Supabase Storage (2026-06-27 reparse-sealed-manual-review
+        # flood hit this for every retried doc). supabase-py forwards
+        # this as an ``x-upsert: true`` header. The PDF retention
+        # contract is "latest seal wins" so overwrite-on-conflict is
+        # the correct semantic — the pdf_store metadata row already
+        # upserts on document_id.
         try:
-            result = self._api().storage.from_(_bucket()).upload(
-                path=path,
-                file=data,
-                file_options={"content-type": "application/octet-stream"},
+            result = (
+                self._api()
+                .storage.from_(_bucket())
+                .upload(
+                    path=path,
+                    file=data,
+                    file_options={
+                        "content-type": "application/octet-stream",
+                        "upsert": "true",
+                    },
+                )
             )
         except Exception as exc:
             raise StorageError(f"upload {path!r} failed: {exc}") from exc
@@ -156,9 +169,7 @@ class _SupabaseStorageBackend:
         if isinstance(result, dict):
             error = result.get("error")
             if error:
-                raise StorageError(
-                    f"upload {path!r} failed (response error): {error!r}"
-                )
+                raise StorageError(f"upload {path!r} failed (response error): {error!r}")
 
     def download(self, path: str) -> bytes:
         try:
@@ -169,9 +180,7 @@ class _SupabaseStorageBackend:
         # under no-any-return.
         if isinstance(data, (bytes, bytearray, memoryview)):
             return bytes(data)
-        raise StorageError(
-            f"download {path!r} returned non-bytes ({type(data).__name__})"
-        )
+        raise StorageError(f"download {path!r} returned non-bytes ({type(data).__name__})")
 
     def delete(self, path: str) -> None:
         # supabase-py's remove([paths]) is idempotent for already-gone
@@ -201,9 +210,7 @@ class _SupabaseStorageBackend:
         except Exception as exc:
             raise StorageError(f"confirm_absent {path!r} failed: {exc}") from exc
 
-    def assert_bucket_private(
-        self, bucket: str, audit: AuditLog | None = None
-    ) -> None:
+    def assert_bucket_private(self, bucket: str, audit: AuditLog | None = None) -> None:
         """Verify the bucket exists and is configured private.
 
         Boot-time check called by ``app.lifespan``. Implementation hits
@@ -374,19 +381,23 @@ def _classify_and_emit_bucket_check_failure(
         action = "boot.bucket_auth_failed"
         _log.critical(
             "ops.boot.bucket_auth_failed bucket=%s error=%s status=%s",
-            bucket, error_type, status,
+            bucket,
+            error_type,
+            status,
         )
     elif status == 404:
         action = "boot.bucket_absent"
         _log.error(
             "ops.boot.bucket_absent bucket=%s error=%s",
-            bucket, error_type,
+            bucket,
+            error_type,
         )
     elif _is_network_error(exc):
         action = "boot.bucket_check_unreachable"
         _log.warning(
             "ops.boot.bucket_check_unreachable bucket=%s error=%s",
-            bucket, error_type,
+            bucket,
+            error_type,
         )
     else:
         # Unmapped exception shape — default to unreachable. Logging
@@ -397,7 +408,9 @@ def _classify_and_emit_bucket_check_failure(
         action = "boot.bucket_check_unreachable"
         _log.warning(
             "ops.boot.bucket_check_unmapped bucket=%s error=%s status=%s",
-            bucket, error_type, status,
+            bucket,
+            error_type,
+            status,
         )
 
     if audit is None:
@@ -421,7 +434,8 @@ def _classify_and_emit_bucket_check_failure(
         # failure itself even if the cause was Supabase-wide weather.
         _log.critical(
             "ops.boot.audit_write_failed action=%s bucket=%s",
-            action, bucket,
+            action,
+            bucket,
             exc_info=True,
         )
 

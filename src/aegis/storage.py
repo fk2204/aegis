@@ -606,9 +606,19 @@ class SupabaseDocumentRepository:
         result: PipelineResult,
         merchant_id: UUID | None = None,
     ) -> None:
+        # Idempotent over re-parses (worker reparse-sealed-manual-review
+        # path, 2026-06-27): a fresh parse against a doc that already
+        # has artifacts must replace them, not raise on the
+        # ``analyses_document_id_key`` UNIQUE constraint or duplicate
+        # transactions. ``transactions`` has no per-doc UNIQUE so a
+        # DELETE-by-document_id clears the prior batch before INSERT.
+        # ``analyses`` has UNIQUE(document_id) so a single upsert on
+        # that conflict target replaces the row in one round-trip.
+        # ``documents`` is already an UPDATE below.
         client = get_supabase()
 
         if result.classified:
+            client.table("transactions").delete().eq("document_id", str(document_id)).execute()
             tx_payload = [
                 _classified_to_db_row(t, document_id, merchant_id) for t in result.classified
             ]
@@ -624,7 +634,10 @@ class SupabaseDocumentRepository:
                 patterns=result.patterns,
                 monthly_breakdown=result.monthly_breakdown,
             )
-            client.table("analyses").insert(_analysis_to_db_row(analysis)).execute()
+            client.table("analyses").upsert(
+                _analysis_to_db_row(analysis),
+                on_conflict="document_id",
+            ).execute()
 
         client.table("documents").update(
             {
