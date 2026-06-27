@@ -1,0 +1,50 @@
+{# Notifications dropdown body.
+
+   Context:
+     notifications : list[Notification] (newest first)
+     unread_count  : int
+#}
+<div class="bell-dropdown__body" data-test-id="bell-dropdown">
+  <header class="bell-dropdown__head">
+    <strong>Notifications</strong>
+    {% if unread_count > 0 %}
+      <span class="bell-dropdown__meta">{{ unread_count }} unread</span>
+    {% endif %}
+  </header>
+
+  {% if not notifications %}
+    <p class="bell-dropdown__empty">No notifications yet.</p>
+  {% else %}
+    <ul class="bell-dropdown__list">
+      {% for n in notifications %}
+        <li class="bell-item
+                   {% if n.read_at is none %}bell-item--unread{% endif %}"
+            data-test-id="bell-item">
+          {% set href = n.link_url or '#' %}
+          <a class="bell-item__link"
+             href="{{ href }}"
+             hx-post="/ui/notifications/{{ n.id }}/mark-read"
+             hx-trigger="click"
+             hx-target="#bell-badge-mount"
+             hx-swap="innerHTML">
+            <span class="bell-item__type">
+              {% if n.event_type == 'merchant_created' %}
+                New merchant
+              {% elif n.event_type == 'parse_complete' %}
+                Parse complete
+              {% else %}
+                {{ n.event_type }}
+              {% endif %}
+            </span>
+            {% if n.payload and n.payload.get('summary') %}
+              <span class="bell-item__summary">{{ n.payload['summary'] }}</span>
+            {% endif %}
+            <span class="bell-item__time">
+              {{ n.created_at.strftime('%b %d %H:%M') if n.created_at else '' }}
+            </span>
+          </a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</div>

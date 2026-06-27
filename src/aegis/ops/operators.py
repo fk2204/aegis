@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 from typing import Annotated, Final
+from uuid import UUID, uuid4
 
 from fastapi import Header
 from pydantic import BaseModel, Field
@@ -34,11 +35,52 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class OperatorRole(StrEnum):
-    """The three roles in migration 022's ``role`` CHECK constraint."""
+    """Roles accepted by the ``operators.role`` CHECK constraint.
+
+    Migration 022 introduced the first three (``underwriter`` /
+    ``compliance_reviewer`` / ``admin``). Migration 076 widened the
+    CHECK to also accept ``viewer`` — the read-only role used by the
+    role-gate permission matrix. ``compliance_reviewer`` is kept for
+    back-compat with rows created before 2026-06; the role gate treats
+    it as a viewer at the application layer.
+    """
 
     UNDERWRITER = "underwriter"
     COMPLIANCE_REVIEWER = "compliance_reviewer"
     ADMIN = "admin"
+    VIEWER = "viewer"
+
+
+# ---------------------------------------------------------------------------
+# Effective-role mapping for the permission gate.
+#
+# The product matrix only cares about admin / underwriter / viewer.
+# ``compliance_reviewer`` rows collapse to ``viewer`` for permission
+# decisions but keep their stored value (so an audit reading the
+# ``operators`` table sees the original assignment).
+# ---------------------------------------------------------------------------
+
+
+class EffectiveRole(StrEnum):
+    """Effective role used by the permission gate.
+
+    Distinct from ``OperatorRole`` so the gate never has to think about
+    legacy values. ``compliance_reviewer`` collapses to ``viewer`` here.
+    """
+
+    ADMIN = "admin"
+    UNDERWRITER = "underwriter"
+    VIEWER = "viewer"
+
+
+def effective_role(role: OperatorRole) -> EffectiveRole:
+    """Map a stored OperatorRole to the role used by the permission gate.
+
+    ``compliance_reviewer`` → ``viewer``. Everything else maps 1:1.
+    """
+    if role == OperatorRole.COMPLIANCE_REVIEWER:
+        return EffectiveRole.VIEWER
+    return EffectiveRole(role.value)
 
 
 class Operator(BaseModel):
@@ -52,6 +94,7 @@ class Operator(BaseModel):
     untrusted input source.
     """
 
+    id: UUID = Field(default_factory=uuid4)
     email: str = Field(pattern=_EMAIL_RE.pattern)
     display_name: str = Field(min_length=1)
     role: OperatorRole = OperatorRole.UNDERWRITER
@@ -96,7 +139,9 @@ async def resolve_operator_email(
 
 __all__ = [
     "CF_ACCESS_EMAIL_HEADER",
+    "EffectiveRole",
     "Operator",
     "OperatorRole",
+    "effective_role",
     "resolve_operator_email",
 ]

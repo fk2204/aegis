@@ -76,6 +76,17 @@
     </div>
   </div>
   <div class="view-toggle">
+    {# Operator identity + role chip. Populated by the /ui router-level
+       ``Depends(current_operator)`` which stashes the resolved Operator
+       on request.state.operator. Silent when the dependency hasn't run
+       (e.g. plain ``_base.html.j2`` smoke tests). #}
+    {% set _op = request.state.operator if request and request.state and request.state.operator is defined else None %}
+    {% if _op %}
+      {% include "_notifications_bell.html.j2" %}
+      <span class="op-chip op-chip--{{ _op.role }}" title="{{ _op.email }}">
+        {{ _op.display_name }} · <strong>{{ _op.role }}</strong>
+      </span>
+    {% endif %}
     <span style="color:var(--sage)">aegis · {{ now|default('') }}</span>
   </div>
 </div>

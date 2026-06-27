@@ -51,12 +51,14 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from aegis.api.deps import (
     get_audit,
     get_close_client,
+    get_deal_assignment_repository,
     get_decision_snapshot,
     get_funder_note_submission_repository,
     get_funder_repository,
     get_merchant_repository,
     get_merchant_shadow_signal_repository,
     get_ofac_client,
+    get_operator_repository,
     get_pdf_store_repository,
     get_processor_statement_repository,
     get_repository,
@@ -90,7 +92,9 @@ from aegis.merchants.shadow_signals import (
     MerchantShadowSignalRecord,
     MerchantShadowSignalRepository,
 )
-from aegis.ops.operators import resolve_operator_email
+from aegis.ops.deal_assignment_repository import DealAssignmentRepository
+from aegis.ops.operator_repository import OperatorRepository
+from aegis.ops.operators import Operator, resolve_operator_email
 from aegis.parser.models import ClassifiedTransaction
 from aegis.parser.patterns import (
     PatternAnalysis,
@@ -157,6 +161,7 @@ from aegis.web._pattern_cards import (
     pattern_has_customer_concentration,
 )
 from aegis.web._processor_section import build_processor_section
+from aegis.web._role_gate import admin_only, current_operator, underwriter_or_admin
 from aegis.web._router_helpers import (
     _AGGREGATE_LABELS,
     _AGGREGATE_UNIT_KIND,
@@ -190,8 +195,47 @@ router = APIRouter()
 async def list_merchants(
     request: Request,
     repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    assignments: Annotated[DealAssignmentRepository, Depends(get_deal_assignment_repository)],
+    operators: Annotated[OperatorRepository, Depends(get_operator_repository)],
+    operator: Annotated[Operator, Depends(current_operator)],
 ) -> HTMLResponse:
-    return templates.TemplateResponse(request, "merchants.html.j2", {"merchants": repo.list_all()})
+    """List merchants. Supports ``?mine=1`` to filter to the current
+    operator's assignments only.
+    """
+    merchants = repo.list_all()
+    mine_only = request.query_params.get("mine") == "1"
+
+    # Bulk lookup of assignments for every visible merchant — avoids the
+    # N+1 that would land if the template asked the repo for each row.
+    assignment_map = assignments.map_by_merchant([m.id for m in merchants])
+
+    # Resolve operator names once for the chip render. We only need names
+    # for operators that actually appear as assignees.
+    assignee_ids = {a.operator_id for a in assignment_map.values()}
+    assignee_by_id: dict[UUID, Operator] = {}
+    for op_id in assignee_ids:
+        found = operators.get_by_id(op_id)
+        if found is not None:
+            assignee_by_id[op_id] = found
+
+    if mine_only:
+        merchants = [
+            m
+            for m in merchants
+            if m.id in assignment_map and assignment_map[m.id].operator_id == operator.id
+        ]
+
+    return templates.TemplateResponse(
+        request,
+        "merchants.html.j2",
+        {
+            "merchants": merchants,
+            "assignment_map": assignment_map,
+            "assignee_by_id": assignee_by_id,
+            "mine_only": mine_only,
+            "current_operator_id": operator.id,
+        },
+    )
 
 
 @router.get("/merchants/new", response_class=HTMLResponse)
@@ -201,7 +245,12 @@ async def merchant_new_form(request: Request) -> HTMLResponse:
     )
 
 
-@router.post("/merchants/new", response_class=HTMLResponse, response_model=None)
+@router.post(
+    "/merchants/new",
+    response_class=HTMLResponse,
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_new_submit(
     request: Request,
     repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
@@ -270,7 +319,11 @@ async def merchant_new_submit(
     return RedirectResponse(f"/ui/merchants/{saved.id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.get("/merchants/{merchant_id}/edit", response_class=HTMLResponse)
+@router.get(
+    "/merchants/{merchant_id}/edit",
+    response_class=HTMLResponse,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_edit_form(
     request: Request,
     merchant_id: UUID,
@@ -285,7 +338,12 @@ async def merchant_edit_form(
     )
 
 
-@router.post("/merchants/{merchant_id}/edit", response_class=HTMLResponse, response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/edit",
+    response_class=HTMLResponse,
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_edit_submit(
     request: Request,
     merchant_id: UUID,
@@ -941,7 +999,11 @@ async def merchant_matched_funders_csv(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/merchants/{merchant_id}/submit", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/submit",
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_submit_to_funders(
     request: Request,
     merchant_id: UUID,
@@ -1228,7 +1290,11 @@ def _integrity_verdict_word(verdict: IntegrityVerdict | None) -> str | None:
     return None
 
 
-@router.post("/merchants/{merchant_id}/submit-to-funder", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/submit-to-funder",
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_submit_to_funder(
     request: Request,
     merchant_id: UUID,
@@ -1279,7 +1345,11 @@ async def merchant_submit_to_funder(
     )
 
 
-@router.post("/merchants/{merchant_id}/submit-to-funder/{funder_id}", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/submit-to-funder/{funder_id}",
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_submit_to_specific_funder(
     request: Request,
     merchant_id: UUID,
@@ -1613,7 +1683,11 @@ async def _perform_submit_to_funder(
 _RENEWAL_DAYS_PER_MONTH: Final[int] = 30
 
 
-@router.post("/merchants/{merchant_id}/prepare-renewal", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/prepare-renewal",
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_prepare_renewal(
     request: Request,
     merchant_id: UUID,
@@ -2022,7 +2096,11 @@ async def merchant_save_note(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/merchants/{merchant_id}/delete", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/delete",
+    response_model=None,
+    dependencies=[Depends(admin_only)],
+)
 async def merchant_soft_delete(
     merchant_id: UUID,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
@@ -2559,7 +2637,11 @@ async def merchant_narrator_refresh(
 _FUNDER_RESPONSE_STATUSES = frozenset({"approved", "declined", "countered", "pending"})
 
 
-@router.post("/merchants/{merchant_id}/funder-response", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/funder-response",
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_funder_response(
     merchant_id: UUID,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
@@ -3469,11 +3551,19 @@ async def merchant_detail(
         ProcessorStatementRepository,
         Depends(get_processor_statement_repository),
     ],
+    assignments: Annotated[DealAssignmentRepository, Depends(get_deal_assignment_repository)],
+    operators: Annotated[OperatorRepository, Depends(get_operator_repository)],
 ) -> HTMLResponse:
     try:
         merchant = merchants.get(merchant_id)
     except MerchantNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    # Resolve the assignment chip's assignee (if any). Looked up once and
+    # passed into the template; the chip partial renders either an
+    # "Unassigned" button or the operator's name.
+    assignment = assignments.get_for_merchant(merchant_id)
+    assignment_assignee = operators.get_by_id(assignment.operator_id) if assignment else None
 
     # Flash from /ui/intake — broker just created the merchant. Banner
     # rendered by the template when from_intake=1 is present in the URL.
@@ -3983,6 +4073,10 @@ async def merchant_detail(
             "override_latest_decision_id": override_latest_decision_id,
             "show_override_button": show_override_button,
             "all_statements_manual_review": all_statements_manual_review,
+            # Assignment chip on the dossier header. ``assignee`` is None
+            # when the merchant is unassigned; the chip renders the
+            # "Unassigned + Assign" CTA in that case.
+            "assignee": assignment_assignee,
         },
     )
 

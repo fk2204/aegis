@@ -637,6 +637,25 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='analyses' "
         "AND column_name='narrator_summary'"
     ),
+    "076_deal_assignments_and_operator_role.sql": (
+        # 076 widens the operators.role CHECK constraint to accept
+        # 'viewer' AND creates the deal_assignments table that powers
+        # the per-merchant assignment chip + "My deals" filter. Both
+        # changes ship in one BEGIN/COMMIT — probe deal_assignments
+        # because its presence proves the CREATE TABLE landed; the
+        # CHECK widening is verified at runtime by the role gate
+        # accepting a 'viewer' insert.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='deal_assignments'"
+    ),
+    "077_notifications.sql": (
+        # 077 creates the notifications table backing the bell-icon
+        # dropdown in the topstrip. Probing the table is sufficient —
+        # the partial index lands in the same migration; if either
+        # half fails, the BEGIN/COMMIT rolls the whole migration back.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='notifications'"
+    ),
     "078_llm_costs.sql": (
         # 078 creates the dedicated per-call Bedrock cost ledger. The
         # ``CostTrackingBedrockClient`` dual-writes audit_log +

@@ -1,0 +1,67 @@
+{# Assignment modal — operator picker shown when the operator clicks
+   the assignment chip on a merchant dossier.
+
+   Context:
+     merchant_id        : UUID
+     current_operator_id: UUID | None — currently-assigned operator
+     operators          : list[Operator] — active operators
+#}
+<div class="modal-backdrop"
+     onclick="document.getElementById('assignment-modal-mount').innerHTML='';"
+     data-test-id="assignment-modal-backdrop"></div>
+<div class="modal assignment-modal" data-test-id="assignment-modal" role="dialog">
+  <header class="modal__head">
+    <h3>Assign deal</h3>
+    <button type="button"
+            class="modal__close"
+            onclick="document.getElementById('assignment-modal-mount').innerHTML='';"
+            aria-label="Close">×</button>
+  </header>
+
+  <div class="modal__body">
+    {% if not operators %}
+      <p class="empty">No active operators to assign.</p>
+    {% else %}
+      <ul class="assignment-modal__list">
+        {% for op in operators %}
+          <li class="assignment-modal__row
+                     {% if current_operator_id and op.id == current_operator_id %}is-current{% endif %}">
+            <form hx-post="/ui/merchants/{{ merchant_id }}/assign"
+                  hx-target="[data-test-id='assignment-chip']"
+                  hx-swap="outerHTML"
+                  hx-on::after-request="document.getElementById('assignment-modal-mount').innerHTML='';">
+              <input type="hidden" name="operator_id" value="{{ op.id }}">
+              <button type="submit"
+                      class="assignment-modal__pick"
+                      {% if current_operator_id and op.id == current_operator_id %}disabled{% endif %}
+                      data-test-id="assignment-modal-pick"
+                      data-operator-id="{{ op.id }}">
+                <span class="assignment-modal__name">{{ op.display_name }}</span>
+                <span class="assignment-modal__role">{{ op.role.value }}</span>
+                {% if current_operator_id and op.id == current_operator_id %}
+                  <span class="assignment-modal__current">current</span>
+                {% endif %}
+              </button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </div>
+
+  <footer class="modal__foot">
+    {% if current_operator_id %}
+      <form hx-post="/ui/merchants/{{ merchant_id }}/unassign"
+            hx-target="[data-test-id='assignment-chip']"
+            hx-swap="outerHTML"
+            hx-on::after-request="document.getElementById('assignment-modal-mount').innerHTML='';">
+        <button type="submit"
+                class="btn ghost"
+                data-test-id="assignment-modal-unassign">Unassign</button>
+      </form>
+    {% endif %}
+    <button type="button"
+            class="btn ghost"
+            onclick="document.getElementById('assignment-modal-mount').innerHTML='';">Cancel</button>
+  </footer>
+</div>

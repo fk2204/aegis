@@ -73,10 +73,25 @@ from aegis.merchants.shadow_signals import (
     MerchantShadowSignalRepository,
     SupabaseMerchantShadowSignalRepository,
 )
+from aegis.ops.deal_assignment_repository import (
+    DealAssignmentRepository,
+    InMemoryDealAssignmentRepository,
+    SupabaseDealAssignmentRepository,
+)
 from aegis.ops.llm_cost_repository import (
     InMemoryLLMCostRepository,
     LLMCostRepository,
     SupabaseLLMCostRepository,
+)
+from aegis.ops.notification_repository import (
+    InMemoryNotificationRepository,
+    NotificationRepository,
+    SupabaseNotificationRepository,
+)
+from aegis.ops.operator_repository import (
+    InMemoryOperatorRepository,
+    OperatorRepository,
+    SupabaseOperatorRepository,
 )
 from aegis.ops.webhook_circuit import (
     InMemoryCircuitBackend,
@@ -363,6 +378,45 @@ def get_close_client() -> CloseClient:
 
 
 @lru_cache(maxsize=1)
+def get_operator_repository() -> OperatorRepository:
+    """Process-wide OperatorRepository (migration 022 / 076).
+
+    Backs the role-based permission gate, the dossier assignment chip,
+    and the notifications fan-out. Same memory / supabase toggle as the
+    other repositories.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryOperatorRepository()
+    return SupabaseOperatorRepository()
+
+
+@lru_cache(maxsize=1)
+def get_notification_repository() -> NotificationRepository:
+    """Process-wide NotificationRepository (migration 077).
+
+    Backs the bell-icon dropdown + the event emitters in
+    ``aegis.web._notify``. Same memory / supabase toggle as the other
+    repositories.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryNotificationRepository()
+    return SupabaseNotificationRepository()
+
+
+@lru_cache(maxsize=1)
+def get_deal_assignment_repository() -> DealAssignmentRepository:
+    """Process-wide DealAssignmentRepository (migration 076).
+
+    Powers the per-merchant assignment chip on the dossier, the
+    "My deals" filter on Today + the merchant list, and the Assignee
+    column. Same memory / supabase toggle as the other repositories.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryDealAssignmentRepository()
+    return SupabaseDealAssignmentRepository()
+
+
+@lru_cache(maxsize=1)
 def get_schema_migrations_reader() -> SchemaMigrationsReader:
     """Process-wide SchemaMigrationsReader (U32 — operator visibility).
 
@@ -418,6 +472,9 @@ def reset_dependency_caches() -> None:
     get_bank_layout_repository.cache_clear()
     get_pdf_store_repository.cache_clear()
     get_processor_statement_repository.cache_clear()
+    get_operator_repository.cache_clear()
+    get_deal_assignment_repository.cache_clear()
+    get_notification_repository.cache_clear()
     get_schema_migrations_reader.cache_clear()
     get_llm.cache_clear()
     get_llm_cost_repository.cache_clear()
@@ -430,6 +487,7 @@ __all__ = [
     "get_audit",
     "get_bank_layout_repository",
     "get_close_client",
+    "get_deal_assignment_repository",
     "get_deal_repository",
     "get_decision_snapshot",
     "get_disclosure_render_event_repository",
@@ -440,7 +498,9 @@ __all__ = [
     "get_llm_cost_repository",
     "get_merchant_repository",
     "get_merchant_shadow_signal_repository",
+    "get_notification_repository",
     "get_ofac_client",
+    "get_operator_repository",
     "get_override_repository",
     "get_pdf_store_repository",
     "get_processor_statement_repository",

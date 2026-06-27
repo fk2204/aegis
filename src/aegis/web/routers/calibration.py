@@ -43,6 +43,7 @@ from aegis.scoring.weight_calibration import (
     WeightDriftReport,
     compute_weight_drift,
 )
+from aegis.web._role_gate import admin_only
 from aegis.web._templates import templates
 
 try:
@@ -61,7 +62,11 @@ _VALID_OPERATOR_DECISIONS: frozenset[str] = frozenset({"accepted", "rejected", "
 _DEFAULT_LOOKBACK_DAYS: int = 180
 
 
-@router.get("/calibration", response_class=HTMLResponse)
+@router.get(
+    "/calibration",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_only)],
+)
 async def calibration_page(
     request: Request,
 ) -> HTMLResponse:
@@ -86,6 +91,7 @@ async def calibration_page(
 @router.post(
     "/calibration/{flag_code}/review",
     response_class=HTMLResponse,
+    dependencies=[Depends(admin_only)],
 )
 async def record_review(
     request: Request,

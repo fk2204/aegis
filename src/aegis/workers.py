@@ -406,6 +406,18 @@ async def parse_document(
     # if it wasn't already set. Both downstream concerns read it.
     doc_after_persist = repository.get_document(document_id)
 
+    # Migration 077 — fan out a ``parse_complete`` notification once the
+    # parse outcome is durable AND merchant_id is resolved. Recipients:
+    # the merchant's assignee, or every active admin when unassigned.
+    # Best-effort: notification-write failures log but never raise (the
+    # parse itself is already persisted and the storage step still runs).
+    _maybe_emit_parse_complete_notification(
+        ctx=ctx,
+        document_id=document_id,
+        merchant_id=doc_after_persist.merchant_id,
+        parse_status=result.parse_status,
+    )
+
     # ===================================================================
     # CONCERN 2 of 3 — migration 034 merchant finalize / flag.
     # Independent of the storage step. Runs FIRST because it's a single
@@ -2968,6 +2980,61 @@ try:
     _populate_worker_attributes()
 except (RedisError, ConnectionError):
     _log.debug("worker.attributes_deferred", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Notification helper — fires the ``parse_complete`` row(s).
+# ---------------------------------------------------------------------------
+
+
+def _maybe_emit_parse_complete_notification(
+    *,
+    ctx: dict[str, Any],
+    document_id: UUID,
+    merchant_id: UUID | None,
+    parse_status: str,
+) -> None:
+    """Best-effort fan-out of a ``parse_complete`` notification.
+
+    No-ops when ``merchant_id`` is None (bearer / orphan uploads — no
+    target operator). Pulls the notification / operator / assignment
+    repos from ``ctx`` when provided (tests) or via the cached
+    process-wide getters (prod).
+
+    Any failure inside the helper is logged and swallowed: the parse
+    itself is already persisted and the storage step is downstream.
+    """
+    if merchant_id is None:
+        return
+    try:
+        from aegis.api.deps import (
+            get_deal_assignment_repository,
+            get_notification_repository,
+            get_operator_repository,
+        )
+        from aegis.web._notify import notify_parse_complete
+
+        notifications = ctx.get("notifications") or get_notification_repository()
+        operators = ctx.get("operators") or get_operator_repository()
+        assignments = ctx.get("assignments") or get_deal_assignment_repository()
+        audit_log = ctx.get("audit") or get_audit()
+        notify_parse_complete(
+            merchant_id=merchant_id,
+            document_id=document_id,
+            parse_status=parse_status,
+            operators=operators,
+            assignments=assignments,
+            notifications=notifications,
+            audit=audit_log,
+        )
+    except Exception:
+        _log.exception(
+            "worker.notify_parse_complete_failed",
+            extra={
+                "merchant_id": str(merchant_id),
+                "document_id": str(document_id),
+            },
+        )
 
 
 __all__ = [

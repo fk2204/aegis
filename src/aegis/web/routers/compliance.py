@@ -37,6 +37,7 @@ from aegis.compliance.overrides import (
 from aegis.funders.replies import FunderReplyRepository
 from aegis.ops.operators import resolve_operator_email
 from aegis.storage import DocumentNotFoundError, DocumentRepository
+from aegis.web._role_gate import admin_only, underwriter_or_admin
 from aegis.web._templates import templates
 
 router = APIRouter()
@@ -46,6 +47,7 @@ router = APIRouter()
     "/decisions/{decision_id}/override",
     response_model=None,
     include_in_schema=False,
+    dependencies=[Depends(underwriter_or_admin)],
 )
 async def decision_override(
     decision_id: UUID,
@@ -111,6 +113,7 @@ async def decision_override(
     "/merchants/{merchant_id}/documents/{document_id}/override",
     response_model=None,
     include_in_schema=False,
+    dependencies=[Depends(underwriter_or_admin)],
 )
 async def dossier_override(
     request: Request,
@@ -233,7 +236,11 @@ async def dossier_override(
     )
 
 
-@router.get("/overrides/summary", response_class=HTMLResponse)
+@router.get(
+    "/overrides/summary",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_only)],
+)
 async def overrides_summary(
     request: Request,
     override_repo: Annotated[OverrideRepository, Depends(get_override_repository)],
@@ -276,7 +283,11 @@ async def overrides_summary(
     )
 
 
-@router.get("/compliance/obligations", response_class=HTMLResponse)
+@router.get(
+    "/compliance/obligations",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_only)],
+)
 async def compliance_obligations(request: Request) -> HTMLResponse:
     """Operator view of state registration / annual-report obligations.
 

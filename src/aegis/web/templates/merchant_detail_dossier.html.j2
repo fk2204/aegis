@@ -23,7 +23,7 @@
      block was moved out of aegis-dossier.css :15-46 by Wave 1) and the
      page renders unstyled. Same load order as base.html.j2: system first,
      then dossier, then tool. ?v= bumps to match base. #}
-  <link rel="stylesheet" href="/ui/static/aegis-system.css?v=5">
+  <link rel="stylesheet" href="/ui/static/aegis-system.css?v=6">
   <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=12">
   <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=14">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
@@ -265,6 +265,15 @@
 
   {# split business name across two lines if it contains an obvious break word #}
   <h1 class="title">{{ merchant.business_name }}</h1>
+
+  {# Assignment chip + mount for the HTMX-injected modal. The chip is
+     rendered server-side using the `assignment_chip_assignee` context
+     value populated by the merchants router; the modal mount is empty
+     until the operator clicks the chip. #}
+  <div class="dossier-assignment-row" data-test-id="dossier-assignment-row">
+    {% include "_assignment_chip.html.j2" with context %}
+  </div>
+  <div id="assignment-modal-mount"></div>
 
   <div class="subtitle">
     {% if documents and analysis %}

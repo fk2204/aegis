@@ -26,12 +26,14 @@ from aegis.api.app import create_app
 from aegis.api.deps import (
     get_audit,
     get_merchant_repository,
+    get_operator_repository,
     reset_dependency_caches,
 )
 from aegis.audit import InMemoryAuditLog
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import InMemoryMerchantRepository
-from aegis.ops.operators import CF_ACCESS_EMAIL_HEADER
+from aegis.ops.operator_repository import InMemoryOperatorRepository
+from aegis.ops.operators import CF_ACCESS_EMAIL_HEADER, Operator, OperatorRole
 
 
 @pytest.fixture
@@ -45,14 +47,32 @@ def merchant_repo() -> InMemoryMerchantRepository:
 
 
 @pytest.fixture
+def operator_repo() -> InMemoryOperatorRepository:
+    """Pre-seed ``filip@commerafunding.com`` as admin so the soft-delete
+    route (admin-gated) accepts the test request.
+    """
+    repo = InMemoryOperatorRepository()
+    repo._seed(
+        Operator(
+            email="filip@commerafunding.com",
+            display_name="Filip",
+            role=OperatorRole.ADMIN,
+        )
+    )
+    return repo
+
+
+@pytest.fixture
 def client(
     audit: InMemoryAuditLog,
     merchant_repo: InMemoryMerchantRepository,
+    operator_repo: InMemoryOperatorRepository,
 ) -> Iterator[TestClient]:
     reset_dependency_caches()
     app = create_app()
     app.dependency_overrides[get_audit] = lambda: audit
     app.dependency_overrides[get_merchant_repository] = lambda: merchant_repo
+    app.dependency_overrides[get_operator_repository] = lambda: operator_repo
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

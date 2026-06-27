@@ -46,7 +46,9 @@ on localhost only.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from aegis.web._role_gate import current_operator
 
 # R4.1 — bundling / score-input helpers + form helpers + aggregate
 # metadata constants live in ``aegis.web._router_helpers``. Re-exported
@@ -75,12 +77,14 @@ from aegis.web.routers import close_queue as _close_queue_routes
 from aegis.web.routers import compliance as _compliance_routes
 from aegis.web.routers import costs as _costs_routes
 from aegis.web.routers import dashboard as _dashboard_routes
+from aegis.web.routers import deal_assignments as _deal_assignment_routes
 from aegis.web.routers import disclosure_events as _disclosure_events_routes
 from aegis.web.routers import documents as _documents_routes
 from aegis.web.routers import funder_replies as _funder_replies_routes
 from aegis.web.routers import funders as _funders_routes
 from aegis.web.routers import intake as _intake_routes
 from aegis.web.routers import merchants as _merchants_routes
+from aegis.web.routers import notifications as _notification_routes
 from aegis.web.routers import portfolio as _portfolio_routes
 from aegis.web.routers import renewals as _renewals_routes
 from aegis.web.routers import shadow_review as _shadow_review_routes
@@ -116,7 +120,16 @@ from aegis.web.routers.merchants import (
     _state_tier,
 )
 
-router = APIRouter(prefix="/ui", tags=["dashboard"])
+# Router-level dependency: every ``/ui/...`` request resolves the
+# current operator before any route runs. Side-effect populates
+# ``request.state.operator`` so the shared topstrip can render the
+# operator name + role chip without each route plumbing the value
+# through the template context.
+router = APIRouter(
+    prefix="/ui",
+    tags=["dashboard"],
+    dependencies=[Depends(current_operator)],
+)
 
 router.include_router(_admin_routes.router)
 router.include_router(_bank_layouts_routes.router)
@@ -125,11 +138,13 @@ router.include_router(_close_queue_routes.router)
 router.include_router(_compliance_routes.router)
 router.include_router(_costs_routes.router)
 router.include_router(_dashboard_routes.router)
+router.include_router(_deal_assignment_routes.router)
 router.include_router(_documents_routes.router)
 router.include_router(_funder_replies_routes.router)
 router.include_router(_funders_routes.router)
 router.include_router(_intake_routes.router)
 router.include_router(_merchants_routes.router)
+router.include_router(_notification_routes.router)
 router.include_router(_renewals_routes.router)
 router.include_router(_portfolio_routes.router)
 router.include_router(_shadow_review_routes.router)
