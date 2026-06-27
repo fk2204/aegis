@@ -851,3 +851,135 @@ def test_running_balance_disagreement_disqualifies_signal_1() -> None:
     assert result is not None
     s1, _, _, _ = _detail_signal_contributions(result.detail)
     assert s1 == 0
+
+
+# ---------------------------------------------------------------------------
+# Min-active-signals guard (added 2026-06-27 after shadow audit — see
+# constants block in ``ai_statement.py``). The detector must require at
+# least 2 of the 4 component signals to be non-zero before firing,
+# regardless of composite total.
+# ---------------------------------------------------------------------------
+
+
+def test_min_active_signals_single_math_does_not_fire() -> None:
+    """Only Signal 1 (math) fires at +30 — composite is below threshold
+    AND active_signals==1 < min. The min-signal guard short-circuits
+    before the composite check; result is None for the active-signals
+    reason rather than the threshold reason."""
+    # Highly varied descriptions (Signal 2 = 0), font None (Signal 4 =
+    # 0), 0% round amounts (Signal 3 = 0). Math perfection fires +30
+    # because math_flags=[] / period_flags=[] / running_balance None.
+    txns = [
+        _txn(
+            posted_date=PERIOD_START + timedelta(days=i),
+            description=f"POS PURCHASE STARBUCKS #{i:04d} NYC CONF {i * 8311:08d} TR {i:06d}",
+            amount=Decimal("17.43") + Decimal(i),
+            source_line=i + 1,
+        )
+        for i in range(10)
+    ]
+    result = detect_ai_generated_statement(txns, math_flags=[], font_result=None, period_flags=[])
+    assert result is None
+
+
+def test_min_active_signals_two_signals_fires_when_threshold_clears() -> None:
+    """Signals 1 + 3 active (math +30, round +13) → composite 43 ≥ 40
+    AND active_signals=2 → fires. The shadow-audit pattern (the exact
+    fire mode we observed 17 times on prod) — under the new guard this
+    still fires because there ARE 2 active signals."""
+    # 20% round (2 of 10) -> Signal 3 = 13 (linear interp). Varied
+    # descriptions keep Signal 2 = 0. Font None keeps Signal 4 = 0.
+    txns = [
+        _txn(
+            posted_date=PERIOD_START + timedelta(days=i),
+            description=f"POS PURCHASE STORE {i * 17 % 100:03d} CONF {i * 31:06d}",
+            amount=Decimal("500.00") if i < 2 else Decimal("17.43") + Decimal(i),
+            source_line=i + 1,
+        )
+        for i in range(10)
+    ]
+    result = detect_ai_generated_statement(txns, math_flags=[], font_result=None, period_flags=[])
+    assert result is not None
+    assert result.severity >= 40
+    # Confirm 2 active signals are reflected in the detail string.
+    s1, s2, s3, s4 = _detail_signal_contributions(result.detail)
+    active = sum(1 for v in (s1, s2, s3, s4) if v > 0)
+    assert active == 2
+
+
+def test_min_active_signals_two_signals_below_threshold_does_not_fire() -> None:
+    """Two signals active but composite still below 40 → still None
+    (threshold gate still applies). Math +30 + round +1 (10%-equivalent
+    forced to a tiny scaled contribution) = 31 < 40."""
+    # Build a corpus where Signal 1 fires (+30) and Signal 3 fires with
+    # a small contribution. 1 round of 10 = 10% → Signal 3 = 0 (below
+    # 20% floor). So we need exactly the floor: 2 of 10 = 20% → +12 or
+    # 13. 30 + 13 = 43, which IS above 40. To get below, use the
+    # round-cluster + font signals such that the total stays under 40.
+    # Simpler: use Signal 1 + Signal 4 — math 30 + font 20 = 50 (above).
+    # Try Signal 3 + Signal 4: round 13 + font 20 = 33 (below 40), and
+    # Signal 1 = 0 (force a math failure), Signal 2 = 0 (varied desc).
+    txns = [
+        _txn(
+            posted_date=PERIOD_START + timedelta(days=i),
+            description=f"POS PURCHASE STORE {i * 17 % 100:03d} CONF {i * 31:06d}",
+            amount=Decimal("500.00") if i < 2 else Decimal("17.43") + Decimal(i),
+            source_line=i + 1,
+        )
+        for i in range(10)
+    ]
+    result = detect_ai_generated_statement(
+        txns,
+        math_flags=["reconciliation_failed_period: forced off"],
+        font_result=_uniform_font_result(),
+        period_flags=[],
+    )
+    # Signal 1 = 0 (math_flags), Signal 2 = 0 (varied), Signal 3 = 13
+    # (20% round), Signal 4 = 20 (uniform). Composite = 33 < 40.
+    # Active signals = 2 (S3 + S4), so the min-signal guard passes but
+    # the threshold check rejects.
+    assert result is None
+
+
+def test_min_active_signals_all_four_fires() -> None:
+    """All 4 signals active — fires (no regression on the well-formed
+    high-score case)."""
+    txns = [
+        _txn(
+            posted_date=PERIOD_START + timedelta(days=i * 2),
+            description="ACH DEPOSIT MERCHANT SALES",
+            amount=Decimal("1000.00"),
+            source_line=i + 1,
+        )
+        for i in range(12)
+    ]
+    result = detect_ai_generated_statement(
+        txns,
+        math_flags=[],
+        font_result=_uniform_font_result(),
+        period_flags=[],
+    )
+    assert result is not None
+    s1, s2, s3, s4 = _detail_signal_contributions(result.detail)
+    assert all(v > 0 for v in (s1, s2, s3, s4))
+
+
+def test_min_active_signals_zero_signals_returns_none() -> None:
+    """All 4 signals at 0 — composite 0, no fire (regression guard for
+    the all-clear case)."""
+    txns = [
+        _txn(
+            posted_date=PERIOD_START + timedelta(days=i),
+            description=f"POS PURCHASE STARBUCKS #{i:04d} NYC CONF {i * 8311:08d}",
+            amount=Decimal("17.43") + Decimal(i),
+            source_line=i + 1,
+        )
+        for i in range(10)
+    ]
+    result = detect_ai_generated_statement(
+        txns,
+        math_flags=["reconciliation_failed_period: x"],  # Signal 1 → 0
+        font_result=_inconsistent_font_result(),  # Signal 4 → 0
+        period_flags=[],
+    )
+    assert result is None

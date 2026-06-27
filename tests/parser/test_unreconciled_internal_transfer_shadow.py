@@ -467,3 +467,127 @@ def test_shadow_detector_does_not_alter_fraud_score() -> None:
     shadow_severity_sum = sum(h.severity for h in shadow_hits)
     assert shadow_severity_sum > 0  # 135
     assert pa.fraud_score <= live_severity_sum or pa.fraud_score == 100
+
+
+# ---------------------------------------------------------------------------
+# Counterparty allowlist (added 2026-06-27 after shadow audit — see
+# ``_ALLOWLISTED_TRANSFER_COUNTERPARTIES`` block in patterns.py).
+#
+# Shadow audit (14d) showed 100% FP rate on this detector — every fire
+# was a government/payroll wire (NYS Dept of Labor x3) or an own-account
+# self-transfer. The allowlist excludes those counterparties BEFORE the
+# matching loop so they never enter the unmatched-leg count.
+# ---------------------------------------------------------------------------
+
+
+def test_allowlist_nys_dept_of_labor_excluded() -> None:
+    """NYS Dept of Labor wire (the exact pattern from the prod fires) →
+    excluded, not flagged."""
+    nys = _txn(
+        posted_date=date(2026, 1, 10),
+        description="CBUSOL TRANSFER DEBIT - WIRE TO NYS Dept of Labor",
+        amount=Decimal("-2500.00"),
+        category="wire_out",
+    )
+    hits = detect_unreconciled_internal_transfers([nys], [nys])
+    assert hits == [], "NYS Dept of Labor wire must be allowlisted"
+
+
+def test_allowlist_irs_payment_excluded() -> None:
+    """IRS quarterly tax payment → excluded."""
+    irs = _txn(
+        posted_date=date(2026, 1, 15),
+        description="WIRE TO IRS 9876543 TAX PAYMENT",
+        amount=Decimal("-15000.00"),
+        category="wire_out",
+    )
+    hits = detect_unreconciled_internal_transfers([irs], [irs])
+    assert hits == [], "IRS wire must be allowlisted"
+
+
+def test_allowlist_state_of_prefix_excluded() -> None:
+    """'State of California Unemployment' → matches the 'state of '
+    prefix → excluded."""
+    state = _txn(
+        posted_date=date(2026, 1, 20),
+        description="ACH TO STATE OF CALIFORNIA UNEMPLOYMENT",
+        amount=Decimal("-4500.00"),
+        category="ach_credit",
+    )
+    hits = detect_unreconciled_internal_transfers([state], [state])
+    assert hits == [], "State of … wire must be allowlisted"
+
+
+def test_allowlist_own_account_transfer_excluded() -> None:
+    """Self-transfer labeled 'own account' → excluded (the exact pattern
+    from the prod self-transfer fire)."""
+    own = _txn(
+        posted_date=date(2026, 1, 25),
+        description="TRANSFER TO OWN ACCOUNT US BANK CHK 7722",
+        amount=Decimal("-3000.00"),
+        category="transfer",
+    )
+    hits = detect_unreconciled_internal_transfers([own], [own])
+    assert hits == [], "Own-account transfer must be allowlisted"
+
+
+def test_allowlist_unknown_counterparty_still_fires_regression_guard() -> None:
+    """Regression guard: a genuinely-unmatched transfer to an unknown
+    counterparty must STILL fire. The allowlist is opt-in by token, not
+    opt-out by default."""
+    suspicious = _txn(
+        posted_date=date(2026, 1, 10),
+        description="WIRE TO ACME OFFSHORE LLC ACCT 99887",
+        amount=Decimal("-8000.00"),
+        category="wire_out",
+    )
+    hits = detect_unreconciled_internal_transfers([suspicious], [suspicious])
+    assert len(hits) == 1, "Unknown counterparty must still fire — allowlist is opt-in by token"
+    assert hits[0].code == SHADOW_CODE
+    assert hits[0].severity == 25  # n=1 on monotonic ramp
+
+
+def test_allowlist_exclusion_count_in_detail_string() -> None:
+    """When allowlisted transfers are excluded alongside a genuine
+    flagged transfer, the emit's detail string includes the exclusion
+    count as evidence of the allowlist firing."""
+    nys = _txn(
+        posted_date=date(2026, 1, 5),
+        description="WIRE TO NYS Dept of Labor — UI WITHHOLDING",
+        amount=Decimal("-1500.00"),
+        category="wire_out",
+    )
+    irs = _txn(
+        posted_date=date(2026, 1, 7),
+        description="ACH TO IRS QUARTERLY TAX",
+        amount=Decimal("-3000.00"),
+        category="ach_credit",
+    )
+    suspicious = _txn(
+        posted_date=date(2026, 1, 12),
+        description="WIRE TO OFFSHORE ACCT 9988",
+        amount=Decimal("-7500.00"),
+        category="wire_out",
+    )
+    hits = detect_unreconciled_internal_transfers([nys, irs, suspicious], [nys, irs, suspicious])
+    # Only the suspicious one fires; the two government wires were
+    # excluded by the allowlist BEFORE the matching loop.
+    assert len(hits) == 1
+    assert "OFFSHORE ACCT 9988" in hits[0].detail
+    # Detail surfaces the exclusion count.
+    assert "2 transfer(s) excluded" in hits[0].detail
+    assert "government/self-transfer allowlist" in hits[0].detail
+
+
+def test_allowlist_case_insensitive_substring_match() -> None:
+    """Allowlist tokens are matched case-insensitive substring against
+    the lowercased description. Mixed-case bank rendering must still
+    match."""
+    mixed = _txn(
+        posted_date=date(2026, 1, 8),
+        description="Wire To Workers Comp Insurance Premium",
+        amount=Decimal("-2200.00"),
+        category="wire_out",
+    )
+    hits = detect_unreconciled_internal_transfers([mixed], [mixed])
+    assert hits == [], "Mixed-case 'Workers Comp' must match the lowercase allowlist token"

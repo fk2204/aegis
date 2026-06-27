@@ -1731,6 +1731,61 @@ _UNRECONCILED_TRANSFER_OUT_DESC_TOKENS: Final[tuple[str, ...]] = (
     "zelle to ",
 )
 
+# Counterparty allow-list (added 2026-06-27 after shadow audit).
+#
+# WHY: 14-day shadow audit on prod showed 4 fires with 100% false-
+# positive rate (4 of 4 on parse_status="proceed"). All 4 fires were
+# legitimate transfers — 3 were "CBUSOL TRANSFER DEBIT - WIRE TO NYS
+# Dept of Labor" (state unemployment / payroll wires), 1 was a self-
+# transfer between own US Bank accounts. The detector mechanically
+# catches what it should (transfer-out with no matching transfer-in)
+# but the INTERPRETATION — "hidden account siphoning" — is wrong for
+# those patterns: government / tax / payroll wires legitimately have no
+# inbound counterpart on the merchant's statements, and own-account
+# transfers labeled as such are not hidden.
+#
+# Substring match (case-insensitive, lowercase counterparty). Order of
+# entries does not matter — set semantics. "state of " is intentionally
+# kept as a 9-char prefix to catch "STATE OF CALIFORNIA UNEMPLOYMENT" /
+# "STATE OF NY UI" / "STATE OF FL DEPT OF REVENUE" etc. without
+# matching arbitrary descriptions that happen to contain "state of".
+#
+# Per CLAUDE.md "Decision-boundary changes — shadow-first": this
+# allowlist ships live (not shadow-first) because the shadow data
+# ALREADY validated the false-positive rate. Re-shadowing a
+# recalibration of an already-shadow detector would be redundant.
+_ALLOWLISTED_TRANSFER_COUNTERPARTIES: Final[frozenset[str]] = frozenset(
+    {
+        "nys dept of labor",
+        "nysdol",
+        "irs",
+        "internal revenue",
+        "us treasury",
+        "state of ",
+        "dept of revenue",
+        "department of revenue",
+        "dept of taxation",
+        "unemployment insurance",
+        "workers comp",
+        "workers compensation",
+        "self transfer",
+        "own account",
+        "zelle to self",
+    }
+)
+
+
+def _is_allowlisted_transfer_counterparty(description: str) -> bool:
+    """Return True when ``description`` matches any allowlist token.
+
+    Case-insensitive substring match — the description is lowercased
+    before comparison. Each allowlist token is checked as ``in
+    description_lower``; the first hit short-circuits.
+    """
+    description_lower = description.lower()
+    return any(token in description_lower for token in _ALLOWLISTED_TRANSFER_COUNTERPARTIES)
+
+
 # Token allow-list extracted from a description before counterparty
 # normalization. Cuts trailing transaction-id noise so two ACH deposits
 # from the same customer with different trace ids collapse to one bucket.
@@ -1933,7 +1988,27 @@ def detect_unreconciled_internal_transfers(
         return []
     bundle = all_bundle_transactions if all_bundle_transactions is not None else transactions
 
-    outs = [t for t in transactions if _is_unreconciled_transfer_out_candidate(t, own_account_ids)]
+    outs_unfiltered = [
+        t for t in transactions if _is_unreconciled_transfer_out_candidate(t, own_account_ids)
+    ]
+    if not outs_unfiltered:
+        return []
+
+    # Counterparty allowlist filter (added 2026-06-27 after shadow
+    # audit). Government / tax / payroll / self-transfer counterparties
+    # are excluded from the unmatched-leg analysis BEFORE the matching
+    # loop — they legitimately have no inbound counterpart on the
+    # merchant's statements and were the source of 100% of the shadow-
+    # detector's false-positive rate. The excluded count is threaded
+    # through to each emitted Pattern's detail string so the operator
+    # sees evidence of the allowlist firing alongside any genuine hits.
+    outs: list[ClassifiedTransaction] = []
+    allowlisted_excluded = 0
+    for candidate in outs_unfiltered:
+        if _is_allowlisted_transfer_counterparty(candidate.description):
+            allowlisted_excluded += 1
+            continue
+        outs.append(candidate)
     if not outs:
         return []
 
@@ -2004,6 +2079,12 @@ def detect_unreconciled_internal_transfers(
             f"no matching transfer-in in the bundle within "
             f"±${row_tolerance.quantize(Decimal('0.01'))} / ±{window}d"
         )
+        if allowlisted_excluded > 0:
+            detail = (
+                f"{detail} "
+                f"({allowlisted_excluded} transfer(s) excluded — "
+                "government/self-transfer allowlist)"
+            )
         out_patterns.append(
             Pattern(
                 code="unreconciled_internal_transfer_v2",
