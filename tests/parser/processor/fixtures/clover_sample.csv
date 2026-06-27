@@ -1,0 +1,16 @@
+Date & Time,Description,Amount,Tip,Tax,Total,Payment Type,Card Type,Last 4,Auth Code,Card Holder Name,Employee,Order ID,Device ID,Note
+2026-05-02 09:14:00,Sale,4.50,0.00,0.36,4.86,Cash,,,,Guest,1234,ord_001,device_A,
+2026-05-03 11:30:00,Sale,12.50,2.00,1.00,15.50,Card,VISA,4242,AUTH100001,Cardholder 1,1234,ord_002,device_A,
+2026-05-05 13:18:00,Sale,25.00,4.00,2.00,31.00,Card,MASTERCARD,5454,AUTH100002,Cardholder 2,1235,ord_003,device_B,
+2026-05-07 14:42:00,Sale,45.00,7.00,3.60,55.60,Card,VISA,1881,AUTH100003,Cardholder 3,1234,ord_004,device_A,
+2026-05-08 18:05:00,Sale,87.50,15.00,7.00,109.50,Card,AMEX,3742,AUTH100004,Cardholder 4,1236,ord_005,device_C,
+2026-05-10 12:22:00,Refund - bad item,12.50,0.00,0.00,12.50,Card,VISA,4242,AUTH100005,Cardholder 1,1234,ord_006,device_A,Goodwill refund
+2026-05-12 19:11:00,Sale,98.25,18.00,7.86,124.11,Card,VISA,7676,AUTH100006,Cardholder 5,1235,ord_007,device_B,
+2026-05-15 10:45:00,Sale,145.00,25.00,11.60,181.60,Card,DISCOVER,1117,AUTH100007,Cardholder 6,1236,ord_008,device_C,
+2026-05-17 20:30:00,Sale,156.75,28.00,12.54,197.29,Card,MASTERCARD,2233,AUTH100008,Cardholder 7,1234,ord_009,device_A,
+2026-05-19 11:00:00,Void - duplicate ring,87.50,0.00,7.00,94.50,Card,VISA,7676,VOID,Cardholder 5,1235,ord_010,device_B,Duplicate of ord_005
+2026-05-21 13:25:00,Sale,175.00,30.00,14.00,219.00,Card,VISA,9988,AUTH100009,Cardholder 8,1236,ord_011,device_C,
+2026-05-23 16:08:00,Sale,200.00,35.00,16.00,251.00,Card,AMEX,5566,AUTH100010,Cardholder 9,1234,ord_012,device_A,
+2026-05-26 18:50:00,Refund - canceled order,25.00,0.00,0.00,25.00,Card,MASTERCARD,5454,AUTH100011,Cardholder 2,1235,ord_013,device_B,Same-day cancel
+2026-05-28 14:33:00,Sale,215.00,40.00,17.20,272.20,Card,VISA,3344,AUTH100012,Cardholder 10,1236,ord_014,device_C,
+2026-05-30 21:15:00,Manual Adjustment,5.00,0.00,0.00,5.00,Other,,,,Guest,1234,ord_015,device_A,Fee credit

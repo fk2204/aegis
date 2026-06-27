@@ -45,7 +45,7 @@ from aegis.logger import get_logger
 _log = get_logger(__name__)
 
 
-ProcessorBrand = Literal["stripe", "square", "bank", "ambiguous"]
+ProcessorBrand = Literal["stripe", "square", "clover", "bank", "ambiguous"]
 
 
 # Stripe statement signatures. The "stripe.com" + "Activity summary"
@@ -166,6 +166,20 @@ _SQUARE_FILENAME_TOKENS: Final[tuple[str, ...]] = (
     "square_transactions",
 )
 
+# Clover filename tokens. Clover Dashboard exports default to
+# ``clover_transactions_<date>.csv`` / ``clover-transactions-<date>.csv``;
+# operators sometimes rename to ``clover_export.csv``. The brand token
+# ``clover`` is the load-bearing common-case match. ``clover-transactions``
+# / ``clover_transactions`` cover the dash-vs-underscore variants
+# Dashboard ships with.
+_CLOVER_FILENAME_TOKENS: Final[tuple[str, ...]] = (
+    "clover",
+    "clover-transactions",
+    "clover_transactions",
+    "clover_export",
+    "clover-export",
+)
+
 
 # Square CSV header signature. The first 8 columns identify a Square
 # transactions export deterministically:
@@ -182,14 +196,22 @@ _SQUARE_CSV_HEADER_SIGNATURE: Final[str] = (
 # optional trailing columns over time but the leading three are stable.
 _STRIPE_CSV_HEADER_PREFIX: Final[str] = "id,Type,Source"
 
+# Clover CSV header discriminator. ``Auth Code`` + ``Device ID`` is the
+# Clover-unique combination — neither Stripe (``id,Type,Source,...``)
+# nor Square (``Date,Time,Time Zone,...,Device Name,...``) carry an
+# ``Auth Code`` column at all, and ``Device ID`` (terminal identifier)
+# differs from Square's ``Device Name``. The combined presence is the
+# load-bearing signal.
+_CLOVER_CSV_REQUIRED_COLUMNS: Final[frozenset[str]] = frozenset({"Auth Code", "Device ID"})
+
 
 def detect_processor_from_csv_header(header_line: str) -> ProcessorBrand:
     """Return the processor brand suggested by a CSV header line.
 
     Complements ``detect_processor_from_filename`` for the CSV upload
-    path: a Square export whose filename was renamed to a generic
-    ``export.csv`` still gets routed correctly when the header is
-    inspected. Pure-string check; no I/O.
+    path: a Square or Clover export whose filename was renamed to a
+    generic ``export.csv`` still gets routed correctly when the header
+    is inspected. Pure-string check; no I/O.
 
     ``"bank"`` means "no processor signature in the header"; the
     caller should refuse the upload (we don't know how to parse an
@@ -203,8 +225,16 @@ def detect_processor_from_csv_header(header_line: str) -> ProcessorBrand:
         stripped = stripped[1:]
     square_hit = stripped.startswith(_SQUARE_CSV_HEADER_SIGNATURE)
     stripe_hit = stripped.startswith(_STRIPE_CSV_HEADER_PREFIX)
-    if square_hit and stripe_hit:
+    # Clover header lives anywhere in the header line (Clover doesn't
+    # mandate column order strictly), so we look for the discriminating
+    # combination of ``Auth Code`` AND ``Device ID`` as substring hits.
+    clover_columns = {c.strip() for c in stripped.split(",")}
+    clover_hit = _CLOVER_CSV_REQUIRED_COLUMNS.issubset(clover_columns)
+    hits = sum([square_hit, stripe_hit, clover_hit])
+    if hits > 1:
         return "ambiguous"
+    if clover_hit:
+        return "clover"
     if square_hit:
         return "square"
     if stripe_hit:
@@ -229,12 +259,16 @@ def detect_processor_from_filename(filename: str | Path) -> ProcessorBrand:
     basename = Path(str(filename)).name.lower()
     stripe_hit = any(token in basename for token in _STRIPE_FILENAME_TOKENS)
     square_hit = any(token in basename for token in _SQUARE_FILENAME_TOKENS)
-    if stripe_hit and square_hit:
+    clover_hit = any(token in basename for token in _CLOVER_FILENAME_TOKENS)
+    hits = sum([stripe_hit, square_hit, clover_hit])
+    if hits > 1:
         return "ambiguous"
     if stripe_hit:
         return "stripe"
     if square_hit:
         return "square"
+    if clover_hit:
+        return "clover"
     return "bank"
 
 

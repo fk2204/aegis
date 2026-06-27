@@ -18,6 +18,7 @@ as in the bank parser:
 from __future__ import annotations
 
 from aegis.parser.processor.aggregate import ProcessorAggregates, aggregate_processor
+from aegis.parser.processor.csv_clover import CloverCsvError, extract_clover_csv
 from aegis.parser.processor.csv_square import SquareCsvError, extract_square_csv
 from aegis.parser.processor.csv_stripe import StripeCsvError, extract_stripe_csv
 from aegis.parser.processor.detect import (
@@ -59,6 +60,7 @@ from aegis.parser.processor.stripe_router import (
 from aegis.parser.processor.validate import ProcessorValidationResult, validate_processor
 
 __all__ = [
+    "CloverCsvError",
     "ExtractedProcessorStatement",
     "InMemoryProcessorStatementRepository",
     "ParseMethod",
@@ -87,6 +89,7 @@ __all__ = [
     "detect_processor_from_csv_header",
     "detect_processor_from_filename",
     "detect_stripe",
+    "extract_clover_csv",
     "extract_square_csv",
     "extract_stripe_csv",
     "processor_type_for_document",
