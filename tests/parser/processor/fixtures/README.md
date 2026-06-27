@@ -76,6 +76,66 @@ edits to the parser itself.
 5. Confirm the PII canary at `tests/test_fixture_pii_canary.py` still
    passes after the sanitised fixture lands.
 
+## `toast_sample.csv` — synthetic-but-realistic, fabricated values
+
+**Status:** SYNTHETIC. Column headers match Toast's documented sales-
+export format (23 columns: Date, Server, Order ID, Order #, Location,
+Revenue Center, Tab Name, Item, Qty, Gross Amount, Discount Amount,
+Net Amount, Void, Void Reason, Check Amount, Tip Amount, Total Amount,
+Transaction Type, Payment Type, Last 4, Card Brand, Card Holder,
+Dining Options). All row values are fabricated — fake order IDs, fake
+ticket descriptions, single-name servers ("Alex" / "Jamie" / "Sam"),
+generic card holder labels ("Guest" / "Cardholder N"). No real merchant
+brand names, no real customer names.
+
+**20 rows breakdown:**
+
+| Transaction Type / Void | Count | Notes |
+|---|---|---|
+| `Payment` (Void=No, Card) | 14 | Visa / Mastercard / Amex / Discover mix; 3 distinct locations (Main Street / Downtown / Westside); 3 distinct Revenue Centers (Bar / Dining Room / Takeout) |
+| `Payment` (Cash) | 1 | `Payment Type = Cash`, no card info; still maps to `gross_charge` |
+| `Refund` | 3 | Negative `Net Amount`; refund reasons (bad pour, cold entree, missing item) |
+| `Payment` (Void=Yes) | 2 | Voided payment rows; map to `adjustment` (excluded from validation identity) |
+
+**Kind mapping after extraction:**
+
+- 15 rows → `gross_charge` (14 card + 1 cash)
+- 3 rows → `refund`
+- 2 rows → `adjustment` (the two voids)
+- 0 rows → `chargeback`, `fee` (Toast doesn't report processor fees)
+- 1 synthetic → `payout` (derived from identity, attributed to period end)
+
+**Identity math (all amounts in USD):**
+
+```
+gross_volume     = 763.80   (15 payment rows: 28.50+45.75+18.00+35.25
+                              +78.40+25.00+22.85+52.10+112.30+15.50
+                              +41.75+89.00+33.60+145.85+19.95)
+refunds_total    =  46.25   (3 refund rows: 15.00+22.50+8.75)
+chargebacks_total=   0.00
+fees_total       =   0.00   (Toast doesn't report processor fees)
+payouts_total    = 717.55   (synthetic — derived from identity)
+
+Identity: 763.80 - 46.25 - 0.00 - 0.00 = 717.55  ✓
+```
+
+Period: 2026-05-01 → 2026-05-30 (30 days inclusive).
+`avg_daily_volume = 763.80 / 30 = 25.46`.
+
+**Why synthetic is tolerable here:**
+
+Same justification as `square_sample.csv` — the column header set is
+byte-for-byte the documented Toast format, all 23 columns are
+populated, and the row coverage exercises every branch of
+`_TOAST_TRANSACTION_TYPE_MAP` plus the void-handling path. Replace
+with a real sanitised Toast export when one becomes available;
+adjust assertion values in `test_toast_csv.py` to match.
+
+**Replacement procedure:** identical to the Square procedure above —
+export from Toast → Reports → Export, sanitise via
+`tests/_fixture_sanitize.py::sanitize_fixture_payload`, replace
+`toast_sample.csv`, update assertions, confirm PII canary green.
+
 ## `stripe_balance_transactions_minimal.csv`
 
 (Pre-existing — unchanged.)

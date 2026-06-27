@@ -45,7 +45,7 @@ from aegis.logger import get_logger
 _log = get_logger(__name__)
 
 
-ProcessorBrand = Literal["stripe", "square", "bank", "ambiguous"]
+ProcessorBrand = Literal["stripe", "square", "toast", "bank", "ambiguous"]
 
 
 # Stripe statement signatures. The "stripe.com" + "Activity summary"
@@ -166,6 +166,33 @@ _SQUARE_FILENAME_TOKENS: Final[tuple[str, ...]] = (
     "square_transactions",
 )
 
+# Filename tokens that mark a Toast export. Toast Dashboard exports
+# carry the brand name plus structural words (``toast_sales``,
+# ``toast-export``). Case-insensitive substring match. Same posture
+# as the Stripe/Square token lists — broad enough to catch operator-
+# renamed variants, narrow enough not to false-positive on the brand
+# alone (a merchant named "Toast Cafe Inc." won't accidentally route
+# to the Toast parser because the bare ``toast`` token is not in this
+# list — only ``toast_`` / ``toast-export`` / ``toast_sales`` are).
+_TOAST_FILENAME_TOKENS: Final[tuple[str, ...]] = (
+    "toast_",
+    "toast-export",
+    "toast_sales",
+    "toast-sales",
+    "toast_export",
+)
+
+
+# Toast CSV header signature. The combination of ``Revenue Center`` AND
+# ``Dining Options`` is Toast-unique — neither Stripe nor Square ships
+# either column. We check the substring presence of both terms rather
+# than a leading-prefix match because Toast occasionally reorders the
+# trailing columns in exports.
+_TOAST_CSV_HEADER_TOKENS: Final[tuple[str, ...]] = (
+    "Revenue Center",
+    "Dining Options",
+)
+
 
 # Square CSV header signature. The first 8 columns identify a Square
 # transactions export deterministically:
@@ -187,9 +214,9 @@ def detect_processor_from_csv_header(header_line: str) -> ProcessorBrand:
     """Return the processor brand suggested by a CSV header line.
 
     Complements ``detect_processor_from_filename`` for the CSV upload
-    path: a Square export whose filename was renamed to a generic
-    ``export.csv`` still gets routed correctly when the header is
-    inspected. Pure-string check; no I/O.
+    path: a Square / Toast export whose filename was renamed to a
+    generic ``export.csv`` still gets routed correctly when the header
+    is inspected. Pure-string check; no I/O.
 
     ``"bank"`` means "no processor signature in the header"; the
     caller should refuse the upload (we don't know how to parse an
@@ -203,8 +230,16 @@ def detect_processor_from_csv_header(header_line: str) -> ProcessorBrand:
         stripped = stripped[1:]
     square_hit = stripped.startswith(_SQUARE_CSV_HEADER_SIGNATURE)
     stripe_hit = stripped.startswith(_STRIPE_CSV_HEADER_PREFIX)
-    if square_hit and stripe_hit:
+    # Toast keys off the presence of BOTH "Revenue Center" AND
+    # "Dining Options" anywhere in the header — those columns are
+    # Toast-unique. Substring check (not prefix) because Toast
+    # occasionally reorders trailing columns.
+    toast_hit = all(token in stripped for token in _TOAST_CSV_HEADER_TOKENS)
+    hits = sum([square_hit, stripe_hit, toast_hit])
+    if hits >= 2:
         return "ambiguous"
+    if toast_hit:
+        return "toast"
     if square_hit:
         return "square"
     if stripe_hit:
@@ -229,8 +264,12 @@ def detect_processor_from_filename(filename: str | Path) -> ProcessorBrand:
     basename = Path(str(filename)).name.lower()
     stripe_hit = any(token in basename for token in _STRIPE_FILENAME_TOKENS)
     square_hit = any(token in basename for token in _SQUARE_FILENAME_TOKENS)
-    if stripe_hit and square_hit:
+    toast_hit = any(token in basename for token in _TOAST_FILENAME_TOKENS)
+    hits = sum([stripe_hit, square_hit, toast_hit])
+    if hits >= 2:
         return "ambiguous"
+    if toast_hit:
+        return "toast"
     if stripe_hit:
         return "stripe"
     if square_hit:

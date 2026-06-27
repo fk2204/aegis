@@ -20,6 +20,7 @@ from __future__ import annotations
 from aegis.parser.processor.aggregate import ProcessorAggregates, aggregate_processor
 from aegis.parser.processor.csv_square import SquareCsvError, extract_square_csv
 from aegis.parser.processor.csv_stripe import StripeCsvError, extract_stripe_csv
+from aegis.parser.processor.csv_toast import ToastCsvError, extract_toast_csv
 from aegis.parser.processor.detect import (
     ProcessorBrand,
     ProcessorDetection,
@@ -81,6 +82,7 @@ __all__ = [
     "StripeParseResult",
     "StripeRouterError",
     "SupabaseProcessorStatementRepository",
+    "ToastCsvError",
     "aggregate_processor",
     "build_stripe_dossier_aggregates",
     "detect_processor",
@@ -89,6 +91,7 @@ __all__ = [
     "detect_stripe",
     "extract_square_csv",
     "extract_stripe_csv",
+    "extract_toast_csv",
     "processor_type_for_document",
     "route_square_document",
     "route_stripe_document",
