@@ -1509,12 +1509,20 @@
     {% endif %}
 
     {# ============== Background checks (Agent 2 placeholder) ============== #}
-    {# Fix 5 (2026-06-26) — Agent 2 owns the background-checks section
-       (UCC, web presence, OFAC roll-up). Reserve the slot here between
-       Track C / pattern findings and the funder match grid so the
-       merge is mechanical when Agent 2's branch lands. Renders nothing
-       on its own — placeholder comments only. #}
+    {# Visible inert stub reserving the slot for Agent 2's UCC / web-
+       presence / OFAC roll-up. Renders as a flat "Not checked yet" line
+       so the layout doesn't look truncated between Track C and the
+       funder-matching section. Agent 2's branch replaces the inner
+       body; the wrapper + data-test-id stays so existing pytest
+       coverage continues to pass after the swap. #}
     <!-- BEGIN: background-checks-section (Agent 2) -->
+    <section class="section" data-test-id="dossier-background-checks-stub">
+      <header>
+        <span class="n">§</span>
+        <h2>Background <em>checks</em></h2>
+      </header>
+      <p style="margin:8px 0 0 0;color:var(--ink-3);font-size:13px">Not checked yet</p>
+    </section>
     <!-- END: background-checks-section (Agent 2) -->
 
     {# ============== § 4 FUNDER MATCHING (inline) ==============
