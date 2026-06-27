@@ -28,7 +28,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -194,9 +194,19 @@ class _RecordedCall:
 class _FakeChain:
     """Records every method call so the test can assert ordering."""
 
-    def __init__(self, table: str, calls: list[_RecordedCall]) -> None:
+    def __init__(
+        self,
+        table: str,
+        calls: list[_RecordedCall],
+        canned_select_data: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
         self._table = table
         self._calls = calls
+        self._canned = canned_select_data or {}
+
+    def select(self, cols: str) -> _FakeChain:
+        self._calls.append(_RecordedCall(self._table, "select", cols))
+        return self
 
     def insert(self, payload: Any) -> _FakeChain:
         self._calls.append(_RecordedCall(self._table, "insert", payload))
@@ -218,22 +228,32 @@ class _FakeChain:
         self._calls.append(_RecordedCall(self._table, "eq", {col: value}))
         return self
 
+    def limit(self, n: int) -> _FakeChain:
+        self._calls.append(_RecordedCall(self._table, "limit", n))
+        return self
+
     def execute(self) -> Any:
         self._calls.append(_RecordedCall(self._table, "execute"))
 
-        class _Result:
-            def __init__(self) -> None:
-                self.data: list[dict[str, Any]] = []
+        canned = self._canned.get(self._table, [])
 
-        return _Result()
+        class _Result:
+            def __init__(self, data: list[dict[str, Any]]) -> None:
+                self.data = data
+
+        return _Result(canned)
 
 
 class _FakeClient:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        canned_select_data: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
         self.calls: list[_RecordedCall] = []
+        self._canned = canned_select_data or {}
 
     def table(self, name: str) -> _FakeChain:
-        return _FakeChain(name, self.calls)
+        return _FakeChain(name, self.calls, self._canned)
 
 
 def test_supabase_persist_parse_result_deletes_txns_then_upserts_analysis(
@@ -260,13 +280,19 @@ def test_supabase_persist_parse_result_deletes_txns_then_upserts_analysis(
     # The eq filter targets document_id with the stringified UUID.
     assert tx_calls[1].payload == {"document_id": str(doc_id)}
 
-    # analyses must be an upsert on document_id, not an insert.
+    # analyses must:
+    #  1) SELECT existing id by document_id (FK-preservation lookup), then
+    #  2) UPSERT on document_id conflict — never bare INSERT.
     an_calls = [c for c in fake.calls if c.table == "analyses"]
     ops = [c.op for c in an_calls]
     assert "insert" not in ops, f"analyses must NOT use insert(): {ops}"
-    assert ops[0] == "upsert", f"analyses first op must be upsert: {ops}"
-    assert an_calls[0].on_conflict == "document_id", (
-        f"analyses upsert on_conflict must be document_id, got: {an_calls[0].on_conflict!r}"
+    # First operation is the id-lookup SELECT (preserves analyses.id
+    # across reparses so the decisions.analysis_id FK stays valid).
+    assert ops[0] == "select", f"analyses first op must be id-lookup select: {ops}"
+    assert "upsert" in ops, f"analyses must include upsert: {ops}"
+    upsert_call = next(c for c in an_calls if c.op == "upsert")
+    assert upsert_call.on_conflict == "document_id", (
+        f"analyses upsert on_conflict must be document_id, got: {upsert_call.on_conflict!r}"
     )
 
 
@@ -349,3 +375,102 @@ def test_supabase_storage_upload_raises_storageerror_on_backend_exception(
     with pytest.raises(StorageError) as exc:
         backend.upload("p/x.bin", b"data")
     assert "network down" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — analyses.id preservation on reparse.
+#
+# The 2026-06-27 reparse flood Round 2: even after the upsert fix landed,
+# reparses on docs that already had a ``decisions`` row failed with
+# ``decisions_analysis_id_fkey`` violations. Root cause: the Pydantic
+# ``AnalysisRow`` generates a fresh ``uuid4()`` for its ``id`` on every
+# build, the upsert UPDATEs that PK column, and Postgres CASCADE on
+# DELETE does NOT cascade on UPDATE-of-PK. Migration 082 (ON DELETE
+# CASCADE) did not solve this — the application-side fix is to reuse
+# the existing analyses.id when an upsert would otherwise change it.
+# ---------------------------------------------------------------------------
+
+
+def test_supabase_persist_parse_result_preserves_existing_analyses_id_on_reparse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reparse must reuse the existing ``analyses.id``.
+
+    The first parse stamped ``analysis.id = <X>`` and a downstream
+    ``decisions`` row was written with ``analysis_id = <X>``. The reparse
+    builds a fresh ``AnalysisRow`` with a new ``uuid4()`` for ``id``;
+    without the lookup-then-reuse fix, the upsert UPDATEs the PK to
+    that new UUID and the FK trips. With the fix, the lookup finds the
+    existing row's id and the upsert preserves it.
+    """
+    doc_id = uuid4()
+    existing_analysis_id = str(uuid4())
+    fake = _FakeClient(
+        canned_select_data={
+            "analyses": [{"id": existing_analysis_id}],
+        }
+    )
+    monkeypatch.setattr(storage_module, "get_supabase", lambda: fake)
+
+    repo = SupabaseDocumentRepository()
+    result = _pipeline_result(num_txns=1)
+    repo.persist_parse_result(doc_id, result=result)
+
+    # Find the upsert payload and assert its id is the existing UUID,
+    # not the fresh uuid4 from _build_analysis().
+    an_calls = [c for c in fake.calls if c.table == "analyses"]
+    upsert_call = next(c for c in an_calls if c.op == "upsert")
+    assert upsert_call.payload["id"] == existing_analysis_id, (
+        f"reparse must reuse existing analyses.id={existing_analysis_id} "
+        f"but upsert wrote id={upsert_call.payload['id']!r}"
+    )
+
+
+def test_supabase_persist_parse_result_fresh_parse_uses_new_uuid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh parse (no existing analyses row) generates a new UUID.
+
+    Counter-positive: ``existing_id`` lookup returns empty list, so the
+    fix's branch goes to ``analysis.id`` as-built by ``_build_analysis``
+    (a fresh uuid4). The upsert payload's id must NOT be empty, must be
+    a valid UUID string, and must differ from previous fresh-parse runs
+    (regenerated on every build).
+    """
+    doc_id = uuid4()
+    fake = _FakeClient()  # no canned data — select returns empty list
+    monkeypatch.setattr(storage_module, "get_supabase", lambda: fake)
+
+    repo = SupabaseDocumentRepository()
+    result = _pipeline_result(num_txns=1)
+    repo.persist_parse_result(doc_id, result=result)
+
+    an_calls = [c for c in fake.calls if c.table == "analyses"]
+    upsert_call = next(c for c in an_calls if c.op == "upsert")
+    new_id = upsert_call.payload["id"]
+    assert new_id, "fresh-parse upsert payload must carry an id"
+    # Parses as UUID — would raise if it doesn't.
+    parsed = UUID(new_id)
+    assert parsed.version == 4, f"fresh-parse id should be uuid4, got version {parsed.version}"
+
+
+def test_supabase_persist_parse_result_lookup_fires_before_upsert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Operation ordering: the id-lookup SELECT must precede the UPSERT.
+
+    If the lookup happens after the upsert, the id-preservation logic
+    can't apply. Pin the order so a future refactor that "optimises"
+    by moving the lookup elsewhere can't quietly reintroduce the FK
+    violation."""
+    doc_id = uuid4()
+    fake = _FakeClient(canned_select_data={"analyses": [{"id": str(uuid4())}]})
+    monkeypatch.setattr(storage_module, "get_supabase", lambda: fake)
+
+    repo = SupabaseDocumentRepository()
+    repo.persist_parse_result(doc_id, result=_pipeline_result(num_txns=1))
+
+    an_ops = [c.op for c in fake.calls if c.table == "analyses"]
+    select_idx = an_ops.index("select")
+    upsert_idx = an_ops.index("upsert")
+    assert select_idx < upsert_idx, f"id-lookup SELECT must precede UPSERT, got order: {an_ops}"

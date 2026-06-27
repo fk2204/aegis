@@ -634,6 +634,25 @@ class SupabaseDocumentRepository:
                 patterns=result.patterns,
                 monthly_breakdown=result.monthly_breakdown,
             )
+            # Preserve the existing analyses.id on reparse so the FK
+            # from ``decisions.analysis_id`` stays valid. Migration
+            # 082 made the FK ``ON DELETE CASCADE``, but the upsert
+            # path is an UPDATE — not a DELETE — and Postgres does
+            # NOT cascade on UPDATE of the parent PK. Reusing the
+            # existing UUID makes the upsert a no-op on the PK and
+            # the FK never trips. Fresh-parse (no existing row) keeps
+            # ``analysis.id`` as the new uuid4 from ``_build_analysis``.
+            existing_id = (
+                client.table("analyses")
+                .select("id")
+                .eq("document_id", str(document_id))
+                .limit(1)
+                .execute()
+                .data
+            )
+            if existing_id:
+                row = cast(dict[str, Any], existing_id[0])
+                analysis = analysis.model_copy(update={"id": UUID(str(row["id"]))})
             client.table("analyses").upsert(
                 _analysis_to_db_row(analysis),
                 on_conflict="document_id",
