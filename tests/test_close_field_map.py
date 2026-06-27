@@ -31,9 +31,13 @@ from aegis.close.field_map import (
     filename_matches_statement_filter,
     get_custom_field,
     industry_to_naics,
+    industry_to_naics_safe,
     normalize_entity_type,
+    normalize_entity_type_safe,
     parse_fico_range,
+    parse_fico_range_safe,
     parse_money,
+    parse_money_safe,
     resolve_entity_type,
 )
 
@@ -497,3 +501,125 @@ def test_filename_is_non_statement_does_not_short_circuit_clean_statements() -> 
         assert filename_is_non_statement(name) is None, (
             f"clean filename {name!r} matched a deny term"
         )
+
+
+# ----------------------------------------------------------------------
+# Graceful (`*_safe`) parser variants
+# ----------------------------------------------------------------------
+#
+# The strict parsers above raise ``FieldMapError`` on unknown enums; the
+# ``_safe`` variants return ``(value, warning_token)`` tuples so the
+# webhook handler can store ``None`` for the bad field, audit the raw
+# value, and keep going with the rest of the payload. Each pair below
+# exercises (a) the happy path is unchanged, (b) null-shaped input ->
+# ``(None, None)``, (c) the unknown-value path surfaces the raw value
+# as a warning token rather than raising.
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_bound"),
+    [
+        ("<550", 549),
+        ("550-599", 550),
+        ("600-649", 600),
+        ("650-699", 650),
+        ("700+", 700),
+    ],
+)
+def test_parse_fico_range_safe_happy_path_returns_value_and_no_warning(
+    value: str, expected_bound: int
+) -> None:
+    assert parse_fico_range_safe(value) == (expected_bound, None)
+
+
+@pytest.mark.parametrize("null_input", [None, "", "-None-"])
+def test_parse_fico_range_safe_null_inputs_return_none_none(null_input: str | None) -> None:
+    assert parse_fico_range_safe(null_input) == (None, None)
+
+
+def test_parse_fico_range_safe_unknown_bucket_returns_none_and_warning() -> None:
+    """A free-form Close-emitted FICO value (e.g. "750+", "720-779") not
+    in the static table comes back as ``(None, raw_value)`` so the
+    webhook handler can store None on the merchant + audit the raw
+    value rather than 400'ing the entire webhook."""
+    result = parse_fico_range_safe("750+")
+    assert result == (None, "750+")
+
+
+def test_parse_fico_range_safe_garbage_string_returns_none_and_warning() -> None:
+    result = parse_fico_range_safe("good")
+    assert result == (None, "good")
+
+
+@pytest.mark.parametrize("industry", sorted(CLOSE_INDUSTRY_TO_NAICS.keys()))
+def test_industry_to_naics_safe_happy_path(industry: str) -> None:
+    result = industry_to_naics_safe(industry)
+    assert result == (CLOSE_INDUSTRY_TO_NAICS[industry], None)
+
+
+@pytest.mark.parametrize("null_input", [None, "", "-None-"])
+def test_industry_to_naics_safe_null_inputs(null_input: str | None) -> None:
+    assert industry_to_naics_safe(null_input) == (None, None)
+
+
+def test_industry_to_naics_safe_unknown_industry_returns_warning() -> None:
+    result = industry_to_naics_safe("Cryptocurrency Mining")
+    assert result == (None, "Cryptocurrency Mining")
+
+
+@pytest.mark.parametrize(
+    ("close_value", "expected_literal"),
+    [
+        ("LLC", "llc"),
+        ("C-Corp", "corp"),
+        ("S-Corp", "corp"),
+        ("Sole Proprietorship", "sole_prop"),
+        ("Partnership", "partnership"),
+        ("Non-Profit", "other"),
+        ("Other", "other"),
+        ("Option 1", "other"),
+    ],
+)
+def test_normalize_entity_type_safe_happy_path(close_value: str, expected_literal: str) -> None:
+    assert normalize_entity_type_safe(close_value) == (expected_literal, None)
+
+
+@pytest.mark.parametrize("null_input", [None, "", "-None-"])
+def test_normalize_entity_type_safe_null_inputs(null_input: str | None) -> None:
+    assert normalize_entity_type_safe(null_input) == (None, None)
+
+
+def test_normalize_entity_type_safe_unknown_choice_returns_warning() -> None:
+    result = normalize_entity_type_safe("B-Corp")
+    assert result == (None, "B-Corp")
+
+
+def test_parse_money_safe_happy_path_with_formatting() -> None:
+    value, warning = parse_money_safe("$1,500.00")
+    assert value == Decimal("1500.00")
+    assert warning is None
+
+
+def test_parse_money_safe_empty_inputs_return_none_none() -> None:
+    assert parse_money_safe(None) == (None, None)
+    assert parse_money_safe("") == (None, None)
+
+
+def test_parse_money_safe_garbage_returns_warning() -> None:
+    value, warning = parse_money_safe("not a number")
+    assert value is None
+    assert warning == "not a number"
+
+
+def test_parse_money_safe_multiple_decimals_returns_warning() -> None:
+    value, warning = parse_money_safe("1.2.3")
+    assert value is None
+    assert warning == "1.2.3"
+
+
+def test_parse_money_safe_only_dollar_sign_returns_warning() -> None:
+    """Strip leaves nothing — the safe variant surfaces the operator's
+    typed value (``"$"``) as the warning token instead of raising."""
+    value, warning = parse_money_safe("$")
+    assert value is None
+    assert warning == "$"

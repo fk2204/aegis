@@ -1234,4 +1234,215 @@ def test_lead_updated_gate_fails_open_when_close_api_errors(
     assert repo.find_by_close_lead_id(lead_id) is not None
     actions = [e["action"] for e in audit.entries]
     assert "close.merchant.created" in actions
+
+
+# ----------------------------------------------------------------------
+# Graceful fallback on unknown Close field values
+# ----------------------------------------------------------------------
+#
+# Pre-2026-06-26 behavior: any unknown FICO bucket / Industry / Entity
+# type / unparseable money string dropped the whole webhook on the floor
+# with HTTP 400 ``close_lead_field_parse_failed``. Every other field that
+# DID parse went with it; Close kept retrying for 72h; the merchant
+# never materialized. Post-fix: the unknown value falls back to None,
+# the merchant upsert proceeds, and a ``close.field_parse_warning``
+# audit row carries the raw value so the operator can extend the static
+# mapping table or fix the Close-side choice.
+
+
+def _close_field_parse_warnings(audit: InMemoryAuditLog) -> list[dict[str, Any]]:
+    return [e for e in audit.entries if e["action"] == "close.field_parse_warning"]
+
+
+def _build_lead_payload_with_overrides(**overrides: str) -> dict[str, Any]:
+    """Canonical lead payload with selected custom fields overridden by
+    AEGIS-side field name (e.g. ``fico_range="900+"``)."""
+    payload = _lead_payload()
+    for aegis_name, value in overrides.items():
+        payload[f"custom.{CLOSE_FIELD_IDS[aegis_name]}"] = value
+    return payload
+
+
+def _client_with_lead_payload(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    payload: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[TestClient]:
+    monkeypatch.setenv("CLOSE_API_KEY", "api_test")
+    monkeypatch.setenv("CLOSE_API_BASE", "https://api.close.example")
+    monkeypatch.setenv("CLOSE_WEBHOOK_SECRET", _TEST_SECRET_HEX)
+    monkeypatch.setenv("CLOSE_DOCS_IN_PRE_UW_STATUS_ID", _TRIGGER_STATUS_ID)
+    get_settings.cache_clear()
+
+    transport = _path_aware_transport_factory(lead_payload_override=payload)
+    close_client = CloseClient(http_client=httpx.Client(transport=httpx.MockTransport(transport)))
+
+    reset_dependency_caches()
+    app = create_app()
+    app.dependency_overrides[get_merchant_repository] = lambda: repo
+    app.dependency_overrides[get_audit] = lambda: audit
+    app.dependency_overrides[get_close_client] = lambda: close_client
+    with TestClient(app) as tc:
+        yield tc
+    reset_dependency_caches()
+
+
+def test_unknown_fico_returns_204_and_audits_warning(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown FICO bucket (e.g. Close starts emitting "750+" outside our
+    static table): merchant created with credit_score=None, exactly one
+    ``close.field_parse_warning`` audit row carrying the raw value."""
+    payload = _build_lead_payload_with_overrides(fico_range="750+")
+    for tc in _client_with_lead_payload(repo, audit, payload, monkeypatch):
+        resp = _post_signed(tc, _opportunity_event())
+        assert resp.status_code == 204, resp.text
+
+    merchant = repo.find_by_close_lead_id("lead_abc")
+    assert merchant is not None
+    assert merchant.credit_score is None
+    # Other fields still parsed.
+    assert merchant.business_name == "Acme Holdings LLC"
+    assert merchant.entity_type == "llc"
+
+    warnings = _close_field_parse_warnings(audit)
+    assert len(warnings) == 1
+    warning = warnings[0]
+    assert warning["actor"] == "close_webhook"
+    assert warning["details"] == {
+        "field": "fico_range",
+        "raw_value": "750+",
+        "close_lead_id": "lead_abc",
+    }
+
+
+def test_unknown_industry_returns_204_and_audits_warning(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown Industry choice — and no explicit NAICS Code on the Lead
+    — falls back to industry_naics=None plus one warning. The explicit
+    naics_code field is cleared so the safe-parse path actually runs."""
+    payload = _build_lead_payload_with_overrides(
+        industry="Cryptocurrency Mining",
+        naics_code="",
+    )
+    for tc in _client_with_lead_payload(repo, audit, payload, monkeypatch):
+        resp = _post_signed(tc, _opportunity_event())
+        assert resp.status_code == 204, resp.text
+
+    merchant = repo.find_by_close_lead_id("lead_abc")
+    assert merchant is not None
+    assert merchant.industry_naics is None
+    # The raw Industry choice still gets persisted alongside (migration 055).
+    assert merchant.industry_choice == "Cryptocurrency Mining"
+
+    warnings = _close_field_parse_warnings(audit)
+    assert len(warnings) == 1
+    assert warnings[0]["details"] == {
+        "field": "industry",
+        "raw_value": "Cryptocurrency Mining",
+        "close_lead_id": "lead_abc",
+    }
+
+
+def test_unknown_entity_type_returns_204_and_audits_warning(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both Close entity-type fields agree on an unmapped value (e.g.
+    "B-Corp"). The merchant lands with entity_type=None and one
+    ``close.field_parse_warning`` row."""
+    payload = _build_lead_payload_with_overrides(
+        entity_type_a="B-Corp",
+        entity_type_b="B-Corp",
+    )
+    for tc in _client_with_lead_payload(repo, audit, payload, monkeypatch):
+        resp = _post_signed(tc, _opportunity_event())
+        assert resp.status_code == 204, resp.text
+
+    merchant = repo.find_by_close_lead_id("lead_abc")
+    assert merchant is not None
+    assert merchant.entity_type is None
+
+    warnings = _close_field_parse_warnings(audit)
+    assert len(warnings) == 1
+    assert warnings[0]["details"] == {
+        "field": "entity_type",
+        "raw_value": "B-Corp",
+        "close_lead_id": "lead_abc",
+    }
+
+
+def test_known_fico_still_parses_to_canonical_bucket(
+    client: TestClient,
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+) -> None:
+    """Sanity test — the happy path on the default fixture still maps
+    FICO 650-699 to credit_score=650 and writes ZERO
+    ``close.field_parse_warning`` rows."""
+    resp = _post_signed(client, _opportunity_event())
+    assert resp.status_code == 204, resp.text
+
+    merchant = repo.find_by_close_lead_id("lead_abc")
+    assert merchant is not None
+    assert merchant.credit_score == 650
+    assert _close_field_parse_warnings(audit) == []
+
+
+def test_unparseable_money_returns_204_and_audits_warning(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bad ``requested_amount`` string (e.g. "$" or "1.2.3") falls back
+    to requested_amount=None plus one warning — the merchant upsert
+    proceeds."""
+    payload = _build_lead_payload_with_overrides(requested_amount="1.2.3")
+    for tc in _client_with_lead_payload(repo, audit, payload, monkeypatch):
+        resp = _post_signed(tc, _opportunity_event())
+        assert resp.status_code == 204, resp.text
+
+    merchant = repo.find_by_close_lead_id("lead_abc")
+    assert merchant is not None
+    assert merchant.requested_amount is None
+
+    warnings = _close_field_parse_warnings(audit)
+    assert len(warnings) == 1
+    assert warnings[0]["details"]["field"] == "requested_amount"
+    assert warnings[0]["details"]["raw_value"] == "1.2.3"
+
+
+def test_multiple_unknown_fields_each_get_their_own_warning_row(
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A really bad payload — unknown FICO + unknown Industry + bad money
+    — yields exactly three warning rows (one per field) and one merchant
+    upsert with the bad fields nulled."""
+    payload = _build_lead_payload_with_overrides(
+        fico_range="900+",
+        industry="Underwater Basket Weaving",
+        naics_code="",
+        requested_amount="not-a-number",
+    )
+    for tc in _client_with_lead_payload(repo, audit, payload, monkeypatch):
+        resp = _post_signed(tc, _opportunity_event())
+        assert resp.status_code == 204, resp.text
+
+    merchant = repo.find_by_close_lead_id("lead_abc")
+    assert merchant is not None
+    assert merchant.credit_score is None
+    assert merchant.industry_naics is None
+    assert merchant.requested_amount is None
+
+    fields = sorted(w["details"]["field"] for w in _close_field_parse_warnings(audit))
+    assert fields == ["fico_range", "industry", "requested_amount"]
     reset_dependency_caches()

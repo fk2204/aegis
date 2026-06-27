@@ -13,9 +13,30 @@ Conventions
   (plus empty string and missing keys) as null.
 * Money values arrive as operator-typed text from Close — string-cleaned
   via ``parse_money`` to ``Decimal``. Never ``float``.
-* Anything we cannot parse raises ``FieldMapError`` with the original
-  value in the message. No silent defaults — the operator must see
-  surprises in the audit trail and fix them in Close.
+
+Strict vs. graceful parsers
+---------------------------
+Each enum-bucket parser exists in two flavors:
+
+* The strict form (``parse_fico_range``, ``industry_to_naics``,
+  ``normalize_entity_type``, ``parse_money``) raises ``FieldMapError``
+  on unknown / un-parseable values. Used by callers that want a hard
+  failure surface (e.g. operator-facing import tools where a surprise
+  must stop the workflow).
+* The graceful form (``parse_fico_range_safe`` and siblings) returns
+  ``(value | None, warning_token | None)`` tuples. Used by the
+  ``POST /webhooks/close`` path so an unknown Close choice no longer
+  drops the whole webhook on the floor — the merchant row gets created
+  with what DID parse, the unknown value lands in a
+  ``close.field_parse_warning`` audit row, and the operator can extend
+  the mapping or fix Close-side.
+
+The flip from strict-only to strict+graceful was driven by repeated
+real-world drops on the prod webhook (FICO bands, industries, entity
+types Close started emitting after the static tables were authored).
+A 400 on one bad field would lose every other field that DID parse;
+the graceful path treats unknown-value as data hygiene, not as a
+webhook-killer.
 """
 
 from __future__ import annotations
@@ -200,6 +221,10 @@ def parse_fico_range(value: str | None) -> int | None:
     None / empty → None. Anything not in ``FICO_RANGE_LOWER_BOUND``
     → ``FieldMapError`` (including values that look like new bands
     Close hasn't published — better to fail loud than guess).
+
+    Use ``parse_fico_range_safe`` for webhook-flow callers that want
+    an unknown bucket to degrade to ``None`` + a warning token rather
+    than killing the upsert.
     """
     if value is None or value == "" or value == _NONE_MARKER:
         return None
@@ -211,12 +236,31 @@ def parse_fico_range(value: str | None) -> int | None:
     return FICO_RANGE_LOWER_BOUND[value]
 
 
+def parse_fico_range_safe(value: str | None) -> tuple[int | None, str | None]:
+    """Graceful variant of ``parse_fico_range``.
+
+    Returns ``(lower_bound, None)`` on a known bucket, ``(None, None)``
+    on null-shaped input (``None`` / ``""`` / ``"-None-"``), and
+    ``(None, raw_value)`` on an unknown bucket so the caller can write
+    a ``close.field_parse_warning`` audit row without losing the rest
+    of the merchant payload.
+    """
+    if value is None or value == "" or value == _NONE_MARKER:
+        return (None, None)
+    if value not in FICO_RANGE_LOWER_BOUND:
+        return (None, value)
+    return (FICO_RANGE_LOWER_BOUND[value], None)
+
+
 def industry_to_naics(industry: str | None) -> str | None:
     """Close ``Industry`` choice → 6-digit NAICS code.
 
     None / empty / "-None-" → None.
     Unknown industry → ``FieldMapError`` (never silent default — the
     operator must see and decide whether to add the mapping).
+
+    Use ``industry_to_naics_safe`` for webhook-flow callers that want
+    an unknown industry to degrade to ``None`` + a warning token.
     """
     if industry is None or industry == "" or industry == _NONE_MARKER:
         return None
@@ -226,6 +270,19 @@ def industry_to_naics(industry: str | None) -> str | None:
             f"add it to CLOSE_INDUSTRY_TO_NAICS in close/field_map.py"
         )
     return CLOSE_INDUSTRY_TO_NAICS[industry]
+
+
+def industry_to_naics_safe(industry: str | None) -> tuple[str | None, str | None]:
+    """Graceful variant of ``industry_to_naics``.
+
+    Returns ``(naics, None)`` on a known industry, ``(None, None)`` on
+    null-shaped input, and ``(None, raw_value)`` on an unknown industry.
+    """
+    if industry is None or industry == "" or industry == _NONE_MARKER:
+        return (None, None)
+    if industry not in CLOSE_INDUSTRY_TO_NAICS:
+        return (None, industry)
+    return (CLOSE_INDUSTRY_TO_NAICS[industry], None)
 
 
 def parse_money(value: str | int | float | None) -> Decimal | None:
@@ -261,6 +318,34 @@ def parse_money(value: str | int | float | None) -> Decimal | None:
             f"could not parse money value {value!r} (after strip: "
             f"{cleaned!r}); decimal.InvalidOperation"
         ) from exc
+
+
+def parse_money_safe(
+    value: str | int | float | None,
+) -> tuple[Decimal | None, str | None]:
+    """Graceful variant of ``parse_money``.
+
+    Returns ``(decimal, None)`` on a valid money string, ``(None, None)``
+    on null-shaped input (``None`` / ``""``), and ``(None, raw_value)``
+    on garbage / multi-decimal / strip-collapses-to-empty so the caller
+    can write a ``close.field_parse_warning`` audit row instead of 400ing
+    the webhook.
+
+    The warning token carries the operator-typed surface form so the
+    audit row is actionable (``"$" `` distinguishable from ``"1.2.3"``).
+    """
+    if value is None:
+        return (None, None)
+    text = str(value).strip()
+    if text == "":
+        return (None, None)
+    cleaned = text.replace("$", "").replace(",", "").strip()
+    if cleaned == "":
+        return (None, text)
+    try:
+        return (Decimal(cleaned), None)
+    except InvalidOperation:
+        return (None, text)
 
 
 def resolve_entity_type(
@@ -338,6 +423,9 @@ def normalize_entity_type(value: str | None) -> str | None:
     None / "" / "-None-" → None.
     Unknown choice → ``FieldMapError`` (so the operator sees Close
     drift rather than silently bucketing into "other").
+
+    Use ``normalize_entity_type_safe`` for webhook-flow callers that
+    want an unknown choice to degrade to ``None`` + a warning token.
     """
     stripped = _strip_none_marker(value)
     if stripped is None:
@@ -348,6 +436,21 @@ def normalize_entity_type(value: str | None) -> str | None:
             f"add it to CLOSE_ENTITY_TYPE_TO_AEGIS in close/field_map.py"
         )
     return CLOSE_ENTITY_TYPE_TO_AEGIS[stripped]
+
+
+def normalize_entity_type_safe(value: str | None) -> tuple[str | None, str | None]:
+    """Graceful variant of ``normalize_entity_type``.
+
+    Returns ``(literal, None)`` on a known choice, ``(None, None)`` on
+    null-shaped input, and ``(None, raw_value)`` on an unknown choice
+    so the caller can write a ``close.field_parse_warning`` audit row.
+    """
+    stripped = _strip_none_marker(value)
+    if stripped is None:
+        return (None, None)
+    if stripped not in CLOSE_ENTITY_TYPE_TO_AEGIS:
+        return (None, stripped)
+    return (CLOSE_ENTITY_TYPE_TO_AEGIS[stripped], None)
 
 
 # ----------------------------------------------------------------------
@@ -517,8 +620,12 @@ __all__ = [
     "filename_matches_statement_filter",
     "get_custom_field",
     "industry_to_naics",
+    "industry_to_naics_safe",
     "normalize_entity_type",
+    "normalize_entity_type_safe",
     "parse_fico_range",
+    "parse_fico_range_safe",
     "parse_money",
+    "parse_money_safe",
     "resolve_entity_type",
 ]
