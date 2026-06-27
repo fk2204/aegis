@@ -96,7 +96,7 @@ class ProcessorSummary(_StrictModel):
     summed line items.
     """
 
-    processor: Literal["stripe", "square", "toast"]
+    processor: Literal["stripe", "square", "toast", "clover", "paypal"]
     business_name: str | None = None
     period_start: date
     period_end: date

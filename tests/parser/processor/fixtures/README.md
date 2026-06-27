@@ -136,6 +136,72 @@ export from Toast → Reports → Export, sanitise via
 `tests/_fixture_sanitize.py::sanitize_fixture_payload`, replace
 `toast_sample.csv`, update assertions, confirm PII canary green.
 
+## `clover_sample.csv` — synthetic-but-realistic, fabricated values
+
+**Status:** SYNTHETIC. Column headers match Clover Dashboard's documented
+transactions export format (Date & Time, Description, Amount, Tip, Tax,
+Total, Payment Type, Card Type, Last 4, Auth Code, Card Holder Name,
+Employee, Order ID, Device ID, Note). All row values are fabricated —
+fake descriptions, fake auth codes, fake card-type / Last 4 / device
+combinations. Card Holder Names are "Cardholder N" / "Guest" only (no
+named individuals); Employees are numeric IDs only (no names).
+
+**15 rows breakdown:**
+
+| Mapped kind | Count | Notes |
+|---|---|---|
+| `gross_charge` | 11 | 10 card payments (Visa / Mastercard / Amex / Discover mix) + 1 cash payment (empty Card Type / Auth Code) |
+| `refund` | 2 | "Refund - bad item" and "Refund - canceled order" — Description-driven mapping |
+| `adjustment` | 2 | 1 Void (Auth Code = VOID) + 1 Manual Adjustment (Description) — both excluded from identity |
+
+**Identity math (all amounts in USD):**
+
+```
+gross_volume     = 1164.50  (11 gross_charge rows)
+refunds_total    =   37.50  (2 refund rows)
+chargebacks_total=    0.00  (Clover doesn't separate chargebacks in this export)
+fees_total       =    0.00  (Clover doesn't report processor fees here)
+payouts_total    = 1127.00  (synthetic — derived from identity)
+
+Identity: 1164.50 - 37.50 - 0 - 0 = 1127.00  ✓
+```
+
+Period: 2026-05-02 → 2026-05-30 (29 days inclusive).
+`avg_daily_volume = 1164.50 / 29 = 40.16`.
+
+**Why synthetic is tolerable here:**
+
+CLAUDE.md's "External-integration test discipline" requires fixtures from
+external systems to be CAPTURED REAL payloads. This fixture is synthetic
+but:
+
+- The column header set is byte-for-byte the documented Clover Dashboard
+  transactions CSV format.
+- All 15 columns are present.
+- The kind-mapping branches all exercise (Payment → gross_charge, Refund
+  → refund via Description, Void → adjustment via Auth Code, Adjustment
+  → adjustment via Description, cash payment → gross_charge with empty
+  card columns).
+- Synthetic-payout derivation path is exercised (no real payout row in
+  the fixture, derived from the simplified identity since fees=0).
+
+Replace with a real sanitised Clover Dashboard export when one becomes
+available — see "Replacement procedure" below — and adjust assertion
+values in `test_clover_csv.py` to match.
+
+**Replacement procedure (when a real export becomes available):**
+
+1. Export real Clover Dashboard transactions CSV (Dashboard → Reports →
+   Transactions → Export).
+2. Run it through `tests/_fixture_sanitize.py::sanitize_fixture_payload`
+   to strip merchant PII (named individuals in Card Holder Name /
+   Employee, real Auth Codes, real Order IDs, location identifiers).
+3. Replace `clover_sample.csv` with the sanitised output.
+4. Update assertion values in `test_clover_csv.py` to match the new
+   fixture's totals.
+5. Confirm the PII canary at `tests/test_fixture_pii_canary.py` still
+   passes after the sanitised fixture lands.
+
 ## `stripe_balance_transactions_minimal.csv`
 
 (Pre-existing — unchanged.)
