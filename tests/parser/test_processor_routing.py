@@ -18,6 +18,7 @@ import pymupdf
 import pytest
 
 from aegis.parser.processor import (
+    detect_processor_from_csv_header,
     detect_processor_from_filename,
     processor_type_for_document,
 )
@@ -102,10 +103,60 @@ def test_neither_filename_nor_content_routes_to_bank(tmp_path: Path) -> None:
         ("payouts_2026_q1.csv", "stripe"),
         ("invoice.pdf", "bank"),
         ("chase_statement.pdf", "bank"),
-        # Square tokens
+        # Square tokens — branded
         ("square_sales_summary.pdf", "square"),
+        # Square Dashboard's default ``transactions_<date>.csv`` filename
+        # is NOT routable by filename alone — it collides with Stripe's
+        # ``balance_transactions_<date>.csv`` substring. Routes to bank
+        # at the filename layer; the CSV header sniff in
+        # detect_processor_from_csv_header is the correct discriminator.
+        ("transactions_2026-03-01_2026-03-31.csv", "bank"),
+        # Square tokens — alternate dash form some operators rename to
+        ("square-transactions-march.csv", "square"),
     ],
 )
 def test_filename_detector_matrix(filename: str, expected: str) -> None:
     """Cover the common filename shapes that the operator runs into."""
     assert detect_processor_from_filename(filename) == expected
+
+
+# ---------------------------------------------------------------------------
+# CSV header-content routing — the renamed-to-export.csv case
+# ---------------------------------------------------------------------------
+
+
+def test_csv_header_detects_square_signature() -> None:
+    """A CSV whose filename was renamed to a generic ``export.csv``
+    still routes to Square when its header carries the canonical
+    Square signature."""
+    header = (
+        "Date,Time,Time Zone,Description,Amount,Fee,Net,Transaction ID,"
+        "Payment ID,Card Brand,PAN Suffix,Device Name,Notes,Event Type,Location"
+    )
+    assert detect_processor_from_csv_header(header) == "square"
+
+
+def test_csv_header_detects_stripe_signature() -> None:
+    """Stripe balance-transactions header detection by the first three
+    columns."""
+    header = "id,Type,Source,Amount,Fee,Net,Currency,Created (UTC)"
+    assert detect_processor_from_csv_header(header) == "stripe"
+
+
+def test_csv_header_no_signature_returns_bank() -> None:
+    """A header that carries neither signature falls through to the
+    bank fallback (the caller refuses an untagged CSV)."""
+    header = "Transaction Date,Posting Date,Description,Amount,Category"
+    assert detect_processor_from_csv_header(header) == "bank"
+
+
+def test_csv_header_empty_returns_bank() -> None:
+    assert detect_processor_from_csv_header("") == "bank"
+
+
+def test_csv_header_strips_utf8_bom() -> None:
+    """Square + Stripe Dashboard exports ship the UTF-8 BOM. The
+    detector must tolerate it on the leading character so a raw
+    decoded line still matches."""
+    header = "﻿Date,Time,Time Zone,Description,Amount,Fee,Net,Transaction ID,extra"
+    assert detect_processor_from_csv_header(header) == "square"

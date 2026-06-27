@@ -58,6 +58,7 @@ from aegis.api.deps import (
     get_merchant_shadow_signal_repository,
     get_ofac_client,
     get_pdf_store_repository,
+    get_processor_statement_repository,
     get_repository,
     get_submission_repository,
 )
@@ -96,6 +97,7 @@ from aegis.parser.patterns import (
     analyze_patterns,
     pattern_analysis_from_dto,
 )
+from aegis.parser.processor.repository import ProcessorStatementRepository
 from aegis.pdf_store import (
     CorruptCiphertextError,
     PdfStoreIntegrityError,
@@ -3463,6 +3465,10 @@ async def merchant_detail(
         Depends(get_funder_note_submission_repository),
     ],
     snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
+    processor_repo: Annotated[
+        ProcessorStatementRepository,
+        Depends(get_processor_statement_repository),
+    ],
 ) -> HTMLResponse:
     try:
         merchant = merchants.get(merchant_id)
@@ -3860,16 +3866,22 @@ async def merchant_detail(
             close_context=_close_ctx,
         )
 
-    # Processor revenue section (Stripe — Square / Toast / Clover later).
-    # Returns None when the merchant has no Stripe statement on file. Until
-    # the processor_statements persistence layer ships (see
-    # ``aegis.workers._run_processor_branch`` docstring), this is always
-    # None on the production path; the template gates on its truthiness so
-    # the dossier section stays hidden. Tests inject a fixture-shape
-    # ``stripe_results_by_doc`` to verify the rendering.
+    # Processor revenue section (Stripe / Square / Toast / Clover / PayPal).
+    # Migration 073 wired persistence; the production path now queries
+    # ``processor_statements`` rather than reaching for a fixture-shape
+    # ``stripe_results_by_doc``. The builder returns ``None`` when the
+    # merchant has no processor rows on file — the template gates on
+    # truthiness so the dossier section stays hidden in that case.
+    #
+    # Agent 1 dossier-layout note: this block lives behind the named
+    # ``processor_section`` context key + the ``_processor_revenue.html.j2``
+    # partial. A reorder of the dossier sections should be safe to do
+    # without touching the data plumbing here — keep the partial include
+    # and the key name intact.
+    processor_statement_rows = processor_repo.list_by_merchant(merchant_id)
     processor_section = build_processor_section(
         documents=all_docs,
-        stripe_results_by_doc=None,
+        processor_statement_rows=processor_statement_rows,
     )
 
     # Plain-English narrator summary (migration 075). Cached on

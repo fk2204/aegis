@@ -146,12 +146,70 @@ _STRIPE_FILENAME_TOKENS: Final[tuple[str, ...]] = (
     "stripe-payout",
 )
 
-# Filename tokens that explicitly carry Square (kept here for parity,
-# wired for the future Square CSV path). NOT used by routing yet.
+# Filename tokens that explicitly carry Square. Wired for the Square
+# CSV path. ``square-transactions`` is the dash-separated form some
+# operators rename Dashboard exports to; ``square_transactions`` is the
+# underscore variant. The brand token ``square`` covers the common case.
+#
+# Note: Square's Dashboard default export is named ``transactions_<date>.csv``
+# WITHOUT a brand prefix — that's deliberately NOT in this list because it
+# would collide with Stripe's ``balance_transactions_<date>.csv`` (the
+# substring match in detect_processor_from_filename would mark both Stripe
+# and Square as hit and the function would return ``ambiguous``, breaking
+# the Stripe routing path). The CSV header sniff in
+# ``detect_processor_from_csv_header`` is the correct discriminator for
+# generically-named Square exports.
 _SQUARE_FILENAME_TOKENS: Final[tuple[str, ...]] = (
     "square",
     "squareup",
+    "square-transactions",
+    "square_transactions",
 )
+
+
+# Square CSV header signature. The first 8 columns identify a Square
+# transactions export deterministically:
+#   Date,Time,Time Zone,Description,Amount,Fee,Net,Transaction ID
+# Documented at the Square Help Center reference linked in
+# ``csv_square.py``. Matched case-sensitive — Square dashboards
+# preserve the header verbatim.
+_SQUARE_CSV_HEADER_SIGNATURE: Final[str] = (
+    "Date,Time,Time Zone,Description,Amount,Fee,Net,Transaction ID"
+)
+
+# Stripe balance-transactions CSV header. The first three columns
+# (``id,Type,Source``) are the structural signature; Stripe adds
+# optional trailing columns over time but the leading three are stable.
+_STRIPE_CSV_HEADER_PREFIX: Final[str] = "id,Type,Source"
+
+
+def detect_processor_from_csv_header(header_line: str) -> ProcessorBrand:
+    """Return the processor brand suggested by a CSV header line.
+
+    Complements ``detect_processor_from_filename`` for the CSV upload
+    path: a Square export whose filename was renamed to a generic
+    ``export.csv`` still gets routed correctly when the header is
+    inspected. Pure-string check; no I/O.
+
+    ``"bank"`` means "no processor signature in the header"; the
+    caller should refuse the upload (we don't know how to parse an
+    untagged CSV).
+    """
+    if not header_line:
+        return "bank"
+    stripped = header_line.strip()
+    # Strip UTF-8 BOM if the caller passed a raw bytes-decoded line.
+    if stripped.startswith("﻿"):
+        stripped = stripped[1:]
+    square_hit = stripped.startswith(_SQUARE_CSV_HEADER_SIGNATURE)
+    stripe_hit = stripped.startswith(_STRIPE_CSV_HEADER_PREFIX)
+    if square_hit and stripe_hit:
+        return "ambiguous"
+    if square_hit:
+        return "square"
+    if stripe_hit:
+        return "stripe"
+    return "bank"
 
 
 def detect_processor_from_filename(filename: str | Path) -> ProcessorBrand:
@@ -202,5 +260,6 @@ __all__ = [
     "ProcessorBrand",
     "ProcessorDetection",
     "detect_processor",
+    "detect_processor_from_csv_header",
     "detect_processor_from_filename",
 ]

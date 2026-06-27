@@ -30,6 +30,7 @@ from typing import Literal
 
 from aegis.llm import LLMClient
 from aegis.parser.processor.aggregate import aggregate_processor
+from aegis.parser.processor.csv_square import SquareCsvError, extract_square_csv
 from aegis.parser.processor.csv_stripe import StripeCsvError, extract_stripe_csv
 from aegis.parser.processor.detect import (
     ProcessorBrand,
@@ -131,6 +132,74 @@ def route_stripe_document(
     )
 
 
+def route_square_document(
+    *,
+    filename: str | Path,
+    file_bytes: bytes,
+    business_name: str | None = None,
+) -> StripeParseResult:
+    """Route a Square CSV document to the deterministic extractor.
+
+    Mirrors ``route_stripe_document`` for Square's CSV path. Square
+    PDFs go through the existing ``extract_square`` Bedrock-vision
+    extractor via ``run_processor_pipeline`` (worker hook); this CSV
+    path is the deterministic alternative the upload route picks when
+    the file extension is ``.csv``.
+
+    Parameters
+    ----------
+    filename
+        Original filename. Used only to verify the extension is
+        ``.csv`` — content discrimination happened upstream in the
+        upload route via ``detect_processor_from_csv_header``.
+    file_bytes
+        Raw CSV bytes.
+    business_name
+        Optional pass-through for the Square summary (Square CSVs
+        don't carry the business name).
+
+    Returns
+    -------
+    StripeParseResult
+        Validated extraction + dossier-shape aggregates +
+        ``parse_method="csv"``. The shape is the same as the Stripe
+        CSV path — the dossier template only cares about the
+        aggregate surface, not the brand-specific underpinnings.
+
+    Raises
+    ------
+    StripeRouterError
+        On unsupported extension or upstream extraction failure (the
+        ``SquareCsvError`` is chained for context).
+    """
+    suffix = Path(str(filename)).suffix.lower()
+    if suffix != ".csv":
+        raise StripeRouterError(
+            f"unsupported Square document extension: {suffix!r} "
+            f"(filename={Path(str(filename)).name!r}); expected .csv"
+        )
+    try:
+        extraction = extract_square_csv(file_bytes, business_name=business_name)
+    except SquareCsvError as exc:
+        raise StripeRouterError(f"Square CSV extraction failed: {exc}") from exc
+
+    validation = validate_processor(extraction)
+    if not validation.passed:
+        raise StripeRouterError(
+            "Square statement failed validation: " + "; ".join(validation.failures)
+        )
+
+    base_aggregates = aggregate_processor(extraction.transactions)
+    dossier_aggregates = build_stripe_dossier_aggregates(extraction, base_aggregates)
+
+    return StripeParseResult(
+        extraction=extraction,
+        aggregates=dossier_aggregates,
+        parse_method="csv",
+        period_days=dossier_aggregates.period_days,
+    )
+
+
 def detect_stripe(
     *,
     filename: str | Path,
@@ -160,6 +229,7 @@ def detect_stripe(
 __all__ = [
     "StripeRouterError",
     "detect_stripe",
+    "route_square_document",
     "route_stripe_document",
 ]
 

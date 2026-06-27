@@ -38,6 +38,7 @@ from aegis.api.deps import (
     get_merchant_repository,
     get_merchant_shadow_signal_repository,
     get_pdf_store_repository,
+    get_processor_statement_repository,
     get_repository,
 )
 from aegis.api.routes.upload import EnqueueParse, persist_pdf_upload
@@ -86,7 +87,14 @@ from aegis.merchants.shadow_signals import (
 from aegis.ops.cost_tracking import CostTrackingBedrockClient
 from aegis.parser.pipeline import MerchantContext, PipelineResult, run_pipeline
 from aegis.parser.processor import (
+    ExtractedProcessorStatement,
+    ProcessorAggregates,
     ProcessorPipelineResult,
+    ProcessorStatementRepository,
+    ProcessorStatementRow,
+    ProcessorStatementWriteError,
+    ProcessorType,
+    build_stripe_dossier_aggregates,
     detect_processor,
     run_processor_pipeline,
 )
@@ -146,6 +154,12 @@ async def parse_document(
     # ``merchants`` / ``shadow_signals`` slots above). The post-parse
     # storage step calls ``store`` before the local PDF is unlinked.
     pdf_store_repo: PdfStoreRepository = ctx.get("pdf_store") or get_pdf_store_repository()
+    # Migration 073 — processor_statements. Pulled here so tests can
+    # inject an in-memory repo via the ctx dict; the processor-branch
+    # success path upserts a row with the dossier-shape aggregates.
+    processor_repo: ProcessorStatementRepository = (
+        ctx.get("processor_statements") or get_processor_statement_repository()
+    )
 
     # Wrap the production BedrockClient with cost tracking so every
     # Bedrock call writes one bedrock.usage audit row tagged with this
@@ -230,6 +244,7 @@ async def parse_document(
             repository=repository,
             merchants_repo=merchants_repo,
             pdf_store_repo=pdf_store_repo,
+            processor_repo=processor_repo,
             keep_local_plaintext=keep_local_plaintext,
         )
 
@@ -461,16 +476,18 @@ async def _run_processor_branch(
     repository: DocumentRepository,
     merchants_repo: MerchantRepository,
     pdf_store_repo: PdfStoreRepository,
+    processor_repo: ProcessorStatementRepository,
     keep_local_plaintext: bool = True,
 ) -> dict[str, Any]:
-    """Run the processor pipeline + audit the result (mp Phase 6.6).
+    """Run the processor pipeline + persist + audit the result (mp Phase 6.6).
 
-    Persistence to the ``processor_statements`` table needs a
-    repository method that doesn't exist yet — punted to a follow-up
-    commit on this branch. For now we audit the aggregates onto
-    ``audit_log`` so the operator can see the parsed result in the
-    dashboard's recent-activity feed, and mark the document's
-    parse_status so downstream queries can filter on it.
+    Migration 073 wired the persistence layer for processor aggregates;
+    on a successful parse this branch builds the dossier-shape
+    aggregates (``StripeDossierAggregates``) and upserts them into the
+    ``processor_statements`` table via ``processor_repo.upsert``. The
+    same row drives the dossier ``processor_section`` builder so the
+    operator sees the parsed gross / fees / payouts without re-running
+    the pipeline.
 
     Migration 034 — the processor pipeline doesn't expose an
     ``account_holder`` analogue, so a processor-branch SUCCESS (let
@@ -591,6 +608,27 @@ async def _run_processor_branch(
 
     doc_after = repository.get_document(document_id)
 
+    # Migration 073 — persist aggregates to ``processor_statements``.
+    # Requires a merchant_id; bearer / orphan uploads skip persistence
+    # (the audit row already captured the parse outcome). The dossier
+    # ``processor_section`` builder reads from this table — without the
+    # upsert, the production dossier stays blank even after a
+    # successful parse.
+    if (
+        result.extraction is not None
+        and result.aggregates is not None
+        and doc_after.merchant_id is not None
+    ):
+        _persist_processor_statement(
+            processor_repo=processor_repo,
+            audit=audit,
+            document_id=document_id,
+            merchant_id=doc_after.merchant_id,
+            brand=brand,
+            extraction=result.extraction,
+            base_aggregates=result.aggregates,
+        )
+
     # Migration 034 — processor pipeline doesn't expose an
     # ``account_holder`` analogue (the processor statement summary
     # carries the gross_volume / payouts shape but not a clean
@@ -642,6 +680,129 @@ async def _run_processor_branch(
         "parse_status": result.parse_status,
         "fraud_score": 0,  # processor pipeline doesn't compute a fraud_score
     }
+
+
+# ===========================================================================
+# Migration 073 — processor_statements persistence helper.
+#
+# Builds dossier-shape aggregates (gross / fees / payouts / net /
+# avg_daily_volume / refund_rate / chargeback_count) from the validator
+# output + extraction, upserts the row, writes an audit row that proves
+# the persistence step ran. The helper isolates the failure mode: a
+# Supabase blip on the upsert MUST surface as a dedicated audit row and
+# fail the worker (CLAUDE.md "audit-log writes are written for every
+# state change; audit-write failures FAIL the operation, never silently
+# log-and-continue") — the parse outcome itself is already on
+# ``audit_log`` via ``document.parse.processor_complete`` so dropping
+# the persistence write would leave the dossier perpetually blank.
+# ===========================================================================
+
+
+def _persist_processor_statement(
+    *,
+    processor_repo: ProcessorStatementRepository,
+    audit: AuditLog,
+    document_id: UUID,
+    merchant_id: UUID,
+    brand: str,
+    extraction: ExtractedProcessorStatement,
+    base_aggregates: ProcessorAggregates,
+) -> ProcessorStatementRow:
+    """Persist the dossier-shape aggregates and audit the write.
+
+    ``parse_method`` is fixed to ``"pdf_vision"`` here — the processor
+    branch only runs on PDF uploads (the CSV path is wired separately
+    through the StripeRouter and does not currently touch the worker).
+    When the CSV upload path lands a worker hook, this helper picks up
+    the discriminator from the caller.
+    """
+    dossier = build_stripe_dossier_aggregates(extraction, base_aggregates)
+    processor_type = _narrow_processor_type(brand)
+    # AEGIS auditability: every aggregate metric persists its
+    # contributing line-item IDs alongside the value. Keys mirror the
+    # 020 column names so the on-disk JSON shape is operator-readable
+    # via the dossier drill-down.
+    source_ids: dict[str, list[UUID]] = {
+        "gross_volume": list(dossier.total_gross_volume.source_ids),
+        "fees_total": list(dossier.total_fees.source_ids),
+        "net_revenue": list(dossier.total_net_volume.source_ids),
+        "payouts_total": list(dossier.total_payouts.source_ids),
+    }
+    row = ProcessorStatementRow(
+        document_id=document_id,
+        merchant_id=merchant_id,
+        processor_type=processor_type,
+        period_start=dossier.period_start,
+        period_end=dossier.period_end,
+        total_gross_volume=dossier.total_gross_volume.value,
+        total_fees=dossier.total_fees.value,
+        total_net_volume=dossier.total_net_volume.value,
+        total_payouts=dossier.total_payouts.value,
+        avg_daily_volume=dossier.avg_daily_volume,
+        chargeback_count=dossier.chargeback_count,
+        refund_rate=dossier.refund_rate,
+        parse_method="pdf_vision",
+        source_ids=source_ids,
+    )
+    try:
+        persisted = processor_repo.upsert(row)
+    except ProcessorStatementWriteError:
+        # Surface failure as an audit row before re-raising; the parse
+        # itself succeeded but the persistence step did not. The worker
+        # propagates the exception so arq retries the job.
+        audit.record(
+            actor="worker",
+            action="processor_statement.persist_failed",
+            subject_type="document",
+            subject_id=document_id,
+            details={"brand": brand, "merchant_id": str(merchant_id)},
+        )
+        raise
+
+    audit.record(
+        actor="worker",
+        action="processor_statement.parsed",
+        subject_type="document",
+        subject_id=document_id,
+        details={
+            "processor_type": persisted.processor_type,
+            "merchant_id": str(merchant_id),
+            "document_id": str(document_id),
+            "total_gross_volume": str(persisted.total_gross_volume),
+            "total_fees": str(persisted.total_fees),
+            "total_net_volume": str(persisted.total_net_volume),
+            "total_payouts": str(persisted.total_payouts),
+            "avg_daily_volume": str(persisted.avg_daily_volume),
+            "chargeback_count": persisted.chargeback_count,
+        },
+    )
+    return persisted
+
+
+def _narrow_processor_type(brand: str) -> ProcessorType:
+    """Narrow ``brand`` to the ``ProcessorType`` literal.
+
+    The worker treats ``brand`` as a plain ``str`` because the detector
+    returns ``ProcessorBrand`` which includes ``bank`` / ``ambiguous``;
+    by the time we reach the persistence helper the value is already
+    constrained to ``stripe`` / ``square`` by the dispatch check at the
+    top of ``parse_document``. Re-asserting the narrowing keeps mypy
+    happy and gives a sharp error message if a new brand ever flows
+    through here without an explicit allowlist update.
+    """
+    if brand == "stripe":
+        return "stripe"
+    if brand == "square":
+        return "square"
+    if brand == "toast":
+        return "toast"
+    if brand == "clover":
+        return "clover"
+    if brand == "paypal":
+        return "paypal"
+    raise ProcessorStatementWriteError(
+        f"unsupported processor brand {brand!r} for processor_statements row"
+    )
 
 
 # ===========================================================================

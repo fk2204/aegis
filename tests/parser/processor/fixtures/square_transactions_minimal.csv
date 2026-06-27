@@ -1,0 +1,9 @@
+Date,Time,Time Zone,Description,Amount,Fee,Net,Transaction ID,Payment ID,Card Brand,PAN Suffix,Device Name,Notes,Event Type,Location
+2026-03-01,10:14,UTC,Card sale - latte + scone,12.50,0.36,12.14,sq_txn_001,sq_pay_001,Visa,4242,Register 1,,Payment,Downtown
+2026-03-02,09:01,UTC,Card sale - lunch combo,28.75,0.83,27.92,sq_txn_002,sq_pay_002,Mastercard,4444,Register 1,,Payment,Downtown
+2026-03-03,18:22,UTC,Customer refund - returned lunch,5.00,0.00,-5.00,sq_txn_003,sq_pay_002,Mastercard,4444,Register 1,,Refund,Downtown
+2026-03-05,11:45,UTC,Card sale - catering order,425.00,12.33,412.67,sq_txn_004,sq_pay_003,Visa,5555,Register 2,,Payment,Downtown
+2026-03-08,14:30,UTC,Customer dispute - unauthorized charge,75.00,15.00,-75.00,sq_txn_005,sq_pay_001,Visa,4242,Register 1,,Chargeback,Downtown
+2026-03-12,08:00,UTC,Card sale - retail purchase,52.40,1.52,50.88,sq_txn_006,sq_pay_004,Amex,1111,Register 2,,Payment,Downtown
+2026-03-18,13:12,UTC,Card sale - dinner service,89.25,2.59,86.66,sq_txn_007,sq_pay_005,Visa,6666,Register 1,,Payment,Downtown
+2026-03-22,16:00,UTC,Customer refund - cancelled order,18.50,0.00,-18.50,sq_txn_008,sq_pay_004,Amex,1111,Register 2,,Refund,Downtown

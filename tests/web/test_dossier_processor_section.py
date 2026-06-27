@@ -199,3 +199,132 @@ def test_builder_picks_first_doc_with_stripe_result() -> None:
     assert section["parse_method"] == "csv"
     assert section["document_id"] == str(doc_a.id)
     assert section["aggregates"] is result.aggregates
+
+
+# ---------------------------------------------------------------------------
+# Migration 073 — persistence-driven path
+# ---------------------------------------------------------------------------
+
+
+def _make_persistence_row(document_id: UUID, merchant_id: UUID) -> Any:
+    """Build a ProcessorStatementRow matching what the worker upserts."""
+    from aegis.parser.processor.repository import ProcessorStatementRow
+
+    return ProcessorStatementRow(
+        document_id=document_id,
+        merchant_id=merchant_id,
+        processor_type="stripe",
+        period_start=date(2026, 3, 1),
+        period_end=date(2026, 3, 31),
+        total_gross_volume=Decimal("12500.00"),
+        total_fees=Decimal("325.50"),
+        total_net_volume=Decimal("12174.50"),
+        total_payouts=Decimal("12174.50"),
+        avg_daily_volume=Decimal("403.23"),
+        chargeback_count=2,
+        refund_rate=Decimal("0.0125"),
+        parse_method="pdf_vision",
+    )
+
+
+def test_builder_renders_from_persisted_rows() -> None:
+    """Migration 073 persistence path: build_processor_section accepts
+    a ``processor_statement_rows`` list and produces the same context
+    shape that the legacy fixture path produced."""
+    from typing import cast
+
+    from aegis.storage import DocumentRow
+
+    class _StubDoc:
+        def __init__(self, doc_id: UUID) -> None:
+            self.id = doc_id
+
+    doc_id = uuid4()
+    merchant_id = uuid4()
+    doc = _StubDoc(doc_id)
+    row = _make_persistence_row(doc_id, merchant_id)
+
+    section = build_processor_section(
+        documents=cast(list[DocumentRow], [doc]),
+        processor_statement_rows=[row],
+    )
+    assert section is not None
+    assert section["processor_type"] == "stripe"
+    assert section["parse_method"] == "pdf_vision"
+    assert section["document_id"] == str(doc_id)
+    # Aggregates expose the template surface — gross / fees / net /
+    # payouts via .value attribute, avg_daily_volume as Decimal.
+    assert section["aggregates"].total_gross_volume.value == Decimal("12500.00")
+    assert section["aggregates"].total_fees.value == Decimal("325.50")
+    assert section["aggregates"].avg_daily_volume == Decimal("403.23")
+    assert section["aggregates"].chargeback_count == 2
+    assert section["aggregates"].refund_rate == Decimal("0.0125")
+    assert section["aggregates"].period_days == 31  # March = 31 days inclusive
+
+
+def test_builder_persistence_path_wins_over_legacy_fixture() -> None:
+    """When both args are present, the persistence path is preferred.
+    Lets a test opt into the new behavior even if the legacy
+    ``stripe_results_by_doc`` is still wired."""
+    from typing import cast
+
+    from aegis.storage import DocumentRow
+
+    class _StubDoc:
+        def __init__(self, doc_id: UUID) -> None:
+            self.id = doc_id
+
+    doc_id = uuid4()
+    merchant_id = uuid4()
+    doc = _StubDoc(doc_id)
+    row = _make_persistence_row(doc_id, merchant_id)
+    legacy = _make_stripe_result()
+
+    section = build_processor_section(
+        documents=cast(list[DocumentRow], [doc]),
+        stripe_results_by_doc={doc_id: legacy},
+        processor_statement_rows=[row],
+    )
+    assert section is not None
+    # parse_method=pdf_vision is the persistence-row value; the legacy
+    # fixture would have produced parse_method=csv. Confirms the
+    # persistence path won.
+    assert section["parse_method"] == "pdf_vision"
+
+
+def test_processor_section_renders_persisted_aggregates_in_template() -> None:
+    """End-to-end gate: the persisted aggregates surface produces a
+    template render that includes the gross-volume number and the
+    PDF-vision parse-method label."""
+    doc_id = uuid4()
+    merchant_id = uuid4()
+    row = _make_persistence_row(doc_id, merchant_id)
+
+    from typing import cast
+
+    from aegis.storage import DocumentRow
+
+    class _StubDoc:
+        def __init__(self, _id: UUID) -> None:
+            self.id = _id
+
+    section = build_processor_section(
+        documents=cast(list[DocumentRow], [_StubDoc(doc_id)]),
+        processor_statement_rows=[row],
+    )
+    assert section is not None
+    html = _render_partial(section)
+    assert "Processor" in html
+    assert "12,500.00" in html
+    assert "PDF (vision)" in html
+    assert "Stripe" in html
+
+
+def test_builder_returns_none_when_no_rows_and_no_legacy() -> None:
+    """When neither persistence nor legacy fixture carries a row, the
+    builder returns None — the dossier section stays hidden."""
+    section = build_processor_section(
+        documents=[],
+        processor_statement_rows=[],
+    )
+    assert section is None
