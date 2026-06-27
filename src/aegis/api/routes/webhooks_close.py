@@ -53,6 +53,7 @@ from aegis.api.deps import (
     get_merchant_repository,
 )
 from aegis.audit import AuditLog
+from aegis.background_checks import enqueue_background_checks
 from aegis.close.client import CloseClient, CloseError
 from aegis.close.field_map import (
     FieldMapError,
@@ -226,7 +227,7 @@ async def close_webhook(
             detail=f"close_get_lead_failed: {exc}",
         ) from exc
 
-    _upsert_merchant_from_lead(
+    fresh_merchant_created = _upsert_merchant_from_lead(
         lead=lead,
         close_lead_id=lead_id,
         close_opportunity_id=opportunity_id,
@@ -270,6 +271,20 @@ async def close_webhook(
         audit=audit,
         trigger="webhook",
     )
+
+    # Fresh merchant create only — enqueue the UCC + web-presence
+    # background-checks job so the operator's first dossier render
+    # already has Bedrock-derived soft signals. Updates / redeliveries
+    # skip the enqueue: the dossier "Refresh" buttons remain the
+    # operator-facing way to re-run on an existing merchant. Enqueue
+    # failures fail-soft inside ``enqueue_background_checks`` — no 5xx.
+    if fresh_merchant_created and merchant_for_audit is not None:
+        await enqueue_background_checks(
+            request=request,
+            merchant_id=merchant_for_audit.id,
+            audit=audit,
+            trigger="close_webhook",
+        )
     return None
 
 
@@ -725,7 +740,7 @@ async def _handle_lead_updated(
             )
             return
 
-    _upsert_merchant_from_lead(
+    fresh_merchant_created = _upsert_merchant_from_lead(
         lead=lead,
         close_lead_id=lead_id,
         # lead.updated events carry no opportunity reference. The Pre-UW
@@ -759,6 +774,16 @@ async def _handle_lead_updated(
         audit=audit,
         trigger="webhook_lead_updated",
     )
+
+    # Fresh merchant only — see the matching block in the Pre-UW
+    # handler above for rationale.
+    if fresh_merchant_created:
+        await enqueue_background_checks(
+            request=request,
+            merchant_id=merchant.id,
+            audit=audit,
+            trigger="close_webhook_lead_updated",
+        )
 
 
 def _suppress_for_soft_deleted_merchant(
@@ -800,7 +825,7 @@ def _upsert_merchant_from_lead(
     close_opportunity_id: str | None,
     merchants: MerchantRepository,
     audit: AuditLog,
-) -> None:
+) -> bool:
     """Read-before-write merchant upsert keyed by close_lead_id.
 
     Idempotency rule (design doc guarantee #2): if a merchant row already
@@ -812,6 +837,11 @@ def _upsert_merchant_from_lead(
     Parse failures from field_map (e.g. unknown FICO Range, unknown
     Industry) bubble up as HTTPException(400) — the operator must see
     that surprise in Close, not have it silently swallowed.
+
+    Returns True when the call created a fresh merchant row (the caller
+    uses this to enqueue background-checks ONLY on fresh creates).
+    Returns False when the call was an update, a no-op idempotent
+    redelivery, or a soft-delete suppression.
     """
     try:
         new_fields = _lead_to_merchant_fields(lead, close_lead_id, audit)
@@ -836,7 +866,7 @@ def _upsert_merchant_from_lead(
             merchants=merchants,
             audit=audit,
         ):
-            return
+            return False
 
         new_merchant = MerchantRow(
             id=uuid4(),
@@ -866,7 +896,7 @@ def _upsert_merchant_from_lead(
                 audit=audit,
                 race_path=True,
             ):
-                return
+                return False
             else:
                 # Constraint fired but no row reads back, active or
                 # deleted — unrecoverable.
@@ -882,7 +912,7 @@ def _upsert_merchant_from_lead(
                     "business_name": new_merchant.business_name,
                 },
             )
-            return
+            return True
 
     # Read-before-write diff. If nothing changed, skip the write.
     diff: dict[str, Any] = {
@@ -896,7 +926,7 @@ def _upsert_merchant_from_lead(
         diff["close_opportunity_id"] = close_opportunity_id
     if not diff:
         # Pure idempotent redelivery. No write, no audit-row noise.
-        return
+        return False
 
     updated = existing.model_copy(update=diff)
     merchants.upsert(updated)
@@ -910,6 +940,7 @@ def _upsert_merchant_from_lead(
             "changed_keys": sorted(diff.keys()),
         },
     )
+    return False
 
 
 def _lead_to_merchant_fields(

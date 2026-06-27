@@ -49,6 +49,37 @@
 {% endblock %}
 
 {% block body %}
+{# Manual-review guidance card. Top-of-body card keyed off the parser's
+   ``all_flags`` strings so the operator who clicks into a manual-review
+   document from the dossier sees the next-action recommendation BEFORE
+   they read the aggregates. The flag-joined string is the proxy for the
+   ``manual_review_reason`` field referenced in the original Agent-2
+   spec (no dedicated DB column exists; the routing rule lives in the
+   parser's all_flags emissions). #}
+{% if document.parse_status == 'manual_review' %}
+  {% set _flags_join = (document.all_flags or []) | join(' ') | lower %}
+  <div class="manual-review-guidance"
+       data-test-id="manual-review-guidance"
+       style="background:#fff3cd;border-left:4px solid #ffc107;padding:12px 16px;margin-bottom:14px">
+    {% if 'editor' in _flags_join and 'reconciliation' in _flags_join %}
+      <strong>Tampering signals detected.</strong>
+      <p>Options:</p>
+      <ol>
+        <li>Call the merchant and request original statements directly from the bank portal.</li>
+        <li>If you believe this is a legitimate OCR artifact, use Override below.</li>
+      </ol>
+    {% elif 'reconciliation' in _flags_join %}
+      <strong>Math discrepancy.</strong>
+      <p>The math doesn't perfectly reconcile but no editing tool was detected. Could be an OCR error. Compare the PDF's printed totals to the extracted numbers. If they match visually, use Override below.</p>
+    {% elif 'extraction' in _flags_join or 'vision' in _flags_join %}
+      <strong>Parser couldn't read this PDF.</strong>
+      <p>Try: (1) Ask merchant to re-export from bank portal as a new PDF. (2) Use Rescan to retry.</p>
+    {% else %}
+      <strong>Needs manual review.</strong>
+      <p>Inspect the statement and use Override if you've verified the numbers manually.</p>
+    {% endif %}
+  </div>
+{% endif %}
 <section class="body cols-2">
   <div>
 

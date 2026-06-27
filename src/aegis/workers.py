@@ -2534,10 +2534,168 @@ async def run_shadow_review_cron(ctx: dict[str, Any]) -> dict[str, int]:
     }
 
 
+async def run_background_checks(
+    ctx: dict[str, Any],
+    merchant_id_str: str,
+    trigger: str,
+) -> dict[str, Any]:
+    """arq job — run UCC + web-presence Bedrock sweeps for a fresh merchant.
+
+    Enqueued from ``aegis.background_checks.enqueue_background_checks``
+    after every fresh merchant create (Close webhook fresh-create branch,
+    ``/ui/merchants/new``, intake form). System-actor — no operator
+    email needed; the merchant create event already carries the operator's
+    identity in its own audit row.
+
+    Idempotent: if both ``merchant.web_presence_scanned_at`` and
+    ``merchant.ucc_checked_at`` are already populated we audit a skip
+    and return without doing work. Partial state (one but not the other)
+    still runs both — the underlying ``refresh_*`` helpers are themselves
+    idempotent-on-success so calling them twice is harmless.
+
+    Audit shape (always):
+
+      * ``merchant.background_checks_started``  — pass began.
+      * ``merchant.background_checks_complete`` — pass finished. ``details``
+        carries ``trigger``, ``skipped`` bool, and ``failed_checks``
+        (list of "ucc" / "web_presence" entries that raised).
+
+    Bedrock-internal failures are absorbed by ``refresh_ucc_for_merchant``
+    + ``refresh_web_presence_for_merchant`` (they persist empty results
+    + a failed-attempt audit row). The two-layer audit row this job
+    writes captures the orchestration boundary.
+    """
+    from aegis.api.deps import get_audit, get_merchant_repository
+    from aegis.business_intel.refresh import refresh_ucc_for_merchant
+    from aegis.web_presence.refresh import refresh_web_presence_for_merchant
+
+    audit = ctx.get("audit") or get_audit()
+    merchants = ctx.get("merchants") or get_merchant_repository()
+
+    try:
+        merchant_id = UUID(merchant_id_str)
+    except ValueError as exc:
+        _log.warning(
+            "background_checks.invalid_merchant_id merchant_id=%s trigger=%s error=%s",
+            merchant_id_str,
+            trigger,
+            exc,
+        )
+        return {"merchant_id": merchant_id_str, "trigger": trigger, "skipped": True}
+
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError:
+        _log.warning(
+            "background_checks.unknown_merchant merchant_id=%s trigger=%s",
+            merchant_id,
+            trigger,
+        )
+        return {"merchant_id": merchant_id_str, "trigger": trigger, "skipped": True}
+
+    # Idempotency: both checks already populated → skip silently.
+    if merchant.web_presence_scanned_at is not None and merchant.ucc_checked_at is not None:
+        audit.record(
+            actor="system",
+            action="merchant.background_checks_complete",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={
+                "trigger": trigger,
+                "skipped": True,
+                "reason": "already_populated",
+                "failed_checks": [],
+            },
+        )
+        return {
+            "merchant_id": merchant_id_str,
+            "trigger": trigger,
+            "skipped": True,
+        }
+
+    audit.record(
+        actor="system",
+        action="merchant.background_checks_started",
+        subject_type="merchant",
+        subject_id=merchant_id,
+        details={"trigger": trigger},
+    )
+
+    failed_checks: list[str] = []
+
+    # UCC + previous-default sweep.
+    try:
+        await asyncio.to_thread(
+            refresh_ucc_for_merchant,
+            merchant_id,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+    except MerchantNotFoundError:
+        # Concurrent soft-delete — log + continue to web_presence.
+        _log.warning(
+            "background_checks.ucc_skip_missing_merchant merchant_id=%s",
+            merchant_id,
+        )
+        failed_checks.append("ucc")
+    except Exception:
+        _log.warning(
+            "background_checks.ucc_failed merchant_id=%s",
+            merchant_id,
+            exc_info=True,
+        )
+        failed_checks.append("ucc")
+
+    # Web-presence reputation sweep.
+    try:
+        await asyncio.to_thread(
+            refresh_web_presence_for_merchant,
+            merchant_id,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+    except MerchantNotFoundError:
+        _log.warning(
+            "background_checks.web_presence_skip_missing_merchant merchant_id=%s",
+            merchant_id,
+        )
+        failed_checks.append("web_presence")
+    except Exception:
+        _log.warning(
+            "background_checks.web_presence_failed merchant_id=%s",
+            merchant_id,
+            exc_info=True,
+        )
+        failed_checks.append("web_presence")
+
+    audit.record(
+        actor="system",
+        action="merchant.background_checks_complete",
+        subject_type="merchant",
+        subject_id=merchant_id,
+        details={
+            "trigger": trigger,
+            "skipped": False,
+            "failed_checks": failed_checks,
+        },
+    )
+    return {
+        "merchant_id": merchant_id_str,
+        "trigger": trigger,
+        "skipped": False,
+        "failed_checks": failed_checks,
+    }
+
+
 class WorkerSettings:
     """arq config. Reads concurrency + timeout from env via Settings."""
 
-    functions = (parse_document, process_funder_reply, process_close_attachments)
+    functions = (
+        parse_document,
+        process_funder_reply,
+        process_close_attachments,
+        run_background_checks,
+    )
     # Crons:
     #   * 02:00 UTC daily — audit retention archiver (master plan §17).
     #   * 09:00 UTC daily — renewal reminder: one Close task per renewing
@@ -2656,6 +2814,7 @@ __all__ = [
     "parse_document",
     "process_close_attachments",
     "process_funder_reply",
+    "run_background_checks",
     "run_shadow_review_cron",
     "run_submission_reminder_cron",
     "run_submission_reminder_pass",

@@ -34,6 +34,7 @@ from aegis.api.deps import (
     get_repository,
 )
 from aegis.audit import AuditLog
+from aegis.background_checks import enqueue_background_checks
 from aegis.config import get_settings
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import (
@@ -52,9 +53,7 @@ from aegis.web._templates import templates
 router = APIRouter()
 
 
-def _intake_form_error(
-    request: Request, error: str, form: dict[str, Any]
-) -> HTMLResponse:
+def _intake_form_error(request: Request, error: str, form: dict[str, Any]) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "intake.html.j2",
@@ -66,9 +65,7 @@ def _intake_form_error(
 @router.get("/intake", response_class=HTMLResponse)
 async def intake_form(request: Request) -> HTMLResponse:
     """Combined intake: create merchant + upload N statements in one POST."""
-    return templates.TemplateResponse(
-        request, "intake.html.j2", {"error": None, "form": {}}
-    )
+    return templates.TemplateResponse(request, "intake.html.j2", {"error": None, "form": {}})
 
 
 @router.post("/intake", response_class=HTMLResponse, response_model=None)
@@ -156,6 +153,17 @@ async def intake_submit(
         merchant = merchants_repo.upsert(merchant)
     except MerchantConflictError as exc:
         return _intake_form_error(request, str(exc), form_payload)
+
+    # Fire-and-forget background-checks sweep (UCC + web-presence).
+    # Same posture as the webhook + standalone create paths — enqueue
+    # failures are absorbed inside the helper; the dossier Refresh
+    # buttons remain the manual fallback.
+    await enqueue_background_checks(
+        request=request,
+        merchant_id=merchant.id,
+        audit=audit,
+        trigger="ui_intake",
+    )
 
     # Files are optional at intake — operator can create merchant first
     # and upload later.

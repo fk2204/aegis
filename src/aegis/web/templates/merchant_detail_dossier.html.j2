@@ -1359,6 +1359,15 @@
       </section>
     {% endif %}
 
+    {# Background-checks section (§ 3¾) sits between Track C (pattern
+       findings + concentration) and § 4 (funder matching) so the
+       underwriter sees the soft-signal layer (UCC filings / previous
+       defaults / web presence / OFAC) BEFORE picking funders. Markup
+       lives in ``_background_checks_section.html.j2`` so the two HTMX
+       refresh routes can re-render the section in place without
+       duplicating the inline block. #}
+    {% include "_background_checks_section.html.j2" %}
+
     {# ============== § 4 FUNDER MATCHING (inline) ==============
        Phase 7B inline-match (2026-06-19). Lifted the side-by-side
        comparison from /ui/merchants/{id}/match into the dossier so the
