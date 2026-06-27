@@ -1116,6 +1116,11 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         # restored backup) collapse to None via ``row.get`` which is
         # the correct active-row default.
         deleted_at=_parse_dt(row.get("deleted_at")),
+        # Migration 080. ``revenue_based`` for every pre-080 row via
+        # the DB DEFAULT; for any forward-compat replica read where the
+        # column is missing entirely (pre-080 backup restore), fall back
+        # to the same default so the model parse cannot trip.
+        product_type=row.get("product_type") or "revenue_based",
     )
 
 
@@ -1194,6 +1199,10 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "ucc_filings": list(m.ucc_filings),
         "ucc_default_indicators": list(m.ucc_default_indicators),
         "ucc_checked_at": m.ucc_checked_at,
+        # Migration 080 — round-trips on every upsert so the column is
+        # always written explicitly (rather than relying on the DB
+        # DEFAULT to land on inserts only).
+        "product_type": m.product_type,
     }
     return payload
 

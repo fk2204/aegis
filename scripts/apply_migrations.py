@@ -675,6 +675,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='bank_layouts' "
         "AND column_name='hints_source'"
     ),
+    "080_product_type.sql": (
+        # 080 creates the ``product_type`` ENUM and adds a column of
+        # that type to merchants / decisions / funder_note_submissions
+        # for Commera's multi-product expansion. Probe the ENUM rather
+        # than any one column so the bootstrap detection is robust
+        # against pre-080 backfills that may have landed only some of
+        # the column adds (the migration's idempotent guards still
+        # cover the column re-apply path).
+        "SELECT 1 FROM pg_type WHERE typname='product_type'"
+    ),
     "082_decisions_analysis_fk_cascade.sql": (
         # 082 swaps ``decisions_analysis_id_fkey`` from RESTRICT to
         # CASCADE so reparse-driven analyses upserts no longer abort

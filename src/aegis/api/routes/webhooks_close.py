@@ -65,6 +65,7 @@ from aegis.close.field_map import (
     normalize_entity_type_safe,
     parse_fico_range_safe,
     parse_money_safe,
+    parse_product_type_safe,
     resolve_entity_type,
 )
 from aegis.close.orchestration import enqueue_close_orchestration
@@ -82,6 +83,7 @@ from aegis.merchants.repository import MerchantConflictError, MerchantRepository
 from aegis.ops.notification_repository import NotificationRepository
 from aegis.ops.operator_repository import OperatorRepository
 from aegis.ops.webhook_circuit import WebhookCircuit
+from aegis.product_types import DEFAULT_PRODUCT_TYPE
 from aegis.web._notify import notify_merchant_created
 
 router = APIRouter(prefix="/webhooks/close", tags=["webhooks"])
@@ -1368,6 +1370,31 @@ def _lead_to_merchant_fields(
             close_lead_id=close_lead_id,
         )
 
+    # Migration 080 — Product Type. The Close custom-field cf_id may not
+    # be registered in ``CLOSE_FIELD_IDS`` yet (operator hasn't created
+    # the field in the Commera Close account at migration time). The
+    # strict ``get_custom_field`` raises ``FieldMapError`` on an
+    # unregistered AEGIS-side name; catch and treat as "field not yet
+    # available" so the merchant upsert proceeds with the project default
+    # (revenue_based — Commera's pre-080 universal value). Once the
+    # operator adds the cf_id, the strict path lights up automatically
+    # and unknown CHOICE values land in a close.field_parse_warning
+    # audit row just like the other ``_safe`` parsers above.
+    raw_product: object | None
+    try:
+        raw_product = get_custom_field(lead, "product_type")
+    except FieldMapError:
+        raw_product = None
+    product_value, product_warning = parse_product_type_safe(raw_product)
+    if product_warning is not None:
+        _record_unknown_field(
+            audit=audit,
+            field_name="product_type",
+            raw_value=product_warning,
+            close_lead_id=close_lead_id,
+        )
+    product_type_value = product_value or DEFAULT_PRODUCT_TYPE
+
     return {
         "business_name": str(business_name),
         "dba": _str_or_none(get_custom_field(lead, "dba_name")),
@@ -1385,6 +1412,9 @@ def _lead_to_merchant_fields(
         "credit_score": credit_score,
         "requested_amount": requested_amount,
         "entity_type": entity,
+        # Migration 080 — product type at merchant create time. Drives
+        # offer sizing, narrator framing, and funder matching.
+        "product_type": product_type_value,
     }
 
 
