@@ -104,6 +104,7 @@ from aegis.pdf_store import (
     PdfStoreRepository,
     PdfStoreWriteError,
 )
+from aegis.scoring_v2.narrator_job import generate_narrator_summary
 from aegis.storage import DocumentNotFoundError, DocumentRepository
 
 _log = get_logger(__name__)
@@ -468,6 +469,27 @@ async def parse_document(
             merchant_id=doc_after_persist.merchant_id,
             file_hash=doc_after_persist.file_hash,
             repository=repository,
+            audit=audit,
+        )
+
+    # ===================================================================
+    # CONCERN 4 — fire-and-forget narrator auto-trigger.
+    # The narrator job is keyed on document_id and idempotent (skips when
+    # ``analyses.narrator_summary`` is already populated), so a re-parse
+    # of an already-narrated doc costs zero Bedrock tokens. Only proceed
+    # docs get the narrator — manual_review / error docs would produce a
+    # narrator on questionable data, so we defer to the operator's
+    # explicit "Refresh narrator" click on those.
+    # The helper itself never raises; an enqueue failure audits and the
+    # parse return path stays identical.
+    # ===================================================================
+    if result.parse_status == "proceed" and doc_after_persist.merchant_id is not None:
+        from aegis.scoring_v2.narrator_job import enqueue_narrator_summary_from_worker
+
+        await enqueue_narrator_summary_from_worker(
+            ctx=ctx,
+            document_id=document_id,
+            merchant_id=doc_after_persist.merchant_id,
             audit=audit,
         )
 
@@ -2868,6 +2890,7 @@ class WorkerSettings:
         process_funder_reply,
         process_close_attachments,
         run_background_checks,
+        generate_narrator_summary,
     )
     # Crons:
     #   * 02:00 UTC daily — audit retention archiver (master plan §17).
@@ -3039,6 +3062,7 @@ def _maybe_emit_parse_complete_notification(
 
 __all__ = [
     "WorkerSettings",
+    "generate_narrator_summary",
     "parse_document",
     "process_close_attachments",
     "process_funder_reply",
