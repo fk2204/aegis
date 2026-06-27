@@ -324,6 +324,88 @@ def test_parse_money_strips_whitespace() -> None:
 
 
 # ----------------------------------------------------------------------
+# Broker-shorthand ranges + k/m suffix (2026-06-27 regression — the
+# graceful path was returning None on 100% of the prod ``requested_amount``
+# values, silently dropping the field on every new lead. Each row below
+# is taken verbatim from prod ``close.field_parse_warning`` audit_log
+# rows in the 24h before the fix).
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value, expected_low",
+    [
+        ("30k-75k", Decimal("30000")),  # prod row
+        ("75k-150k", Decimal("75000")),  # prod row (most frequent)
+        ("110-150K", Decimal("110000")),  # prod row — suffix only on high side
+        ("$30k-$75k", Decimal("30000")),  # dollar signs in range
+        ("30K - 75K", Decimal("30000")),  # spaces around dash
+        ("1.5m-3m", Decimal("1500000")),  # m suffix
+        ("100-200", Decimal("100")),  # no suffix — plain range
+    ],
+)
+def test_parse_money_safe_range_returns_low_end_no_warning(
+    value: str, expected_low: Decimal
+) -> None:
+    """Conservative interpretation — broker enters a range, AEGIS
+    persists the LOW end. Counts as a clean parse (no warning token)."""
+    parsed, warning = parse_money_safe(value)
+    assert parsed == expected_low
+    assert warning is None
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("30k", Decimal("30000")),
+        ("1.5K", Decimal("1500")),
+        ("2m", Decimal("2000000")),
+        ("0.25M", Decimal("250000")),
+        ("  $30k  ", Decimal("30000")),
+    ],
+)
+def test_parse_money_safe_k_or_m_suffix_returns_value_no_warning(
+    value: str, expected: Decimal
+) -> None:
+    parsed, warning = parse_money_safe(value)
+    assert parsed == expected
+    assert warning is None
+
+
+@pytest.mark.parametrize(
+    "value, expected_low",
+    [
+        ("30k-75k", Decimal("30000")),
+        ("110-150K", Decimal("110000")),
+        ("1.5m-3m", Decimal("1500000")),
+    ],
+)
+def test_parse_money_strict_form_also_accepts_ranges(value: str, expected_low: Decimal) -> None:
+    """The strict form mirrors the graceful form for ranges + suffixes
+    so callers that opted into strict parsing don't suddenly raise on
+    operator-typed shorthand the graceful path now accepts."""
+    assert parse_money(value) == expected_low
+
+
+def test_parse_money_safe_garbage_still_warns() -> None:
+    """The new range support must NOT regress the warn-on-garbage
+    path — the audit row remains the operator's signal that Close
+    drifted into something un-parseable."""
+    parsed, warning = parse_money_safe("not a number")
+    assert parsed is None
+    assert warning == "not a number"
+
+
+def test_parse_money_safe_range_high_side_not_used() -> None:
+    """Belt-and-suspenders — the high side of the range is intentionally
+    NOT what we persist. If the field stops appearing as a range value
+    one day, the parser still keeps the conservative low-end semantics."""
+    parsed, _ = parse_money_safe("30k-75k")
+    assert parsed == Decimal("30000")
+    assert parsed != Decimal("75000")
+
+
+# ----------------------------------------------------------------------
 # Custom-field accessor
 # ----------------------------------------------------------------------
 
