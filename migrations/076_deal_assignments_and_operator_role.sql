@@ -48,18 +48,23 @@ BEGIN;
 -- under a stable name so future migrations have a target.
 -- ---------------------------------------------------------------------
 
+-- Drop ALL CHECK constraints whose definition references operators.role
+-- (a previous run of this migration may have already created
+-- ``operators_role_check`` alongside the anonymous CHECK from migration
+-- 022 — loop instead of SELECT INTO so re-runs are idempotent and
+-- ``DuplicateObject`` cannot fire on the ADD below).
 DO $$
 DECLARE
-  v_constraint_name text;
+  r record;
 BEGIN
-  SELECT conname INTO v_constraint_name
-  FROM pg_constraint
-  WHERE conrelid = 'operators'::regclass
-    AND contype = 'c'
-    AND pg_get_constraintdef(oid) LIKE '%role%IN%';
-  IF v_constraint_name IS NOT NULL THEN
-    EXECUTE format('ALTER TABLE operators DROP CONSTRAINT %I', v_constraint_name);
-  END IF;
+  FOR r IN
+    SELECT conname FROM pg_constraint
+    WHERE conrelid = 'operators'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%role%IN%'
+  LOOP
+    EXECUTE format('ALTER TABLE operators DROP CONSTRAINT %I', r.conname);
+  END LOOP;
 END$$;
 
 ALTER TABLE operators
