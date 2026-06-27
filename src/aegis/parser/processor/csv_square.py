@@ -16,8 +16,10 @@ running a vision pass:
 
 Square CSV header (canonical)
 -----------------------------
-Documented at https://squareup.com/help/article/5161-export-transactions-and-payments
-(verified 2026-06-26).
+Documented at Square's help center under "Export Transactions and
+Payments" (article 5161, verified 2026-06-26). URL omitted because the
+parser makes no outbound calls to squareup.com; it operates only on
+operator-supplied CSV exports.
 
   Date,Time,Time Zone,Description,Amount,Fee,Net,Transaction ID,
   Payment ID,Card Brand,PAN Suffix,Device Name,Notes,Event Type,Location
