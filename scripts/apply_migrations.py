@@ -665,6 +665,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='llm_costs'"
     ),
+    "079_bank_layouts_hints_source.sql": (
+        # 079 adds the ``hints_source`` column to ``bank_layouts`` so
+        # the pipeline can distinguish auto-generated hints (threshold
+        # 1 successful parse) from operator-authored hints (threshold
+        # 3). Existing populated rows are backfilled to 'manual';
+        # default for new rows is 'auto'.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='bank_layouts' "
+        "AND column_name='hints_source'"
+    ),
 }
 
 
