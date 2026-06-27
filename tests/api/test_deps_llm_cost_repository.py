@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
 from aegis.api.deps import get_llm_cost_repository, reset_dependency_caches
@@ -19,7 +21,7 @@ def _clear_all_caches() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_caches() -> None:
+def _reset_caches() -> Iterator[None]:
     _clear_all_caches()
     yield
     _clear_all_caches()
