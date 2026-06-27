@@ -73,6 +73,11 @@ from aegis.merchants.shadow_signals import (
     MerchantShadowSignalRepository,
     SupabaseMerchantShadowSignalRepository,
 )
+from aegis.ops.webhook_circuit import (
+    InMemoryCircuitBackend,
+    WebhookCircuit,
+    build_default_circuit,
+)
 from aegis.pdf_store import (
     InMemoryPdfStoreRepository,
     PdfStoreRepository,
@@ -342,6 +347,20 @@ def get_schema_migrations_reader() -> SchemaMigrationsReader:
     return SupabaseSchemaMigrationsReader()
 
 
+@lru_cache(maxsize=1)
+def get_webhook_circuit() -> WebhookCircuit:
+    """Process-wide Close webhook circuit breaker.
+
+    Memory backend in tests / dev; Redis-backed in production. The Redis
+    URL comes from ``Settings.redis_url`` (same source the arq worker
+    uses), so the breaker shares the box's existing Redis without
+    needing a second connection pool.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return WebhookCircuit(InMemoryCircuitBackend())
+    return build_default_circuit()
+
+
 def reset_dependency_caches() -> None:
     """Drop the lru_cache singletons. For tests that swap settings."""
     get_repository.cache_clear()
@@ -364,6 +383,7 @@ def reset_dependency_caches() -> None:
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
     get_close_client.cache_clear()
+    get_webhook_circuit.cache_clear()
 
 
 __all__ = [
@@ -387,5 +407,6 @@ __all__ = [
     "get_schema_migrations_reader",
     "get_scoring_disagreement_repository",
     "get_submission_repository",
+    "get_webhook_circuit",
     "reset_dependency_caches",
 ]

@@ -86,6 +86,7 @@ from aegis.web.routers import shadow_review as _shadow_review_routes
 from aegis.web.routers import submissions as _submissions_routes
 from aegis.web.routers import triage as _triage_routes
 from aegis.web.routers import upload as _upload_routes
+from aegis.web.routers import webhook_circuits as _webhook_circuits_routes
 
 # Re-export so tests/test_close_queue.py keeps its
 # ``from aegis.web.router import _classify_close_pipeline_state`` import path.
@@ -134,6 +135,7 @@ router.include_router(_submissions_routes.router)
 router.include_router(_disclosure_events_routes.router)
 router.include_router(_triage_routes.router)
 router.include_router(_upload_routes.router)
+router.include_router(_webhook_circuits_routes.router)
 
 
 # R4.1 — re-exports required for `from aegis.web.router import X` callers
