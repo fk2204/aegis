@@ -608,6 +608,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='overrides' "
         "AND column_name='pattern_false_positives'"
     ),
+    "073_processor_statements.sql": (
+        # 073 adds the processor_statements table — durable persistence
+        # for Stripe / Square / Toast / Clover / PayPal aggregates that
+        # the worker's ``_run_processor_branch`` previously only wrote
+        # to ``audit_log``. Probing ``information_schema.tables`` for
+        # the table name proves the migration body executed; the
+        # CHECK / UNIQUE / RLS pieces land in the same BEGIN/COMMIT.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='processor_statements'"
+    ),
     "074_deal_outcomes_and_weight_calibration.sql": (
         # 074 adds two new top-level tables: deal_outcomes (post-fund
         # outcome capture) + weight_calibration_log (operator review

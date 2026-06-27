@@ -18,11 +18,13 @@ as in the bank parser:
 from __future__ import annotations
 
 from aegis.parser.processor.aggregate import ProcessorAggregates, aggregate_processor
+from aegis.parser.processor.csv_square import SquareCsvError, extract_square_csv
 from aegis.parser.processor.csv_stripe import StripeCsvError, extract_stripe_csv
 from aegis.parser.processor.detect import (
     ProcessorBrand,
     ProcessorDetection,
     detect_processor,
+    detect_processor_from_csv_header,
     detect_processor_from_filename,
 )
 from aegis.parser.processor.dossier_aggregates import (
@@ -38,16 +40,27 @@ from aegis.parser.processor.models import (
     ProcessorSummary,
 )
 from aegis.parser.processor.pipeline import ProcessorPipelineResult, run_processor_pipeline
+from aegis.parser.processor.repository import (
+    InMemoryProcessorStatementRepository,
+    ProcessorStatementNotFoundError,
+    ProcessorStatementRepository,
+    ProcessorStatementRow,
+    ProcessorStatementWriteError,
+    ProcessorType,
+    SupabaseProcessorStatementRepository,
+)
 from aegis.parser.processor.stripe_router import (
     StripeRouterError,
     detect_stripe,
     processor_type_for_document,
+    route_square_document,
     route_stripe_document,
 )
 from aegis.parser.processor.validate import ProcessorValidationResult, validate_processor
 
 __all__ = [
     "ExtractedProcessorStatement",
+    "InMemoryProcessorStatementRepository",
     "ParseMethod",
     "ProcessorAggregates",
     "ProcessorBrand",
@@ -55,19 +68,29 @@ __all__ = [
     "ProcessorLineItem",
     "ProcessorLineKind",
     "ProcessorPipelineResult",
+    "ProcessorStatementNotFoundError",
+    "ProcessorStatementRepository",
+    "ProcessorStatementRow",
+    "ProcessorStatementWriteError",
     "ProcessorSummary",
+    "ProcessorType",
     "ProcessorValidationResult",
+    "SquareCsvError",
     "StripeCsvError",
     "StripeDossierAggregates",
     "StripeParseResult",
     "StripeRouterError",
+    "SupabaseProcessorStatementRepository",
     "aggregate_processor",
     "build_stripe_dossier_aggregates",
     "detect_processor",
+    "detect_processor_from_csv_header",
     "detect_processor_from_filename",
     "detect_stripe",
+    "extract_square_csv",
     "extract_stripe_csv",
     "processor_type_for_document",
+    "route_square_document",
     "route_stripe_document",
     "run_processor_pipeline",
     "validate_processor",

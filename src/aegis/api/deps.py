@@ -73,6 +73,11 @@ from aegis.merchants.shadow_signals import (
     MerchantShadowSignalRepository,
     SupabaseMerchantShadowSignalRepository,
 )
+from aegis.parser.processor.repository import (
+    InMemoryProcessorStatementRepository,
+    ProcessorStatementRepository,
+    SupabaseProcessorStatementRepository,
+)
 from aegis.pdf_store import (
     InMemoryPdfStoreRepository,
     PdfStoreRepository,
@@ -136,6 +141,21 @@ def get_renewal_attestation_repository() -> RenewalAttestationRepository:
     if get_settings().aegis_storage_backend == "memory":
         return InMemoryRenewalAttestationRepository()
     return SupabaseRenewalAttestationRepository()
+
+
+@lru_cache(maxsize=1)
+def get_processor_statement_repository() -> ProcessorStatementRepository:
+    """Process-wide ProcessorStatementRepository (migration 073).
+
+    Persists Stripe / Square / Toast / Clover / PayPal aggregates that
+    the worker's ``_run_processor_branch`` writes after a successful
+    parse. The dossier ``processor_section`` builder reads here to
+    populate ``processor_revenue`` without re-parsing. Same memory /
+    supabase toggle as the other repositories.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryProcessorStatementRepository()
+    return SupabaseProcessorStatementRepository()
 
 
 @lru_cache(maxsize=1)
@@ -360,6 +380,7 @@ def reset_dependency_caches() -> None:
     get_funder_note_submission_repository.cache_clear()
     get_bank_layout_repository.cache_clear()
     get_pdf_store_repository.cache_clear()
+    get_processor_statement_repository.cache_clear()
     get_schema_migrations_reader.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
@@ -382,6 +403,7 @@ __all__ = [
     "get_ofac_client",
     "get_override_repository",
     "get_pdf_store_repository",
+    "get_processor_statement_repository",
     "get_renewal_attestation_repository",
     "get_repository",
     "get_schema_migrations_reader",
