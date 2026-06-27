@@ -527,6 +527,93 @@ def normalize_entity_type_safe(value: str | None) -> tuple[str | None, str | Non
 
 
 # ----------------------------------------------------------------------
+# Product-type (migration 080) — Close ``Product Type`` choice → AEGIS
+# ``ProductType`` literal.
+#
+# Close-side string mapping is case-insensitive substring match against
+# the keys below — the operator's Close choice list may not match these
+# verbatim, but the broad phrases ("revenue based", "term loan", etc.)
+# cover the common variants. Unknown values return (None, raw) so the
+# webhook handler writes a ``close.field_parse_warning`` audit row and
+# the operator can either extend this table or rename the Close choice.
+#
+# The Close custom-field ID for "Product Type" is NOT yet in
+# ``CLOSE_FIELD_IDS`` — the operator has not confirmed that the field
+# exists in the Commera Close account at migration-080 time. The
+# webhook handler wraps the read in ``try/except FieldMapError`` so the
+# absence collapses to None → DEFAULT_PRODUCT_TYPE without a webhook
+# break. Once the operator creates the Close custom field and supplies
+# the cf_id, add an entry here (``"product_type": "cf_..."``) and the
+# strict ``get_custom_field`` path lights up automatically.
+# ----------------------------------------------------------------------
+
+# Maps regex pattern (compiled IGNORECASE) → AEGIS ProductType literal.
+# First match wins. Patterns use word boundaries (``\b``) on short
+# acronyms (LOC / MCA / SBA / RBF / ABL) so a literal substring match
+# like "abl" inside "receivABLes" doesn't accidentally route a
+# Receivables choice to Asset-Based Lending. Longer multi-word phrases
+# (e.g. "term loan") don't need word boundaries — they're not at risk
+# of being subwords of another product description.
+_CLOSE_PRODUCT_TYPE_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    # Revenue-based (default + aliases). MCA / RBF acronyms word-bounded.
+    (re.compile(r"revenue[\s-]?based", re.IGNORECASE), "revenue_based"),
+    (re.compile(r"merchant\s+cash\s+advance", re.IGNORECASE), "revenue_based"),
+    (re.compile(r"\bmca\b", re.IGNORECASE), "revenue_based"),
+    (re.compile(r"\brbf\b", re.IGNORECASE), "revenue_based"),
+    # Line of credit. LOC acronym word-bounded.
+    (re.compile(r"line\s+of\s+credit", re.IGNORECASE), "line_of_credit"),
+    (re.compile(r"\bloc\b", re.IGNORECASE), "line_of_credit"),
+    (re.compile(r"revolving", re.IGNORECASE), "line_of_credit"),
+    # Equipment financing variants.
+    (re.compile(r"equipment\s+(lease|finance|financing|loan)", re.IGNORECASE), "equipment"),
+    # Asset-based. ABL acronym word-bounded.
+    (re.compile(r"asset[\s-]?based", re.IGNORECASE), "asset_based"),
+    (re.compile(r"\babl\b", re.IGNORECASE), "asset_based"),
+    # Receivables / factoring.
+    (re.compile(r"receivables?", re.IGNORECASE), "receivables"),
+    (re.compile(r"factoring", re.IGNORECASE), "receivables"),
+    (re.compile(r"invoice\s+factor", re.IGNORECASE), "receivables"),
+    (re.compile(r"a/?r\s+financ", re.IGNORECASE), "receivables"),
+    # Business loan / term loan / SBA loan / installment loan.
+    (re.compile(r"term\s+loan", re.IGNORECASE), "business_loan"),
+    (re.compile(r"business\s+loan", re.IGNORECASE), "business_loan"),
+    (re.compile(r"installment\s+loan", re.IGNORECASE), "business_loan"),
+    (re.compile(r"\bsba\b", re.IGNORECASE), "business_loan"),
+)
+
+
+def parse_product_type_safe(value: object) -> tuple[str | None, str | None]:
+    """Graceful Close ``Product Type`` choice → AEGIS ``ProductType``.
+
+    Returns ``(literal, None)`` on a recognized regex match,
+    ``(None, None)`` on null-shaped input, and ``(None, raw_value)`` on
+    an unrecognized string so the webhook caller can write a
+    ``close.field_parse_warning`` audit row.
+
+    The literal is returned as ``str`` rather than the ``ProductType``
+    Literal type because the call site composes it with
+    ``or DEFAULT_PRODUCT_TYPE``, and the strict Literal narrowing is
+    enforced at the merchant model layer. Mirrors the shape of the
+    other ``parse_*_safe`` helpers in this module.
+    """
+    if value is None:
+        return (None, None)
+    if not isinstance(value, str):
+        return (None, str(value))
+    # Strip leading/trailing whitespace BEFORE the ``-None-`` check so
+    # ``"  -None-  "`` collapses to None and ``"  Term Loan  "``
+    # matches without the surrounding spaces dragging into the warning.
+    candidate = value.strip()
+    stripped = _strip_none_marker(candidate)
+    if stripped is None:
+        return (None, None)
+    for pattern, product in _CLOSE_PRODUCT_TYPE_PATTERNS:
+        if pattern.search(stripped):
+            return (product, None)
+    return (None, stripped)
+
+
+# ----------------------------------------------------------------------
 # Custom-field accessor (helper for sync.py in step 5; safe + pure)
 # ----------------------------------------------------------------------
 
@@ -700,5 +787,6 @@ __all__ = [
     "parse_fico_range_safe",
     "parse_money",
     "parse_money_safe",
+    "parse_product_type_safe",
     "resolve_entity_type",
 ]

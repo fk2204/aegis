@@ -42,6 +42,7 @@ from aegis.audit import AuditLog, AuditWriteError
 from aegis.db import get_supabase
 from aegis.logger import get_logger
 from aegis.parser.pipeline import FRAUD_WEIGHTS
+from aegis.product_types import DEFAULT_PRODUCT_TYPE, ProductType
 
 _log = get_logger(__name__)
 
@@ -102,6 +103,13 @@ class DecisionPayload(BaseModel):
 
     backfill_quality: BackfillQuality | None = None
     decided_at: datetime | None = None  # None = let DB default to NOW(); set for backfill
+
+    # Migration 080 — product type at decision time. Frozen on the
+    # immutable snapshot so a re-product of the same merchant later
+    # does not retroactively change what the prior decision was made
+    # against. Defaults to ``revenue_based`` to keep pre-080 call sites
+    # working without explicit plumbing.
+    product_type: ProductType = DEFAULT_PRODUCT_TYPE
 
 
 class StoredDecision(BaseModel):
@@ -368,6 +376,8 @@ def _payload_to_row(payload: DecisionPayload, *, row_id: UUID) -> dict[str, Any]
         "aegis_version": payload.aegis_version,
         "rule_pack_version": payload.rule_pack_version,
         "backfill_quality": payload.backfill_quality,
+        # Migration 080.
+        "product_type": payload.product_type,
     }
 
 

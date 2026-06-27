@@ -473,6 +473,8 @@ def _row_to_payload(r: FunderNoteSubmissionRow) -> dict[str, Any]:
         "funder_note": r.funder_note,
         "responded_at": _dt_or_none(r.responded_at),
         "notes": r.notes,
+        # Migration 080.
+        "product_type": r.product_type,
     }
 
 
@@ -509,6 +511,8 @@ def _row_from_dict(row: dict[str, Any]) -> FunderNoteSubmissionRow:
         funder_note=row.get("funder_note"),
         responded_at=_dt("responded_at"),
         notes=row.get("notes"),
+        # Migration 080. Pre-080 reads collapse to the default.
+        product_type=row.get("product_type") or "revenue_based",
         created_at=_dt("created_at"),
         updated_at=_dt("updated_at"),
     )

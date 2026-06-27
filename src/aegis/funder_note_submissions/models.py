@@ -33,6 +33,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from aegis.money import Money
+from aegis.product_types import DEFAULT_PRODUCT_TYPE, ProductType
 
 FunderNoteSubmissionStatus = Literal[
     "pending",
@@ -89,6 +90,11 @@ class FunderNoteSubmissionRow(_StrictModel):
     funder_note: str | None = None
     responded_at: datetime | None = None
     notes: str | None = None
+
+    # Migration 080. A merchant whose product_type changes between
+    # submissions logs each shape distinctly — the row captures what
+    # was true at the time of the click.
+    product_type: ProductType = DEFAULT_PRODUCT_TYPE
 
     created_at: datetime | None = None
     updated_at: datetime | None = None

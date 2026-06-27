@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from aegis.money import Money
+from aegis.product_types import DEFAULT_PRODUCT_TYPE, ProductType
 
 IndustryRiskTier = Literal["low", "moderate", "elevated", "high", "avoid"]
 EntityType = Literal["llc", "corp", "sole_prop", "partnership", "other"]
@@ -72,6 +73,14 @@ class MerchantRow(_StrictModel):
     status: MerchantStatus = "finalized"
     business_name: str = Field(min_length=1)
     dba: str | None = None
+    # Migration 080 — Commera lending product this merchant is being
+    # underwritten for. Defaults to ``revenue_based`` because that is
+    # truthfully what Commera offered exclusively before migration 080
+    # (per AEGIS operating-principle 4 — no fabricated defaults). Every
+    # legacy merchant row carries this value via the migration-080
+    # ``DEFAULT``; new merchants land with the Close-side product_type
+    # when the operator has populated it, else default.
+    product_type: ProductType = DEFAULT_PRODUCT_TYPE
     owner_name: str | None = Field(default=None, min_length=1)
     state: str | None = Field(
         default=None, min_length=2, max_length=2, description="USPS state code"
