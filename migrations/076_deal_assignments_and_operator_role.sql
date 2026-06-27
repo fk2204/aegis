@@ -48,11 +48,15 @@ BEGIN;
 -- under a stable name so future migrations have a target.
 -- ---------------------------------------------------------------------
 
--- Drop ALL CHECK constraints whose definition references operators.role
--- (a previous run of this migration may have already created
--- ``operators_role_check`` alongside the anonymous CHECK from migration
--- 022 — loop instead of SELECT INTO so re-runs are idempotent and
--- ``DuplicateObject`` cannot fire on the ADD below).
+-- Drop ALL CHECK constraints on operators whose definition references
+-- the ``role`` column. Postgres normalizes ``role IN (...)`` to
+-- ``role = ANY (ARRAY[...])`` in ``pg_get_constraintdef()``, so the
+-- pattern must match the normalized form — using ILIKE '%role%' is
+-- the simplest match that covers both anonymous (migration 022) and
+-- named (``operators_role_check`` from a prior run of this migration)
+-- shapes. ``operators`` has no non-role CHECK constraints, so the
+-- broad match is safe. Loop guarantees idempotence — re-runs find
+-- nothing to drop and the ADD below lands the fresh constraint.
 DO $$
 DECLARE
   r record;
@@ -61,7 +65,7 @@ BEGIN
     SELECT conname FROM pg_constraint
     WHERE conrelid = 'operators'::regclass
       AND contype = 'c'
-      AND pg_get_constraintdef(oid) LIKE '%role%IN%'
+      AND pg_get_constraintdef(oid) ILIKE '%role%'
   LOOP
     EXECUTE format('ALTER TABLE operators DROP CONSTRAINT %I', r.conname);
   END LOOP;
