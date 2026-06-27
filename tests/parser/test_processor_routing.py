@@ -105,8 +105,12 @@ def test_neither_filename_nor_content_routes_to_bank(tmp_path: Path) -> None:
         ("chase_statement.pdf", "bank"),
         # Square tokens — branded
         ("square_sales_summary.pdf", "square"),
-        # Square tokens — Dashboard default export name
-        ("transactions_2026-03-01_2026-03-31.csv", "square"),
+        # Square Dashboard's default ``transactions_<date>.csv`` filename
+        # is NOT routable by filename alone — it collides with Stripe's
+        # ``balance_transactions_<date>.csv`` substring. Routes to bank
+        # at the filename layer; the CSV header sniff in
+        # detect_processor_from_csv_header is the correct discriminator.
+        ("transactions_2026-03-01_2026-03-31.csv", "bank"),
         # Square tokens — alternate dash form some operators rename to
         ("square-transactions-march.csv", "square"),
     ],

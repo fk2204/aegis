@@ -147,17 +147,21 @@ _STRIPE_FILENAME_TOKENS: Final[tuple[str, ...]] = (
 )
 
 # Filename tokens that explicitly carry Square. Wired for the Square
-# CSV path landed in the 2026-06-26 commit. ``transactions_`` is
-# Square's Dashboard default for CSV exports (e.g.
-# ``transactions_2026-03-01_2026-03-31.csv``); ``square-transactions``
-# is the alternate dash-separated form some operators rename to. The
-# brand token ``square`` is left at the front so a generic "square"
-# filename still routes — the content sniff is the final arbiter on
-# the PDF path.
+# CSV path. ``square-transactions`` is the dash-separated form some
+# operators rename Dashboard exports to; ``square_transactions`` is the
+# underscore variant. The brand token ``square`` covers the common case.
+#
+# Note: Square's Dashboard default export is named ``transactions_<date>.csv``
+# WITHOUT a brand prefix — that's deliberately NOT in this list because it
+# would collide with Stripe's ``balance_transactions_<date>.csv`` (the
+# substring match in detect_processor_from_filename would mark both Stripe
+# and Square as hit and the function would return ``ambiguous``, breaking
+# the Stripe routing path). The CSV header sniff in
+# ``detect_processor_from_csv_header`` is the correct discriminator for
+# generically-named Square exports.
 _SQUARE_FILENAME_TOKENS: Final[tuple[str, ...]] = (
     "square",
     "squareup",
-    "transactions_",
     "square-transactions",
     "square_transactions",
 )
