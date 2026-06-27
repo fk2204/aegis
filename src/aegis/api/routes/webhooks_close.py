@@ -57,10 +57,10 @@ from aegis.close.client import CloseClient, CloseError
 from aegis.close.field_map import (
     FieldMapError,
     get_custom_field,
-    industry_to_naics,
-    normalize_entity_type,
-    parse_fico_range,
-    parse_money,
+    industry_to_naics_safe,
+    normalize_entity_type_safe,
+    parse_fico_range_safe,
+    parse_money_safe,
     resolve_entity_type,
 )
 from aegis.close.orchestration import enqueue_close_orchestration
@@ -96,20 +96,35 @@ async def close_webhook(
     funders: Annotated[FunderRepository, Depends(get_funder_repository)],
 ) -> None:
     raw_body = await request.body()
+    client_ip = request.client.host if request.client is not None else None
 
     # Stage 1 — verify signature + freshness. 401 on either fail. No body
     # parsing before this point; HMAC must compute over the raw bytes.
-    _verify_signature(request.headers, raw_body)
+    _verify_signature(request.headers, raw_body, audit=audit, client_ip=client_ip)
 
-    # Stage 2 — parse JSON. 400 on malformed.
+    # Stage 2 — parse JSON. 400 on malformed. Every reject writes a
+    # `close.webhook.malformed_*` audit row so a 400 flood is visible
+    # to the operator without re-instrumenting in a hurry.
     try:
         payload = json.loads(raw_body)
     except json.JSONDecodeError as exc:
+        _audit_400_reject(
+            audit=audit,
+            reason="malformed_json",
+            client_ip=client_ip,
+            detail=str(exc)[:200],
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"invalid json: {exc}",
         ) from exc
     if not isinstance(payload, dict):
+        _audit_400_reject(
+            audit=audit,
+            reason="payload_not_dict",
+            client_ip=client_ip,
+            detail=f"got {type(payload).__name__}",
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="webhook body must be a JSON object",
@@ -117,6 +132,12 @@ async def close_webhook(
 
     event = payload.get("event")
     if not isinstance(event, dict):
+        _audit_400_reject(
+            audit=audit,
+            reason="missing_event",
+            client_ip=client_ip,
+            detail=f"event is {type(event).__name__}",
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="webhook body missing 'event' object",
@@ -202,6 +223,12 @@ async def close_webhook(
     # Stage 4 — pull the Lead and upsert the merchant (idempotent).
     lead_id = event.get("lead_id")
     if not isinstance(lead_id, str) or not lead_id:
+        _audit_400_reject(
+            audit=audit,
+            reason="lead_id_missing_on_trigger",
+            client_ip=client_ip,
+            detail=f"event_id={event.get('id')!r} opp_id={event.get('object_id')!r}",
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="event matches trigger filter but lead_id is missing",
@@ -278,17 +305,38 @@ async def close_webhook(
 # ----------------------------------------------------------------------
 
 
-def _verify_signature(headers: Any, raw_body: bytes) -> None:  # noqa: ANN401 — FastAPI Headers proxy
+def _verify_signature(
+    headers: Any,  # noqa: ANN401 — FastAPI Headers proxy
+    raw_body: bytes,
+    *,
+    audit: AuditLog,
+    client_ip: str | None,
+) -> None:
     """Reject the request unless the close-sig-hash + close-sig-timestamp
     headers carry a valid HMAC over (timestamp + raw_body) and the
     timestamp is within the 5-minute freshness window. 401 on any fail
     with a generic body — don't leak which check failed.
+
+    Every reject path writes a ``close.webhook.hmac_fail`` audit row +
+    a ``logger.warning`` with the source IP and a non-PII reason token
+    so a 400/401 flood is diagnosable from `journalctl` + `audit_log`
+    without re-instrumenting in a hurry. The audit details do NOT carry
+    the presented signature or the timestamp value — only the reason
+    token, source IP, and the body byte length so a replay vs. drift
+    pattern is visible.
     """
     settings = get_settings()
     if settings.close_webhook_secret is None:
         # Fail-closed: an unconfigured secret must not silently accept
         # signed traffic. 503 makes it clear the integration isn't
         # ready, vs 401 which would suggest a key mismatch.
+        _audit_hmac_fail(
+            audit=audit,
+            reason="secret_unconfigured",
+            client_ip=client_ip,
+            body_bytes=len(raw_body),
+            status_code=503,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="CLOSE_WEBHOOK_SECRET is not configured",
@@ -297,6 +345,13 @@ def _verify_signature(headers: Any, raw_body: bytes) -> None:  # noqa: ANN401 �
     presented_sig = headers.get("close-sig-hash", "")
     timestamp_str = headers.get("close-sig-timestamp", "")
     if not presented_sig or not timestamp_str:
+        _audit_hmac_fail(
+            audit=audit,
+            reason="missing_headers",
+            client_ip=client_ip,
+            body_bytes=len(raw_body),
+            status_code=401,
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
     # Freshness — Close sends Unix epoch seconds as the timestamp; some
@@ -304,12 +359,27 @@ def _verify_signature(headers: Any, raw_body: bytes) -> None:  # noqa: ANN401 �
     try:
         ts_dt = _parse_timestamp(timestamp_str)
     except ValueError:
+        _audit_hmac_fail(
+            audit=audit,
+            reason="bad_timestamp_format",
+            client_ip=client_ip,
+            body_bytes=len(raw_body),
+            status_code=401,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
         ) from None
 
     age = abs((datetime.now(UTC) - ts_dt).total_seconds())
     if age > WEBHOOK_FRESHNESS_SECONDS:
+        _audit_hmac_fail(
+            audit=audit,
+            reason="stale_timestamp",
+            client_ip=client_ip,
+            body_bytes=len(raw_body),
+            status_code=401,
+            extra={"age_seconds": int(age)},
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
     # HMAC — Close gives the signature_key hex-encoded; the HMAC input
@@ -321,6 +391,13 @@ def _verify_signature(headers: Any, raw_body: bytes) -> None:  # noqa: ANN401 �
         # Configuration error rather than auth error — the operator's
         # secret is malformed. Still don't leak it; 503 + generic detail.
         _log.error("close_webhook_secret_not_valid_hex")
+        _audit_hmac_fail(
+            audit=audit,
+            reason="secret_not_hex",
+            client_ip=client_ip,
+            body_bytes=len(raw_body),
+            status_code=503,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="CLOSE_WEBHOOK_SECRET is not valid hex",
@@ -329,7 +406,84 @@ def _verify_signature(headers: Any, raw_body: bytes) -> None:  # noqa: ANN401 �
     data = timestamp_str.encode("utf-8") + raw_body
     expected = hmac.new(secret_bytes, data, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(presented_sig, expected):
+        _audit_hmac_fail(
+            audit=audit,
+            reason="signature_mismatch",
+            client_ip=client_ip,
+            body_bytes=len(raw_body),
+            status_code=401,
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+
+
+def _audit_hmac_fail(
+    *,
+    audit: AuditLog,
+    reason: str,
+    client_ip: str | None,
+    body_bytes: int,
+    status_code: int,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Write one ``close.webhook.hmac_fail`` audit row + warning log.
+
+    Diagnostic-only: never carries PII (no body content, no signature
+    bytes, no timestamp). The (reason, client_ip) pair is enough to
+    tell a Close-side secret-rotation flood from an unknown-IP spoof
+    attempt. Failure to write the audit row propagates per the
+    ``audit_log writes are mandatory`` rule.
+    """
+    details: dict[str, Any] = {
+        "reason": reason,
+        "client_ip": client_ip,
+        "body_bytes": body_bytes,
+        "status_code": status_code,
+    }
+    if extra is not None:
+        details.update(extra)
+    audit.record(
+        actor="close_webhook",
+        action="close.webhook.hmac_fail",
+        details=details,
+    )
+    _log.warning(
+        "close_webhook.hmac_fail reason=%s client_ip=%s body_bytes=%d status=%d",
+        reason,
+        client_ip,
+        body_bytes,
+        status_code,
+    )
+
+
+def _audit_400_reject(
+    *,
+    audit: AuditLog,
+    reason: str,
+    client_ip: str | None,
+    detail: str,
+) -> None:
+    """Write one ``close.webhook.bad_request`` audit row + warning log.
+
+    Diagnostic-only — the request body has already failed shape /
+    schema / trigger-precondition checks, so there is no merchant or
+    lead context yet. ``detail`` is a non-PII summary (exception
+    message, type name, event id) capped at 200 chars.
+    """
+    audit.record(
+        actor="close_webhook",
+        action="close.webhook.bad_request",
+        details={
+            "reason": reason,
+            "client_ip": client_ip,
+            "detail": detail[:200],
+        },
+    )
+    _log.warning(
+        "close_webhook.bad_request reason=%s client_ip=%s detail=%s",
+        reason,
+        client_ip,
+        detail[:200],
+    )
 
 
 def _parse_timestamp(value: str) -> datetime:
@@ -809,13 +963,41 @@ def _upsert_merchant_from_lead(
     redelivered events from generating noise on the merchants row's
     updated_at timestamp.
 
-    Parse failures from field_map (e.g. unknown FICO Range, unknown
-    Industry) bubble up as HTTPException(400) — the operator must see
-    that surprise in Close, not have it silently swallowed.
+    Unknown enum values on Close-side fields (FICO bucket, Industry,
+    Entity type, money strings, time-in-business cast) used to bubble
+    up as ``HTTPException(400)`` and drop the entire webhook on the
+    floor — every other field that DID parse went with it. The
+    graceful path in ``_lead_to_merchant_fields`` now stores ``None``
+    for any unparseable field and writes a
+    ``close.field_parse_warning`` audit row carrying the raw value, so
+    the operator can extend the static mapping tables or fix Close-side
+    without losing the merchant upsert.
+
+    ``FieldMapError`` is still raised by ``get_custom_field`` when the
+    AEGIS-side name is unknown (a code bug, not Close drift), so we
+    keep the catch as a backstop.
     """
     try:
         new_fields = _lead_to_merchant_fields(lead, close_lead_id, audit)
     except FieldMapError as exc:
+        # Backstop catch — only fires when ``get_custom_field`` is called
+        # with an AEGIS-side name that isn't in ``CLOSE_FIELD_IDS`` (a
+        # code bug, not Close drift). Audit so the operator sees the
+        # bug surface even though we're still 400ing per the original
+        # intent (this branch is a defect signal, not a graceful path).
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.field_map_backstop_failed",
+            details={
+                "close_lead_id": close_lead_id,
+                "error": str(exc)[:200],
+            },
+        )
+        _log.warning(
+            "close_webhook.field_map_backstop_failed close_lead_id=%s error=%s",
+            close_lead_id,
+            str(exc)[:200],
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"close_lead_field_parse_failed: {exc}",
@@ -912,6 +1094,35 @@ def _upsert_merchant_from_lead(
     )
 
 
+def _record_unknown_field(
+    *,
+    audit: AuditLog,
+    field_name: str,
+    raw_value: str,
+    close_lead_id: str,
+) -> None:
+    """Write one ``close.field_parse_warning`` audit row when a Close
+    payload carries a value the static mapping table doesn't recognize.
+
+    The webhook handler keeps going with this field set to ``None`` —
+    the merchant row gets created with what DID parse. The audit row
+    surfaces the raw value so the operator can extend the mapping
+    (FICO bucket / Industry / Entity type / etc.) or fix it in Close.
+
+    ``raw_value`` is truncated to 200 chars so a runaway free-text
+    field can't blow up the audit row.
+    """
+    audit.record(
+        actor="close_webhook",
+        action="close.field_parse_warning",
+        details={
+            "field": field_name,
+            "raw_value": raw_value[:200],
+            "close_lead_id": close_lead_id,
+        },
+    )
+
+
 def _lead_to_merchant_fields(
     lead: dict[str, Any],
     close_lead_id: str,
@@ -920,7 +1131,16 @@ def _lead_to_merchant_fields(
     """Translate a Close Lead payload into a MerchantRow-field dict.
 
     All Close-specific cf_<id> lookups go through field_map.get_custom_field
-    so the cf_id table stays in one place. Pure (no DB, no HTTP).
+    so the cf_id table stays in one place. Pure (no DB, no HTTP, modulo
+    the audit-row write for unknown enum values).
+
+    Graceful fallback policy (2026-06-26): every enum-bucket / money
+    parser that COULD fail on Close drift uses the ``_safe`` variant
+    that returns ``(value, warning_token)``. A ``warning_token`` lands
+    in a ``close.field_parse_warning`` audit row and the field falls
+    back to ``None``. The merchant upsert proceeds with whatever did
+    parse — the previous behavior 400'd the entire webhook and lost
+    every other field on a single bad enum.
     """
     legal_name = get_custom_field(lead, "legal_name")
     business_name = legal_name or lead.get("display_name") or lead.get("name") or ""
@@ -949,7 +1169,15 @@ def _lead_to_merchant_fields(
     if isinstance(naics_explicit, str) and naics_explicit.strip():
         naics = naics_explicit.strip()
     else:
-        naics = industry_to_naics(industry_choice if isinstance(industry_choice, str) else None)
+        industry_input = industry_choice if isinstance(industry_choice, str) else None
+        naics, naics_warning = industry_to_naics_safe(industry_input)
+        if naics_warning is not None:
+            _record_unknown_field(
+                audit=audit,
+                field_name="industry",
+                raw_value=naics_warning,
+                close_lead_id=close_lead_id,
+            )
 
     raw_entity = resolve_entity_type(
         entity_type_a=get_custom_field(lead, "entity_type_a"),
@@ -957,7 +1185,14 @@ def _lead_to_merchant_fields(
         close_lead_id=close_lead_id,
         audit=audit,
     )
-    entity = normalize_entity_type(raw_entity)
+    entity, entity_warning = normalize_entity_type_safe(raw_entity)
+    if entity_warning is not None:
+        _record_unknown_field(
+            audit=audit,
+            field_name="entity_type",
+            raw_value=entity_warning,
+            close_lead_id=close_lead_id,
+        )
 
     tib_raw = get_custom_field(lead, "time_in_business_months")
     tib_months: int | None
@@ -966,8 +1201,34 @@ def _lead_to_merchant_fields(
     else:
         try:
             tib_months = int(tib_raw)
-        except (ValueError, TypeError) as exc:
-            raise FieldMapError(f"time_in_business_months not an int: {tib_raw!r}") from exc
+        except (ValueError, TypeError):
+            tib_months = None
+            _record_unknown_field(
+                audit=audit,
+                field_name="time_in_business_months",
+                raw_value=str(tib_raw),
+                close_lead_id=close_lead_id,
+            )
+
+    fico_raw = get_custom_field(lead, "fico_range")
+    fico_input = fico_raw if isinstance(fico_raw, str) else None
+    credit_score, fico_warning = parse_fico_range_safe(fico_input)
+    if fico_warning is not None:
+        _record_unknown_field(
+            audit=audit,
+            field_name="fico_range",
+            raw_value=fico_warning,
+            close_lead_id=close_lead_id,
+        )
+
+    requested_amount, money_warning = parse_money_safe(get_custom_field(lead, "requested_amount"))
+    if money_warning is not None:
+        _record_unknown_field(
+            audit=audit,
+            field_name="requested_amount",
+            raw_value=money_warning,
+            close_lead_id=close_lead_id,
+        )
 
     return {
         "business_name": str(business_name),
@@ -983,12 +1244,8 @@ def _lead_to_merchant_fields(
             industry_choice if isinstance(industry_choice, str) and industry_choice else None
         ),
         "time_in_business_months": tib_months,
-        "credit_score": parse_fico_range(
-            get_custom_field(lead, "fico_range")
-            if isinstance(get_custom_field(lead, "fico_range"), str)
-            else None
-        ),
-        "requested_amount": parse_money(get_custom_field(lead, "requested_amount")),
+        "credit_score": credit_score,
+        "requested_amount": requested_amount,
         "entity_type": entity,
     }
 
