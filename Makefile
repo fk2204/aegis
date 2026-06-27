@@ -31,6 +31,10 @@ test-fast:
 test:
 	CORPUS=1 uv run pytest -v
 
+# Match CI: typecheck src + tests + scripts (test-file type errors must surface locally).
+# Agents that run only `uv run mypy src/aegis` will miss errors that CI catches in
+# tests/ or scripts/, leading to the "passes locally, fails in CI" footgun (see
+# 2026-06-27 A5 + A6 CI failures). Always invoke `make typecheck` — not a bare mypy.
 typecheck:
 	uv run mypy src tests scripts
 

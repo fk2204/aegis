@@ -1,0 +1,16 @@
+Date,Time,Time Zone,Description,Amount,Fee,Net,Transaction ID,Payment ID,Card Brand,PAN Suffix,Device Name,Notes,Event Type,Location
+2026-04-02,07:42,Eastern Time (US & Canada),Morning coffee rush,12.50,0.43,12.07,sq_txn_a1b2c3d4e5f6,sq_pay_0001a2b3c4d5,Visa,4242,Register 1,,Payment,Main Street Store
+2026-04-03,11:18,Eastern Time (US & Canada),Catering order #4892,487.00,12.76,474.24,sq_txn_b2c3d4e5f6a7,sq_pay_0002b3c4d5e6,Mastercard,5454,Catering Pad,Pickup at 11:30,Payment,Main Street Store
+2026-04-05,13:05,Eastern Time (US & Canada),Lunch combo,28.75,0.85,27.90,sq_txn_c3d4e5f6a7b8,sq_pay_0003c4d5e6f7,Visa,1881,Register 1,,Payment,Main Street Store
+2026-04-07,19:32,Eastern Time (US & Canada),Dinner for two,67.80,1.86,65.94,sq_txn_d4e5f6a7b8c9,sq_pay_0004d5e6f7a8,American Express,3742,Register 2,,Payment,Westside Cafe
+2026-04-08,09:14,Eastern Time (US & Canada),Refund - burnt coffee,8.50,0.00,-8.50,sq_txn_e5f6a7b8c9d0,sq_pay_0001a2b3c4d5,Visa,4242,Register 1,Goodwill refund,Refund,Main Street Store
+2026-04-10,17:48,Eastern Time (US & Canada),Happy hour tab,89.25,2.42,86.83,sq_txn_f6a7b8c9d0e1,sq_pay_0005e6f7a8b9,Visa,7676,Mobile - Server A,,Payment,Westside Cafe
+2026-04-12,20:15,Eastern Time (US & Canada),Wine pairing event,145.50,3.88,141.62,sq_txn_a7b8c9d0e1f2,sq_pay_0006f7a8b9c0,Discover,1117,Register 1,Table 6,Payment,Main Street Store
+2026-04-15,10:30,Eastern Time (US & Canada),Private event deposit,215.00,5.69,209.31,sq_txn_b8c9d0e1f2a3,sq_pay_0007a8b9c0d1,Mastercard,2233,Register 2,Apr 28 booking,Payment,Main Street Store
+2026-04-15,23:00,Eastern Time (US & Canada),Deposit to bank - week 2,1234.56,0.00,1234.56,sq_xfer_0001abc,,,,,,Transfer,
+2026-04-18,11:00,Eastern Time (US & Canada),Brunch special,32.10,0.93,31.17,sq_txn_c9d0e1f2a3b4,sq_pay_0008b9c0d1e2,Visa,3344,Register 1,,Payment,Westside Cafe
+2026-04-20,12:45,Eastern Time (US & Canada),Refund - canceled brunch,32.10,0.00,-32.10,sq_txn_d0e1f2a3b4c5,sq_pay_0008b9c0d1e2,Visa,3344,Register 1,Same-day,Refund,Westside Cafe
+2026-04-22,08:30,Eastern Time (US & Canada),Pastry box pickup,15.75,0.51,15.24,sq_txn_e1f2a3b4c5d6,sq_pay_0009c0d1e2f3,Mastercard,9988,Mobile - Cashier,,Payment,Westside Cafe
+2026-04-25,18:20,Eastern Time (US & Canada),Group dinner,52.40,1.46,50.94,sq_txn_f2a3b4c5d6e7,sq_pay_000ad1e2f3a4,American Express,5566,Register 2,Party of 4,Payment,Main Street Store
+2026-04-28,14:08,Eastern Time (US & Canada),Customer dispute - wine event,145.50,15.00,-160.50,sq_txn_a3b4c5d6e7f8,sq_pay_0006f7a8b9c0,Discover,1117,,Dispute reason: unauthorized,Chargeback,Main Street Store
+2026-04-30,23:55,Eastern Time (US & Canada),Balance adjustment - fee credit,5.00,0.00,5.00,sq_adj_001xyz,,,,,,Reversal of Apr-15 fee,Adjustment,

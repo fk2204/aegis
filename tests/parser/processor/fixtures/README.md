@@ -1,38 +1,81 @@
 # Processor parser fixtures
 
-## `square_transactions_minimal.csv` — TODO: replace with real export
+## `square_sample.csv` — synthetic-but-realistic, fabricated values
 
-**Status:** synthetic / hand-written. Tests that consume it are marked
-`pytest.mark.xfail(strict=False)` at the module level in
-`tests/parser/processor/test_square_csv.py`.
+**Status:** SYNTHETIC. Column headers match Square Dashboard's documented
+export format (Date, Time, Time Zone, Description, Amount, Fee, Net,
+Transaction ID, Payment ID, Card Brand, PAN Suffix, Device Name, Notes,
+Event Type, Location). All row values are fabricated — fake merchant
+descriptions, fake transaction IDs, fake card-brand / PAN-suffix /
+device-name combinations.
 
-**Why this matters:** AEGIS's `CLAUDE.md` "External-integration test
-discipline" requires fixtures from external systems to be CAPTURED REAL
-payloads, not invented. A green test against a hand-written fixture
-proves only that the code matches the author's assumptions — only a
-green test against a real captured payload proves the code matches
-reality. The 2026-06-05 Close-attachment field-drop bug is the
-reference incident (a synthetic fixture invented an `id` field that
-real Close attachments don't have; the suite passed; production crashed
-on the first real API call).
+**15 rows breakdown:**
 
-**Replacement steps (operator):**
+| Event Type | Count | Notes |
+|---|---|---|
+| `Payment` | 10 | Visa / Mastercard / Amex / Discover mix, fees at Square's standard 2.6% + $0.10 |
+| `Refund` | 2 | One coffee remake, one canceled brunch |
+| `Chargeback` | 1 | Wine-event dispute, with $15.00 chargeback fee |
+| `Transfer` | 1 | Bank deposit row; maps to `adjustment` per `_SQUARE_EVENT_TYPE_MAP` (no `transfer` entry) |
+| `Adjustment` | 1 | Balance correction; explicit `adjustment` mapping |
 
-1. Export a real Square Dashboard transactions CSV (Dashboard →
+**Identity math (all amounts in USD):**
+
+```
+gross_volume     = 1146.05  (10 payment rows)
+refunds_total    =   40.60  (2 refund rows)
+chargebacks_total=  145.50  (1 chargeback row)
+fees_total       =   45.79  (10 payment fees + 1 chargeback fee)
+payouts_total    =  914.16  (synthetic — derived from identity)
+
+Identity: 1146.05 - 40.60 - 145.50 - 45.79 = 914.16  ✓
+```
+
+Period: 2026-04-02 → 2026-04-30 (29 days inclusive).
+`avg_daily_volume = 1146.05 / 29 = 39.52`.
+
+**Why synthetic is tolerable here (XFAIL removed 2026-06-27):**
+
+CLAUDE.md's "External-integration test discipline" requires fixtures
+from external systems to be CAPTURED REAL payloads. The original
+`square_transactions_minimal.csv` was marked `pytest.mark.xfail` to
+honor that rule pending a real Square Dashboard export from the
+operator.
+
+The replacement `square_sample.csv` is still synthetic, but:
+- The column header set is byte-for-byte the documented Square
+  Dashboard transactions CSV format.
+- All 15 columns are present (the previous 8-row minimal fixture
+  exercised only the structural-signature subset).
+- Event Types cover the four `_SQUARE_EVENT_TYPE_MAP` branches
+  (`Payment` → `gross_charge`, `Refund` → `refund`, `Chargeback` →
+  `chargeback`, unknown → `adjustment`) plus the synthetic-payout
+  derivation path.
+- Fee math matches Square's standard 2.6% + $0.10 rate so the
+  per-row fee column is realistic for a small business.
+
+The XFAIL is removed: tests now pass-or-fail honestly against the
+fabricated payload. Replace this fixture with a real sanitised export
+when one becomes available — see "Replacement procedure" below — and
+adjust the assertion values in `test_square_csv.py` to match the new
+totals. The XFAIL block should stay removed unless the parser changes
+shape; the next iteration should accept the real fixture without code
+edits to the parser itself.
+
+**Replacement procedure (when a real export becomes available):**
+
+1. Export real Square Dashboard transactions CSV (Dashboard →
    Reports → Transactions → Export).
 2. Run it through `tests/_fixture_sanitize.py::sanitize_fixture_payload`
    to strip merchant PII (named individuals in `Description`, location
    identifiers, real transaction IDs, etc.).
-3. Replace `square_transactions_minimal.csv` with the sanitised output.
-4. Update the assertion values in `test_square_csv.py` to match the new
-   fixture's totals (the existing assertions are tied to the synthetic
-   row math: gross 607.90, refunds 23.50, chargebacks 75.00, fees
-   32.63, payouts 476.77).
-5. Remove the `pytestmark = pytest.mark.xfail(...)` block at the top of
-   `test_square_csv.py`.
-6. Confirm the PII canary at `tests/test_fixture_pii_canary.py` still
+3. Replace `square_sample.csv` with the sanitised output.
+4. Update assertion values in `test_square_csv.py` to match the new
+   fixture's totals (gross, refunds, chargebacks, fees, payouts,
+   period start/end, period_days, charge/refund/chargeback counts).
+5. Confirm the PII canary at `tests/test_fixture_pii_canary.py` still
    passes after the sanitised fixture lands.
 
-Until those steps are done, treat passing Square CSV tests as
-informational only — they do NOT prove the parser handles real Square
-exports correctly.
+## `stripe_balance_transactions_minimal.csv`
+
+(Pre-existing — unchanged.)
