@@ -26,6 +26,10 @@ EnvironmentFile=/etc/aegis/aegis.env
 ExecStart=/usr/local/bin/uv run --no-sync arq aegis.workers.WorkerSettings
 Restart=on-failure
 RestartSec=5s
+# Same SIGTERM-as-clean rationale as aegis-web.service — see the
+# matching comment there. Worker restarts on every deploy alongside
+# web; without this whitelist, journalctl flags both as "Failed".
+SuccessExitStatus=143
 
 NoNewPrivileges=true
 ProtectSystem=strict

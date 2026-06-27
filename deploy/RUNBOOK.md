@@ -54,6 +54,28 @@ sudo systemctl stop aegis-worker
 sudo systemctl start aegis-worker
 ```
 
+### One-time: sync `SuccessExitStatus=143` after this commit lands
+
+The repo's `deploy/aegis-web.service` + `deploy/aegis-worker.service`
+were updated to whitelist exit-code 143 (SIGTERM) so routine restarts
+no longer show as `Failed with result 'exit-code'` in journalctl. Auto-
+deploy syncs the repo source tree to `/opt/aegis` but does NOT re-copy
+unit files into `/etc/systemd/system/` — `deploy/install.sh` is the only
+path that does that, and it only runs on first-time setup. To take effect:
+
+```bash
+ssh root@5.161.51.105
+install -m 0644 /opt/aegis/deploy/aegis-web.service     /etc/systemd/system/aegis-web.service
+install -m 0644 /opt/aegis/deploy/aegis-worker.service  /etc/systemd/system/aegis-worker.service
+systemctl daemon-reload
+systemctl restart aegis-web aegis-worker
+journalctl -u aegis-web -u aegis-worker -n 20 --no-pager
+```
+
+Expected: the restart line reads `Deactivated successfully` rather than
+`Failed with result 'exit-code'`. One-time op; future deploys keep the
+whitelist because the unit file on disk is now the new version.
+
 ---
 
 ## Deployment

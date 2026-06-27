@@ -27,6 +27,12 @@ EnvironmentFile=/etc/aegis/aegis.env
 ExecStart=/usr/local/bin/uv run --no-sync uvicorn aegis.api.app:app --host 127.0.0.1 --port 5555
 Restart=on-failure
 RestartSec=5s
+# systemd reports any non-zero exit as "Failed with result 'exit-code'",
+# which mis-classifies routine SIGTERM-driven restarts (every deploy +
+# every manual `systemctl restart`) as crashes in journalctl. Whitelist
+# 143 (= 128 + SIGTERM) as a clean exit so the journal only flags real
+# unexpected exits.
+SuccessExitStatus=143
 
 # Security hardening — minimum-privilege defaults.
 NoNewPrivileges=true
