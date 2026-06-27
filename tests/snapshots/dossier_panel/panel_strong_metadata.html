@@ -2,6 +2,10 @@
 
 
 
+
+
+
+
 <section class="body cols-1" style="margin-top:18px">
   <div>
     <header class="sect-head">
@@ -39,18 +43,34 @@
                 </td>
                 <td title="strong_metadata">Strong metadata anomaly</td>
                 <td>
-                  <div class="desc">FAIL (strong_metadata) — metadata_score=72 >= 50. Hard editor / forged author / structural anomaly. Auto-decline-eligible at Step 2; informational today.</div>
                   
-                    <ul style="margin:4px 0 0 0;padding-left:18px;font-size:11.5px;color:var(--ink-2)">
-                      
-                        <li><span title="metadata_score">Metadata anomaly score</span> · metadata_score=72 >= 50 (strong: hard editor / forged author / structural)</li>
-                      
-                        <li><span title="editor_detected">Editor metadata fingerprint</span> · editor_detected: iText 2.1.7 by 1T3XT</li>
-                      
-                        <li><span title="reconciliation_failed_period">Reconciliation: period total mismatch</span> · reconciliation_failed_period: expected 1000 got 950</li>
-                      
-                    </ul>
                   
+                  
+                    <div class="track-a-plain"
+                         data-test-id="track-a-plain-english"
+                         data-branch="strong_metadata">PDF editing tool detected in file metadata. Could be innocent compression — but request original bank export to confirm.</div>
+                  
+                  
+                    
+                    
+                    
+                  
+                  <details class="track-a-tech-detail"
+                           data-test-id="track-a-tech-detail">
+                    <summary>Technical detail</summary>
+                    <div class="desc" style="margin-top:4px">FAIL (strong_metadata) — metadata_score=72 >= 50. Hard editor / forged author / structural anomaly. Auto-decline-eligible at Step 2; informational today.</div>
+                    
+                      <ul style="margin:4px 0 0 0;padding-left:18px;font-size:11.5px;color:var(--ink-2)">
+                        
+                          <li><span title="metadata_score">Metadata anomaly score</span> &middot; metadata_score=72 >= 50 (strong: hard editor / forged author / structural)</li>
+                        
+                          <li><span title="editor_detected">Editor metadata fingerprint</span> &middot; editor_detected: iText 2.1.7 by 1T3XT</li>
+                        
+                          <li><span title="reconciliation_failed_period">Reconciliation: period total mismatch</span> &middot; reconciliation_failed_period: expected 1000 got 950</li>
+                        
+                      </ul>
+                    
+                  </details>
                 </td>
               </tr>
             

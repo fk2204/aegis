@@ -2,6 +2,10 @@
 
 
 
+
+
+
+
 <section class="body cols-1" style="margin-top:18px">
   <div>
     <header class="sect-head">
@@ -39,14 +43,30 @@
                 </td>
                 <td title="drift_alone">Reconciliation drift alone</td>
                 <td>
-                  <div class="desc">REVIEW (drift_alone) — 1 reconciliation failure(s) with no editor metadata (metadata_score=10). Could be genuine OCR or parser miss; could be drift. Underwriter review distinguishes the two.</div>
                   
-                    <ul style="margin:4px 0 0 0;padding-left:18px;font-size:11.5px;color:var(--ink-2)">
-                      
-                        <li><span title="reconciliation_failed_withdrawal_total">Reconciliation: withdrawal total mismatch</span> · reconciliation_failed_withdrawal_total: listed 100 vs printed 90</li>
-                      
-                    </ul>
                   
+                  
+                    <div class="track-a-plain"
+                         data-test-id="track-a-plain-english"
+                         data-branch="drift_alone">Math discrepancy detected. Could be OCR error or real manipulation. Compare the printed totals on the PDF to the numbers shown here.</div>
+                  
+                  
+                    
+                    
+                    
+                  
+                  <details class="track-a-tech-detail"
+                           data-test-id="track-a-tech-detail">
+                    <summary>Technical detail</summary>
+                    <div class="desc" style="margin-top:4px">REVIEW (drift_alone) — 1 reconciliation failure(s) with no editor metadata (metadata_score=10). Could be genuine OCR or parser miss; could be drift. Underwriter review distinguishes the two.</div>
+                    
+                      <ul style="margin:4px 0 0 0;padding-left:18px;font-size:11.5px;color:var(--ink-2)">
+                        
+                          <li><span title="reconciliation_failed_withdrawal_total">Reconciliation: withdrawal total mismatch</span> &middot; reconciliation_failed_withdrawal_total: listed 100 vs printed 90</li>
+                        
+                      </ul>
+                    
+                  </details>
                 </td>
               </tr>
             
