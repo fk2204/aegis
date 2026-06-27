@@ -1110,6 +1110,22 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--include-old",
+        action="store_true",
+        help=(
+            "Used only alongside ``--reparse-sealed-manual-review "
+            "--all-merchants``. Default behavior excludes documents whose "
+            "``uploaded_at`` is older than 90 days from the re-enqueue "
+            "sweep — stale legacy docs are unlikely to benefit from a "
+            "fresh parse and the operator usually wants to triage them "
+            "manually. Pass this flag to opt-in and re-enqueue every "
+            "sealed manual_review doc regardless of age. No effect when "
+            "``--reparse-sealed-manual-review`` is scoped via "
+            "``--merchant`` (per-merchant path always processes the full "
+            "candidate set)."
+        ),
+    )
+    p.add_argument(
         "--vision-retry",
         action="store_true",
         help=(
@@ -1872,6 +1888,7 @@ def _vision_retry(
 def _select_sealed_manual_review_candidates(
     *,
     merchant_id: UUID | None,
+    include_old: bool = True,
 ) -> list[dict[str, Any]]:
     """Identify ``manual_review`` docs with a sealed ``pdf_store`` blob.
 
@@ -1880,6 +1897,12 @@ def _select_sealed_manual_review_candidates(
       * ``storage_path IS NOT NULL`` — pdf_store has a sealed blob; the
         plaintext is reachable without a Close re-fetch.
       * Optionally ``merchant_id = ?`` when the caller passes a UUID.
+      * When ``include_old=False`` (the ``--all-merchants`` default)
+        ``uploaded_at >= now() - 90 days`` is added so stale legacy docs
+        the operator hasn't touched in months stay parked instead of
+        flooding the worker queue. Per-merchant invocations keep the
+        default ``True`` so an operator targeting a specific lead always
+        sees every candidate regardless of age.
 
     Distinct from ``_select_vision_retry_candidates``: does NOT require
     the analyses row to be absent. The use case here is a doc that DID
@@ -1890,12 +1913,15 @@ def _select_sealed_manual_review_candidates(
     sb = get_supabase()
     q = (
         sb.table("documents")
-        .select("id, original_filename, parse_status, storage_path, merchant_id")
+        .select("id, original_filename, parse_status, storage_path, merchant_id, uploaded_at")
         .eq("parse_status", "manual_review")
         .not_.is_("storage_path", "null")
     )
     if merchant_id is not None:
         q = q.eq("merchant_id", str(merchant_id))
+    if not include_old:
+        cutoff = (datetime.now(UTC) - timedelta(days=90)).isoformat()
+        q = q.gte("uploaded_at", cutoff)
     result = q.execute()
     return cast(list[dict[str, Any]], result.data or [])
 
@@ -1943,6 +1969,7 @@ def _reparse_sealed_manual_review(
     audit: AuditLog,
     upload_dir: Path,
     apply_writes: bool,
+    include_old: bool = True,
 ) -> tuple[int, int, int]:
     """Decrypt each sealed-blob manual_review doc and enqueue a re-parse.
 
@@ -1963,7 +1990,10 @@ def _reparse_sealed_manual_review(
     mode ``reparse_enqueued`` is always 0.
     """
     merchant_id = merchant_filter.id if merchant_filter is not None else None
-    candidates = _select_sealed_manual_review_candidates(merchant_id=merchant_id)
+    candidates = _select_sealed_manual_review_candidates(
+        merchant_id=merchant_id,
+        include_old=include_old,
+    )
     scope = (
         f"merchant={merchant_filter.business_name!r}"
         if merchant_filter is not None
@@ -2083,6 +2113,125 @@ def _reparse_sealed_manual_review(
             issues += 1
 
     return (len(candidates), enqueued, issues)
+
+
+def _reparse_sealed_manual_review_all_merchants(
+    *,
+    merchants_repo: SupabaseMerchantRepository,
+    pdf_store: SupabasePdfStoreRepository,
+    audit: AuditLog,
+    upload_dir: Path,
+    apply_writes: bool,
+    include_old: bool,
+    batch_size: int = 5,
+    sleep_between_batches_s: float = 2.0,
+) -> tuple[int, int, int]:
+    """Run ``_reparse_sealed_manual_review`` against every merchant that
+    has at least one sealed manual_review document, processing merchants
+    in batches with a short sleep between batches.
+
+    Selection — pull every (merchant_id, doc) pair in the sealed
+    manual_review bucket (honouring ``include_old``), reduce to the
+    distinct merchant_id set, then hydrate ``MerchantRow`` objects from
+    the repository so the per-merchant function gets the same shape its
+    existing ``--merchant`` path receives.
+
+    Batching — 5 merchants per batch with a 2-second sleep between
+    batches. The sleep is parameterised so tests can collapse it to
+    zero. Sleep is skipped after the final batch (mirrors the existing
+    ``--all-merchants`` ingestion-mode loop above).
+
+    Fault tolerance — a hydrate-miss (``MerchantNotFoundError``) or a
+    per-merchant ``_reparse_sealed_manual_review`` exception increments
+    the issues counter and the loop continues to the next merchant.
+    The same idempotency the per-merchant function already provides
+    (audit-after-enqueue, dry-run guard) is inherited here.
+
+    Returns ``(total_candidates, total_enqueued, total_issues)`` summed
+    across every merchant processed.
+    """
+    import time
+
+    candidate_rows = _select_sealed_manual_review_candidates(
+        merchant_id=None,
+        include_old=include_old,
+    )
+    merchant_ids: list[UUID] = []
+    seen: set[UUID] = set()
+    for row in candidate_rows:
+        raw = row.get("merchant_id")
+        if not isinstance(raw, str):
+            continue
+        try:
+            mid = UUID(raw)
+        except ValueError:
+            continue
+        if mid in seen:
+            continue
+        seen.add(mid)
+        merchant_ids.append(mid)
+
+    if not merchant_ids:
+        print(
+            "# reparse-sealed-manual-review +all-merchants: no merchants with "
+            "sealed manual_review docs found",
+            file=sys.stderr,
+        )
+        return (0, 0, 0)
+
+    merchant_rows: list[MerchantRow] = []
+    total_issues = 0
+    for mid in merchant_ids:
+        try:
+            merchant_rows.append(merchants_repo.get(mid))
+        except MerchantNotFoundError as exc:
+            print(
+                f"  hydrate-miss merchant_id={mid}: {exc}",
+                file=sys.stderr,
+            )
+            total_issues += 1
+
+    total_batches = (len(merchant_rows) + batch_size - 1) // batch_size
+    print(
+        f"# reparse-sealed-manual-review +all-merchants: {len(merchant_rows)} "
+        f"merchant(s) across {total_batches} batch(es) "
+        f"({'include-old' if include_old else '<=90d'})",
+        file=sys.stderr,
+    )
+
+    total_candidates = 0
+    total_enqueued = 0
+    for batch_idx, batch_start in enumerate(range(0, len(merchant_rows), batch_size), start=1):
+        batch = merchant_rows[batch_start : batch_start + batch_size]
+        names = ", ".join(repr(m.business_name) for m in batch)
+        print(
+            f"[batch {batch_idx}/{total_batches}] processing merchants: {names}",
+            file=sys.stderr,
+        )
+        for merchant in batch:
+            try:
+                c, e, i = _reparse_sealed_manual_review(
+                    merchant_filter=merchant,
+                    pdf_store=pdf_store,
+                    audit=audit,
+                    upload_dir=upload_dir,
+                    apply_writes=apply_writes,
+                    include_old=include_old,
+                )
+            except Exception as exc:
+                print(
+                    f"  merchant {merchant.business_name!r} failed: {_format_error_chain(exc)}",
+                    file=sys.stderr,
+                )
+                total_issues += 1
+                continue
+            total_candidates += c
+            total_enqueued += e
+            total_issues += i
+        if batch_idx < total_batches:
+            time.sleep(sleep_between_batches_s)
+
+    return (total_candidates, total_enqueued, total_issues)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -2394,6 +2543,32 @@ def main() -> int:
     # fresh parse_document arq job. The worker handles wipe-and-replace
     # of the existing analyses + transactions rows internally.
     if args.reparse_sealed_manual_review:
+        # When --all-merchants is also set, iterate every merchant that
+        # has at least one sealed manual_review doc and call the per-
+        # merchant flow in batches. Per-merchant batching (rather than
+        # per-doc) keeps the operator-facing progress log readable and
+        # gives the worker pool natural breathing room between bursts.
+        if args.all_merchants:
+            try:
+                found, enqueued, issues = _reparse_sealed_manual_review_all_merchants(
+                    merchants_repo=merchants_repo,
+                    pdf_store=pdf_store,
+                    audit=audit,
+                    upload_dir=upload_dir,
+                    apply_writes=args.apply,
+                    include_old=args.include_old,
+                )
+            finally:
+                close_client.close()
+            mode = "APPLY" if args.apply else "DRY-RUN"
+            age_scope = " +include-old" if args.include_old else ""
+            print(
+                f"# mode={mode} +reparse-sealed-manual-review +all-merchants{age_scope} "
+                f"candidates={found} reparse_enqueued={enqueued} issues={issues}",
+                file=sys.stderr,
+            )
+            return EXIT_ISSUES_FOUND if issues > 0 else EXIT_OK
+
         merchant_filter: MerchantRow | None = None
         if args.merchant is not None:
             try:

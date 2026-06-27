@@ -76,7 +76,7 @@ def test_dry_run_one_candidate_no_writes(
     monkeypatch.setattr(
         recover,
         "_select_sealed_manual_review_candidates",
-        lambda *, merchant_id: [candidate],
+        lambda *, merchant_id, include_old=True: [candidate],
     )
 
     pdf_store = InMemoryPdfStoreRepository()
@@ -124,7 +124,7 @@ def test_apply_one_candidate_writes_tempfile_with_mode_0o644(
     monkeypatch.setattr(
         recover,
         "_select_sealed_manual_review_candidates",
-        lambda *, merchant_id: [candidate],
+        lambda *, merchant_id, include_old=True: [candidate],
     )
 
     pdf_store = InMemoryPdfStoreRepository()
@@ -189,7 +189,7 @@ def test_apply_decrypt_failure_increments_issues_and_continues(
     monkeypatch.setattr(
         recover,
         "_select_sealed_manual_review_candidates",
-        lambda *, merchant_id: [good, bad],
+        lambda *, merchant_id, include_old=True: [good, bad],
     )
 
     pdf_store = InMemoryPdfStoreRepository()
