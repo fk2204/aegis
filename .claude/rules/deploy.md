@@ -107,3 +107,44 @@ Helper scripts that match `install-*.ps1`, `provision-*.sh`, or anything `.gitig
 Before any deploy / parser / compliance / scoring / testing work, read the matching `.claude/rules/<area>.md` file. They are not abstract — they answer most operational questions verbatim (including the sudo and systemctl gotchas above) and exist because someone already paid the cost of discovering the answer the hard way. Auto-load triggers on file edits but does not fire when the work is "investigate why X fails on the box" — explicitly Read the relevant rules file first in those cases.
 
 (Cost: ~5 failed SSH attempts on 2026-06-10 before reading this very file's prior version.)
+
+---
+
+## Migration writing gotchas
+
+Real failure modes learned writing migrations that have to survive prod's existing schema state. Each one cost a deploy retry — captured here so the next session doesn't re-derive them.
+
+### Postgres rewrites `col IN (...)` to `col = ANY (ARRAY[...])` in `pg_get_constraintdef()`
+
+When a migration tries to discover-and-drop an existing CHECK constraint by definition pattern, **do not** use `LIKE '%IN%'`. Postgres stores `CHECK (col IN ('a','b'))` and `CHECK (col = ANY (ARRAY['a','b']))` interchangeably and returns the normalized `ANY (ARRAY[...])` form from `pg_get_constraintdef(oid)`. A pattern like `LIKE '%role%IN%'` returns zero rows on a freshly-applied table — the discovery loop body never runs, the subsequent `ADD CONSTRAINT` then fails with `DuplicateObject` because the constraint was actually there under its normalized definition.
+
+Safe alternatives:
+
+- `ILIKE '%role%'` — matches both stored forms (broad but safe when the table has no non-role CHECK constraints to accidentally drop).
+- Match by constraint name directly: `WHERE conname = 'operators_role_check'` — most precise when the prior name is known.
+- For unknown-anonymous-name discovery, use the `~* 'role'` regex.
+
+Reference incident: A4 migration `076_deal_assignments_and_operator_role.sql` (June 27, two deploy retries to land). The fixed loop lives at `migrations/076_deal_assignments_and_operator_role.sql:60-70`; the worked-example sequence:
+
+```sql
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN
+    SELECT conname FROM pg_constraint
+    WHERE conrelid = 'operators'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) ILIKE '%role%'   -- NOT LIKE '%IN%'
+  LOOP
+    EXECUTE format('ALTER TABLE operators DROP CONSTRAINT %I', r.conname);
+  END LOOP;
+END$$;
+
+ALTER TABLE operators
+  ADD CONSTRAINT operators_role_check
+  CHECK (role IN ('underwriter', 'compliance_reviewer', 'admin', 'viewer'));
+```
+
+The loop pattern (drop ALL matching, then ADD fresh) is also what makes the migration idempotent across re-runs — a `SELECT INTO` single-row drop would miss a prior-named constraint that already exists.
+
+(Cost: 2 deploy retries on 2026-06-27 — the original migration shipped with `LIKE '%role%IN%'` and silently no-op'd the discovery loop.)
