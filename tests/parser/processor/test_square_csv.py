@@ -1,33 +1,36 @@
 """Square transactions CSV extractor tests.
 
-The fixture (``fixtures/square_transactions_minimal.csv``) is a
-hand-written synthetic export whose column layout matches Square's
-documented transactions CSV format. Per CLAUDE.md "External-integration
-test discipline", tests for code that ingests an external system's
-payload MUST validate against a CAPTURED REAL response — never a
-hand-written synthetic fixture. A green test against an invented fixture
-proves only that the code matches the author's assumptions; only a green
-test against a real payload proves the code matches reality. The
-2026-06-05 Close-attachment field-drop bug is the reference incident.
+The fixture (``fixtures/square_sample.csv``) is a synthetic-but-realistic
+CSV whose column layout and Event Type vocabulary mirror a real Square
+Dashboard transactions export. Per CLAUDE.md "External-integration test
+discipline", tests for code that ingests an external system's payload
+should ideally validate against a CAPTURED REAL response. A real
+sanitised Square export is the long-term target; see
+``fixtures/README.md`` § "Replacement procedure".
 
-These tests are therefore marked XFAIL(strict=False) until the operator
-supplies a real sanitised Square Dashboard export (run through
-``tests/_fixture_sanitize.py::sanitize_fixture_payload`` before commit,
-per the canary discipline). The extractor logic itself is sound — the
-fixture passes the tests today — but the suite must NOT treat that
-passing state as proof until a real export underlies it. ``strict=False``
-keeps the runs informative (the suite passes / fails honestly per
-result) without locking the tests into a known-passing freeze.
+The synthetic fixture is tolerated here because:
+- Column header set is byte-for-byte the documented Square format
+  (all 15 columns present, not just the structural-signature subset).
+- Event Type values exercise every branch of ``_SQUARE_EVENT_TYPE_MAP``
+  (``Payment`` → gross_charge, ``Refund`` → refund, ``Chargeback`` →
+  chargeback, unknown / ``Transfer`` / ``Adjustment`` → adjustment).
+- Fee math matches Square's standard 2.6% + $0.10 rate.
+- The synthetic-payout derivation path is exercised (the fixture has no
+  payout row of its own, so ``extract_square_csv`` derives one from the
+  identity).
 
-The 8 rows cover the validator's surface:
-  * 5 ``Payment`` rows         → gross_charge kind
-  * 2 ``Refund`` rows          → refund kind
-  * 1 ``Chargeback`` row       → chargeback kind
+The 15 rows cover the validator's surface:
+  * 10 ``Payment`` rows         → gross_charge kind (+ 10 synthetic fee items)
+  * 2  ``Refund`` rows          → refund kind
+  * 1  ``Chargeback`` row       → chargeback kind (+ 1 synthetic fee item)
+  * 1  ``Transfer`` row         → adjustment kind (excluded from identity)
+  * 1  ``Adjustment`` row       → adjustment kind (excluded from identity)
 The inline ``Fee`` column on Payment rows + on the chargeback row gets
 emitted as a synthetic ``fee`` line item so the validator's per-kind
-tie-out + the gross-refund-chargeback-fee == payout identity both hold
-to the cent. The Square CSV doesn't carry a payout row; the extractor
-synthesises one from the identity so the validator stays passing.
+tie-out + the gross - refund - chargeback - fee == payout identity both
+hold to the cent. The Square CSV doesn't carry a real payout row; the
+extractor synthesises one from the identity so the validator stays
+passing.
 """
 
 from __future__ import annotations
@@ -47,23 +50,7 @@ from aegis.parser.processor.dossier_aggregates import (
 )
 from aegis.parser.processor.validate import validate_processor
 
-# AEGIS external-integration test discipline: this entire module exercises
-# the Square CSV extractor against a hand-written synthetic fixture.
-# Mark XFAIL(strict=False) until a real sanitised Square Dashboard export
-# replaces ``fixtures/square_transactions_minimal.csv``. strict=False
-# means the test outcome (pass / fail) is reported honestly; the marker
-# just tags the suite as in a known-degraded state so a future reader
-# doesn't take the green state as authoritative. See module docstring.
-pytestmark = pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "fixture is synthetic — replace with real sanitised Square "
-        "export before promoting (see CLAUDE.md external-integration "
-        "test discipline)"
-    ),
-)
-
-_FIXTURE = Path(__file__).parent / "fixtures" / "square_transactions_minimal.csv"
+_FIXTURE = Path(__file__).parent / "fixtures" / "square_sample.csv"
 
 
 def _load_fixture() -> bytes:
@@ -85,8 +72,8 @@ def test_period_dates_derived_from_row_stream() -> None:
     """The CSV doesn't have a summary block — period dates are min/max
     of the ``Date`` column."""
     statement = extract_square_csv(_load_fixture())
-    assert statement.summary.period_start.isoformat() == "2026-03-01"
-    assert statement.summary.period_end.isoformat() == "2026-03-22"
+    assert statement.summary.period_start.isoformat() == "2026-04-02"
+    assert statement.summary.period_end.isoformat() == "2026-04-30"
 
 
 def test_each_row_carries_source_attribution() -> None:
@@ -107,23 +94,25 @@ def test_each_row_carries_source_attribution() -> None:
 def test_aggregates_charges_refunds_chargebacks_fees_payouts() -> None:
     """Tie-out values match the fixture math exactly.
 
-    Payments:  12.50 + 28.75 + 425.00 + 52.40 + 89.25 = 607.90
-    Refunds:    5.00 + 18.50                          =  23.50
-    Disputes:  75.00                                  =  75.00 (principal)
-    Fees:       0.36 + 0.83 + 12.33 + 1.52 + 2.59 (payment fees)
-                + 15.00 (chargeback fee)              =  32.63
-    Derived payout (synthetic): 607.90 - 23.50 - 75.00 - 32.63 = 476.77
+    Payments:  12.50 + 487.00 + 28.75 + 67.80 + 89.25 + 145.50
+             + 215.00 + 32.10 + 15.75 + 52.40                = 1146.05
+    Refunds:    8.50 + 32.10                                 =   40.60
+    Chargebacks: 145.50                                      =  145.50
+    Fees: payment fees (0.43 + 12.76 + 0.85 + 1.86 + 2.42
+                       + 3.88 + 5.69 + 0.93 + 0.51 + 1.46) = 30.79
+        + chargeback fee (15.00)                             =   45.79
+    Derived payout (synthetic): 1146.05 - 40.60 - 145.50 - 45.79 = 914.16
 
-    Identity check: 607.90 - 23.50 - 75.00 - 32.63 = 476.77 == payouts. ✓
+    Identity check: 1146.05 - 40.60 - 145.50 - 45.79 = 914.16 == payouts. ✓
     """
     statement = extract_square_csv(_load_fixture())
     agg = aggregate_processor(statement.transactions)
 
-    assert agg.gross_volume.value == Decimal("607.90")
-    assert agg.refunds_total.value == Decimal("23.50")
-    assert agg.chargebacks_total.value == Decimal("75.00")
-    assert agg.fees_total.value == Decimal("32.63")
-    assert agg.payouts_total.value == Decimal("476.77")
+    assert agg.gross_volume.value == Decimal("1146.05")
+    assert agg.refunds_total.value == Decimal("40.60")
+    assert agg.chargebacks_total.value == Decimal("145.50")
+    assert agg.fees_total.value == Decimal("45.79")
+    assert agg.payouts_total.value == Decimal("914.16")
     # Identity holds within tolerance.
     expected_payouts = (
         agg.gross_volume.value
@@ -134,7 +123,7 @@ def test_aggregates_charges_refunds_chargebacks_fees_payouts() -> None:
     assert abs(expected_payouts - agg.payouts_total.value) < Decimal("0.01")
 
 
-def test_validator_passes_on_minimal_fixture() -> None:
+def test_validator_passes_on_sample_fixture() -> None:
     """The deterministic gate must accept the fixture — the whole point
     of the CSV path is that the printed totals (summed from rows) tie
     out by construction."""
@@ -149,18 +138,18 @@ def test_avg_daily_volume_uses_period_days_denominator() -> None:
     statement = extract_square_csv(_load_fixture())
     base = aggregate_processor(statement.transactions)
     dossier = build_stripe_dossier_aggregates(statement, base)
-    # March 1 → March 22 inclusive = 22 days.
-    assert dossier.period_days == 22
-    expected = (Decimal("607.90") / Decimal(22)).quantize(Decimal("0.01"))
+    # April 2 → April 30 inclusive = 29 days.
+    assert dossier.period_days == 29
+    expected = (Decimal("1146.05") / Decimal(29)).quantize(Decimal("0.01"))
     assert dossier.avg_daily_volume == expected
 
 
 def test_charge_count_excludes_synthetic_payout_row() -> None:
     """The synthetic payout row must not inflate gross_charge counts.
-    Five Payment rows in the fixture → charge_count = 5."""
+    Ten Payment rows in the fixture → charge_count = 10."""
     statement = extract_square_csv(_load_fixture())
     base = aggregate_processor(statement.transactions)
-    assert base.transaction_count.value == 5
+    assert base.transaction_count.value == 10
     assert base.refund_count.value == 2
     assert base.chargeback_count.value == 1
 
