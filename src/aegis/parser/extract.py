@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from aegis.llm import LLMClient
 from aegis.parser.models import ExtractedStatement, Transaction
 from aegis.parser.page_router import PageStrategy, PageStrategyDecision
+from aegis.parser.period_regex import PeriodMatch, extract_period_via_regex
 from aegis.parser.prompts import EXTRACTION_PROMPT, EXTRACTION_PROMPT_VISION
 
 # Placeholder strings the LLM uses when a value isn't visible in the document.
@@ -74,19 +75,34 @@ class ExtractionPass1Result:
     Downstream `validate_extraction(...)` consumes this so a truncated
     response is surfaced as `extraction_truncated_retry_required` rather
     than getting misdiagnosed as a math reconciliation failure.
+
+    `period_regex_fallback_used` is set to the matched ``PeriodMatch``
+    when the regex fallback (see ``aegis.parser.period_regex``) supplied
+    one or both period dates that Bedrock returned as null. ``None`` on
+    the happy path. Pipeline reads this to emit the
+    ``[META] period_regex_fallback_used:<pattern>`` flag onto
+    ``all_flags`` so the worker can write the corresponding
+    ``parser.period_regex_fallback_used`` audit row.
     """
 
-    __slots__ = ("statement", "synthetic_risk_indicators", "truncated")
+    __slots__ = (
+        "period_regex_fallback_used",
+        "statement",
+        "synthetic_risk_indicators",
+        "truncated",
+    )
 
     def __init__(
         self,
         statement: ExtractedStatement,
         synthetic_risk_indicators: list[str],
         truncated: bool = False,
+        period_regex_fallback_used: PeriodMatch | None = None,
     ) -> None:
         self.statement = statement
         self.synthetic_risk_indicators = synthetic_risk_indicators
         self.truncated = truncated
+        self.period_regex_fallback_used = period_regex_fallback_used
 
 
 # Defensive cap. Pass 1 should never need more than the document itself.
@@ -96,6 +112,56 @@ _MAX_PDF_BYTES: Final[int] = 25 * 1024 * 1024
 # for a US Letter page — enough resolution for Claude vision to read printed
 # numbers and descriptions accurately, without ballooning the token cost.
 _VISION_DPI: Final[int] = 200
+
+
+def _extract_first_page_text(pdf_bytes: bytes) -> str:
+    """Pull the first page's text-layer content via pymupdf.
+
+    Returns an empty string on any failure (image-only PDF, corrupted
+    bytes, zero pages). Pure helper — no I/O beyond the in-memory
+    pymupdf open. Used by the regex period-fallback layer to recover
+    period dates Bedrock dropped on text-layer dropouts.
+    """
+    try:
+        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:  # type: ignore[no-untyped-call]
+            if doc.page_count == 0:
+                return ""
+            return str(doc.load_page(0).get_text("text") or "")
+    except Exception:
+        return ""
+
+
+def _apply_period_regex_fallback(
+    raw_summary: dict[str, Any],
+    pdf_bytes: bytes,
+) -> PeriodMatch | None:
+    """Populate raw summary's missing period dates from regex on page 1.
+
+    Mutates ``raw_summary`` IN PLACE: if either ``period_start`` or
+    ``period_end`` is null / missing, runs ``extract_period_via_regex``
+    against the first-page text and writes the recovered ISO date
+    strings into the dict so subsequent Pydantic validation succeeds.
+
+    Returns the ``PeriodMatch`` when the fallback successfully
+    populated at least one missing date, ``None`` otherwise (either
+    both dates were already present, regex found nothing, or the
+    matched values failed to populate the missing field).
+    """
+    start_missing = raw_summary.get("period_start") in (None, "", "null")
+    end_missing = raw_summary.get("period_end") in (None, "", "null")
+    if not (start_missing or end_missing):
+        return None
+    first_page_text = _extract_first_page_text(pdf_bytes)
+    if not first_page_text:
+        return None
+    match = extract_period_via_regex(first_page_text)
+    if match is None:
+        return None
+    if start_missing:
+        raw_summary["period_start"] = match.period_start.isoformat()
+    if end_missing:
+        raw_summary["period_end"] = match.period_end.isoformat()
+    return match
 
 
 def extract_statement(
@@ -144,8 +210,16 @@ def extract_statement(
 
     indicators = _coerce_indicators(raw.get("synthetic_risk_indicators", []))
 
+    coerced_summary = _coerce_summary(raw["summary"])
+    # Regex-based period fallback. Runs BEFORE Pydantic validation so a
+    # successful match populates the missing field and the parse
+    # continues; failure leaves the dict unchanged and the ValidationError
+    # propagates as the existing ``ExtractionError`` (caller may decide
+    # to route to ``manual_review`` or trigger the vision fallback).
+    period_fallback = _apply_period_regex_fallback(coerced_summary, pdf_bytes)
+
     payload: dict[str, Any] = {
-        "summary": _coerce_summary(raw["summary"]),
+        "summary": coerced_summary,
         "transactions": [_coerce_transaction(t) for t in raw["transactions"]],
     }
 
@@ -161,6 +235,7 @@ def extract_statement(
         statement=statement,
         synthetic_risk_indicators=indicators,
         truncated=truncated,
+        period_regex_fallback_used=period_fallback,
     )
 
 
@@ -215,8 +290,16 @@ def extract_statement_via_vision(
 
     indicators = _coerce_indicators(raw.get("synthetic_risk_indicators", []))
 
+    coerced_summary = _coerce_summary(raw["summary"])
+    # Vision-path regex fallback. ``_extract_first_page_text`` returns
+    # "" for image-only PDFs (which is the dominant vision-path case),
+    # so the fallback is a no-op there — but text-with-vision-fallback
+    # paths (caller decided to re-route after the text path failed) DO
+    # have a text layer and benefit from the fallback.
+    period_fallback = _apply_period_regex_fallback(coerced_summary, pdf_bytes)
+
     payload: dict[str, Any] = {
-        "summary": _coerce_summary(raw["summary"]),
+        "summary": coerced_summary,
         "transactions": [_coerce_transaction(t) for t in raw["transactions"]],
     }
 
@@ -232,6 +315,7 @@ def extract_statement_via_vision(
         statement=statement,
         synthetic_risk_indicators=indicators,
         truncated=truncated,
+        period_regex_fallback_used=period_fallback,
     )
 
 

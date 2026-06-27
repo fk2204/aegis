@@ -553,6 +553,24 @@ def run_pipeline(
     if used_per_page_routing:
         all_flags.append("[META] per_page_routing_used")
 
+    # Period regex fallback — surface the matched pattern + fragment on
+    # ``all_flags`` so the worker writes the corresponding audit row
+    # (``parser.period_regex_fallback_used``) and the operator can see
+    # WHY the doc parsed despite Bedrock dropping the period. The
+    # fragment is already truncated to ``_FRAGMENT_MAX_LEN`` (200 chars)
+    # inside ``period_regex.py`` and contains no PII (period text only).
+    period_fallback = getattr(extraction, "period_regex_fallback_used", None)
+    if period_fallback is not None:
+        all_flags.append(
+            f"[META] period_regex_fallback_used:{period_fallback.pattern_name}:"
+            f"{period_fallback.fragment}"
+        )
+        _log.info(
+            "parser.period_regex_fallback_used pattern=%s fragment=%r",
+            period_fallback.pattern_name,
+            period_fallback.fragment,
+        )
+
     # R1.7 — ADB partial-coverage escalation (SHADOW). When the aggregator
     # reports more than 10% of period days skipped, the ADB metric is
     # computed over too narrow a window to be trustworthy. Emit a shadow
