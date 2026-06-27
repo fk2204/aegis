@@ -13,9 +13,15 @@ from aegis.ops.operators import (
 
 
 def test_operator_role_values_match_db_constraint() -> None:
-    """The three string values MUST match migration 022's CHECK constraint
-    or the table insert will fail at runtime."""
-    expected = {"underwriter", "compliance_reviewer", "admin"}
+    """The string values MUST match the operators.role CHECK constraint
+    or the table insert will fail at runtime.
+
+    Migration 022 introduced the first three roles
+    (``underwriter`` / ``compliance_reviewer`` / ``admin``); migration
+    076 widened the CHECK to also accept ``viewer`` for the role-gate
+    permission matrix.
+    """
+    expected = {"underwriter", "compliance_reviewer", "admin", "viewer"}
     assert {r.value for r in OperatorRole} == expected
 
 

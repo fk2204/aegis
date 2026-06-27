@@ -706,3 +706,153 @@
   line-height: 1.35;
 }
 
+/* --- OPERATOR CHIP — topstrip role indicator --------------------
+ * Sits in the .view-toggle slot on every UI page. Shows the operator's
+ * display name + a role color cue. Role values come straight from
+ * Operator.role (admin / underwriter / viewer / compliance_reviewer).
+ * No hover affordance — chip is informational, not interactive. */
+.op-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 8px;
+  margin-right: 10px;
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
+  background: color-mix(in oklch, var(--sage) 14%, var(--paper-2));
+  border: 1px solid color-mix(in oklch, var(--sage-deep) 25%, transparent);
+  color: var(--ink-2);
+}
+.op-chip strong {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+.op-chip--admin {
+  background: color-mix(in oklch, var(--sage-deep) 22%, var(--paper-2));
+  border-color: var(--sage-deep);
+}
+.op-chip--viewer,
+.op-chip--compliance_reviewer {
+  background: var(--paper-2);
+  color: var(--ink-3);
+  border-color: var(--rule);
+}
+
+/* --- NOTIFICATIONS BELL ---------------------------------------- */
+.bell-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-right: 10px;
+}
+.bell-icon {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  color: var(--ink-2);
+  font-size: 12px;
+  text-decoration: none;
+}
+.bell-icon:hover {
+  background: color-mix(in oklch, var(--sage) 14%, var(--paper-2));
+}
+.bell-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #b34c4c;
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.bell-dropdown {
+  position: absolute;
+  right: 0;
+  top: 26px;
+  min-width: 320px;
+  max-width: 380px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  padding: 6px 0;
+  z-index: 80;
+  display: none;
+}
+.bell-wrap:hover .bell-dropdown,
+.bell-wrap:focus-within .bell-dropdown {
+  display: block;
+}
+.bell-item {
+  display: block;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--serif);
+  font-size: 13px;
+  color: var(--ink-2);
+  text-decoration: none;
+}
+.bell-item:last-child {
+  border-bottom: none;
+}
+.bell-item:hover {
+  background: var(--paper-2);
+}
+.bell-item.unread {
+  background: color-mix(in oklch, var(--sage) 8%, var(--paper));
+}
+.bell-item__head {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-3);
+}
+.bell-empty {
+  padding: 12px;
+  color: var(--ink-3);
+  font-family: var(--serif);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* --- DEAL ASSIGNMENT chip ------------------------------------- */
+.assignment-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: color-mix(in oklch, var(--sage) 12%, var(--paper-2));
+  border: 1px solid var(--rule);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+.assignment-chip.unassigned {
+  background: var(--paper-2);
+  color: var(--ink-3);
+  font-style: italic;
+}
+.assignment-chip:hover {
+  background: color-mix(in oklch, var(--sage) 18%, var(--paper-2));
+}
+

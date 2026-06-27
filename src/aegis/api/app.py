@@ -151,9 +151,7 @@ def create_app() -> FastAPI:
     @app.get("/applicants", include_in_schema=False)
     async def applicants_lookup(
         email: str,
-        merchants: Annotated[
-            MerchantRepository, Depends(get_merchant_repository)
-        ],
+        merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
         documents: Annotated[DocumentRepository, Depends(get_repository)],
     ) -> RedirectResponse:
         # Entry point for the CRM "View in Aegis" Lead button. The
@@ -167,10 +165,16 @@ def create_app() -> FastAPI:
             return RedirectResponse(url="/ui/", status_code=302)
         has_docs = bool(documents.list_documents(merchant_id=merchant.id, limit=1))
         if has_docs:
-            return RedirectResponse(
-                url=f"/ui/merchants/{merchant.id}", status_code=302
-            )
+            return RedirectResponse(url=f"/ui/merchants/{merchant.id}", status_code=302)
         return RedirectResponse(url="/ui/", status_code=302)
+
+    # Role-gate exception handler — converts ``_ForbiddenResponse`` raised
+    # by ``require_role`` into the carried HTML 403 page (instead of the
+    # default JSON 403 surface). Registered before ``include_router`` so
+    # any UI route's ``Depends(require_role(...))`` resolves cleanly.
+    from aegis.web._role_gate import _ForbiddenResponse, role_gate_exception_handler
+
+    app.add_exception_handler(_ForbiddenResponse, role_gate_exception_handler)
 
     for r in ALL_ROUTERS:
         app.include_router(r)

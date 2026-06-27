@@ -154,6 +154,7 @@ from aegis.web._pattern_cards import (
     pattern_has_customer_concentration,
 )
 from aegis.web._processor_section import build_processor_section
+from aegis.web._role_gate import admin_only, underwriter_or_admin
 from aegis.web._router_helpers import (
     _AGGREGATE_LABELS,
     _AGGREGATE_UNIT_KIND,
@@ -198,7 +199,12 @@ async def merchant_new_form(request: Request) -> HTMLResponse:
     )
 
 
-@router.post("/merchants/new", response_class=HTMLResponse, response_model=None)
+@router.post(
+    "/merchants/new",
+    response_class=HTMLResponse,
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_new_submit(
     request: Request,
     repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
@@ -254,7 +260,11 @@ async def merchant_new_submit(
     return RedirectResponse(f"/ui/merchants/{saved.id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.get("/merchants/{merchant_id}/edit", response_class=HTMLResponse)
+@router.get(
+    "/merchants/{merchant_id}/edit",
+    response_class=HTMLResponse,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_edit_form(
     request: Request,
     merchant_id: UUID,
@@ -269,7 +279,12 @@ async def merchant_edit_form(
     )
 
 
-@router.post("/merchants/{merchant_id}/edit", response_class=HTMLResponse, response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/edit",
+    response_class=HTMLResponse,
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_edit_submit(
     request: Request,
     merchant_id: UUID,
@@ -925,7 +940,11 @@ async def merchant_matched_funders_csv(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/merchants/{merchant_id}/submit", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/submit",
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_submit_to_funders(
     request: Request,
     merchant_id: UUID,
@@ -1212,7 +1231,11 @@ def _integrity_verdict_word(verdict: IntegrityVerdict | None) -> str | None:
     return None
 
 
-@router.post("/merchants/{merchant_id}/submit-to-funder", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/submit-to-funder",
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_submit_to_funder(
     request: Request,
     merchant_id: UUID,
@@ -1263,7 +1286,11 @@ async def merchant_submit_to_funder(
     )
 
 
-@router.post("/merchants/{merchant_id}/submit-to-funder/{funder_id}", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/submit-to-funder/{funder_id}",
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_submit_to_specific_funder(
     request: Request,
     merchant_id: UUID,
@@ -1597,7 +1624,11 @@ async def _perform_submit_to_funder(
 _RENEWAL_DAYS_PER_MONTH: Final[int] = 30
 
 
-@router.post("/merchants/{merchant_id}/prepare-renewal", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/prepare-renewal",
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_prepare_renewal(
     request: Request,
     merchant_id: UUID,
@@ -2006,7 +2037,11 @@ async def merchant_save_note(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/merchants/{merchant_id}/delete", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/delete",
+    response_model=None,
+    dependencies=[Depends(admin_only)],
+)
 async def merchant_soft_delete(
     merchant_id: UUID,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
@@ -2431,7 +2466,11 @@ async def merchant_narrator_refresh(
 _FUNDER_RESPONSE_STATUSES = frozenset({"approved", "declined", "countered", "pending"})
 
 
-@router.post("/merchants/{merchant_id}/funder-response", response_model=None)
+@router.post(
+    "/merchants/{merchant_id}/funder-response",
+    response_model=None,
+    dependencies=[Depends(underwriter_or_admin)],
+)
 async def merchant_funder_response(
     merchant_id: UUID,
     merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],

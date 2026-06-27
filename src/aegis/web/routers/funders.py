@@ -75,6 +75,7 @@ from aegis.funders.repository import (
 from aegis.llm import LLMClient
 from aegis.merchants.repository import MerchantRepository
 from aegis.ops.operators import resolve_operator_email
+from aegis.web._role_gate import admin_only
 from aegis.web._router_helpers import (
     _decimal_or_none,
     _int_or_none,
@@ -382,7 +383,12 @@ async def funder_import_form(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "funder_import.html.j2", {"error": None})
 
 
-@router.post("/funders/import", response_class=HTMLResponse, response_model=None)
+@router.post(
+    "/funders/import",
+    response_class=HTMLResponse,
+    response_model=None,
+    dependencies=[Depends(admin_only)],
+)
 async def funder_import_review(
     request: Request,
     llm: Annotated[LLMClient, Depends(get_llm)],
@@ -496,7 +502,12 @@ async def funder_import_review(
     )
 
 
-@router.post("/funders/import/save", response_class=HTMLResponse, response_model=None)
+@router.post(
+    "/funders/import/save",
+    response_class=HTMLResponse,
+    response_model=None,
+    dependencies=[Depends(admin_only)],
+)
 async def funder_import_save(
     request: Request,
     repo: Annotated[FunderRepository, Depends(get_funder_repository)],
@@ -630,7 +641,12 @@ async def funder_new_form(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "funder_form.html.j2", {"error": None})
 
 
-@router.post("/funders/new", response_class=HTMLResponse, response_model=None)
+@router.post(
+    "/funders/new",
+    response_class=HTMLResponse,
+    response_model=None,
+    dependencies=[Depends(admin_only)],
+)
 async def funder_new_submit(
     request: Request,
     repo: Annotated[FunderRepository, Depends(get_funder_repository)],

@@ -73,6 +73,11 @@ from aegis.merchants.shadow_signals import (
     MerchantShadowSignalRepository,
     SupabaseMerchantShadowSignalRepository,
 )
+from aegis.ops.operator_repository import (
+    InMemoryOperatorRepository,
+    OperatorRepository,
+    SupabaseOperatorRepository,
+)
 from aegis.pdf_store import (
     InMemoryPdfStoreRepository,
     PdfStoreRepository,
@@ -320,6 +325,19 @@ def get_close_client() -> CloseClient:
 
 
 @lru_cache(maxsize=1)
+def get_operator_repository() -> OperatorRepository:
+    """Process-wide OperatorRepository (migration 022 / 076).
+
+    Backs the role-based permission gate, the dossier assignment chip,
+    and the notifications fan-out. Same memory / supabase toggle as the
+    other repositories.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryOperatorRepository()
+    return SupabaseOperatorRepository()
+
+
+@lru_cache(maxsize=1)
 def get_schema_migrations_reader() -> SchemaMigrationsReader:
     """Process-wide SchemaMigrationsReader (U32 — operator visibility).
 
@@ -360,6 +378,7 @@ def reset_dependency_caches() -> None:
     get_funder_note_submission_repository.cache_clear()
     get_bank_layout_repository.cache_clear()
     get_pdf_store_repository.cache_clear()
+    get_operator_repository.cache_clear()
     get_schema_migrations_reader.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
@@ -380,6 +399,7 @@ __all__ = [
     "get_merchant_repository",
     "get_merchant_shadow_signal_repository",
     "get_ofac_client",
+    "get_operator_repository",
     "get_override_repository",
     "get_pdf_store_repository",
     "get_renewal_attestation_repository",

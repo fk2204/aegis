@@ -627,6 +627,17 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='analyses' "
         "AND column_name='narrator_summary'"
     ),
+    "076_deal_assignments_and_operator_role.sql": (
+        # 076 widens the operators.role CHECK constraint to accept
+        # 'viewer' AND creates the deal_assignments table that powers
+        # the per-merchant assignment chip + "My deals" filter. Both
+        # changes ship in one BEGIN/COMMIT — probe deal_assignments
+        # because its presence proves the CREATE TABLE landed; the
+        # CHECK widening is verified at runtime by the role gate
+        # accepting a 'viewer' insert.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='deal_assignments'"
+    ),
 }
 
 

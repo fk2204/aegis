@@ -1,0 +1,39 @@
+{% extends "base.html.j2" %}
+{% block title %}Forbidden — AEGIS{% endblock %}
+
+{% block deck %}
+{% set title = "Access denied" %}
+{% set subtitle = "· role gate" %}
+{% set meta = "Your role does not permit this surface." %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+  <div>
+    <header class="sect-head">
+      <h2>Insufficient role</h2>
+      <div class="rule"></div>
+      <div class="meta">403 forbidden</div>
+    </header>
+    <div class="empty">
+      <p>
+        Path <code>{{ path }}</code> requires one of:
+        <strong>{{ allowed_roles|join(", ") }}</strong>.
+      </p>
+      <p>
+        Signed in as <strong>{{ operator.display_name }}</strong>
+        ({{ operator.email }}) with role <strong>{{ operator.role }}</strong>.
+      </p>
+      <p>
+        Talk to an admin if you believe your role needs adjusting; role
+        changes land in the <code>operators</code> table via the
+        Settings page.
+      </p>
+      <span class="copy">
+        <a class="btn primary" href="/ui/">Back to Today</a>
+      </span>
+    </div>
+  </div>
+</section>
+{% endblock %}

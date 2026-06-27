@@ -46,7 +46,9 @@ on localhost only.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from aegis.web._role_gate import current_operator
 
 # R4.1 — bundling / score-input helpers + form helpers + aggregate
 # metadata constants live in ``aegis.web._router_helpers``. Re-exported
@@ -114,7 +116,16 @@ from aegis.web.routers.merchants import (
     _state_tier,
 )
 
-router = APIRouter(prefix="/ui", tags=["dashboard"])
+# Router-level dependency: every ``/ui/...`` request resolves the
+# current operator before any route runs. Side-effect populates
+# ``request.state.operator`` so the shared topstrip can render the
+# operator name + role chip without each route plumbing the value
+# through the template context.
+router = APIRouter(
+    prefix="/ui",
+    tags=["dashboard"],
+    dependencies=[Depends(current_operator)],
+)
 
 router.include_router(_admin_routes.router)
 router.include_router(_bank_layouts_routes.router)
