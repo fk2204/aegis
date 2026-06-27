@@ -1,0 +1,60 @@
+{# One row of the bank-coverage table — also the HTMX swap target
+   returned from POST /ui/bank-coverage/{bank_name}/bump-parse-count
+   and POST /ui/bank-coverage/{bank_name}/generate-hints.
+
+   The wrapping <tr id="bank-coverage-row-{{ normalized }}"> is the
+   anchor; both POSTs hx-target this id so the row replaces in place.
+   Use the normalized (lowercased) bank name so the id is URL-safe
+   and stable across casings ("CHASE" vs "Chase" collapse to one row). #}
+<tr id="bank-coverage-row-{{ row.bank_name_normalized|replace(' ', '-')|replace('.', '-')|replace(',', '') }}"
+    class="bank-coverage-row">
+  <td class="merchant">
+    <strong>{{ row.bank_name }}</strong>
+  </td>
+  <td class="mono-cell" style="text-align:right">{{ row.total_documents }}</td>
+  <td class="mono-cell" style="text-align:right">{{ row.successful_parses }}</td>
+  <td>
+    {% if row.hint_status == 'manual' %}
+      <span class="pill pill-ok" data-test-id="hint-status-manual">✅ Manual hints</span>
+    {% elif row.hint_status == 'auto' %}
+      <span class="pill pill-warn" data-test-id="hint-status-auto">🟡 Auto-generated</span>
+    {% else %}
+      <span class="pill pill-danger" data-test-id="hint-status-none">❌ No hints</span>
+    {% endif %}
+  </td>
+  <td class="mono-cell">{{ row.hints_source }}</td>
+  <td>
+    {% if row.last_seen %}
+      <span class="mono-cell">{{ row.last_seen.strftime('%Y-%m-%d') }}</span>
+    {% else %}
+      <span class="sub">never</span>
+    {% endif %}
+  </td>
+  <td class="mono-cell" style="text-align:right">
+    {% if row.total_documents > 0 %}
+      {{ row.proceed_count }}/{{ row.total_documents }} ({{ ((row.proceed_count / row.total_documents) * 100)|round(0, 'floor')|int }}%)
+    {% else %}
+      <span class="sub">—</span>
+    {% endif %}
+  </td>
+  <td>
+    {% if row.successful_parses < 3 and row.hint_status in ('auto', 'none') %}
+      <form method="post"
+            action="/ui/bank-coverage/{{ row.bank_name|urlencode }}/bump-parse-count"
+            hx-post="/ui/bank-coverage/{{ row.bank_name|urlencode }}/bump-parse-count"
+            hx-target="#bank-coverage-row-{{ row.bank_name_normalized|replace(' ', '-')|replace('.', '-')|replace(',', '') }}"
+            hx-swap="outerHTML"
+            style="display:inline">
+        <button class="btn" type="submit" data-test-id="bump-parse-count">Bump to threshold</button>
+      </form>
+    {% endif %}
+    <form method="post"
+          action="/ui/bank-coverage/{{ row.bank_name|urlencode }}/generate-hints"
+          hx-post="/ui/bank-coverage/{{ row.bank_name|urlencode }}/generate-hints"
+          hx-target="#bank-coverage-row-{{ row.bank_name_normalized|replace(' ', '-')|replace('.', '-')|replace(',', '') }}"
+          hx-swap="outerHTML"
+          style="display:inline">
+      <button class="btn" type="submit" data-test-id="generate-hints">Generate hints</button>
+    </form>
+  </td>
+</tr>
