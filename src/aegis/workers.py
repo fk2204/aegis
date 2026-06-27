@@ -2860,6 +2860,47 @@ async def run_background_checks(
     }
 
 
+async def reparse_bank_manual_review(
+    ctx: dict[str, Any],
+    bank_name: str,
+    trigger: str = "hints_updated",
+) -> dict[str, str | int]:
+    """arq job — re-enqueue every sealed ``manual_review`` doc for ``bank_name``.
+
+    Fires after a bank's extraction hints change (operator UI write or
+    auto-hint append from a successful parse). Walks
+    ``documents.parse_status='manual_review'`` joined to
+    ``analyses.bank_name = bank_name`` (case-insensitive), decrypts the
+    sealed ``pdf_store`` blob, writes the plaintext to the upload dir
+    with ``chmod 0o644`` (worker-user readability), and enqueues
+    ``parse_document`` with ``keep_local_plaintext=False``.
+
+    Idempotent at this layer: ``parse_document``'s storage upsert
+    (Bug 1 fix earlier this session) means re-enqueuing the same doc
+    just overwrites the previous analyses row. Pacing: 100ms between
+    enqueues so Bedrock + Supabase Storage aren't burst-hammered.
+
+    Implementation lives in ``aegis.bank_layouts.reparse`` so the same
+    helper is reused by the operator-triggered POST endpoint at
+    ``/ui/bank-coverage/{bank_name}/reparse-manual-review``.
+    """
+    from aegis.api.deps import get_audit, get_pdf_store_repository
+    from aegis.bank_layouts.reparse import enqueue_bank_reparse
+
+    audit: AuditLog = ctx.get("audit") or get_audit()
+    pdf_store_repo: PdfStoreRepository = ctx.get("pdf_store") or get_pdf_store_repository()
+    pool = ctx.get("redis")
+
+    enqueued = await enqueue_bank_reparse(
+        bank_name=bank_name,
+        pool=pool,
+        audit=audit,
+        pdf_store=pdf_store_repo,
+        trigger=trigger,
+    )
+    return {"bank_name": bank_name, "trigger": trigger, "enqueued": enqueued}
+
+
 class WorkerSettings:
     """arq config. Reads concurrency + timeout from env via Settings."""
 
@@ -2868,6 +2909,7 @@ class WorkerSettings:
         process_funder_reply,
         process_close_attachments,
         run_background_checks,
+        reparse_bank_manual_review,
     )
     # Crons:
     #   * 02:00 UTC daily — audit retention archiver (master plan §17).
