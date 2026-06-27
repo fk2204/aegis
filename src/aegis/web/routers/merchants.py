@@ -62,6 +62,7 @@ from aegis.api.deps import (
     get_submission_repository,
 )
 from aegis.audit import AuditLog
+from aegis.background_checks import enqueue_background_checks
 from aegis.close.client import CloseClient, CloseError
 from aegis.close.funder_note import RenewalContext, format_funder_note
 from aegis.close.orchestration import enqueue_close_orchestration
@@ -202,6 +203,7 @@ async def merchant_new_form(request: Request) -> HTMLResponse:
 async def merchant_new_submit(
     request: Request,
     repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
     business_name: Annotated[str, Form()],
     owner_name: Annotated[str, Form()],
     state: Annotated[str, Form()],
@@ -251,6 +253,18 @@ async def merchant_new_submit(
         saved = repo.upsert(row)
     except MerchantConflictError as exc:
         return _merchant_form_error(request, str(exc), _form_dict_from_locals(locals()))
+
+    # Fire-and-forget background-checks sweep (UCC + web-presence).
+    # Operator-create branch — webhook + intake both call the same
+    # helper. Enqueue failure is fail-soft inside the helper; the
+    # dossier Refresh buttons remain the manual fallback.
+    await enqueue_background_checks(
+        request=request,
+        merchant_id=saved.id,
+        audit=audit,
+        trigger="ui_merchant_new",
+    )
+
     return RedirectResponse(f"/ui/merchants/{saved.id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -2272,6 +2286,118 @@ async def merchant_refresh_web_presence(
 
 
 @router.post(
+    "/merchants/{merchant_id}/background-checks/refresh-ucc",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+async def merchant_background_check_refresh_ucc(
+    request: Request,
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+) -> HTMLResponse:
+    """HTMX endpoint — synchronously re-run the UCC + previous-default
+    sweep, then re-render just the background-checks section.
+
+    Mirrors ``merchant_refresh_ucc`` (which redirects to the full
+    dossier); this endpoint targets the dossier's HTMX
+    ``hx-swap=outerHTML`` so the operator stays on the page.
+    """
+    from aegis.business_intel.refresh import refresh_ucc_for_merchant
+
+    try:
+        refresh_ucc_for_merchant(
+            merchant_id,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    ofac_status, ofac_match = (
+        _ofac_ribbon_status(ofac, merchant.business_name)
+        if merchant.is_finalized
+        else ("not_consulted", None)
+    )
+    if ofac_status == "checked":
+        ofac_dossier_status = "match" if ofac_match else "clean"
+    elif ofac_status in {"stale", "unavailable"}:
+        ofac_dossier_status = "unavailable"
+    else:
+        ofac_dossier_status = "pending"
+
+    bg = _build_background_checks_context(merchant)
+    return templates.TemplateResponse(
+        request,
+        "_background_checks_section.html.j2",
+        {
+            "merchant": merchant,
+            "ucc_result": bg["ucc_result"],
+            "web_presence_result": bg["web_presence_result"],
+            "previous_default": bg["previous_default"],
+            "ofac_status": ofac_dossier_status,
+            "ofac_match": ofac_match,
+        },
+    )
+
+
+@router.post(
+    "/merchants/{merchant_id}/background-checks/refresh-web-presence",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+async def merchant_background_check_refresh_web_presence(
+    request: Request,
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+) -> HTMLResponse:
+    """HTMX endpoint — synchronously re-run the web-presence sweep,
+    then re-render just the background-checks section. Same posture as
+    ``merchant_background_check_refresh_ucc`` above."""
+    from aegis.web_presence.refresh import refresh_web_presence_for_merchant
+
+    try:
+        refresh_web_presence_for_merchant(
+            merchant_id,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    ofac_status, ofac_match = (
+        _ofac_ribbon_status(ofac, merchant.business_name)
+        if merchant.is_finalized
+        else ("not_consulted", None)
+    )
+    if ofac_status == "checked":
+        ofac_dossier_status = "match" if ofac_match else "clean"
+    elif ofac_status in {"stale", "unavailable"}:
+        ofac_dossier_status = "unavailable"
+    else:
+        ofac_dossier_status = "pending"
+
+    bg = _build_background_checks_context(merchant)
+    return templates.TemplateResponse(
+        request,
+        "_background_checks_section.html.j2",
+        {
+            "merchant": merchant,
+            "ucc_result": bg["ucc_result"],
+            "web_presence_result": bg["web_presence_result"],
+            "previous_default": bg["previous_default"],
+            "ofac_status": ofac_dossier_status,
+            "ofac_match": ofac_match,
+        },
+    )
+
+
+@router.post(
     "/merchants/{merchant_id}/documents/{document_id}/narrator/refresh",
     response_model=None,
 )
@@ -2962,6 +3088,53 @@ def _parse_funder_ids(values: list[str]) -> list[UUID]:
 
 
 _SHADOW_FLAG_PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^\[(?:SHADOW|WARN)\]\s*")
+
+
+def _build_background_checks_context(merchant: MerchantRow) -> dict[str, Any]:
+    """Project the merchant row's UCC + web-presence fields onto the
+    shape the Background-checks dossier section consumes.
+
+    Returns three keys:
+
+    * ``ucc_result`` — ``None`` when ``ucc_checked_at is None`` (the
+      template renders an empty-state + Run-now button). Otherwise a
+      dict with ``filing_count`` / ``most_recent_date`` /
+      ``lien_holders`` / ``default_indicators`` derived from the
+      persisted lists. ``most_recent_date`` is ``None`` today — the
+      checker doesn't capture filing dates yet; the field reserved
+      for when it does.
+    * ``web_presence_result`` — ``None`` when never scanned; else a
+      dict with ``summary`` + ``flag_count``.
+    * ``previous_default`` — bool, True when the UCC checker returned
+      any default-indicator strings on the most recent sweep.
+    """
+    ucc_result: dict[str, Any] | None
+    if merchant.ucc_checked_at is None:
+        ucc_result = None
+    else:
+        ucc_result = {
+            "filing_count": len(merchant.ucc_filings),
+            "most_recent_date": None,
+            "lien_holders": list(merchant.ucc_filings),
+            "default_indicators": list(merchant.ucc_default_indicators),
+        }
+
+    web_presence_result: dict[str, Any] | None
+    if merchant.web_presence_scanned_at is None:
+        web_presence_result = None
+    else:
+        web_presence_result = {
+            "summary": merchant.web_presence_summary or "",
+            "flag_count": len(merchant.web_presence_flags),
+        }
+
+    previous_default = bool(merchant.ucc_default_indicators)
+
+    return {
+        "ucc_result": ucc_result,
+        "web_presence_result": web_presence_result,
+        "previous_default": previous_default,
+    }
 
 
 def _collect_shadow_flags_for_dossier(
@@ -3729,12 +3902,21 @@ async def merchant_detail(
         d.parse_status == "manual_review" for d in _settled_docs
     )
 
+    # Background-checks section (between Track C + § 4) context. Derived
+    # directly from the merchant row's persisted UCC + web-presence
+    # fields; ``None`` when the merchant has never been swept (the
+    # template renders an empty-state + Run-now button in that branch).
+    background_checks_context = _build_background_checks_context(merchant)
+
     return templates.TemplateResponse(
         request,
         template_name,
         {
             "merchant": merchant,
             "documents": documents_table,
+            "ucc_result": background_checks_context["ucc_result"],
+            "web_presence_result": background_checks_context["web_presence_result"],
+            "previous_default": background_checks_context["previous_default"],
             "document": latest_doc,
             "analysis": latest_analysis,
             "aggregate_labels": _AGGREGATE_LABELS,

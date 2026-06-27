@@ -1446,3 +1446,92 @@ def test_multiple_unknown_fields_each_get_their_own_warning_row(
     fields = sorted(w["details"]["field"] for w in _close_field_parse_warnings(audit))
     assert fields == ["fico_range", "industry", "requested_amount"]
     reset_dependency_caches()
+
+
+# ----------------------------------------------------------------------
+# Background-checks enqueue on fresh-merchant create
+# ----------------------------------------------------------------------
+
+
+def test_webhook_fresh_merchant_create_enqueues_background_checks(
+    client: TestClient,
+    audit: InMemoryAuditLog,
+) -> None:
+    """Pre-UW opportunity event whose Lead does not yet have an AEGIS
+    merchant row → fresh create + one ``run_background_checks`` enqueue
+    captured in ``pending_background_checks_jobs`` (no arq pool wired
+    in the test harness).
+    """
+    resp = _post_signed(client, _opportunity_event(lead_id="lead_fresh"))
+    assert resp.status_code == 204, resp.text
+
+    pending = getattr(
+        client.app.state,  # type: ignore[attr-defined]
+        "pending_background_checks_jobs",
+        [],
+    )
+    from uuid import UUID
+
+    assert len(pending) == 1
+    assert pending[0]["trigger"] == "close_webhook"
+    # ``merchant_id`` is the string of a UUID.
+    UUID(pending[0]["merchant_id"])
+
+    actions = [e["action"] for e in audit.entries]
+    assert "merchant.background_checks.enqueued" in actions
+    enq = next(e for e in audit.entries if e["action"] == "merchant.background_checks.enqueued")
+    assert enq["details"]["trigger"] == "close_webhook"
+
+
+def test_webhook_existing_merchant_update_skips_background_checks(
+    client: TestClient,
+    repo: InMemoryMerchantRepository,
+    audit: InMemoryAuditLog,
+) -> None:
+    """Pre-UW redelivery against a merchant that already exists must NOT
+    enqueue ``run_background_checks`` — fresh-create branch only. The
+    update / no-op redelivery branches reuse the existing merchant row;
+    the dossier Refresh buttons stay the operator-facing rerun path.
+    """
+    # First delivery creates the merchant + enqueues background checks.
+    resp1 = _post_signed(client, _opportunity_event(lead_id="lead_existing"))
+    assert resp1.status_code == 204
+
+    # Capture state after the first delivery so the assertions below
+    # speak strictly to the second delivery's effects.
+    pending_after_first = list(
+        getattr(
+            client.app.state,  # type: ignore[attr-defined]
+            "pending_background_checks_jobs",
+            [],
+        )
+    )
+    assert len(pending_after_first) == 1
+
+    enqueued_after_first = sum(
+        1 for e in audit.entries if e["action"] == "merchant.background_checks.enqueued"
+    )
+    assert enqueued_after_first == 1
+
+    # Second delivery: identical event → no diff → update branch is a
+    # no-op redelivery, background-checks enqueue MUST stay at 1.
+    resp2 = _post_signed(client, _opportunity_event(lead_id="lead_existing"))
+    assert resp2.status_code == 204
+
+    pending_after_second = getattr(
+        client.app.state,  # type: ignore[attr-defined]
+        "pending_background_checks_jobs",
+        [],
+    )
+    assert pending_after_second == pending_after_first, (
+        "redelivery on existing merchant must not enqueue a second background-checks job"
+    )
+
+    enqueued_after_second = sum(
+        1 for e in audit.entries if e["action"] == "merchant.background_checks.enqueued"
+    )
+    assert enqueued_after_second == 1, (
+        "existing-merchant update path must not record a second enqueue audit row"
+    )
+    # Merchant count is exactly one (sanity check).
+    assert repo.count_total() == 1

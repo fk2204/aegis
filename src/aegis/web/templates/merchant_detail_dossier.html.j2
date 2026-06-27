@@ -1508,22 +1508,16 @@
       </section>
     {% endif %}
 
-    {# ============== Background checks (Agent 2 placeholder) ============== #}
-    {# Visible inert stub reserving the slot for Agent 2's UCC / web-
-       presence / OFAC roll-up. Renders as a flat "Not checked yet" line
-       so the layout doesn't look truncated between Track C and the
-       funder-matching section. Agent 2's branch replaces the inner
-       body; the wrapper + data-test-id stays so existing pytest
-       coverage continues to pass after the swap. #}
-    <!-- BEGIN: background-checks-section (Agent 2) -->
-    <section class="section" data-test-id="dossier-background-checks-stub">
-      <header>
-        <span class="n">§</span>
-        <h2>Background <em>checks</em></h2>
-      </header>
-      <p style="margin:8px 0 0 0;color:var(--ink-3);font-size:13px">Not checked yet</p>
-    </section>
-    <!-- END: background-checks-section (Agent 2) -->
+    {# Background-checks section (§ 3¾) sits between Track C (pattern
+       findings + concentration) and § 4 (funder matching) so the
+       underwriter sees the soft-signal layer (UCC filings / previous
+       defaults / web presence / OFAC) BEFORE picking funders. Markup
+       lives in ``_background_checks_section.html.j2`` so the two HTMX
+       refresh routes can re-render the section in place without
+       duplicating the inline block. Replaces the A1 visible-stub
+       placeholder (``dossier-background-checks-stub``); the live
+       section now exposes ``data-test-id="dossier-background-checks"``. #}
+    {% include "_background_checks_section.html.j2" %}
 
     {# ============== § 4 FUNDER MATCHING (inline) ==============
        Phase 7B inline-match (2026-06-19). Lifted the side-by-side

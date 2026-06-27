@@ -476,11 +476,15 @@ def test_raw_flags_section_absent_when_no_flags() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_background_checks_stub_renders_visible_placeholder() -> None:
+def test_background_checks_section_renders_visible_placeholder() -> None:
+    """A1 reserved a visible bg-checks slot; A2 replaced the inline stub
+    with the real include (`_background_checks_section.html.j2`). The
+    section renders empty-state rows ("Not checked") with HTMX
+    refresh buttons when no scan has run for the merchant."""
     html = _render()
-    assert 'data-test-id="dossier-background-checks-stub"' in html
-    # Header is "Background <em>checks</em>" — text is split by markup,
-    # so check the two halves separately.
+    assert 'data-test-id="dossier-background-checks"' in html
+    # Header is "Background <em>checks</em>" — text is split by markup.
     assert "Background" in html
     assert "checks</em>" in html
-    assert "Not checked yet" in html
+    # Empty-state row text from the A2 partial.
+    assert "Not checked" in html

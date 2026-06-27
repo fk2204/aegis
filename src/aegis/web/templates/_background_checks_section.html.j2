@@ -1,0 +1,110 @@
+{# Background-checks dossier section partial.
+
+   Rendered both as part of the full dossier (included by
+   ``merchant_detail_dossier.html.j2`` inline) and as the response body
+   of the two HTMX refresh routes
+   (``POST /ui/merchants/{id}/background-checks/refresh-ucc`` /
+   ``refresh-web-presence``). Keep the markup byte-for-byte aligned
+   with the inline block so an in-place ``hx-swap=outerHTML`` doesn't
+   visually drift. #}
+{# BEGIN: background-checks-section (Agent 2) #}
+    <section id="background-checks"
+             class="section background-checks"
+             data-test-id="dossier-background-checks">
+      <header>
+        <span class="n">§ 3¾</span>
+        <h2>Background <em>checks</em></h2>
+        <span class="footnote">
+          UCC · web presence · previous defaults · OFAC
+        </span>
+      </header>
+
+      <div class="background-checks-grid"
+           style="display:grid;gap:10px;margin-top:8px">
+
+        {% if ucc_result %}
+          <div class="bg-check-row"
+               data-test-id="bg-check-ucc"
+               style="padding:8px 12px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+            <strong>UCC filings:</strong>
+            {{ ucc_result.filing_count }}
+            {% if ucc_result.most_recent_date %}
+              (latest {{ ucc_result.most_recent_date }})
+            {% endif %}
+            {% if ucc_result.lien_holders %}
+              — {{ ucc_result.lien_holders | join(', ') }}
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="bg-check-row"
+               data-test-id="bg-check-ucc-empty"
+               style="padding:8px 12px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7);display:flex;align-items:center;justify-content:space-between">
+            <span><strong>UCC filings:</strong> <em>Not checked</em></span>
+            <button hx-post="/ui/merchants/{{ merchant.id }}/background-checks/refresh-ucc"
+                    hx-target="#background-checks"
+                    hx-swap="outerHTML"
+                    data-test-id="bg-check-refresh-ucc"
+                    style="font-size:11px">Run now</button>
+          </div>
+        {% endif %}
+
+        {% if web_presence_result %}
+          <div class="bg-check-row"
+               data-test-id="bg-check-web-presence"
+               style="padding:8px 12px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+            <strong>Web presence:</strong>
+            {% if web_presence_result.summary %}
+              {{ web_presence_result.summary }}
+            {% else %}
+              no summary returned
+            {% endif %}
+            {% if web_presence_result.flag_count %}
+              — {{ web_presence_result.flag_count }} risk flag{{ '' if web_presence_result.flag_count == 1 else 's' }}
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="bg-check-row"
+               data-test-id="bg-check-web-presence-empty"
+               style="padding:8px 12px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7);display:flex;align-items:center;justify-content:space-between">
+            <span><strong>Web presence:</strong> <em>Not checked</em></span>
+            <button hx-post="/ui/merchants/{{ merchant.id }}/background-checks/refresh-web-presence"
+                    hx-target="#background-checks"
+                    hx-swap="outerHTML"
+                    data-test-id="bg-check-refresh-web-presence"
+                    style="font-size:11px">Run now</button>
+          </div>
+        {% endif %}
+
+        <div class="bg-check-row"
+             data-test-id="bg-check-previous-default"
+             style="padding:8px 12px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+          <strong>Previous defaults:</strong>
+          {% if previous_default %}
+            <span style="color:#7a0000;font-weight:600">Yes</span>
+            {% if ucc_result and ucc_result.default_indicators %}
+              — {{ ucc_result.default_indicators | join(', ') }}
+            {% endif %}
+          {% else %}
+            No
+          {% endif %}
+        </div>
+
+        <div class="bg-check-row"
+             data-test-id="bg-check-ofac"
+             style="padding:8px 12px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+          <strong>OFAC:</strong>
+          {% if ofac_status == 'match' %}
+            <span style="color:#7a0000;font-weight:600">Match</span>
+            {% if ofac_match %} — {{ ofac_match }}{% endif %}
+          {% elif ofac_status == 'clean' %}
+            <span style="color:#2a5a2a">Clean</span>
+          {% elif ofac_status == 'unavailable' %}
+            Unavailable
+          {% else %}
+            Pending
+          {% endif %}
+        </div>
+
+      </div>
+    </section>
+{# END: background-checks-section (Agent 2) #}
