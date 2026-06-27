@@ -51,3 +51,23 @@ os.environ["API_BEARER_TOKEN"] = "test-token"
 - `make check` — `typecheck + lint + test`, the pre-commit/pre-deploy gate
 
 `CORPUS=1` is baked into `make test` so the operator cannot accidentally ship without corpus validation. The opt-out is `make test-fast`; the corpus is not opt-out.
+
+---
+
+## mypy scope: always include `tests` and `scripts`
+
+CI's `make typecheck` runs `uv run mypy src tests scripts` (~644 source files). Running `uv run mypy src/aegis` locally (~224 files) **misses test-file type errors that will fail CI**. Always use the full CI scope when validating locally:
+
+```bash
+uv run mypy src tests scripts
+```
+
+Or — equivalently and preferred — just `make typecheck`, which already targets all three directories. Don't invent a narrower invocation.
+
+Common test-file-only errors that hide from `mypy src/aegis`:
+
+- Generator fixtures annotated `-> None` instead of `Iterator[None]` / `Generator[None, None, None]` (`misc` strict error: "return type of a generator function should be 'Generator' or one of its supertypes").
+- Unused `# type: ignore[arg-type]` comments left from a prior refactor (`unused-ignore` strict error).
+- Loose `Any` in tests that `mypy --strict` rejects.
+
+Reference incidents: A5 + A6 deploys on 2026-06-27 — both PRs passed the agent's local `mypy src/aegis` check and then failed CI on test-only errors, costing fix-forward commits before deploy could land. Use `make typecheck` (or the full triple) before declaring local validation done.
