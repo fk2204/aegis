@@ -604,6 +604,290 @@ If those all work but the queue is full, the worker process is wedged.
 - **Redis:** `appendonly yes` in `/etc/redis/redis.conf` so an arq
   queue replay is recoverable on restart. Worst case an outage drops
   in-flight jobs; the operator re-uploads the affected PDFs.
-- **Hetzner VM:** treated as cattle. If the box dies, run
-  `deploy/install.sh` on a fresh CPX21 from the repo, point Cloudflare
-  Tunnel at the new IP, populate `/etc/aegis/aegis.env`, restart.
+- **Hetzner VM:** treated as cattle. If the box dies, run the
+  Cold box recovery procedure below — target wall-clock under
+  30 minutes from a fresh Hetzner CPX21 to production traffic.
+
+---
+
+## Cold box recovery
+
+Reproducible recipe to take a fresh Hetzner CPX21 from a clean Ubuntu
+install to production traffic when the existing box is unrecoverable.
+Target: under 30 minutes of operator wall-clock. Every step is a
+verbatim copy-paste — no prose paraphrase, no "you know what to do."
+
+Pre-flight assumptions: the operator holds (1) the canonical encrypted
+backup of `/etc/aegis/aegis.env` in their password manager (per
+`Secrets + key rotation` above), (2) the `MIGRATIONS_DB_URL_PROD` DSN
+in their local `.env.local`, (3) SSH access to the cattle keypair
+(`~/.ssh/aegis_ed25519`), (4) Cloudflare dashboard access for the
+tunnel-credentials JSON. If any of those are missing, stop and
+recover them before continuing — the recipe assumes them present.
+
+Replace `<NEW_BOX_IP>` with the value Hetzner prints in step 1.
+
+### 1. Provision the VM (≈3 min)
+
+Hetzner Cloud Console → Add Server:
+
+- **Location:** any US region (currently Ashburn or Hillsboro).
+- **Image:** Ubuntu 24.04 LTS (22.04 LTS works as a fallback).
+- **Type:** CPX21 (3 vCPU shared AMD / 4 GB RAM / 80 GB NVMe).
+- **SSH key:** paste the public half of `~/.ssh/aegis_ed25519`.
+- **Networking:** default IPv4 + IPv6.
+- **Firewall:** create one allowing inbound TCP 22 from
+  `0.0.0.0/0` (key-only auth is the actual gate) — the production
+  HTTPS surface stays behind Cloudflare Tunnel, no direct 443 inbound.
+
+Once the server is `running`, note the public IPv4 in the Hetzner UI.
+Verify SSH:
+
+```
+ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> 'uname -a'
+```
+
+Expected: one line including `Linux ... Ubuntu`.
+
+### 2. Install system dependencies (≈4 min)
+
+Run as root on the new box:
+
+```
+ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> bash -s <<'REMOTE'
+set -euo pipefail
+apt-get update
+apt-get install -y \
+  git jq curl ca-certificates \
+  python3.12 python3.12-venv python3.12-dev \
+  build-essential pkg-config \
+  postgresql-client \
+  libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2 \
+  libgdk-pixbuf-2.0-0 fonts-liberation \
+  redis-server
+# uv — install for root (used during sync below) AND fetch the binary
+# we'll symlink so the aegis user picks it up.
+curl -LsSf https://astral.sh/uv/install.sh | sh
+install -m 0755 /root/.local/bin/uv /usr/local/bin/uv
+uv --version
+REMOTE
+```
+
+Expected output ends with `uv 0.x.y`.
+
+### 3. Clone the repo to `/opt/aegis` (≈1 min)
+
+```
+ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> bash -s <<'REMOTE'
+set -euo pipefail
+install -d -o root -g root -m 0755 /opt/aegis
+git clone https://github.com/commerafunding/aegis.git /opt/aegis
+cd /opt/aegis
+git log --oneline -1
+REMOTE
+```
+
+Expected: one-line `git log` output for the latest `main` commit. If
+the repo is private and the box needs a deploy key, copy the same
+GitHub Actions deploy key contents from the operator's password manager
+into `/root/.ssh/id_ed25519` and switch the clone URL to
+`git@github.com:commerafunding/aegis.git` — same key the CI workflow
+uses (see `CLAUDE.md` § CI auto-deploy — operator one-time setup).
+
+### 4. Restore `/etc/aegis/aegis.env` (≈3 min)
+
+Decrypt the operator's canonical backup (password-manager vault entry
+named **AEGIS prod /etc/aegis/aegis.env backup**) on the workstation,
+then scp it to the box. The plaintext MUST NOT pass through chat
+output or any log surface.
+
+In the operator's terminal (NOT via this agent's Bash tool):
+
+```
+# decrypt to a memfile (Linux) or stdout-piped via your password
+# manager's CLI, then ship straight to the box:
+op read 'op://Private/AEGIS prod aegis.env backup/document' \
+  | ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> \
+    'install -m 0640 -o root -g root /dev/stdin /etc/aegis/aegis.env'
+```
+
+(`op` is the 1Password CLI — substitute the equivalent command for
+whatever password manager the operator uses.) Verify shape WITHOUT
+echoing values:
+
+```
+ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> \
+  'wc -l /etc/aegis/aegis.env && grep -cE "^[A-Z_]+=.+$" /etc/aegis/aegis.env'
+```
+
+Expected: matching line count and key=value count (no blank-line drift).
+
+### 5. Apply migrations from the laptop (≈2 min)
+
+Migrations run from the operator's workstation against the prod DSN —
+the box deliberately doesn't carry the DB-admin DSN
+(see CLAUDE.md § CI auto-deploy step 4 for the rationale). Run from
+the repo root on the workstation:
+
+```
+make migrate TARGET=prod DRY_RUN=1   # preview pending migrations
+make migrate TARGET=prod             # apply for real
+```
+
+Expected: `Applied 0 migrations` if Supabase persisted through the box
+loss (the schema lives in Supabase, not on the box); a non-zero count
+means the workstation has migrations newer than Supabase, which is
+unexpected during a cold recovery — pause and inspect before
+continuing.
+
+### 6. Create the `aegis` user + take ownership (≈1 min)
+
+```
+ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> bash -s <<'REMOTE'
+set -euo pipefail
+useradd -m -r -s /bin/bash aegis || true
+install -d -o aegis -g aegis -m 0755 /var/log/aegis
+install -d -o aegis -g aegis -m 0755 /var/lib/aegis/uploads
+install -d -o aegis -g aegis -m 0755 /opt/aegis/quarantine
+chown -R aegis:aegis /opt/aegis
+# narrow sudoers rule (operator interactive deploys + CI both rely on this):
+cat >/etc/sudoers.d/aegis-systemctl <<'SUDO'
+aegis ALL=(root) NOPASSWD: /usr/bin/systemctl restart aegis-web aegis-worker
+SUDO
+chmod 0440 /etc/sudoers.d/aegis-systemctl
+visudo -c
+REMOTE
+```
+
+Expected: final line `/etc/sudoers: parsed OK`.
+
+### 7. Install systemd units (≈1 min)
+
+```
+ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> bash -s <<'REMOTE'
+set -euo pipefail
+cp /opt/aegis/deploy/aegis-web.service /etc/systemd/system/aegis-web.service
+cp /opt/aegis/deploy/aegis-worker.service /etc/systemd/system/aegis-worker.service
+systemctl daemon-reload
+systemctl is-enabled redis-server || systemctl enable --now redis-server
+redis-cli -u redis://127.0.0.1:6379 ping
+REMOTE
+```
+
+Expected: `PONG` on the last line.
+
+### 8. First-time `uv sync` as the `aegis` user (≈4 min)
+
+The 2026-06-16 `ProtectSystem=strict` editable-install outage means
+`uv sync` must run as `aegis`, not root — running as root leaves
+`/opt/aegis/.venv` owned by root and `systemd`'s sandbox can't write
+to it on next sync.
+
+```
+ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> \
+  'sudo -u aegis bash -lc "cd /opt/aegis && uv sync --locked"'
+```
+
+Expected: `Resolved N packages` followed by `Installed N packages`.
+
+### 9. Start services (≈30 s)
+
+```
+ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> bash -s <<'REMOTE'
+set -euo pipefail
+systemctl enable --now aegis-web aegis-worker
+sleep 2
+systemctl is-active aegis-web aegis-worker
+REMOTE
+```
+
+Expected: two lines, both `active`. If either is `failed`, capture
+`journalctl -u aegis-web -u aegis-worker --since "2 minutes ago" -p err
+--no-pager` and address the root cause before continuing.
+
+### 10. Re-point the Cloudflare Tunnel (≈4 min)
+
+The existing tunnel `aegis-prod` keeps its DNS routes (`aegis.…` and
+`aegis-ssh.…`) — the only change is which box runs `cloudflared`.
+From the operator's terminal (NOT via this agent's Bash tool):
+
+```
+# 1. In Cloudflare dashboard -> Zero Trust -> Networks -> Tunnels ->
+#    aegis-prod -> rotate token. Capture the new value into your
+#    password manager; the prior box's connector goes stale.
+# 2. Install cloudflared + register the connector on the new box:
+ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> bash -s <<'REMOTE'
+set -euo pipefail
+curl -L --output /tmp/cloudflared.deb \
+  https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+apt-get install -y /tmp/cloudflared.deb
+rm /tmp/cloudflared.deb
+cloudflared --version
+REMOTE
+# 3. Pipe the token straight from your password manager into the install
+#    command so it never lands in shell history or chat output:
+op read 'op://Private/AEGIS prod cloudflared tunnel token/credential' \
+  | ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> \
+    'TOKEN=$(cat) && cloudflared service install "$TOKEN" \
+       && systemctl enable --now cloudflared \
+       && systemctl is-active cloudflared'
+```
+
+Expected: final output is `active`. Within ~30 s the Cloudflare
+dashboard's Tunnel detail page will show the new connector as
+"HEALTHY" and the old one as "INACTIVE" (which is then safe to remove
+from the connector list).
+
+> Token-handling note: `systemctl status cloudflared` leaks the
+> tunnel token via argv on this install path (documented gotcha in
+> `.claude/rules/deploy.md`). Use `systemctl is-active cloudflared` +
+> `journalctl -u cloudflared --output=cat -n 50` for ongoing health
+> checks — never `status`.
+
+### 11. Smoke — local healthz (≈10 s)
+
+```
+ssh -i ~/.ssh/aegis_ed25519 root@<NEW_BOX_IP> \
+  'curl -sS http://127.0.0.1:5555/healthz'
+```
+
+Expected:
+
+```
+{"ok":true}
+```
+
+If anything else: `journalctl -u aegis-web -n 200 --no-pager` and check
+the first error. Most cold-box failures at this stage are a missing
+env var in `/etc/aegis/aegis.env` (the boot-guard fail-closed prints
+the exact missing key in the log line).
+
+### 12. Smoke — external tunnel (≈10 s)
+
+From the workstation:
+
+```
+curl -sS -o /dev/null -w "%{http_code}\n" https://aegis.commerafunding.com/healthz
+```
+
+Expected: `302` — the Cloudflare Access SSO redirect, which proves the
+tunnel is up AND Cloudflare Access is gating the surface. (`200` would
+mean Access is misconfigured; `502` / `504` / `530` means the tunnel
+is still bootstrapping — wait 30 s and retry.)
+
+### Post-recovery hygiene
+
+- [ ] Log the recovery in `deploy/RUNBOOK.md` § Credential rotation log
+      with the date, the recovered IP, and which credentials rotated
+      (the Cloudflare tunnel token at minimum).
+- [ ] Update GitHub Actions secret `AEGIS_SERVER_IP` to the new IP so
+      auto-deploys continue working — see CLAUDE.md § CI auto-deploy
+      step 4b.
+- [ ] Authorize the CI deploy key on the new box per CLAUDE.md § CI
+      auto-deploy step 2 (the cattle key works for ops, but CI uses
+      a separate key in `/root/.ssh/authorized_keys`).
+- [ ] Run `make verify-bedrock` from the workstation to confirm the
+      vision + text-only parser legs both succeed end-to-end against
+      real Bedrock.
+- [ ] Decommission the dead box in the Hetzner console after 48 hours
+      (long enough to copy off anything if a postmortem needs it).
