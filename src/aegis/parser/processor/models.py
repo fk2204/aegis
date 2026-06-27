@@ -31,11 +31,11 @@ from aegis.money import Money, as_money
 
 ProcessorLineKind = Literal[
     "gross_charge",  # money in from a customer card swipe / online charge
-    "refund",        # money returned to the customer (operator-initiated)
-    "chargeback",    # money clawed back via dispute
-    "fee",           # processor's per-transaction or monthly fee
-    "payout",        # deposit to the merchant's bank account
-    "adjustment",    # rare: balance-only correction, not part of the math gate
+    "refund",  # money returned to the customer (operator-initiated)
+    "chargeback",  # money clawed back via dispute
+    "fee",  # processor's per-transaction or monthly fee
+    "payout",  # deposit to the merchant's bank account
+    "adjustment",  # rare: balance-only correction, not part of the math gate
 ]
 
 
@@ -96,7 +96,7 @@ class ProcessorSummary(_StrictModel):
     summed line items.
     """
 
-    processor: Literal["stripe", "square"]
+    processor: Literal["stripe", "square", "toast"]
     business_name: str | None = None
     period_start: date
     period_end: date

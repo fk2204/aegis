@@ -1,0 +1,21 @@
+Date,Server,Order ID,Order #,Location,Revenue Center,Tab Name,Item,Qty,Gross Amount,Discount Amount,Net Amount,Void,Void Reason,Check Amount,Tip Amount,Total Amount,Transaction Type,Payment Type,Last 4,Card Brand,Card Holder,Dining Options
+2026-05-01 11:42:00,Alex,toast_ord_a1b2c3,O-1001,Main Street,Bar,Table 3,Old Fashioned,1,28.50,0.00,28.50,No,,28.50,5.00,33.50,Payment,Card,4242,Visa,Guest,Dine In
+2026-05-02 12:15:00,Jamie,toast_ord_b2c3d4,O-1002,Main Street,Dining Room,Table 7,Lunch Special,2,45.75,0.00,45.75,No,,45.75,8.00,53.75,Payment,Card,5454,Mastercard,Cardholder 1,Dine In
+2026-05-04 18:30:00,Sam,toast_ord_c3d4e5,O-1003,Downtown,Takeout,Online Order,Family Box,1,18.00,0.00,18.00,No,,18.00,0.00,18.00,Payment,Card,3742,Amex,Cardholder 2,Take Out
+2026-05-06 20:05:00,Alex,toast_ord_d4e5f6,O-1004,Main Street,Bar,Table 1,Whiskey Flight,1,35.25,0.00,35.25,No,,35.25,7.00,42.25,Payment,Card,1117,Discover,Cardholder 3,Dine In
+2026-05-08 13:48:00,Jamie,toast_ord_e5f6a7,O-1005,Downtown,Dining Room,Table 12,Catering Order,4,78.40,0.00,78.40,No,,78.40,12.00,90.40,Payment,Card,4242,Visa,Guest,Dine In
+2026-05-09 10:12:00,Sam,toast_ord_f6a7b8,O-1006,Main Street,Bar,Walk-in,Coffee Pour Over,3,25.00,0.00,25.00,No,,25.00,0.00,25.00,Payment,Cash,,,Guest,Dine In
+2026-05-10 19:22:00,Alex,toast_ord_a7b8c9,O-1007,Main Street,Bar,Table 4,Refund - bad pour,1,15.00,0.00,-15.00,No,Customer complaint,-15.00,0.00,-15.00,Refund,Card,4242,Visa,Guest,Dine In
+2026-05-11 12:38:00,Jamie,toast_ord_b8c9d0,O-1008,Westside,Takeout,Online Order,Lunch Combo,1,22.85,0.00,22.85,No,,22.85,3.00,25.85,Payment,Card,5454,Mastercard,Cardholder 4,Take Out
+2026-05-12 21:15:00,Sam,toast_ord_c9d0e1,O-1009,Main Street,Dining Room,Table 8,Voided Lunch Special,2,65.00,0.00,65.00,Yes,Double ring,65.00,0.00,65.00,Payment,Card,4242,Visa,Cardholder 5,Dine In
+2026-05-13 18:55:00,Alex,toast_ord_d0e1f2,O-1010,Main Street,Bar,Table 6,Cocktail Round,2,52.10,0.00,52.10,No,,52.10,10.00,62.10,Payment,Card,4242,Visa,Guest,Dine In
+2026-05-15 20:30:00,Jamie,toast_ord_e1f2a3,O-1011,Downtown,Dining Room,Table 14,Wine Pairing Dinner,2,112.30,0.00,112.30,No,,112.30,22.00,134.30,Payment,Card,3742,Amex,Cardholder 6,Dine In
+2026-05-17 11:42:00,Sam,toast_ord_f2a3b4,O-1012,Westside,Takeout,Online Order,Box Lunch,1,15.50,0.00,15.50,No,,15.50,2.00,17.50,Payment,Card,4242,Visa,Cardholder 7,Take Out
+2026-05-18 14:08:00,Alex,toast_ord_a3b4c5,O-1013,Downtown,Dining Room,Table 5,Refund - cold entree,1,22.50,0.00,-22.50,No,Food quality,-22.50,0.00,-22.50,Refund,Card,3742,Amex,Cardholder 6,Dine In
+2026-05-19 19:48:00,Jamie,toast_ord_b4c5d6,O-1014,Main Street,Bar,Table 9,Beer Flight,1,41.75,0.00,41.75,No,,41.75,8.00,49.75,Payment,Card,1117,Discover,Guest,Dine In
+2026-05-22 13:25:00,Sam,toast_ord_c5d6e7,O-1015,Downtown,Dining Room,Table 11,Lunch Group,3,89.00,0.00,89.00,No,,89.00,15.00,104.00,Payment,Card,5454,Mastercard,Cardholder 8,Dine In
+2026-05-24 20:00:00,Alex,toast_ord_d6e7f8,O-1016,Main Street,Bar,Table 2,Cocktails,2,33.60,0.00,33.60,No,,33.60,6.00,39.60,Payment,Card,4242,Visa,Guest,Dine In
+2026-05-25 11:18:00,Jamie,toast_ord_e7f8a9,O-1017,Westside,Takeout,Online Order,Refund - missing item,1,8.75,0.00,-8.75,No,Order incomplete,-8.75,0.00,-8.75,Refund,Card,5454,Mastercard,Cardholder 9,Take Out
+2026-05-27 19:42:00,Sam,toast_ord_f8a9b0,O-1018,Downtown,Dining Room,Table 16,Tasting Menu,2,145.85,0.00,145.85,No,,145.85,25.00,170.85,Payment,Card,3742,Amex,Cardholder 10,Dine In
+2026-05-29 12:30:00,Alex,toast_ord_a9b0c1,O-1019,Westside,Takeout,Online Order,Lunch Box,1,19.95,0.00,19.95,No,,19.95,3.00,22.95,Payment,Card,4242,Visa,Cardholder 11,Take Out
+2026-05-30 21:55:00,Jamie,toast_ord_b0c1d2,O-1020,Main Street,Bar,Table 5,Voided Beer Round,1,18.50,0.00,18.50,Yes,Wrong table,18.50,0.00,18.50,Payment,Card,5454,Mastercard,Cardholder 12,Dine In
