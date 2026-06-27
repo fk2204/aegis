@@ -1,0 +1,68 @@
+{% extends "base.html.j2" %}
+{% set active = 'Admin' %}
+{% block title %}Bank coverage — AEGIS{% endblock %}
+
+{% block deck %}
+{% set title = "Bank coverage" %}
+{% set subtitle = "· hint armament + coverage gap" %}
+{% set meta = (summary.total_banks|string) ~ ' bank' ~ ('' if summary.total_banks == 1 else 's') ~ ' seen' %}
+{% set actions = [] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+  <div>
+    <header class="sect-head">
+      <h2>Coverage gap — sorted by most-docs, biggest-gap first</h2>
+      <div class="rule"></div>
+      <div class="meta">
+        <strong>{{ summary.total_banks }}</strong> banks seen ·
+        <strong>{{ summary.manual_hints }}</strong> with manual hints ·
+        <strong>{{ summary.auto_hints }}</strong> with auto hints ·
+        <strong>{{ summary.no_hints }}</strong> with no hints
+        <!-- TODO: image-only count omitted — no source column distinguishes
+             vision-routed parses from text-extracted ones today. Add once
+             ``analyses.parse_method`` or equivalent ships. -->
+      </div>
+    </header>
+
+    {% if not rows %}
+      <div class="empty">
+        No bank documents on file yet
+        <span class="copy">Upload a statement to start populating bank coverage.</span>
+      </div>
+    {% else %}
+      <table class="queue">
+        <thead>
+          <tr>
+            <th>Bank</th>
+            <th class="num">Docs</th>
+            <th class="num">Successful parses</th>
+            <th>Hints status</th>
+            <th>Source</th>
+            <th>Last seen</th>
+            <th class="num">Parse success</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            {% include "_bank_coverage_row.html.j2" %}
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    <div class="marginalia" style="margin-top:14px">
+      <strong>How this works</strong> · Rows sort by document volume first, then by
+      coverage gap inside each bucket — banks with no hints surface above banks with
+      auto-generated hints, which surface above banks with manual hints.
+      <em>Bump to threshold</em> increments <code>successful_parses</code> by one so
+      a bank with a sparse history crosses the hint-activation threshold sooner.
+      <em>Generate hints</em> enqueues an auto-hint generation pass for one bank
+      from its most recent successful parses (Bedrock-driven).
+    </div>
+  </div>
+</section>
+{% endblock %}
