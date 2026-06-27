@@ -46,7 +46,7 @@ def _row(**overrides: object) -> ProcessorStatementRow:
         "parse_method": "pdf_vision",
     }
     defaults.update(overrides)
-    return ProcessorStatementRow(**defaults)  # type: ignore[arg-type]
+    return ProcessorStatementRow(**defaults)
 
 
 # ---------------------------------------------------------------------------
