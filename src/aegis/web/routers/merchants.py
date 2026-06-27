@@ -109,6 +109,7 @@ from aegis.pdf_store import (
     PdfStoreRepository,
     PdfStoreWriteError,
 )
+from aegis.product_types import DEFAULT_PRODUCT_TYPE
 from aegis.scoring.historical_approval import (
     LOOKBACK_DAYS as _HISTORICAL_LOOKBACK_DAYS,
 )
@@ -3655,10 +3656,16 @@ async def merchant_detail(
         # default to 25% of monthly revenue — the MCA-shop convention for
         # the max sustainable debt-service load on a "clean" cashflow.
         # Documented in src/aegis/scoring_v2/offer.py.
+        #
+        # product_type wired via getattr fallback — PA A7's migration 080
+        # adds the column but isn't guaranteed to land before this commit.
+        # When merchant has no product_type yet, default to revenue_based
+        # which is byte-for-byte the prior behavior.
         offer = compute_offer(
             true_revenue_monthly=latest_analysis.monthly_revenue,
             holdback_capacity_monthly=(latest_analysis.monthly_revenue * Decimal("0.25")),
             mca_stack=mca_stack,
+            product_type=getattr(merchant, "product_type", DEFAULT_PRODUCT_TYPE),
         )
         pattern_analysis = _dossier_pattern_analysis(latest_analysis, latest_transactions)
         pattern_analysis_for_view = pattern_analysis
@@ -4218,10 +4225,16 @@ def _build_pdf_dossier_context(
         # default to 25% of monthly revenue — the MCA-shop convention for
         # the max sustainable debt-service load on a "clean" cashflow.
         # Documented in src/aegis/scoring_v2/offer.py.
+        #
+        # product_type wired via getattr fallback — PA A7's migration 080
+        # adds the column but isn't guaranteed to land before this commit.
+        # When merchant has no product_type yet, default to revenue_based
+        # which is byte-for-byte the prior behavior.
         offer = compute_offer(
             true_revenue_monthly=latest_analysis.monthly_revenue,
             holdback_capacity_monthly=(latest_analysis.monthly_revenue * Decimal("0.25")),
             mca_stack=mca_stack,
+            product_type=getattr(merchant, "product_type", DEFAULT_PRODUCT_TYPE),
         )
         pattern_analysis = _dossier_pattern_analysis(latest_analysis, latest_transactions)
         pattern_analysis_for_view = pattern_analysis
