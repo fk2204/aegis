@@ -63,6 +63,30 @@ _SIGNAL_4_WEIGHT: Final[int] = 20
 # without one signal alone being able to fire.
 _COMPOSITE_THRESHOLD: Final[int] = 40
 
+# Min-active-signals guard (added 2026-06-27 after shadow audit).
+#
+# WHY: 14-day shadow audit on prod showed 17 fires with a 65% false-
+# positive rate (11 of 17 on docs at parse_status="proceed"). All fires
+# were driven by ONLY Signal 1 (math_perfection=30) + Signal 3
+# (round_cluster=12-25). Signals 2 (description_uniformity) and 4
+# (font_uniformity) were 0 on every fire — the composite was operating
+# as a 2-signal detector but the 40 threshold was calibrated for the
+# 4-signal land. Real low-volume merchants with clean books + round
+# rents trip Signals 1+3 alone and get false-flagged.
+#
+# This guard requires ≥2 of the 4 component signals to be NON-ZERO
+# before the detector can fire, regardless of composite total. Single-
+# signal high-score cases (e.g., math_perfection=30 alone) exit early
+# even when the threshold check would otherwise pass.
+#
+# The guard runs BEFORE the composite threshold check — early-exit
+# semantics make the intent explicit. Per CLAUDE.md "Decision-boundary
+# changes — shadow-first": this calibration ships live (not shadow-
+# first) because the shadow data ALREADY validated the false-positive
+# rate. Re-shadowing a recalibration of an already-shadow detector
+# would be redundant.
+_MIN_ACTIVE_SIGNALS: Final[int] = 2
+
 # ─────────────────────────────────────────────────────────────────────
 # Signal 2 — description entropy threshold.
 #
@@ -200,6 +224,24 @@ def detect_ai_generated_statement(
         signal_3_round_number_cluster=_signal_3_round_number_cluster(transactions),
         signal_4_font_uniformity=_signal_4_font_uniformity(font_result),
     )
+
+    # Min-active-signals guard — early-exit BEFORE the composite check.
+    # Single-signal high-score cases (e.g. math_perfection=30 alone with
+    # no other signals) exit here even if their total would otherwise
+    # clear the threshold. See ``_MIN_ACTIVE_SIGNALS`` constant block
+    # for the shadow-audit calibration rationale.
+    active_signals = sum(
+        1
+        for v in (
+            contributions.signal_1_math_perfection,
+            contributions.signal_2_description_uniformity,
+            contributions.signal_3_round_number_cluster,
+            contributions.signal_4_font_uniformity,
+        )
+        if v > 0
+    )
+    if active_signals < _MIN_ACTIVE_SIGNALS:
+        return None
 
     composite = contributions.composite
     if composite < _COMPOSITE_THRESHOLD:
