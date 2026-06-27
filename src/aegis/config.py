@@ -148,8 +148,14 @@ class Settings(BaseSettings):
         default_factory=lambda: Path(tempfile.gettempdir()) / "aegis-ofac" / "sdn.json"
     )
 
-    # Worker tuning
-    aegis_worker_max_concurrent: int = Field(default=4, ge=1, le=32)
+    # Worker tuning. Lowered from 4 → 3 (2026-06-27) to keep parallelism
+    # under the 4GB Hetzner box's RAM ceiling — Bedrock vision parses
+    # cost ~600-900MB resident each at ~150-180s, and the worker shares
+    # the box with aegis-web + Redis. 3 concurrent jobs leaves headroom
+    # for the web process under simultaneous parse + dossier render.
+    # arq's default is 10; AEGIS pins via this env-driven setting so a
+    # higher-spec box can opt in without a code change.
+    aegis_worker_max_concurrent: int = Field(default=3, ge=1, le=32)
     aegis_worker_job_timeout: int = Field(
         default=600, ge=30, description="seconds; longer than typical parse to allow LLM retries"
     )
