@@ -51,6 +51,8 @@ from aegis.api.deps import (
     get_funder_note_submission_repository,
     get_funder_repository,
     get_merchant_repository,
+    get_notification_repository,
+    get_operator_repository,
 )
 from aegis.audit import AuditLog
 from aegis.close.client import CloseClient, CloseError
@@ -75,6 +77,9 @@ from aegis.logger import get_logger
 from aegis.merchants.close_context import refresh_close_context_for_merchant
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import MerchantConflictError, MerchantRepository
+from aegis.ops.notification_repository import NotificationRepository
+from aegis.ops.operator_repository import OperatorRepository
+from aegis.web._notify import notify_merchant_created
 
 router = APIRouter(prefix="/webhooks/close", tags=["webhooks"])
 
@@ -94,6 +99,8 @@ async def close_webhook(
         Depends(get_funder_note_submission_repository),
     ],
     funders: Annotated[FunderRepository, Depends(get_funder_repository)],
+    operators: Annotated[OperatorRepository, Depends(get_operator_repository)],
+    notifications: Annotated[NotificationRepository, Depends(get_notification_repository)],
 ) -> None:
     raw_body = await request.body()
 
@@ -226,6 +233,14 @@ async def close_webhook(
             detail=f"close_get_lead_failed: {exc}",
         ) from exc
 
+    # Detect whether this webhook will produce a NEW merchant (vs. update
+    # an existing one). The upsert helper is idempotent so we look up the
+    # pre-upsert state to decide whether to fire the merchant_created
+    # notification afterwards. Soft-deleted rows would already short-
+    # circuit inside the helper; treat their absence here as "no new
+    # merchant created" to stay consistent.
+    pre_existing_merchant = merchants.find_by_close_lead_id(lead_id)
+
     _upsert_merchant_from_lead(
         lead=lead,
         close_lead_id=lead_id,
@@ -233,6 +248,20 @@ async def close_webhook(
         merchants=merchants,
         audit=audit,
     )
+
+    if pre_existing_merchant is None:
+        # New merchant landed via this webhook — fan-out a
+        # ``merchant_created`` notification to every active admin. Best-
+        # effort: the helper logs (does not raise) on a write failure.
+        created_merchant = merchants.find_by_close_lead_id(lead_id)
+        if created_merchant is not None:
+            notify_merchant_created(
+                merchant_id=created_merchant.id,
+                business_name=created_merchant.business_name,
+                operators=operators,
+                notifications=notifications,
+                audit=audit,
+            )
 
     # Feature D — merchant context refresh. After the merchant row
     # resolves we pull the Lead description + the 5 most-recent Close

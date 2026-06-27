@@ -638,6 +638,14 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='deal_assignments'"
     ),
+    "077_notifications.sql": (
+        # 077 creates the notifications table backing the bell-icon
+        # dropdown in the topstrip. Probing the table is sufficient —
+        # the partial index lands in the same migration; if either
+        # half fails, the BEGIN/COMMIT rolls the whole migration back.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='notifications'"
+    ),
 }
 
 

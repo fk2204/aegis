@@ -78,6 +78,11 @@ from aegis.ops.deal_assignment_repository import (
     InMemoryDealAssignmentRepository,
     SupabaseDealAssignmentRepository,
 )
+from aegis.ops.notification_repository import (
+    InMemoryNotificationRepository,
+    NotificationRepository,
+    SupabaseNotificationRepository,
+)
 from aegis.ops.operator_repository import (
     InMemoryOperatorRepository,
     OperatorRepository,
@@ -343,6 +348,19 @@ def get_operator_repository() -> OperatorRepository:
 
 
 @lru_cache(maxsize=1)
+def get_notification_repository() -> NotificationRepository:
+    """Process-wide NotificationRepository (migration 077).
+
+    Backs the bell-icon dropdown + the event emitters in
+    ``aegis.web._notify``. Same memory / supabase toggle as the other
+    repositories.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryNotificationRepository()
+    return SupabaseNotificationRepository()
+
+
+@lru_cache(maxsize=1)
 def get_deal_assignment_repository() -> DealAssignmentRepository:
     """Process-wide DealAssignmentRepository (migration 076).
 
@@ -398,6 +416,7 @@ def reset_dependency_caches() -> None:
     get_pdf_store_repository.cache_clear()
     get_operator_repository.cache_clear()
     get_deal_assignment_repository.cache_clear()
+    get_notification_repository.cache_clear()
     get_schema_migrations_reader.cache_clear()
     get_llm.cache_clear()
     get_ofac_client.cache_clear()
@@ -418,6 +437,7 @@ __all__ = [
     "get_llm",
     "get_merchant_repository",
     "get_merchant_shadow_signal_repository",
+    "get_notification_repository",
     "get_ofac_client",
     "get_operator_repository",
     "get_override_repository",

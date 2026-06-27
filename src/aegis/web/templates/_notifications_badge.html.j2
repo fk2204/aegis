@@ -1,0 +1,10 @@
+{# Bell badge — empty when count is 0 (CSS hides), populated otherwise.
+
+   Context:
+     count : int — current unread count for the operator
+#}
+{% if count and count > 0 %}
+  <span class="bell-badge" data-test-id="bell-badge">
+    {{ count if count < 100 else "99+" }}
+  </span>
+{% endif %}

@@ -1,0 +1,28 @@
+{# Bell partial — included in _topstrip.html.j2.
+
+   Context: none required at include time (this template loads its
+   contents via HTMX once the page is rendered, so the topstrip itself
+   doesn't need to do a notification-repo lookup).
+#}
+<div class="bell-wrap" data-test-id="bell-wrap">
+  <button class="bell-icon"
+          type="button"
+          hx-get="/ui/notifications/dropdown"
+          hx-target=".bell-dropdown"
+          hx-trigger="click once, every 60s from:body"
+          hx-swap="innerHTML"
+          title="Notifications"
+          aria-label="Notifications">
+    🔔
+  </button>
+  <span id="bell-badge-mount"
+        hx-get="/ui/notifications/unread-count"
+        hx-trigger="load, every 60s"
+        hx-swap="innerHTML">
+    {# Empty until the polling fires. The badge partial returns nothing
+       when count is 0, so the user sees only the bell icon at rest. #}
+  </span>
+  <div class="bell-dropdown">
+    {# Lazy-loaded on click. #}
+  </div>
+</div>
