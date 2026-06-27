@@ -3714,6 +3714,21 @@ async def merchant_detail(
     # stays explicit and out of the hot render path (preserves dossier
     # latency + avoids per-pageview Bedrock cost).
 
+    # Fix 2 (2026-06-26): when every settled statement is in
+    # ``manual_review`` the funder matching panel still renders matches
+    # against the most-recent available analysis, but we surface an amber
+    # banner above the grid so the underwriter knows to verify the
+    # integrity findings before submitting. ``pending`` docs are excluded
+    # from the universe — they haven't reached a terminal parse state, so
+    # treating a half-complete merchant as "all manual_review" would lie
+    # to the operator. True only when at least one settled doc exists AND
+    # every settled doc is ``manual_review``.
+    _settled_statuses = {"proceed", "review", "manual_review", "error"}
+    _settled_docs = [d for d in all_docs if d.parse_status in _settled_statuses]
+    all_statements_manual_review = bool(_settled_docs) and all(
+        d.parse_status == "manual_review" for d in _settled_docs
+    )
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -3773,6 +3788,7 @@ async def merchant_detail(
             "override_pattern_codes": override_pattern_codes,
             "override_latest_decision_id": override_latest_decision_id,
             "show_override_button": show_override_button,
+            "all_statements_manual_review": all_statements_manual_review,
         },
     )
 

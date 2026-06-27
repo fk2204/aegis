@@ -17,6 +17,26 @@
 
 {% set ut = unified_tracks %}
 
+{# Fix 4 (2026-06-26) — plain-English Track A translations. Display-side
+   only; NOT added to the backend IntegrityVerdict model per task spec.
+   Branch values come straight from ``aegis.scoring_v2.track_a.models.IntegrityBranch``
+   (clean / strong_metadata / drift_plus_editor / medium_corroborated /
+   drift_alone). The forensic-finding strings (font / text-overlay /
+   creator-mismatch) are NOT branches — they are EvidenceItem.signal
+   tokens and surface alongside the branch text when present. #}
+{% set _TRACK_A_BRANCH_PLAIN = {
+  'drift_plus_editor': "PDF was edited with a tool after bank export AND math doesn't reconcile. Both together is a tampering pattern. Request original statements directly from the bank.",
+  'drift_alone': "Math discrepancy detected. Could be OCR error or real manipulation. Compare the printed totals on the PDF to the numbers shown here.",
+  'strong_metadata': "PDF editing tool detected in file metadata. Could be innocent compression — but request original bank export to confirm.",
+  'medium_corroborated': "PDF metadata raises a concern AND math discrepancies were found. Request original statements directly from the bank to confirm.",
+  'clean': "No integrity concerns detected.",
+} %}
+{% set _TRACK_A_SIGNAL_PLAIN = {
+  'font_inconsistency_detected': "Transaction text uses a different font than the rest of the page. Possible paste-over fraud.",
+  'text_overlay_detected': "Text appears in a separate layer above the original page content. Classic signature of tools that replace transaction text.",
+  'creator_mismatch_detected': "The PDF creator tool doesn't match what this bank normally uses.",
+} %}
+
 <section class="body cols-1" style="margin-top:18px">
   <div>
     <header class="sect-head">
@@ -64,14 +84,45 @@
                 </td>
                 <td title="{{ v.branch }}">{{ v.branch | humanize_track_a_branch }}</td>
                 <td>
-                  <div class="desc">{{ v.rationale }}</div>
-                  {% if v.evidence %}
-                    <ul style="margin:4px 0 0 0;padding-left:18px;font-size:11.5px;color:var(--ink-2)">
-                      {% for e in v.evidence %}
-                        <li><span title="{{ e.signal }}">{{ e.signal | humanize_track_a_signal }}</span> · {{ e.detail }}</li>
-                      {% endfor %}
-                    </ul>
+                  {# Fix 4 — plain-English branch translation up top
+                     (prominent), per-signal forensic translations next,
+                     then the technical detail tucked into a closed
+                     <details>. The plain-English maps live above this
+                     template; the raw branch / signal tokens stay
+                     accessible for engineer-mode audit via title=. #}
+                  {% set _branch_plain = _TRACK_A_BRANCH_PLAIN.get(v.branch) %}
+                  {% if _branch_plain %}
+                    <div class="track-a-plain"
+                         data-test-id="track-a-plain-english"
+                         data-branch="{{ v.branch }}">{{ _branch_plain }}</div>
                   {% endif %}
+                  {% if v.evidence %}
+                    {# Forensic plain-English lines. Filter the evidence
+                       list down to the three forensic signal codes the
+                       map above translates. Render only when ≥1 hits. #}
+                    {% set _forensic_evidence = v.evidence | selectattr('signal', 'in', _TRACK_A_SIGNAL_PLAIN.keys() | list) | list %}
+                    {% if _forensic_evidence %}
+                      <ul class="track-a-plain"
+                          data-test-id="track-a-plain-english-forensic"
+                          style="margin:6px 0 0 0;padding-left:18px;font-size:13px">
+                        {% for e in _forensic_evidence %}
+                          <li>{{ _TRACK_A_SIGNAL_PLAIN.get(e.signal) }}</li>
+                        {% endfor %}
+                      </ul>
+                    {% endif %}
+                  {% endif %}
+                  <details class="track-a-tech-detail"
+                           data-test-id="track-a-tech-detail">
+                    <summary>Technical detail</summary>
+                    <div class="desc" style="margin-top:4px">{{ v.rationale }}</div>
+                    {% if v.evidence %}
+                      <ul style="margin:4px 0 0 0;padding-left:18px;font-size:11.5px;color:var(--ink-2)">
+                        {% for e in v.evidence %}
+                          <li><span title="{{ e.signal }}">{{ e.signal | humanize_track_a_signal }}</span> &middot; {{ e.detail }}</li>
+                        {% endfor %}
+                      </ul>
+                    {% endif %}
+                  </details>
                 </td>
               </tr>
             {% endfor %}

@@ -28,8 +28,144 @@
   <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=14">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   <script src="/ui/static/evidence_copy.js?v=1" defer></script>
+  <style>
+    /* Fix 1 (2026-06-26) — narrator action-chip color scheme. White-on-yellow
+       fails WCAG contrast so the call_first chip uses black text on yellow
+       deliberately; the other three pass at the listed swatches. */
+    .narrator-action--submit_now { background:#198754; color:#fff; }
+    .narrator-action--call_first { background:#ffc107; color:#000; }
+    .narrator-action--request_documents { background:#fd7e14; color:#fff; }
+    .narrator-action--do_not_submit { background:#dc3545; color:#fff; }
+    .narrator-action { padding:10px 14px; border-radius:6px; margin-top:10px; }
+    .narrator-action strong { color:inherit; }
+    .narrator-action a { color:inherit; }
+    /* Fix 1 — visible prompt card when narrator_summary is None but the
+       deal already has a scoreable analysis on file. The HTMX swap targets
+       this class so the response replaces the card in place. */
+    .narrator-prompt {
+      background:#fff3cd;
+      border:1px solid #ffeeba;
+      border-radius:6px;
+      padding:14px;
+      margin-bottom:16px;
+    }
+    .narrator-prompt p { margin:0 0 10px 0; }
+    .narrator-prompt button {
+      padding:6px 14px;
+      border:1px solid #1d1d18;
+      border-radius:4px;
+      background:#1d1d18;
+      color:#fafaf7;
+      cursor:pointer;
+      font-size:12px;
+      text-transform:uppercase;
+      letter-spacing:0.08em;
+    }
+    /* Fix 2 — amber banner above the funder match grid when every
+       statement is in manual_review. Keep style local: the dossier has
+       no existing banner class with this exact tone. */
+    .manual-review-banner {
+      background:#fff3cd;
+      border-left:4px solid #ffc107;
+      padding:10px 14px;
+      margin-bottom:12px;
+    }
+    /* Fix 4 — Track A plain-English block. Prominent (15px serif) above
+       the technical detail; details/summary closed by default. */
+    .track-a-plain {
+      font-family:var(--serif, Georgia, serif);
+      font-size:15px;
+      line-height:1.5;
+      color:var(--ink, #1d1d18);
+      margin:4px 0 6px 0;
+    }
+    .track-a-tech-detail {
+      margin-top:6px;
+      font-size:12px;
+      color:var(--ink-2, #3d3d38);
+    }
+    .track-a-tech-detail summary {
+      cursor:pointer;
+      font-family:var(--mono, monospace);
+      font-size:11px;
+      letter-spacing:0.06em;
+      text-transform:uppercase;
+      color:var(--ink-3, #6b6b66);
+    }
+    /* Fix 5 — stacking alert banner (red for confirmed, yellow for
+       pattern-only). Renders above the funder match grid. */
+    .stacking-alert {
+      padding:10px 14px;
+      border-radius:6px;
+      margin-bottom:12px;
+      font-size:13px;
+    }
+    .stacking-alert--confirmed {
+      background:#f8d7da;
+      border:1px solid #f5c2c7;
+      color:#842029;
+    }
+    .stacking-alert--pattern {
+      background:#fff3cd;
+      border:1px solid #ffeeba;
+      color:#664d03;
+    }
+  </style>
 </head>
 <body class="dossier-page body-root">
+
+{# Fix 3 (2026-06-26) — plain-English statement label. Maps
+   ``parse_status`` plus the strongest hint in ``all_flags`` (no dedicated
+   ``manual_review_reason`` column lives on documents today; reasons are
+   carried in-band on ``all_flags`` per parser/pipeline.py) to a single
+   human label. Returns a tuple-shaped dict so callers can render the
+   label + a short tag chip next to it. Tooltip surfaces the strongest
+   flag match for raw inspection. #}
+{% macro plain_status_label(doc) -%}
+  {%- set _status = doc.parse_status -%}
+  {%- set _flags_joined = ' '.join(doc.all_flags or []) | lower -%}
+  {%- if _status == 'proceed' -%}
+    {%- set _label -%}&check; Parsed clean{%- endset -%}
+    {%- set _tag = 'proceed' -%}
+    {%- set _tooltip = 'parse_status=proceed' -%}
+  {%- elif _status == 'review' -%}
+    {%- set _label -%}&#9888; Review band &mdash; verify findings{%- endset -%}
+    {%- set _tag = 'review' -%}
+    {%- set _tooltip = 'parse_status=review' -%}
+  {%- elif _status == 'pending' -%}
+    {%- set _label -%}&#8987; Being analyzed{%- endset -%}
+    {%- set _tag = 'pending' -%}
+    {%- set _tooltip = 'parse_status=pending' -%}
+  {%- elif _status == 'error' -%}
+    {%- set _label -%}&times; Parse error{%- endset -%}
+    {%- set _tag = 'error' -%}
+    {%- set _tooltip = 'parse_status=error' -%}
+  {%- elif _status == 'manual_review' -%}
+    {%- if 'editor' in _flags_joined and ('reconciliation' in _flags_joined or 'reconcile' in _flags_joined) -%}
+      {%- set _label -%}&#9888; Possible tampering &mdash; PDF edited and math doesn&#39;t reconcile{%- endset -%}
+    {%- elif 'reconciliation' in _flags_joined or 'reconcile' in _flags_joined -%}
+      {%- set _label -%}&#9888; Math discrepancy &mdash; could be OCR error or real drift{%- endset -%}
+    {%- elif 'period' in _flags_joined -%}
+      {%- set _label -%}&#9888; Statement period couldn&#39;t be determined{%- endset -%}
+    {%- elif 'extraction' in _flags_joined -%}
+      {%- set _label -%}&#9888; Parser couldn&#39;t read this file{%- endset -%}
+    {%- elif 'vision' in _flags_joined -%}
+      {%- set _label -%}&#9888; Image-only PDF &mdash; vision parse attempted{%- endset -%}
+    {%- else -%}
+      {%- set _label -%}&#9888; Needs manual review{%- endset -%}
+    {%- endif -%}
+    {%- set _tag = 'manual_review' -%}
+    {%- set _tooltip = (doc.all_flags or [])|join(' | ') -%}
+  {%- else -%}
+    {%- set _label = _status -%}
+    {%- set _tag = _status -%}
+    {%- set _tooltip = _status -%}
+  {%- endif -%}
+  <span class="plain-status" title="{{ _tooltip }}">
+    <span class="plain-status-label">{{ _label | safe }}</span>
+    <span class="pill {% if _tag == 'proceed' %}ok{% elif _tag in ('manual_review','error') %}bad{% elif _tag == 'review' %}warn{% endif %}" style="margin-left:6px;font-family:var(--mono);font-size:10px;letter-spacing:0.06em">{{ _tag }}</span>
+  </span>
+{%- endmacro %}
 
 {# === compact topstrip === #}
 {# Wave 2.4 (2026-06-03): use the shared `_topstrip.html.j2` partial
@@ -179,8 +315,21 @@
    dossier so the operator reads the verbal summary first, then drills
    into the raw numbers as needed. Rendered from cached
    ``analyses.narrator_summary`` JSON; absent rows (legacy deals + first
-   visit on a new deal) silently skip the block and the raw-analysis
-   `<details>` lower on the page opens by default. #}
+   visit on a new deal) render the Fix-1 prompt card so the underwriter
+   sees an actionable button instead of silence. The HTMX swap targets
+   ``.narrator-prompt`` so the response replaces the card in place. #}
+{% if narrator_summary is none and analysis and document %}
+  <div class="narrator-prompt"
+       data-test-id="narrator-prompt"
+       data-narrator-prompt>
+    <p><strong>No deal summary yet.</strong></p>
+    <button hx-post="/ui/merchants/{{ merchant.id }}/documents/{{ document.id }}/narrator/refresh"
+            hx-target=".narrator-prompt"
+            hx-swap="outerHTML"
+            type="submit"
+            data-test-id="narrator-prompt-generate">Generate deal summary</button>
+  </div>
+{% endif %}
 {% if narrator_summary %}
   <section class="narrator-summary"
            data-test-id="narrator-summary"
@@ -1359,6 +1508,15 @@
       </section>
     {% endif %}
 
+    {# ============== Background checks (Agent 2 placeholder) ============== #}
+    {# Fix 5 (2026-06-26) — Agent 2 owns the background-checks section
+       (UCC, web presence, OFAC roll-up). Reserve the slot here between
+       Track C / pattern findings and the funder match grid so the
+       merge is mechanical when Agent 2's branch lands. Renders nothing
+       on its own — placeholder comments only. #}
+    <!-- BEGIN: background-checks-section (Agent 2) -->
+    <!-- END: background-checks-section (Agent 2) -->
+
     {# ============== § 4 FUNDER MATCHING (inline) ==============
        Phase 7B inline-match (2026-06-19). Lifted the side-by-side
        comparison from /ui/merchants/{id}/match into the dossier so the
@@ -1387,14 +1545,58 @@
       {% elif not matched_funders %}
         <div class="funder-summary" data-test-id="dossier-funder-matching-empty">
           <div class="copy">
+            {# Fix 2 (2026-06-26) — distinguish three empty branches:
+                 (a) merchant has an analysis row + a score → matcher
+                     simply found no qualifying funder. Suggest import.
+                 (b) merchant has an analysis row but no score yet
+                     (manual_review-only, not finalized, etc.) → tell
+                     the operator the matcher hasn't run.
+                 (c) no analysis at all → original "not yet scoreable"
+                     copy. #}
             {% if score_result %}
               No active funders match this merchant today. <a href="/ui/funders/import">Import a funder</a> or review the criteria comparison on the standalone match page.
+            {% elif analysis %}
+              Funder matching has not run for this deal yet. Verify the merchant is finalized and any integrity findings above, then refresh.
             {% else %}
               The deal isn&apos;t yet scoreable &mdash; upload at least one analyzed statement before funder matching runs.
             {% endif %}
           </div>
         </div>
       {% else %}
+        {# Fix 2 (2026-06-26) — when every statement is manual_review and
+           the matcher still returned cards, surface an amber banner so
+           the underwriter verifies the integrity findings above before
+           clicking Submit. Renders BEFORE the actions row + grid so it
+           is the first thing the underwriter reads in this section. #}
+        {% if all_statements_manual_review %}
+          <div class="manual-review-banner"
+               data-test-id="dossier-funder-matching-manual-review-banner">
+            <strong>Statements in manual review.</strong>
+            Funder matches below are based on the available analysis &mdash; verify integrity findings before submitting.
+          </div>
+        {% endif %}
+        {# Fix 5 — stacking alert banner. Read mca_confirmed_count /
+           mca_pattern_count off the unified Track B CashflowSignals
+           (live, additive context); falls back to 0/0 when Track B
+           isn't built (insufficient data or not-finalized merchant). #}
+        {% set _cf = unified_tracks.risk_band.cashflow if unified_tracks and unified_tracks.risk_band else None %}
+        {% set _mca_confirmed = (_cf.mca_confirmed_count if _cf else 0) or 0 %}
+        {% set _mca_pattern = (_cf.mca_pattern_count if _cf else 0) or 0 %}
+        {% if _mca_confirmed >= 1 %}
+          <div class="stacking-alert stacking-alert--confirmed"
+               data-test-id="dossier-stacking-alert"
+               data-stacking-severity="confirmed">
+            <strong>Confirmed MCA stack detected.</strong>
+            {{ _mca_confirmed }} confirmed funder cadence{{ '' if _mca_confirmed == 1 else 's' }} on this account &mdash; resolve before sizing.
+          </div>
+        {% elif _mca_pattern >= 3 %}
+          <div class="stacking-alert stacking-alert--pattern"
+               data-test-id="dossier-stacking-alert"
+               data-stacking-severity="pattern">
+            <strong>Possible MCA stack.</strong>
+            {{ _mca_pattern }} pattern-only debit cadences without a named funder &mdash; verify by calling the merchant before submitting.
+          </div>
+        {% endif %}
         <div class="funder-matching-actions"
              style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 14px;font-size:12px">
           <a class="btn"
@@ -1581,7 +1783,10 @@
                 {% if a %}{{ a.statement_period_start.strftime('%b %Y') }}{% else %}<span style="color:var(--ink-3)">{{ d.uploaded_at.strftime('%Y-%m-%d') }}</span>{% endif %}
               </td>
               <td class="action">
-                <span class="pill {% if d.parse_status == 'proceed' %}ok{% elif d.parse_status == 'manual_review' or d.parse_status == 'error' %}bad{% elif d.parse_status == 'review' %}warn{% endif %}">{{ d.parse_status }}</span>
+                {# Fix 3 (2026-06-26) — render the plain-English label
+                   in the main column; ``plain_status_label`` re-emits
+                   the raw parse_status as a small tag chip next to it. #}
+                {{ plain_status_label(d) }}
               </td>
               <td class="details" style="text-align:right;font-family:var(--mono);color:{% if d.fraud_score is number and d.fraud_score >= 65 %}var(--decline){% elif d.fraud_score is number and d.fraud_score >= 35 %}var(--review){% elif d.fraud_score is number %}var(--approve){% endif %}">
                 {% if d.fraud_score is number %}{{ d.fraud_score }}{% else %}—{% endif %}
@@ -1758,6 +1963,31 @@
       <div id="deal-outcome-modal-host"></div>
     {% endif %}
     <!-- END: record-outcome -->
+
+    {# ============== Raw flags (audit / drill-down) ==============
+       Fix 5 (2026-06-26) — drop the raw ``all_flags`` list into a
+       collapsible at the bottom of the main area. Open-by-default ONLY
+       when ``narrator_summary`` is absent so legacy / unsummarized
+       deals still surface their underlying flags without an extra
+       click; collapsed when the narrator already explains the deal in
+       plain English. #}
+    {% if document and document.all_flags %}
+      <section id="raw-flags" class="section" data-test-id="dossier-raw-flags-section">
+        <header>
+          <span class="n">&sect;</span>
+          <h2>Raw <em>flags</em></h2>
+          <span class="footnote">{{ document.all_flags|length }} flag{{ '' if document.all_flags|length == 1 else 's' }} on the latest document &middot; audit-only drill-down</span>
+        </header>
+        <details data-test-id="dossier-raw-flags-details"{% if narrator_summary is none %} open{% endif %}>
+          <summary>Show flags</summary>
+          <ul style="margin:8px 0 0 0;padding-left:18px;font-family:var(--mono);font-size:11.5px;color:var(--ink-2);line-height:1.6">
+            {% for f in document.all_flags %}
+              <li>{{ f }}</li>
+            {% endfor %}
+          </ul>
+        </details>
+      </section>
+    {% endif %}
 
     {# ============== § 6 OPERATOR NOTES ============== #}
     {# Moved from the top-of-dossier slot (above the chips) to the
