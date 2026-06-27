@@ -1,0 +1,178 @@
+{# Pipeline 4-column grid partial.
+
+   Rendered both as the body of ``pipeline.html.j2`` AND as the response
+   to ``GET /ui/pipeline/refresh`` so the initial render + HTMX poll
+   share one source of truth. The wrapper id ``pipeline-grid`` is the
+   HTMX swap target.
+
+   Inputs:
+     * columns (_PipelineColumns) — docs_in / ready / submitted /
+       outcomes lists + matching *_tail counts.
+     * now (datetime) — used to compute the "time since" labels inline
+       so the columns don't need a Jinja filter for relative time. #}
+
+{% macro time_since(then, now_) -%}
+  {%- set delta = (now_ - then) -%}
+  {%- set total_minutes = (delta.total_seconds() / 60) | int -%}
+  {%- if total_minutes < 60 -%}
+    {{ total_minutes }}m ago
+  {%- elif total_minutes < (60 * 24) -%}
+    {{ (total_minutes / 60) | int }}h ago
+  {%- else -%}
+    {{ (total_minutes / (60 * 24)) | int }}d ago
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro money(amount) -%}
+  {%- if amount is none -%}—{%- else -%}${{ "{:,.0f}".format(amount) }}{%- endif -%}
+{%- endmacro %}
+
+{% macro action_chip(action) -%}
+  {%- if action == 'submit_now' -%}
+    <span class="action-chip action-chip--submit" data-test-id="pipeline-action-submit">Submit now</span>
+  {%- elif action == 'call_first' -%}
+    <span class="action-chip action-chip--call" data-test-id="pipeline-action-call">Call first</span>
+  {%- elif action == 'request_documents' -%}
+    <span class="action-chip action-chip--documents" data-test-id="pipeline-action-documents">Request documents</span>
+  {%- elif action == 'decline' -%}
+    <span class="action-chip action-chip--decline" data-test-id="pipeline-action-decline">Decline</span>
+  {%- endif -%}
+{%- endmacro %}
+
+<section id="pipeline-grid"
+         class="pipeline-grid"
+         data-test-id="pipeline-grid"
+         style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:12px"
+         hx-get="/ui/pipeline/refresh"
+         hx-trigger="every 60s"
+         hx-swap="outerHTML">
+
+  {# === Column 1 — Docs In / Parsing === #}
+  <div class="pipeline-col" data-test-id="pipeline-col-docs-in">
+    <header style="display:flex;align-items:center;justify-content:space-between;padding-bottom:6px;border-bottom:1px solid var(--ink-4,#d8d8d4)">
+      <h3 style="margin:0;font-size:14px">Docs In / Parsing</h3>
+      <span class="muted" style="font-size:11px">{{ columns.docs_in | length }}{% if columns.docs_in_tail %} of {{ (columns.docs_in | length) + columns.docs_in_tail }}{% endif %}</span>
+    </header>
+    {% if columns.docs_in %}
+      {% for row in columns.docs_in %}
+        <a href="/ui/merchants/{{ row.merchant_id }}"
+           class="pipeline-card"
+           data-test-id="pipeline-card-docs-in"
+           data-merchant-id="{{ row.merchant_id }}"
+           style="display:block;margin-top:8px;padding:8px 10px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7);text-decoration:none;color:inherit">
+          <div style="font-weight:600">{{ row.merchant_label }}</div>
+          <div class="muted" style="font-size:11px;margin-top:2px">
+            {{ row.pending_count }} pending
+            · {{ time_since(row.oldest_uploaded_at, now) }}
+          </div>
+        </a>
+      {% endfor %}
+      {% if columns.docs_in_tail %}
+        <p class="muted" style="font-size:11px;margin-top:8px">+{{ columns.docs_in_tail }} more</p>
+      {% endif %}
+    {% else %}
+      <p class="muted" style="font-size:12px;margin-top:8px" data-test-id="pipeline-empty-docs-in">No documents pending parse.</p>
+    {% endif %}
+  </div>
+
+  {# === Column 2 — Ready to Review === #}
+  <div class="pipeline-col" data-test-id="pipeline-col-ready">
+    <header style="display:flex;align-items:center;justify-content:space-between;padding-bottom:6px;border-bottom:1px solid var(--ink-4,#d8d8d4)">
+      <h3 style="margin:0;font-size:14px">Ready to Review</h3>
+      <span class="muted" style="font-size:11px">{{ columns.ready | length }}{% if columns.ready_tail %} of {{ (columns.ready | length) + columns.ready_tail }}{% endif %}</span>
+    </header>
+    {% if columns.ready %}
+      {% for row in columns.ready %}
+        <a href="/ui/merchants/{{ row.merchant_id }}"
+           class="pipeline-card"
+           data-test-id="pipeline-card-ready"
+           data-merchant-id="{{ row.merchant_id }}"
+           style="display:block;margin-top:8px;padding:8px 10px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7);text-decoration:none;color:inherit">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px">
+            <span style="font-weight:600">{{ row.merchant_label }}</span>
+            {% if row.paper_grade %}
+              <span class="tier-badge tier-badge--{{ row.paper_grade | lower }}"
+                    data-test-id="pipeline-paper-grade"
+                    style="font-size:11px">Tier {{ row.paper_grade }}</span>
+            {% endif %}
+          </div>
+          <div class="muted" style="font-size:11px;margin-top:2px">
+            Revenue: {{ money(row.true_revenue) }}
+            · Top match: {{ row.top_funder_match or "—" }}
+          </div>
+          {% if row.action_chip %}
+            <div style="margin-top:4px">{{ action_chip(row.action_chip) }}</div>
+          {% endif %}
+        </a>
+      {% endfor %}
+      {% if columns.ready_tail %}
+        <p class="muted" style="font-size:11px;margin-top:8px">+{{ columns.ready_tail }} more</p>
+      {% endif %}
+    {% else %}
+      <p class="muted" style="font-size:12px;margin-top:8px" data-test-id="pipeline-empty-ready">Nothing waiting for review.</p>
+    {% endif %}
+  </div>
+
+  {# === Column 3 — Submitted === #}
+  <div class="pipeline-col" data-test-id="pipeline-col-submitted">
+    <header style="display:flex;align-items:center;justify-content:space-between;padding-bottom:6px;border-bottom:1px solid var(--ink-4,#d8d8d4)">
+      <h3 style="margin:0;font-size:14px">Submitted</h3>
+      <span class="muted" style="font-size:11px">{{ columns.submitted | length }}{% if columns.submitted_tail %} of {{ (columns.submitted | length) + columns.submitted_tail }}{% endif %}</span>
+    </header>
+    {% if columns.submitted %}
+      {% for row in columns.submitted %}
+        <a href="/ui/merchants/{{ row.merchant_id }}"
+           class="pipeline-card"
+           data-test-id="pipeline-card-submitted"
+           data-merchant-id="{{ row.merchant_id }}"
+           style="display:block;margin-top:8px;padding:8px 10px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7);text-decoration:none;color:inherit">
+          <div style="font-weight:600">{{ row.merchant_label }}</div>
+          <div class="muted" style="font-size:11px;margin-top:2px">
+            {{ row.funder_names | join(", ") }}
+          </div>
+          <div class="muted" style="font-size:11px">
+            {{ time_since(row.oldest_submitted_at, now) }}
+          </div>
+        </a>
+      {% endfor %}
+      {% if columns.submitted_tail %}
+        <p class="muted" style="font-size:11px;margin-top:8px">+{{ columns.submitted_tail }} more</p>
+      {% endif %}
+    {% else %}
+      <p class="muted" style="font-size:12px;margin-top:8px" data-test-id="pipeline-empty-submitted">No open submissions.</p>
+    {% endif %}
+  </div>
+
+  {# === Column 4 — Outcome Recorded === #}
+  <div class="pipeline-col" data-test-id="pipeline-col-outcomes">
+    <header style="display:flex;align-items:center;justify-content:space-between;padding-bottom:6px;border-bottom:1px solid var(--ink-4,#d8d8d4)">
+      <h3 style="margin:0;font-size:14px">Outcome Recorded</h3>
+      <span class="muted" style="font-size:11px">{{ columns.outcomes | length }}{% if columns.outcomes_tail %} of {{ (columns.outcomes | length) + columns.outcomes_tail }}{% endif %}</span>
+    </header>
+    {% if columns.outcomes %}
+      {% for row in columns.outcomes %}
+        <a href="/ui/merchants/{{ row.merchant_id }}"
+           class="pipeline-card"
+           data-test-id="pipeline-card-outcome"
+           data-merchant-id="{{ row.merchant_id }}"
+           style="display:block;margin-top:8px;padding:8px 10px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7);text-decoration:none;color:inherit">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px">
+            <span style="font-weight:600">{{ row.merchant_label }}</span>
+            <span class="outcome-chip outcome-chip--{{ row.outcome }}"
+                  data-test-id="pipeline-outcome-{{ row.outcome }}"
+                  style="font-size:11px;text-transform:uppercase">{{ row.outcome }}</span>
+          </div>
+          <div class="muted" style="font-size:11px;margin-top:2px">
+            {{ row.funder_name }} · {{ time_since(row.responded_at, now) }}
+          </div>
+        </a>
+      {% endfor %}
+      {% if columns.outcomes_tail %}
+        <p class="muted" style="font-size:11px;margin-top:8px">+{{ columns.outcomes_tail }} more</p>
+      {% endif %}
+    {% else %}
+      <p class="muted" style="font-size:12px;margin-top:8px" data-test-id="pipeline-empty-outcomes">No outcomes in the last 30 days.</p>
+    {% endif %}
+  </div>
+
+</section>
