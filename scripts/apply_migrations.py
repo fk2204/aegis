@@ -695,6 +695,16 @@ MIGRATION_PROBES: dict[str, str] = {
         # is ``'c'``.
         "SELECT 1 FROM pg_constraint WHERE conname='decisions_analysis_id_fkey' AND confdeltype='c'"
     ),
+    "086_merchants_ucc_enhanced.sql": (
+        # 086 adds three additive columns to ``merchants`` for the
+        # enhanced UCC flow (portal URL + operator verification).
+        # Probe ``ucc_portal_url`` — the migration is a single
+        # ALTER TABLE ADD COLUMN IF NOT EXISTS so the column's
+        # presence proves the migration ran.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='ucc_portal_url'"
+    ),
 }
 
 

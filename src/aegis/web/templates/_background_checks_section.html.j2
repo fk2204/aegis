@@ -34,6 +34,32 @@
             {% if ucc_result.lien_holders %}
               — {{ ucc_result.lien_holders | join(', ') }}
             {% endif %}
+            {# Migration 086 — operator verification gate against the
+               state SOS / UCC portal. Surfaces the one-click verify
+               link the moment a UCC result lands. #}
+            {% if ucc_portal_url %}
+              <div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <a href="{{ ucc_portal_url }}"
+                   target="_blank"
+                   rel="noopener noreferrer"
+                   data-test-id="bg-check-ucc-portal-link"
+                   style="font-size:11px;color:#1a5490;text-decoration:underline">
+                  Verify UCC → {{ merchant.state or 'state' }} portal
+                </a>
+                {% if ucc_operator_verified %}
+                  <span data-test-id="bg-check-ucc-verified"
+                        style="font-size:11px;color:#2a5a2a;font-weight:600">
+                    ✓ Verified{% if ucc_verified_at %} {{ ucc_verified_at.strftime('%Y-%m-%d %H:%M UTC') if ucc_verified_at.strftime is defined else ucc_verified_at }}{% endif %}
+                  </span>
+                {% else %}
+                  <button hx-post="/ui/merchants/{{ merchant.id }}/verify-ucc"
+                          hx-target="#background-checks"
+                          hx-swap="outerHTML"
+                          data-test-id="bg-check-ucc-verify"
+                          style="font-size:11px">✓ Mark UCC verified</button>
+                {% endif %}
+              </div>
+            {% endif %}
           </div>
         {% else %}
           <div class="bg-check-row"

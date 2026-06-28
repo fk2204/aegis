@@ -2418,6 +2418,9 @@ async def merchant_background_check_refresh_ucc(
             "ucc_result": bg["ucc_result"],
             "web_presence_result": bg["web_presence_result"],
             "previous_default": bg["previous_default"],
+            "ucc_portal_url": bg["ucc_portal_url"],
+            "ucc_operator_verified": bg["ucc_operator_verified"],
+            "ucc_verified_at": bg["ucc_verified_at"],
             "ofac_status": ofac_dossier_status,
             "ofac_match": ofac_match,
         },
@@ -2472,6 +2475,103 @@ async def merchant_background_check_refresh_web_presence(
             "ucc_result": bg["ucc_result"],
             "web_presence_result": bg["web_presence_result"],
             "previous_default": bg["previous_default"],
+            "ucc_portal_url": bg["ucc_portal_url"],
+            "ucc_operator_verified": bg["ucc_operator_verified"],
+            "ucc_verified_at": bg["ucc_verified_at"],
+            "ofac_status": ofac_dossier_status,
+            "ofac_match": ofac_match,
+        },
+    )
+
+
+@router.post(
+    "/merchants/{merchant_id}/verify-ucc",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+async def merchant_verify_ucc(
+    request: Request,
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    operator: Annotated[Operator, Depends(underwriter_or_admin)],
+) -> HTMLResponse:
+    """HTMX endpoint — operator confirms the dossier UCC findings
+    against the state portal (migration 086).
+
+    Flips ``merchants.ucc_operator_verified`` to True, stamps
+    ``ucc_verified_at`` with now-UTC, writes a single audit row
+    ``merchant.ucc_verified_manually`` carrying the operator's email so
+    the immutable audit trail captures who verified, and re-renders the
+    background-checks section so the dossier reflects the new state
+    without a full page reload.
+
+    Returns 403 (via ``underwriter_or_admin``) for viewer-role
+    operators; returns 404 when the merchant is unknown.
+    """
+    from aegis.business_intel.ucc_checker import UCC_STATE_PORTALS
+
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    # Backfill ``ucc_portal_url`` from the canonical map when the row
+    # doesn't carry one yet — verification + persistence land together
+    # so the audit row + downstream renders both have the URL the
+    # operator actually visited.
+    persisted_portal = merchant.ucc_portal_url
+    if not persisted_portal and merchant.state:
+        persisted_portal = UCC_STATE_PORTALS.get(merchant.state.upper())
+
+    verified_at = datetime.now(UTC)
+    updated = merchant.model_copy(
+        update={
+            "ucc_portal_url": persisted_portal,
+            "ucc_operator_verified": True,
+            "ucc_verified_at": verified_at,
+        }
+    )
+    merchants.upsert(updated)
+
+    audit.record(
+        actor=f"operator:{operator.email}",
+        actor_email=operator.email,
+        action="merchant.ucc_verified_manually",
+        subject_type="merchant",
+        subject_id=merchant_id,
+        details={
+            "verified_at": verified_at.isoformat(),
+            "ucc_portal_url": persisted_portal,
+        },
+    )
+
+    ofac_status, ofac_match = (
+        _ofac_ribbon_status(ofac, updated.business_name)
+        if updated.is_finalized
+        else ("not_consulted", None)
+    )
+    if ofac_status == "checked":
+        ofac_dossier_status = "match" if ofac_match else "clean"
+    elif ofac_status in {"stale", "unavailable"}:
+        ofac_dossier_status = "unavailable"
+    else:
+        ofac_dossier_status = "pending"
+
+    bg = _build_background_checks_context(updated)
+    return templates.TemplateResponse(
+        request,
+        "_background_checks_section.html.j2",
+        {
+            "merchant": updated,
+            "ucc_result": bg["ucc_result"],
+            "web_presence_result": bg["web_presence_result"],
+            "previous_default": bg["previous_default"],
+            "ucc_portal_url": bg["ucc_portal_url"],
+            "ucc_operator_verified": bg["ucc_operator_verified"],
+            "ucc_verified_at": bg["ucc_verified_at"],
+            "ucc_verified_by_email": operator.email,
             "ofac_status": ofac_dossier_status,
             "ofac_match": ofac_match,
         },
@@ -3179,7 +3279,7 @@ def _build_background_checks_context(merchant: MerchantRow) -> dict[str, Any]:
     """Project the merchant row's UCC + web-presence fields onto the
     shape the Background-checks dossier section consumes.
 
-    Returns three keys:
+    Returns these keys:
 
     * ``ucc_result`` — ``None`` when ``ucc_checked_at is None`` (the
       template renders an empty-state + Run-now button). Otherwise a
@@ -3192,7 +3292,16 @@ def _build_background_checks_context(merchant: MerchantRow) -> dict[str, Any]:
       dict with ``summary`` + ``flag_count``.
     * ``previous_default`` — bool, True when the UCC checker returned
       any default-indicator strings on the most recent sweep.
+    * ``ucc_portal_url`` — state SOS / UCC search URL (migration 086).
+      Falls back to ``UCC_STATE_PORTALS[merchant.state]`` when the row
+      hasn't yet had the column populated (the column is filled at
+      operator-verification time and via the next merchant upsert).
+      ``None`` when state is missing or unknown.
+    * ``ucc_operator_verified`` / ``ucc_verified_at`` — surface the
+      verification state straight from the merchant row.
     """
+    from aegis.business_intel.ucc_checker import UCC_STATE_PORTALS
+
     ucc_result: dict[str, Any] | None
     if merchant.ucc_checked_at is None:
         ucc_result = None
@@ -3215,10 +3324,22 @@ def _build_background_checks_context(merchant: MerchantRow) -> dict[str, Any]:
 
     previous_default = bool(merchant.ucc_default_indicators)
 
+    # Resolve the portal URL: prefer the persisted column (operator
+    # may have a state-override workflow later), fall back to the
+    # canonical map keyed by ``merchant.state``. None when state is
+    # missing or unknown — the template renders a "state unknown"
+    # branch in that case.
+    portal_url = merchant.ucc_portal_url
+    if not portal_url and merchant.state:
+        portal_url = UCC_STATE_PORTALS.get(merchant.state.upper())
+
     return {
         "ucc_result": ucc_result,
         "web_presence_result": web_presence_result,
         "previous_default": previous_default,
+        "ucc_portal_url": portal_url,
+        "ucc_operator_verified": merchant.ucc_operator_verified,
+        "ucc_verified_at": merchant.ucc_verified_at,
     }
 
 
@@ -4026,6 +4147,9 @@ async def merchant_detail(
             "ucc_result": background_checks_context["ucc_result"],
             "web_presence_result": background_checks_context["web_presence_result"],
             "previous_default": background_checks_context["previous_default"],
+            "ucc_portal_url": background_checks_context["ucc_portal_url"],
+            "ucc_operator_verified": background_checks_context["ucc_operator_verified"],
+            "ucc_verified_at": background_checks_context["ucc_verified_at"],
             "document": latest_doc,
             "analysis": latest_analysis,
             "aggregate_labels": _AGGREGATE_LABELS,
