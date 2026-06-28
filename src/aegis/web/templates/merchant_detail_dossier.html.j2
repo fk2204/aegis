@@ -23,10 +23,12 @@
      block was moved out of aegis-dossier.css :15-46 by Wave 1) and the
      page renders unstyled. Same load order as base.html.j2: system first,
      then dossier, then tool. ?v= bumps to match base. #}
-  <link rel="stylesheet" href="/ui/static/aegis-system.css?v=7">
-  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=14">
-  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=16">
-  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <link rel="stylesheet" href="/ui/static/aegis-system.css?v=8">
+  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=15">
+  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=17">
+  {# 2026-06-28 — HTMX self-hosted (was https://unpkg.com/htmx.org@2.0.4).
+     Removes the CDN dependency from the dossier render hot path. #}
+  <script src="/ui/static/htmx.min.js" defer></script>
   <script src="/ui/static/evidence_copy.js?v=1" defer></script>
   <style>
     /* Fix 1 (2026-06-26) — narrator action-chip color scheme. White-on-yellow

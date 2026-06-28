@@ -26,10 +26,14 @@
      dossier + tool inherit canonical tokens. Token-definition block
      moved out of aegis-dossier.css into system; computed values
      identical. v queries bumped to bust browser cache after the move. #}
-  <link rel="stylesheet" href="/ui/static/aegis-system.css?v=7">
-  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=14">
-  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=16">
-  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <link rel="stylesheet" href="/ui/static/aegis-system.css?v=8">
+  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=15">
+  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=17">
+  {# 2026-06-28 — HTMX self-hosted (was https://unpkg.com/htmx.org@2.0.4).
+     50.9 KB local fetch beats the CDN cold-load DNS+cert+fetch by
+     400-800ms on every dossier render. Version-pinned via the filename
+     so a hash-bust isn't strictly needed; bump the path when upgrading. #}
+  <script src="/ui/static/htmx.min.js" defer></script>
   <script src="/ui/static/evidence_copy.js?v=1" defer></script>
 </head>
 <body class="dossier-page body-root">
