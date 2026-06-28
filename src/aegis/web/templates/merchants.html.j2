@@ -5,7 +5,7 @@
 {% block deck %}
 {% set title = "Merchants" %}
 {% set subtitle = "· directory" %}
-{% set meta = (merchants|length|string) ~ " merchant" ~ ('' if merchants|length == 1 else 's') ~ " · click row → dossier" %}
+{% set meta = (merchant_rows|length|string) ~ " merchant" ~ ('' if merchant_rows|length == 1 else 's') ~ " · click row → dossier · sorted by last activity" %}
 {% set actions = [
     {"label": "Upload PDF", "href": "/ui/upload"},
     {"label": "+ Add manually", "href": "/ui/merchants/new"},
@@ -20,7 +20,7 @@
     <header class="sect-head">
       <h2>All merchants</h2>
       <div class="rule"></div>
-      <div class="meta">n = {{ merchants|length }}</div>
+      <div class="meta">n = {{ merchant_rows|length }}</div>
       <div class="merchants-filters" style="margin-left:auto">
         {# "My deals" filter chip — toggle via ?mine=1. The bare /ui/merchants
            link clears the filter; the &mine=1 link shows only the current
@@ -42,7 +42,7 @@
       </div>
     </header>
 
-    {% if not merchants %}
+    {% if not merchant_rows %}
       <div class="empty">
         {% if mine_only %}
           No merchants assigned to you yet.<span class="copy"><a class="btn" href="/ui/merchants">See all</a></span>
@@ -51,59 +51,94 @@
         {% endif %}
       </div>
     {% else %}
-      <table class="queue">
+      {# Operator-useful columns (2026-06-28). Default sort:
+         last-activity DESC (route-side). Click any row to open the
+         dossier. Each row is the latest-document snapshot for the
+         merchant; the dossier exposes the full history. #}
+      <table class="queue" data-test-id="merchants-list-table">
         <thead>
           <tr>
             <th>Status</th>
             <th>Business</th>
-            <th>Owner</th>
             <th>State</th>
-            <th>Industry</th>
-            <th class="num">FICO</th>
-            <th class="num">TIB · mo</th>
-            <th>Assignee</th>
+            <th class="num">Stated rev</th>
+            <th class="num">Measured rev</th>
+            <th>Paper</th>
+            <th>Parse</th>
+            <th class="num">Last activity</th>
+            <th>Assigned to</th>
             <th>Close</th>
           </tr>
         </thead>
         <tbody>
-          {% for m in merchants %}
-            <tr onclick="window.location.href='/ui/merchants/{{ m.id }}'">
+          {% for r in merchant_rows %}
+            <tr onclick="window.location.href='/ui/merchants/{{ r.id }}'" data-test-id="merchants-list-row">
               <td>
-                {% if m.is_provisional %}
+                {% if r.is_provisional %}
                   {% with tone="warn", label="PROVISIONAL" %}{% include "_status_chip.html.j2" %}{% endwith %}
-                {% elif m.needs_manual_naming %}
+                {% elif r.needs_manual_naming %}
                   {% with tone="warn", label="NEEDS NAMING" %}{% include "_status_chip.html.j2" %}{% endwith %}
                 {% else %}
                   <span class="mono-cell">—</span>
                 {% endif %}
               </td>
               <td class="merchant">
-                <a href="/ui/merchants/{{ m.id }}">{{ m.business_name }}</a>
-                <span class="sub">{{ m.id|string|truncate(8, True, '') }}</span>
+                <a href="/ui/merchants/{{ r.id }}">{{ r.business_name }}</a>
+                <span class="sub">
+                  {{ r.id|string|truncate(8, True, '') }}{% if r.owner_name %} · {{ r.owner_name }}{% endif %}{% if r.industry_naics %} · {{ r.industry_naics }}{% endif %}
+                </span>
               </td>
-              <td>{{ m.owner_name }}</td>
-              <td class="mono-cell">{{ m.state }}</td>
-              <td>{{ m.industry_naics or '—' }}</td>
-              <td class="mono-cell" style="text-align:right">{{ m.credit_score or '—' }}</td>
-              <td class="mono-cell" style="text-align:right">{{ m.time_in_business_months or '—' }}</td>
+              <td class="mono-cell">{{ r.state }}</td>
+              <td class="mono-cell" style="text-align:right" data-test-id="merchants-list-stated-rev">
+                {% if r.stated_revenue is not none %}${{ '{:,.0f}'.format(r.stated_revenue) }}{% else %}—{% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right" data-test-id="merchants-list-measured-rev">
+                {% if r.measured_revenue is not none %}${{ '{:,.0f}'.format(r.measured_revenue) }}{% else %}—{% endif %}
+              </td>
+              <td data-test-id="merchants-list-paper-grade">
+                {% if r.paper_grade %}
+                  <span class="tier-badge tier-badge--{{ r.paper_grade|lower }}" title="Derived from latest document fraud band">{{ r.paper_grade }}</span>
+                {% else %}
+                  <span class="mono-cell">—</span>
+                {% endif %}
+              </td>
+              <td data-test-id="merchants-list-parse-status">
+                {% if r.parse_status == 'proceed' %}
+                  <span class="chip pos">proceed</span>
+                {% elif r.parse_status == 'manual_review' %}
+                  <span class="chip bad">manual_review</span>
+                {% elif r.parse_status == 'review' %}
+                  <span class="chip warn">review</span>
+                {% elif r.parse_status == 'pending' %}
+                  <span class="chip">pending</span>
+                {% elif r.parse_status == 'error' %}
+                  <span class="chip bad">error</span>
+                {% elif r.parse_status == 'no_upload' %}
+                  <span class="mono-cell">no upload</span>
+                {% else %}
+                  <span class="mono-cell">{{ r.parse_status }}</span>
+                {% endif %}
+              </td>
+              <td class="mono-cell" style="text-align:right" data-test-id="merchants-list-last-activity">
+                {% if r.days_since_activity is none %}
+                  —
+                {% elif r.days_since_activity == 0 %}
+                  today
+                {% elif r.days_since_activity == 1 %}
+                  1d
+                {% else %}
+                  {{ r.days_since_activity }}d
+                {% endif %}
+              </td>
               <td data-test-id="merchants-list-assignee">
-                {% set assigned = assignment_map.get(m.id) %}
-                {% if assigned %}
-                  {% set assignee_op = assignee_by_id.get(assigned.operator_id) %}
-                  {% if assignee_op %}
-                    <span class="assignee-pill"
-                          title="Assigned to {{ assignee_op.display_name }}">
-                      {{ assignee_op.display_name }}
-                    </span>
-                  {% else %}
-                    <span class="mono-cell">—</span>
-                  {% endif %}
+                {% if r.assignee_label and r.assignee_label != '—' %}
+                  <span class="assignee-pill" title="Assigned to {{ r.assignee_label }}">{{ r.assignee_label }}</span>
                 {% else %}
                   <span class="mono-cell">—</span>
                 {% endif %}
               </td>
               <td>
-                {% if m.close_lead_id %}
+                {% if r.close_lead_id %}
                   <span class="chip info">lead</span>
                 {% else %}
                   <span class="mono-cell">—</span>

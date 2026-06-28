@@ -312,7 +312,9 @@ def test_pipeline_outcomes_within_30d_shown(env) -> None:  # type: ignore[no-unt
     assert 'data-test-id="pipeline-outcome-approved"' in body
 
 
-def test_pipeline_outcomes_older_than_30d_excluded(env) -> None:  # type: ignore[no-untyped-def]
+def test_pipeline_outcomes_older_than_90d_excluded(env) -> None:  # type: ignore[no-untyped-def]
+    """Outcome window widened to 90 days (2026-06-28) — the kanban should
+    surface an outcome from ~35 days ago but NOT one from ~100 days ago."""
     client, merchants, _docs, subs, funders = env
     now = datetime.now(UTC)
     m = _seed_merchant(merchants, business_name="Old Outcome")
@@ -321,10 +323,10 @@ def test_pipeline_outcomes_older_than_30d_excluded(env) -> None:  # type: ignore
         subs,
         merchant_id=m.id,
         funder_id=f.id,
-        submitted_at=now - timedelta(days=40),
+        submitted_at=now - timedelta(days=120),
     )
     subs.update_status(row.id, status="declined")
-    subs._by_id[row.id].responded_at = now - timedelta(days=35)
+    subs._by_id[row.id].responded_at = now - timedelta(days=100)
 
     resp = client.get("/ui/pipeline")
     body = resp.text

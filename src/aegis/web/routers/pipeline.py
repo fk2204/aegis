@@ -59,10 +59,25 @@ from aegis.web.routers.dashboard import _compute_merchant_tier
 
 router = APIRouter()
 
-# Recent-outcome window for column 4. 30 days matches the operator's
-# "did we hear back recently?" mental model without making the column
-# unbounded (a year-old outcome shouldn't appear next to a fresh one).
-_OUTCOME_RECENT_DAYS: Final[int] = 30
+# Recent-outcome window for column 4 (2026-06-28). 90 days gives the
+# operator the broader read on the funded/outcome bucket — matches the
+# deals-list 90-day window so the two surfaces agree on "recent
+# response activity". The narrow 30-day window the kanban shipped with
+# was hiding ~60d of outcomes the operator still cared about for
+# trend / re-engagement.
+_OUTCOME_RECENT_DAYS: Final[int] = 90
+
+# Window over which a merchant is considered "already submitted" and
+# therefore excluded from the Ready column. Matches the dashboard
+# key-numbers ``_KEY_NUMBERS_READY_WINDOW_DAYS`` and the deal-flow
+# convention (a merchant submitted >30 days ago is fair game for
+# re-submission with a fresh statement).
+_READY_SUBMISSION_EXCLUSION_DAYS: Final[int] = 30
+
+# Window for column 3 "Submitted" — pending submissions in the last
+# 60 days. Older pending submissions are stale enough to belong on
+# the deal-detail page, not the at-a-glance kanban.
+_SUBMITTED_PENDING_WINDOW_DAYS: Final[int] = 60
 
 # Soft cap on per-column row count so a backlog spike doesn't render
 # 1000 cards into the DOM. Cards beyond the cap surface a "+N more"
@@ -76,10 +91,12 @@ _COLUMN_DISPLAY_CAP: Final[int] = 50
 # documents do we consider live".
 _DOCUMENT_SCAN_LIMIT: Final[int] = 500
 
-# Submission-window scan: covers the recent-outcome window plus a
-# safety margin so a submission whose ``submitted_at`` is older than 30
-# days but whose ``responded_at`` is within 30 still surfaces.
-_SUBMISSION_SCAN_DAYS: Final[int] = 180
+# Submission-window scan: covers the recent-outcome window
+# (_OUTCOME_RECENT_DAYS, 90 days as of 2026-06-28) plus a safety margin
+# so a submission whose ``submitted_at`` is older than 90 days but whose
+# ``responded_at`` is within 90 still surfaces. 270 = 90 outcome window
+# + 180 margin (worst-case turnaround time on a stalled funder response).
+_SUBMISSION_SCAN_DAYS: Final[int] = 270
 
 
 _ActionChip = Literal["submit_now", "call_first", "request_documents", "decline"]
@@ -103,6 +120,11 @@ class _ReadyRow:
     merchant_label: str
     paper_grade: str | None  # "A".."F" or None when scorer can't run
     true_revenue: Decimal | None
+    # Cheap estimated advance derived from
+    # ``aegis.scoring.score._suggested_max_advance(monthly_revenue,
+    # paper_grade)``. ``None`` when paper_grade or monthly_revenue
+    # is missing — the kanban can't fabricate a sizing in that case.
+    estimated_advance: Decimal | None
     top_funder_match: str | None
     action_chip: _ActionChip | None
 
@@ -232,12 +254,23 @@ def _build_ready(
     *,
     now: datetime,
 ) -> list[_ReadyRow]:
-    """Column 2 — merchants with a ``proceed`` doc AND no submissions yet.
+    """Column 2 — merchants with a ``proceed`` doc, no submission in the
+    last ``_READY_SUBMISSION_EXCLUSION_DAYS``, and ``ofac_is_clear !=
+    False`` (i.e. clear OR not-yet-checked).
 
-    "No submissions yet" is read from ``funder_note_submissions`` —
-    a merchant with at least one row in that table is in column 3 or 4,
-    not here.
+    Window logic update (2026-06-28): the prior 365-day exclusion
+    permanently parked any merchant who had been submitted once; a
+    re-uploaded fresh statement could not surface in the kanban for a
+    full year. Operators wanted the column to refresh once enough time
+    had passed for a re-submission to be reasonable — 30 days is the
+    accepted convention (matches the Today key-numbers banner and the
+    deal-flow assumption that funder responses land inside 30 days).
     """
+    # Lazy import — keeps the pipeline column rebuild light and avoids
+    # pulling the scoring module's transitive imports into every
+    # request that touches the kanban polling endpoint.
+    from aegis.scoring.score import _suggested_max_advance
+
     proceed_docs = docs.list_documents(
         parse_status="proceed",
         limit=_DOCUMENT_SCAN_LIMIT,
@@ -256,20 +289,16 @@ def _build_ready(
 
     analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in latest_by_merchant.values()])
 
-    # Submitted-merchant exclusion: pull a wide submission window and
-    # build a set of merchant_ids that already have at least one row.
-    # 365-day window because the contract says "no submission yet" —
-    # a merchant who was submitted long ago and re-uploaded a fresh
-    # statement should NOT appear here; their old submission row keeps
-    # them out of column 2 forever (or until the operator records an
-    # outcome AND starts a fresh deal cycle, which is a future surface).
-    window_start = now - timedelta(days=365)
+    # Recent-submission exclusion: merchants submitted in the last
+    # ``_READY_SUBMISSION_EXCLUSION_DAYS`` days drop out of this column
+    # (they belong in Submitted or Outcome).
+    window_start = now - timedelta(days=_READY_SUBMISSION_EXCLUSION_DAYS)
     submissions = funder_note_subs.list_in_window(from_dt=window_start, to_dt=now)
-    submitted_merchant_ids = {s.merchant_id for s in submissions}
+    recently_submitted_merchant_ids = {s.merchant_id for s in submissions}
 
     rows: list[_ReadyRow] = []
     for mid, d in latest_by_merchant.items():
-        if mid in submitted_merchant_ids:
+        if mid in recently_submitted_merchant_ids:
             continue
         analysis: AnalysisRow | None = analyses_by_doc.get(d.id)
 
@@ -279,10 +308,33 @@ def _build_ready(
             merchant = merchants_repo.get(mid)
         except MerchantNotFoundError:
             continue
+        # OFAC gate: skip merchants whose OFAC check has explicitly
+        # returned ``False`` (sanctioned). ``None`` (not yet checked)
+        # is allowed — the dossier surfaces the chip and the operator
+        # decides; the column shouldn't disappear just because the
+        # background-check cron hasn't visited the merchant yet.
+        if merchant.ofac_is_clear is False:
+            continue
         paper_grade = _compute_merchant_tier(merchant, docs, ofac)
 
         true_revenue: Decimal | None = analysis.true_revenue if analysis else None
         action_chip = _action_chip_from_narrator(analysis.narrator_summary if analysis else None)
+        # Cheap estimated-advance proxy. ``monthly_revenue`` lives on
+        # the analysis (parser aggregate); the formula matches the
+        # legacy ``_suggested_max_advance`` used everywhere else in
+        # the scorer so the kanban + dossier agree. ``None`` when
+        # either input is missing — render as em-dash.
+        monthly_revenue = analysis.monthly_revenue if analysis else None
+        if paper_grade is not None and monthly_revenue is not None:
+            try:
+                estimated_advance: Decimal | None = _suggested_max_advance(
+                    monthly_revenue, paper_grade
+                )
+            except (KeyError, ValueError):
+                estimated_advance = None
+        else:
+            estimated_advance = None
+
         # ``top_funder_match`` is intentionally None at the column level —
         # running the full funder-match pass per merchant is too expensive
         # for a 60s-polling kanban. The dossier surfaces the same data
@@ -296,6 +348,7 @@ def _build_ready(
                 merchant_label=merchant.business_name,
                 paper_grade=paper_grade,
                 true_revenue=true_revenue,
+                estimated_advance=estimated_advance,
                 top_funder_match=top_funder_match,
                 action_chip=action_chip,
             )
@@ -321,13 +374,16 @@ def _build_submitted(
     *,
     now: datetime,
 ) -> list[_SubmittedRow]:
-    """Column 3 — pending submissions grouped by merchant.
+    """Column 3 — pending submissions grouped by merchant, within the
+    ``_SUBMITTED_PENDING_WINDOW_DAYS`` window (60 days as of 2026-06-28).
 
     A merchant with multiple pending submissions to different funders
     collapses to one row whose ``funder_names`` lists each. Oldest first
-    so the most-overdue submission tops the column.
+    so the most-overdue submission tops the column. Pending submissions
+    OLDER than the window age out — they belong on the per-merchant
+    dossier history, not in the at-a-glance kanban.
     """
-    window_start = now - timedelta(days=_SUBMISSION_SCAN_DAYS)
+    window_start = now - timedelta(days=_SUBMITTED_PENDING_WINDOW_DAYS)
     submissions = funder_note_subs.list_in_window(from_dt=window_start, to_dt=now)
 
     by_merchant: dict[UUID, list[FunderNoteSubmissionRow]] = defaultdict(list)
@@ -368,7 +424,12 @@ def _build_outcomes(
     *,
     now: datetime,
 ) -> list[_OutcomeRow]:
-    """Column 4 — terminal-status submissions whose response landed in 30d."""
+    """Column 4 — terminal-status submissions whose response landed in the
+    trailing ``_OUTCOME_RECENT_DAYS`` (90 days as of 2026-06-28)."""
+    # Scan window is the outcome window + the safety margin (the
+    # submission could have been submitted before the response window).
+    # Keep _SUBMISSION_SCAN_DAYS for the scan, then filter by the
+    # _OUTCOME_RECENT_DAYS response cutoff.
     window_start = now - timedelta(days=_SUBMISSION_SCAN_DAYS)
     cutoff = now - timedelta(days=_OUTCOME_RECENT_DAYS)
     submissions = funder_note_subs.list_in_window(from_dt=window_start, to_dt=now)
