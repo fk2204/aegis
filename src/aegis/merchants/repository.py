@@ -1217,18 +1217,31 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         # stores as an empty array (not NULL) — which is what we want
         # for "scanned but no flags" so the scorer doesn't re-fire.
         "web_presence_flags": list(m.web_presence_flags),
-        "web_presence_scanned_at": m.web_presence_scanned_at,
+        # 2026-06-28 hotfix — supabase-py / postgrest serialises the
+        # upsert payload via stdlib ``json.dumps`` which rejects raw
+        # ``datetime`` objects. Every datetime column has to be
+        # ``.isoformat()``ed before it lands in this dict. The
+        # ``intake_date`` / ``maturity_date`` lines above are the
+        # historical precedent; the ``_at`` columns added with
+        # migrations 067/068/083/084/085/086 missed it and triggered
+        # 500s on the dossier when a new OFAC / bankruptcy / SOS check
+        # ran (the first upsert with the column populated).
+        "web_presence_scanned_at": (
+            m.web_presence_scanned_at.isoformat() if m.web_presence_scanned_at else None
+        ),
         # Migration 068.
         "ucc_filings": list(m.ucc_filings),
         "ucc_default_indicators": list(m.ucc_default_indicators),
-        "ucc_checked_at": m.ucc_checked_at,
+        "ucc_checked_at": m.ucc_checked_at.isoformat() if m.ucc_checked_at else None,
         # Migration 083 — OFAC SDN screening.
-        "ofac_checked_at": m.ofac_checked_at,
+        "ofac_checked_at": m.ofac_checked_at.isoformat() if m.ofac_checked_at else None,
         "ofac_is_clear": m.ofac_is_clear,
         "ofac_match_detail": list(m.ofac_match_detail),
-        "ofac_cache_date": m.ofac_cache_date,
+        "ofac_cache_date": m.ofac_cache_date.isoformat() if m.ofac_cache_date else None,
         # Migration 084 — federal bankruptcy check columns.
-        "bankruptcy_checked_at": m.bankruptcy_checked_at,
+        "bankruptcy_checked_at": (
+            m.bankruptcy_checked_at.isoformat() if m.bankruptcy_checked_at else None
+        ),
         "bankruptcy_active": m.bankruptcy_active,
         "bankruptcy_recent": m.bankruptcy_recent,
         "bankruptcy_chapter": m.bankruptcy_chapter,
@@ -1236,9 +1249,9 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         # Migration 086 — additive UCC verification columns.
         "ucc_portal_url": m.ucc_portal_url,
         "ucc_operator_verified": m.ucc_operator_verified,
-        "ucc_verified_at": m.ucc_verified_at,
+        "ucc_verified_at": m.ucc_verified_at.isoformat() if m.ucc_verified_at else None,
         # Migration 085 — SOS entity check.
-        "sos_checked_at": m.sos_checked_at,
+        "sos_checked_at": m.sos_checked_at.isoformat() if m.sos_checked_at else None,
         "sos_status": m.sos_status,
         "sos_entity_name": m.sos_entity_name,
         "sos_formation_date": m.sos_formation_date,
