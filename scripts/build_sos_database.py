@@ -82,43 +82,55 @@ class StateSource:
 STATE_SOURCES: Final[tuple[StateSource, ...]] = (
     StateSource(
         state="FL",
-        # SUNBIZ data-download index.
+        # SUNBIZ publishes the quarterly corporate-data file as
+        # fixed-width ASCII. Field positions documented at
+        # https://dos.myflorida.com/sunbiz/other-services/data-downloads/corporate-data-file/
+        # The direct download lives on the SUNBIZ FTP host (HTTPS
+        # mirror); _fetch_fl discovers the latest archive at runtime
+        # by listing the cordata directory.
         url="https://search.sunbiz.org/Inquiry/CorporationSearch/Download",
         format="fl_fixed_width",
-        notes=(
-            "SUNBIZ ships the corporate data file as fixed-width ASCII. "
-            "Field positions documented at "
-            "https://dos.myflorida.com/sunbiz/other-services/data-downloads/corporate-data-file/"
-        ),
+        notes="SUNBIZ quarterly fixed-width corporate-data file.",
     ),
     StateSource(
         state="CO",
+        # Socrata SODA API (works as of 2026-06 — CO is the canonical
+        # working endpoint; ~1.2M active entities).
         url="https://data.colorado.gov/resource/4ykn-tg5h.json",
         format="socrata_json",
     ),
     StateSource(
         state="OR",
-        url="https://data.oregon.gov/resource/bhk3-b7qd.json",
-        format="socrata_json",
+        # 2026-06-28 — Socrata SODA /resource/{id}.json returned 404 on
+        # 2026-06-27 build. Switching to the Socrata Download API
+        # (/api/views/{id}/rows.json?accessType=DOWNLOAD) which the
+        # state's open-data portal advertises as the canonical export
+        # endpoint. The Socrata Download API returns a {meta, data}
+        # envelope (columns + array-of-arrays) — see _fetch_socrata_rows_json.
+        url="https://data.oregon.gov/api/views/bhk3-b7qd/rows.json?accessType=DOWNLOAD",
+        format="socrata_rows_json",
     ),
     StateSource(
         state="CT",
-        url="https://data.ct.gov/resource/w3e7-gxs7.json",
-        format="socrata_json",
+        # 2026-06-28 — dataset id refreshed (old w3e7-gxs7 returned 404).
+        url="https://data.ct.gov/api/views/n3p2-res3/rows.json?accessType=DOWNLOAD",
+        format="socrata_rows_json",
     ),
     StateSource(
         state="IA",
-        url="https://data.iowa.gov/resource/kaxi-bdpi.json",
-        format="socrata_json",
+        url="https://data.iowa.gov/api/views/kaxi-bdpi/rows.json?accessType=DOWNLOAD",
+        format="socrata_rows_json",
     ),
     StateSource(
         state="NY",
-        url="https://data.ny.gov/resource/ej5i-dqpf.json",
-        format="socrata_json",
+        url="https://data.ny.gov/api/views/ej5i-dqpf/rows.json?accessType=DOWNLOAD",
+        format="socrata_rows_json",
     ),
     StateSource(
         state="OH",
-        url="https://www.ohiosos.gov/globalassets/businesses/",
+        # 2026-06-28 — old /globalassets/businesses/ index returned 403.
+        # The business-filings page hosts the current bulk-export links.
+        url="https://www.ohiosos.gov/businesses/business-filings/",
         format="oh_bulk_csv_index",
         notes=(
             "Ohio SOS publishes monthly bulk files. Build script crawls "
@@ -140,7 +152,11 @@ STATE_SOURCES: Final[tuple[StateSource, ...]] = (
     ),
     StateSource(
         state="MN",
-        url="https://www.sos.state.mn.us/business-liens/business-filings/data-requests/",
+        # 2026-06-28 — old www.sos.state.mn.us URL redirected to a
+        # Radware bot-manager challenge. Direct portal download page is
+        # at mblsportal.sos.state.mn.us; falls through to Bedrock if
+        # the form-submission path doesn't deliver a CSV.
+        url="https://mblsportal.sos.state.mn.us/Business/DownloadData",
         format="mn_csv",
         notes=("MN ships CSV bulk downloads. Build script crawls the index page for CSV links."),
     ),
@@ -232,8 +248,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-rows-per-state",
         type=int,
-        default=2_000_000,
-        help="Safety cap on rows per state (default 2M).",
+        # 2026-06-28 — cap effectively removed (default raised to
+        # 50M). The prior 2M cap silently truncated CO's full ~1.2M
+        # active-entity dataset and would also clip FL (~10M) and NY
+        # (~5M) bulk exports. The cap remains as a runaway-safety
+        # ceiling so a buggy paginator can't grow the SQLite
+        # unboundedly; 50M is well above any real US state's active
+        # entity count.
+        default=50_000_000,
+        help="Safety ceiling on rows per state (default 50M).",
     )
     parser.add_argument(
         "--dry-run",
@@ -249,6 +272,8 @@ def _build_one_state(src: StateSource, max_rows: int) -> StateBuildOutcome:
     try:
         if src.format == "socrata_json":
             outcome.rows = list(_fetch_socrata(src.url, max_rows))
+        elif src.format == "socrata_rows_json":
+            outcome.rows = list(_fetch_socrata_rows_json(src.url, max_rows))
         elif src.format == "fl_fixed_width":
             outcome.rows = list(_fetch_fl(src.url, max_rows))
         elif src.format == "oh_bulk_csv_index":
@@ -273,7 +298,7 @@ def _build_one_state(src: StateSource, max_rows: int) -> StateBuildOutcome:
 # Per-format fetchers
 # ---------------------------------------------------------------------------
 def _fetch_socrata(url: str, max_rows: int) -> Iterator[dict[str, str | None]]:
-    """Paginate a Socrata-style JSON endpoint."""
+    """Paginate a Socrata-style JSON endpoint (/resource/{id}.json)."""
     offset = 0
     page_size = 50_000
     while offset < max_rows:
@@ -288,6 +313,43 @@ def _fetch_socrata(url: str, max_rows: int) -> Iterator[dict[str, str | None]]:
         offset += len(page)
         if len(page) < page_size:
             return
+
+
+def _fetch_socrata_rows_json(url: str, max_rows: int) -> Iterator[dict[str, str | None]]:
+    """Stream the Socrata Download API (``/api/views/{id}/rows.json``).
+
+    Different envelope from the SODA ``/resource/{id}.json`` API: returns
+    a single JSON object ``{meta: {view: {columns: [...]}}, data: [[row,
+    row, ...], ...]}`` with positional rows. We resolve column names from
+    ``meta.view.columns[].fieldName`` to build the same canonical
+    ``{business_name, status, entity_type, formation_date, ...}`` dict
+    shape ``_socrata_row_to_canonical`` produces.
+
+    No pagination on this endpoint — the server streams the full dataset
+    in one response, so it can be slow on large states. 120s timeout
+    matches the CSV streamers.
+    """
+    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
+        resp = client.get(url)
+        resp.raise_for_status()
+        payload = resp.json()
+    columns_meta = payload.get("meta", {}).get("view", {}).get("columns", [])
+    field_names: list[str] = [str(c.get("fieldName") or "") for c in columns_meta]
+    data = payload.get("data") or []
+    for i, row in enumerate(data):
+        if i >= max_rows:
+            return
+        if not isinstance(row, list):
+            continue
+        # Socrata rows include 8 leading metadata columns (sid, id, position,
+        # created_at, created_meta, updated_at, updated_meta, meta) before
+        # the user-defined columns. Build a name→value dict skipping the
+        # ones we cannot map.
+        raw_dict: dict[str, object] = {}
+        for idx, value in enumerate(row):
+            if idx < len(field_names) and field_names[idx]:
+                raw_dict[field_names[idx]] = value
+        yield _socrata_row_to_canonical(raw_dict)
 
 
 def _socrata_row_to_canonical(raw: dict[str, object]) -> dict[str, str | None]:

@@ -61,9 +61,17 @@ from typing import Final
 
 import httpx
 
-# Sources (no auth, no rate limits as of 2026-06).
-SDN_URL: Final[str] = "https://ofac.treasury.gov/SDN.XML"
-CONSOLIDATED_URL: Final[str] = "https://ofac.treasury.gov/consolidated/consolidated.xml"
+# Sources (no auth, no rate limits as of 2026-06). Treasury migrated the
+# direct XML downloads off ofac.treasury.gov to the Sanctions List
+# Service API (2026-Q2); the new endpoints 302-redirect to per-request
+# signed S3 URLs, which ``follow_redirects=True`` in ``_fetch`` handles
+# transparently.
+SDN_URL: Final[str] = (
+    "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.XML"
+)
+CONSOLIDATED_URL: Final[str] = (
+    "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/CONS_ADV.XML"
+)
 OPENSANCTIONS_URL: Final[str] = (
     "https://data.opensanctions.org/datasets/latest/us_ofac_sdn/entities.ftm.json"
 )
