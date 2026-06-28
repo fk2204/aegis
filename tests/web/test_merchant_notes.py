@@ -209,32 +209,37 @@ def test_dossier_renders_empty_notes_panel(
     client: TestClient,
     merchant_repo: InMemoryMerchantRepository,
 ) -> None:
+    """The operator-notes panel is lazy-loaded via HTMX (2026-06-28
+    perf change). The dossier render now contains only a placeholder
+    div; the panel body is served from
+    ``GET /ui/merchants/{id}/operator-notes``. This test asserts the
+    panel-body contract against the lazy endpoint directly — the
+    dossier-position test below covers the hook + wrapper.
+    """
     m = _seed_merchant(merchant_repo)
-    resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
-    assert resp.status_code == 200
-    html = resp.text
+    panel_resp = client.get(f"/ui/merchants/{m.id}/operator-notes")
+    assert panel_resp.status_code == 200
+    panel = panel_resp.text
 
-    # Panel container is present.
-    assert 'id="merchant-notes-block"' in html
-    # Empty-state copy when no notes.
-    assert "no notes yet" in html
-    # 6-row textarea wired to the route.
-    assert 'name="body"' in html
-    assert 'rows="6"' in html
-    assert f'action="/ui/merchants/{m.id}/notes"' in html
-    # Save button label.
-    assert "Save note" in html
-    # Character counter element with the cap.
-    assert "data-merchant-notes-counter" in html
-    assert f"0 / {MERCHANT_NOTE_MAX_CHARS}" in html
-    # Max-length attribute on the textarea reflects the cap.
-    assert f'maxlength="{MERCHANT_NOTE_MAX_CHARS}"' in html
+    assert 'id="merchant-notes-block"' in panel
+    assert "no notes yet" in panel
+    assert 'name="body"' in panel
+    assert 'rows="6"' in panel
+    assert f'action="/ui/merchants/{m.id}/notes"' in panel
+    assert "Save note" in panel
+    assert "data-merchant-notes-counter" in panel
+    assert f"0 / {MERCHANT_NOTE_MAX_CHARS}" in panel
+    assert f'maxlength="{MERCHANT_NOTE_MAX_CHARS}"' in panel
 
 
 def test_dossier_renders_existing_notes_as_cards_newest_first(
     client: TestClient,
     merchant_repo: InMemoryMerchantRepository,
 ) -> None:
+    """Cards render via the lazy endpoint (2026-06-28 perf change).
+    Asserted directly against ``GET /ui/merchants/{id}/operator-notes``
+    instead of the dossier render — bodies no longer appear inline on
+    the initial dossier page load."""
     m = _seed_merchant(merchant_repo)
     # Two notes via the repo so the in-memory ``created_at`` is set; this
     # mirrors the route's persistence path without the redirect overhead.
@@ -244,57 +249,51 @@ def test_dossier_renders_existing_notes_as_cards_newest_first(
     time.sleep(0.005)
     merchant_repo.add_note(merchant_id=m.id, body="newer pricing note", actor="b@x.com")
 
-    resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
-    assert resp.status_code == 200
-    html = resp.text
+    panel_resp = client.get(f"/ui/merchants/{m.id}/operator-notes")
+    assert panel_resp.status_code == 200
+    panel = panel_resp.text
 
-    # Both bodies appear.
-    assert "older broker quote" in html
-    assert "newer pricing note" in html
-    # Card list class present.
-    assert "merchant-notes-panel__cards" in html
-    # Newest-first — "newer pricing note" appears before "older broker
-    # quote" in the rendered HTML.
-    pos_newer = html.find("newer pricing note")
-    pos_older = html.find("older broker quote")
+    assert "older broker quote" in panel
+    assert "newer pricing note" in panel
+    assert "merchant-notes-panel__cards" in panel
+    pos_newer = panel.find("newer pricing note")
+    pos_older = panel.find("older broker quote")
     assert pos_newer != -1 and pos_older != -1
     assert pos_newer < pos_older
-
-    # Footnote reflects the count.
-    assert "2 notes on file" in html
+    assert "2 notes on file" in panel
 
 
 def test_notes_panel_renders_at_bottom_of_dossier_main(
     client: TestClient,
     merchant_repo: InMemoryMerchantRepository,
 ) -> None:
-    """Post-2026-06-18 dossier contract: the operator notes panel is the
-    LAST section in ``<main>``, replacing the removed audit-log block.
-    It sits below the verdict section (the first ``<section>`` in main)
-    and immediately before the closing ``</main>`` tag, wrapped in a
-    ``<section id="operator-notes">``.
+    """Post-2026-06-28 dossier contract: the operator-notes ``<section>``
+    wrapper is the LAST section in ``<main>`` and carries an HTMX
+    placeholder that lazy-loads the panel body from
+    ``/ui/merchants/{id}/operator-notes``. The placeholder sits below
+    the verdict section and immediately before the closing ``</main>``
+    tag.
     """
     m = _seed_merchant(merchant_repo)
     resp = client.get(f"/ui/merchants/{m.id}", follow_redirects=False)
     assert resp.status_code == 200
     html = resp.text
 
-    pos_notes = html.find('id="merchant-notes-block"')
     pos_sheet = html.find('<div class="sheet">')
     pos_name = html.find('class="title">Notes Test LLC')
     pos_verdict = html.find('id="verdict"')
     pos_main_close = html.find("</main>")
     pos_operator_notes_section = html.find('id="operator-notes"')
+    pos_lazy_placeholder = html.find('data-test-id="dossier-operator-notes-lazy"')
 
-    assert pos_notes != -1, "notes block missing from dossier"
     assert pos_sheet != -1, "sheet container missing — template drift?"
     assert pos_name != -1, "merchant name h1 missing — template drift?"
     assert pos_verdict != -1, "verdict section missing — template drift?"
     assert pos_main_close != -1, "main closing tag missing — template drift?"
     assert pos_operator_notes_section != -1, "operator-notes section wrapper missing"
+    assert pos_lazy_placeholder != -1, "operator-notes lazy placeholder missing"
 
-    # The notes block now sits AFTER the verdict section (i.e. inside
-    # main, below the chips/score) and BEFORE the closing main tag.
-    assert pos_name < pos_sheet < pos_verdict < pos_notes < pos_main_close
-    # It's wrapped in the ``#operator-notes`` section.
-    assert pos_operator_notes_section < pos_notes
+    # Wrapper sits after the verdict section and before closing main.
+    assert pos_name < pos_sheet < pos_verdict < pos_operator_notes_section < pos_main_close
+    # The lazy placeholder is INSIDE the operator-notes wrapper.
+    assert pos_operator_notes_section < pos_lazy_placeholder < pos_main_close
