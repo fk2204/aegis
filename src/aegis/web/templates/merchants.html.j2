@@ -103,21 +103,21 @@
                 {% endif %}
               </td>
               <td data-test-id="merchants-list-parse-status">
-                {% if r.parse_status == 'proceed' %}
-                  <span class="chip pos">proceed</span>
-                {% elif r.parse_status == 'manual_review' %}
-                  <span class="chip bad">manual_review</span>
-                {% elif r.parse_status == 'review' %}
-                  <span class="chip warn">review</span>
-                {% elif r.parse_status == 'pending' %}
-                  <span class="chip">pending</span>
-                {% elif r.parse_status == 'error' %}
-                  <span class="chip bad">error</span>
-                {% elif r.parse_status == 'no_upload' %}
-                  <span class="mono-cell">no upload</span>
-                {% else %}
-                  <span class="mono-cell">{{ r.parse_status }}</span>
-                {% endif %}
+                {# 2026-06-28 — plain-English status badges. Replaces the
+                   raw enum chip ("proceed", "manual_review", etc.) so
+                   non-engineers reading the merchant list scan it like
+                   English. Macros vs inline if/elif: the inline map is
+                   simpler given the limited shape and one-call site. #}
+                {% set _parse_label = {
+                  'proceed':       ('✓ Clean',         'badge-proceed'),
+                  'manual_review': ('⚠ Needs review',  'badge-manual'),
+                  'review':        ('⚠ Review band',   'badge-manual'),
+                  'pending':       ('⏳ Parsing',       'badge-pending'),
+                  'error':         ('✗ Error',         'badge-error'),
+                  'no_upload':     ('— No upload',     'badge-none'),
+                } %}
+                {% set _entry = _parse_label.get(r.parse_status, (r.parse_status, '')) %}
+                <span class="badge {{ _entry[1] }}">{{ _entry[0] }}</span>
               </td>
               <td class="mono-cell" style="text-align:right" data-test-id="merchants-list-last-activity">
                 {% if r.days_since_activity is none %}

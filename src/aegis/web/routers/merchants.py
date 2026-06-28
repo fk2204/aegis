@@ -2241,6 +2241,39 @@ NAICS_NAMES: Final[dict[str, str]] = {
     "713940": "Fitness & recreational sports centers",
     "541511": "Custom computer programming services",
     "541512": "Computer systems design services",
+    # 2026-06-28 — additional codes the user reported as showing up raw
+    # ("999999" was the loudest miss — the SBA "Unclassified" placeholder
+    # that Close intake assigns when the applicant skips the industry
+    # field). Covers wholesale, manufacturing, healthcare residential,
+    # hospitality, and a few finer-grain construction trades that
+    # appeared on recent deals.
+    "999999": "Unknown industry",
+    "238110": "Poured concrete contractors",
+    "238310": "Drywall & insulation contractors",
+    "238350": "Finish carpentry contractors",
+    "238990": "All other specialty trade contractors",
+    "332": "Fabricated metal product manufacturing",
+    "423": "Merchant wholesalers, durable goods",
+    "423390": "Other industrial machinery wholesalers",
+    "424": "Merchant wholesalers, nondurable goods",
+    "446110": "Pharmacies & drug stores",
+    "452210": "Department stores",
+    "524": "Insurance carriers & related activities",
+    "524210": "Insurance agencies & brokerages",
+    "531110": "Lessors of residential buildings",
+    "531120": "Lessors of nonresidential buildings",
+    "541611": "Administrative management & general consulting",
+    "561110": "Office administrative services",
+    "561210": "Facilities support services",
+    "561330": "Professional employer organizations",
+    "621340": "Offices of physical / occupational / speech therapists",
+    "621910": "Ambulance services",
+    "623110": "Nursing care facilities (skilled)",
+    "623210": "Residential intellectual & mental health facilities",
+    "711211": "Sports teams & clubs",
+    "713210": "Casinos (except casino hotels)",
+    "721110": "Hotels & motels",
+    "811114": "Other automotive mechanical & electrical repair",
 }
 
 
