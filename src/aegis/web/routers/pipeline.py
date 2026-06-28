@@ -55,7 +55,7 @@ from aegis.merchants.repository import (
 from aegis.scoring.ofac import OFACClient
 from aegis.storage import AnalysisRow, DocumentRepository, DocumentRow
 from aegis.web._templates import templates
-from aegis.web.routers.dashboard import _compute_merchant_tier
+from aegis.web.routers.dashboard import _score_to_tier_letter
 
 router = APIRouter()
 
@@ -302,20 +302,32 @@ def _build_ready(
             continue
         analysis: AnalysisRow | None = analyses_by_doc.get(d.id)
 
-        # Paper grade — reuses the dashboard's tier computation so the
-        # two surfaces can't disagree.
-        try:
-            merchant = merchants_repo.get(mid)
-        except MerchantNotFoundError:
-            continue
         # OFAC gate: skip merchants whose OFAC check has explicitly
         # returned ``False`` (sanctioned). ``None`` (not yet checked)
         # is allowed — the dossier surfaces the chip and the operator
         # decides; the column shouldn't disappear just because the
         # background-check cron hasn't visited the merchant yet.
+        try:
+            merchant = merchants_repo.get(mid)
+        except MerchantNotFoundError:
+            continue
         if merchant.ofac_is_clear is False:
             continue
-        paper_grade = _compute_merchant_tier(merchant, docs, ofac)
+        # 2026-06-28 perf — was ``_compute_merchant_tier(merchant, docs,
+        # ofac)`` which ran score_deal() per merchant: profiling showed
+        # _build_ready = 11,609ms for 8 rows (~1.5s/row) because every
+        # call collected the merchant's analyzed docs + ran multi-month
+        # scoring + OFAC + Track A/B compute for a single letter chip.
+        # Derive from the already-on-row ``fraud_score`` via the
+        # cheap-band helper instead. Accuracy trade: the band now
+        # reflects the legacy single-axis fraud_score rather than the
+        # multi-month track-aware score; operators drill into the
+        # dossier for the authoritative tier. Same trade-off the
+        # today_pipeline tier-breakdown made (also uses
+        # _score_to_tier_letter against the decisions table).
+        paper_grade: str | None = (
+            _score_to_tier_letter(d.fraud_score) if d.fraud_score is not None else None
+        )
 
         true_revenue: Decimal | None = analysis.true_revenue if analysis else None
         action_chip = _action_chip_from_narrator(analysis.narrator_summary if analysis else None)
