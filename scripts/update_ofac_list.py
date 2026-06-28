@@ -76,8 +76,13 @@ OPENSANCTIONS_URL: Final[str] = (
     "https://data.opensanctions.org/datasets/latest/us_ofac_sdn/entities.ftm.json"
 )
 
-# OFAC XML uses a default namespace prefix on every element.
-_SDN_NS: Final[dict[str, str]] = {"s": "http://tempuri.org/sdnList.xsd"}
+# OFAC XML uses a default namespace prefix on every element. Treasury
+# renamed the namespace when moving downloads off ofac.treasury.gov to
+# the sanctionslistservice.ofac.treas.gov API in 2026-Q2 — the new
+# namespace is https://sanctionslistservice.ofac.treas.gov/api/Publication
+# Preview/exports/XML. Rather than hardcoding (and breaking again on the
+# next rename), strip the namespace off every tag before matching —
+# same pattern src/aegis/scoring/ofac.py uses for the runtime fetcher.
 
 DEFAULT_CACHE_DIR: Final[Path] = Path("/var/lib/aegis/ofac_cache")
 UNIFIED_CACHE_FILENAME: Final[str] = "ofac_unified.json"
@@ -123,15 +128,39 @@ def _fetch(url: str) -> bytes | None:
         return None
 
 
+def _local_tag(elem: ET.Element) -> str:
+    """ElementTree tag with namespace stripped — ``{ns}tag`` → ``tag``."""
+    tag = elem.tag or ""
+    if "}" in tag:
+        return tag.rsplit("}", 1)[1]
+    return tag
+
+
+def _children(elem: ET.Element, name: str) -> list[ET.Element]:
+    """Direct children whose local name matches ``name``."""
+    return [c for c in elem if _local_tag(c) == name]
+
+
+def _child_text(elem: ET.Element, name: str) -> str:
+    """Text of the first child whose local name matches ``name``, or ``''``."""
+    for c in elem:
+        if _local_tag(c) == name and c.text:
+            return c.text.strip()
+    return ""
+
+
 def _parse_ofac_xml(xml_bytes: bytes, list_name: str) -> list[OFACEntry]:
     """Parse SDN-format XML into OFACEntry list.
 
-    Both SDN.XML and consolidated.xml share the same schema (sdnList).
+    Both SDN.XML and CONS_ADV.XML share the same schema (sdnList). Tag
+    matching strips the default namespace so the parser survives
+    Treasury renaming the schema (2026-Q2 migration moved the namespace
+    from tempuri.org/sdnList.xsd to sanctionslistservice.ofac.treas.gov).
     """
     entries: list[OFACEntry] = []
     try:
-        # nosec B314 — the XML source is ofac.treasury.gov over HTTPS.
-        # Not user-controlled; the ET.ParseError catch below covers the
+        # nosec B314 — the XML source is Treasury over HTTPS. Not
+        # user-controlled; the ET.ParseError catch below covers the
         # malformed-input case. defusedxml is overkill for a known-good
         # government endpoint.
         root = ET.fromstring(xml_bytes)  # noqa: S314
@@ -139,18 +168,17 @@ def _parse_ofac_xml(xml_bytes: bytes, list_name: str) -> list[OFACEntry]:
         print(f"XML_PARSE_FAILED list={list_name} error={exc}", file=sys.stderr)
         return entries
 
-    # Tags carry the namespace prefix; iterate findall with the ns map.
-    for entry in root.findall("s:sdnEntry", _SDN_NS):
-        uid_elem = entry.find("s:uid", _SDN_NS)
-        if uid_elem is None or not uid_elem.text:
+    for entry in _children(root, "sdnEntry"):
+        uid_text = _child_text(entry, "uid")
+        if not uid_text:
             continue
-        uid = f"{list_name}:{uid_elem.text.strip()}"
+        uid = f"{list_name}:{uid_text}"
 
         # Individual vs entity. Individuals use firstName / lastName;
         # entities use a single "name" pseudo-field via lastName.
-        sdn_type = entry.findtext("s:sdnType", default="", namespaces=_SDN_NS).strip()
-        first = entry.findtext("s:firstName", default="", namespaces=_SDN_NS).strip()
-        last = entry.findtext("s:lastName", default="", namespaces=_SDN_NS).strip()
+        sdn_type = _child_text(entry, "sdnType")
+        first = _child_text(entry, "firstName")
+        last = _child_text(entry, "lastName")
         if sdn_type.lower() == "individual":
             name = " ".join(p for p in (first, last) if p)
         else:
@@ -161,23 +189,23 @@ def _parse_ofac_xml(xml_bytes: bytes, list_name: str) -> list[OFACEntry]:
 
         # Aliases (akaList → aka)
         aliases: list[str] = []
-        aka_list = entry.find("s:akaList", _SDN_NS)
-        if aka_list is not None:
-            for aka in aka_list.findall("s:aka", _SDN_NS):
-                f = aka.findtext("s:firstName", default="", namespaces=_SDN_NS).strip()
-                lt = aka.findtext("s:lastName", default="", namespaces=_SDN_NS).strip()
+        aka_lists = _children(entry, "akaList")
+        for aka_list in aka_lists:
+            for aka in _children(aka_list, "aka"):
+                f = _child_text(aka, "firstName")
+                lt = _child_text(aka, "lastName")
                 aka_name = " ".join(p for p in (f, lt) if p) if f else lt
                 if aka_name and aka_name not in aliases:
                     aliases.append(aka_name)
 
         programs: list[str] = []
-        prog_list = entry.find("s:programList", _SDN_NS)
-        if prog_list is not None:
-            for p in prog_list.findall("s:program", _SDN_NS):
+        prog_lists = _children(entry, "programList")
+        for prog_list in prog_lists:
+            for p in _children(prog_list, "program"):
                 if p.text:
                     programs.append(p.text.strip())
 
-        remarks = entry.findtext("s:remarks", default="", namespaces=_SDN_NS).strip()
+        remarks = _child_text(entry, "remarks")
 
         entries.append(
             OFACEntry(
