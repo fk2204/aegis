@@ -13,12 +13,24 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from aegis.counterparty.models import CounterpartyClassification
 from aegis.parser.models import ClassifiedTransaction
+from aegis.parser.patterns import (
+    detect_impossible_payment_load,
+    detect_stated_vs_measured_revenue_divergence,
+)
 from aegis.scoring_v2.aggregation import aggregate_bundle
 from aegis.scoring_v2.industry import IndustryTier, industry_tier_reason
+
+if TYPE_CHECKING:
+    # Type-only import so this module stays decoupled from
+    # aegis.merchants. ``compute_risk_band`` accepts the merchant via an
+    # optional kwarg; the runtime detector reads its fields via
+    # ``getattr`` so the call works against any object shape.
+    from aegis.merchants.models import MerchantRow
 from aegis.scoring_v2.track_b.banding import (
     band_from_severity,
     severity_for_international_concentration,
@@ -118,6 +130,7 @@ def compute_risk_band(
     classifications: Mapping[UUID, CounterpartyClassification],
     *,
     industry_tier: IndustryTier | None = None,
+    merchant: MerchantRow | None = None,
 ) -> BusinessRiskBand:
     """Compute the Track B band for one parse bundle.
 
@@ -136,6 +149,23 @@ def compute_risk_band(
     is derived, and adds a FactorReason naming the tier. ``None``
     skips the adjustment entirely (legacy callers / tests that
     haven't been threaded with industry data).
+
+    ``merchant`` (kwarg) is the ``MerchantRow`` whose stated /
+    application figures (``stated_daily_payment``, ``monthly_revenue``)
+    are cross-checked against the bank-measured numbers. When supplied
+    AND the merchant carries the relevant ``stated_*`` field, two
+    detectors fire:
+
+      * ``impossible_payment_load`` (severity ``critical``) — stated
+        daily payment x 22 business days > measured monthly revenue x 1.5.
+        Catches the "Vibration Guys" failure mode where the merchant's
+        existing obligations exceed their cashflow capacity.
+      * ``stated_vs_measured_revenue_divergence`` (severity ``elevated``)
+        — application revenue diverges > 40% from bank-measured.
+        Catches misrepresentation BEFORE submission.
+
+    Both detectors degrade to ``None`` (no reason emitted) when their
+    inputs are missing — safe to thread the merchant unconditionally.
     """
     agg = aggregate_bundle(transactions_by_doc, classifications)
 
@@ -220,6 +250,34 @@ def compute_risk_band(
     # commit adds the trend signal computation.
     if period_days < 120:
         insufficient.append("trend_volatility")
+
+    # Application-vs-measured reality checks. Both run only when a
+    # merchant has been threaded AND the relevant ``stated_*`` field is
+    # populated — the detector helpers return ``None`` on missing inputs
+    # so this stays safe pre-Agent-2-merge. Severity hard-coded to mirror
+    # the detector severity (85 = critical, 60 = elevated) so the dossier
+    # ordering puts these at the top when they fire.
+    if merchant is not None:
+        impossible_load = detect_impossible_payment_load(merchant, monthly_revenue)
+        if impossible_load is not None:
+            severities.append("critical")
+            reasons.append(
+                FactorReason(
+                    factor="impossible_payment_load",
+                    severity="critical",
+                    detail=impossible_load.detail,
+                )
+            )
+        revenue_divergence = detect_stated_vs_measured_revenue_divergence(merchant, monthly_revenue)
+        if revenue_divergence is not None:
+            severities.append("elevated")
+            reasons.append(
+                FactorReason(
+                    factor="stated_vs_measured_revenue_divergence",
+                    severity="elevated",
+                    detail=revenue_divergence.detail,
+                )
+            )
 
     # ── band + action ──────────────────────────────────────────────
     worst = worst_severity(severities)

@@ -31,12 +31,22 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from difflib import SequenceMatcher
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from aegis.parser.models import ClassifiedTransaction
+
+if TYPE_CHECKING:
+    # Type-only import — avoids any chance of a circular import at
+    # runtime (merchants.cross_statement_pipeline imports Pattern from
+    # here). The detectors below read merchant fields via ``getattr``
+    # with explicit defaults so they degrade gracefully when the
+    # MerchantRow shape is missing the new ``stated_*`` fields (Agent
+    # 2's parallel work adds them). Option B per the parallel-agent
+    # spec — code applies cleanly regardless of merge order.
+    from aegis.merchants.models import MerchantRow
 
 # Known MCA funders + behavioral terms. Generic single words ("advance",
 # "remit", "factor") are ONLY decisive when paired with daily-cadence
@@ -2553,6 +2563,112 @@ def _ai_generated_statement_score(
     return min(100, max(0, composite))
 
 
+# ---------------------------------------------------------------------------
+# Application-vs-measured reality detectors.
+#
+# Both compare an operator-or-application-stated figure on ``MerchantRow``
+# against an AEGIS-measured figure derived from the parsed statements.
+# They surface as Track B reasons (CRITICAL / ELEVATED) when the
+# divergence crosses the threshold — never gate a parse-level decline.
+#
+# Built around the real "Vibration Guys" case: merchant stated $125K/day
+# payment on $120K/month revenue. $125K x 22 business days = $2.75M/month
+# implied payment load — mathematically impossible / insolvent.
+#
+# Both read merchant fields via ``getattr`` with explicit defaults so
+# the code compiles + returns ``None`` until Agent 2's parallel work
+# populates ``stated_*`` on ``MerchantRow``. The detector "turns on" as
+# soon as the field is populated; no second deploy needed.
+# ---------------------------------------------------------------------------
+
+# 22 business days/month — standard MCA payment-day convention.
+_BUSINESS_DAYS_PER_MONTH: Final[Decimal] = Decimal("22")
+
+# Insolvency threshold: stated daily * 22 > true revenue * 1.5 means
+# the implied payment load exceeds 150% of the bank-measured revenue.
+# Above 100% is already insolvent; 150% gives a margin for statement-
+# period variance + the fact that not every payment day is a full debit.
+_INSOLVENT_PAYMENT_LOAD_RATIO: Final[Decimal] = Decimal("1.5")
+
+# Revenue-divergence threshold: > 40% delta between stated and measured
+# monthly revenue is the typical "needs verification" line. Below 40%
+# absorbs normal seasonal/statement-window variance without firing.
+_REVENUE_DIVERGENCE_THRESHOLD: Final[Decimal] = Decimal("0.40")
+
+
+def detect_impossible_payment_load(
+    merchant: MerchantRow,
+    true_revenue_monthly: Decimal,
+) -> Pattern | None:
+    """Fire when stated daily payment x 22 business days > true revenue x 150%.
+
+    Catches merchants who misrepresented payment load OR whose business
+    is mathematically insolvent under current obligations. Real case
+    "Vibration Guys": $125K/day stated x 22 = $2.75M/month implied on
+    $120K/month measured revenue (~2,290% of revenue) — instant decline.
+
+    Returns ``None`` when either input is missing or non-positive so the
+    detector degrades gracefully on legacy merchants and on Agent-2's
+    field-population gap.
+    """
+    stated_daily = getattr(merchant, "stated_daily_payment", None)
+    if (
+        stated_daily is None
+        or stated_daily <= Decimal("0")
+        or true_revenue_monthly is None
+        or true_revenue_monthly <= Decimal("0")
+    ):
+        return None
+    implied_monthly = stated_daily * _BUSINESS_DAYS_PER_MONTH
+    if implied_monthly <= true_revenue_monthly * _INSOLVENT_PAYMENT_LOAD_RATIO:
+        return None
+    return Pattern(
+        code="impossible_payment_load",
+        severity=85,
+        detail=(
+            f"Stated daily payment ${stated_daily:,.0f} * 22 days = "
+            f"${implied_monthly:,.0f}/month implied — but true revenue is only "
+            f"${true_revenue_monthly:,.0f}/month. Deal is mathematically "
+            f"insolvent under current obligations."
+        ),
+    )
+
+
+def detect_stated_vs_measured_revenue_divergence(
+    merchant: MerchantRow,
+    measured_revenue_monthly: Decimal,
+) -> Pattern | None:
+    """Fire when the application's stated monthly revenue diverges > 40%
+    from the AEGIS-measured monthly revenue.
+
+    Stated revenue lives on ``MerchantRow.monthly_revenue`` (operator-
+    populated at intake). Measured revenue is the bank-statement-derived
+    figure from the Track B aggregation. > 40% delta is the line where
+    the underwriter needs to verify before the deal moves forward —
+    seasonal/statement-period variance lives below 40%.
+    """
+    stated = getattr(merchant, "monthly_revenue", None)
+    if (
+        stated is None
+        or stated <= Decimal("0")
+        or measured_revenue_monthly is None
+        or measured_revenue_monthly <= Decimal("0")
+    ):
+        return None
+    divergence = abs(stated - measured_revenue_monthly) / measured_revenue_monthly
+    if divergence <= _REVENUE_DIVERGENCE_THRESHOLD:
+        return None
+    return Pattern(
+        code="stated_vs_measured_revenue_divergence",
+        severity=60,
+        detail=(
+            f"Stated monthly revenue ${stated:,.0f}/month (from application) "
+            f"vs bank-statement-measured ${measured_revenue_monthly:,.0f}/month — "
+            f"{int(divergence * 100)}% divergence. Verify with merchant before submission."
+        ),
+    )
+
+
 __all__ = [
     "CHARGEBACK_KEYWORDS",
     "DISGUISE_MCA_TERMS",
@@ -2566,5 +2682,7 @@ __all__ = [
     "Pattern",
     "PatternAnalysis",
     "analyze_patterns",
+    "detect_impossible_payment_load",
+    "detect_stated_vs_measured_revenue_divergence",
     "detect_unreconciled_internal_transfers",
 ]
