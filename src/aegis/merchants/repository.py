@@ -1109,6 +1109,12 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         ucc_filings=list(row.get("ucc_filings") or []),
         ucc_default_indicators=list(row.get("ucc_default_indicators") or []),
         ucc_checked_at=_parse_dt(row.get("ucc_checked_at")),
+        # Migration 084 — federal bankruptcy check (CourtListener v4).
+        bankruptcy_checked_at=_parse_dt(row.get("bankruptcy_checked_at")),
+        bankruptcy_active=row.get("bankruptcy_active"),
+        bankruptcy_recent=row.get("bankruptcy_recent"),
+        bankruptcy_chapter=row.get("bankruptcy_chapter"),
+        bankruptcy_cases=list(row.get("bankruptcy_cases") or []),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
         # Migration 065. None for every pre-065 row + every live row;
@@ -1199,6 +1205,12 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "ucc_filings": list(m.ucc_filings),
         "ucc_default_indicators": list(m.ucc_default_indicators),
         "ucc_checked_at": m.ucc_checked_at,
+        # Migration 084 — federal bankruptcy check columns.
+        "bankruptcy_checked_at": m.bankruptcy_checked_at,
+        "bankruptcy_active": m.bankruptcy_active,
+        "bankruptcy_recent": m.bankruptcy_recent,
+        "bankruptcy_chapter": m.bankruptcy_chapter,
+        "bankruptcy_cases": list(m.bankruptcy_cases),
         # Migration 080 — round-trips on every upsert so the column is
         # always written explicitly (rather than relying on the DB
         # DEFAULT to land on inserts only).

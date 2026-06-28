@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -201,6 +201,23 @@ class MerchantRow(_StrictModel):
     ucc_filings: list[str] = Field(default_factory=list)
     ucc_default_indicators: list[str] = Field(default_factory=list)
     ucc_checked_at: datetime | None = None
+
+    # ------------------------------------------------------------------
+    # Federal bankruptcy check (migration 084). Populated by
+    # ``aegis.business_intel.bankruptcy_checker.check_bankruptcy``
+    # via CourtListener v4 REST. ``bankruptcy_checked_at IS NULL`` is
+    # the "needs first check" signal ``ensure_bankruptcy_check``
+    # reads. ``bankruptcy_active`` AND ``bankruptcy_chapter == "7"``
+    # is a hard gate at the dossier; Ch.11 is amber, Ch.13 yellow,
+    # discharged/recent surfaces as informational only. The
+    # ``bankruptcy_cases`` JSONB carries per-docket detail for the
+    # dossier drill-down.
+    # ------------------------------------------------------------------
+    bankruptcy_checked_at: datetime | None = None
+    bankruptcy_active: bool | None = None
+    bankruptcy_recent: bool | None = None
+    bankruptcy_chapter: str | None = None
+    bankruptcy_cases: list[dict[str, Any]] = Field(default_factory=list)
 
     # Phase 7B funder-submission tracking (Pydantic-only — no Supabase
     # column yet, so these reset on a Supabase round-trip; audit_log is
