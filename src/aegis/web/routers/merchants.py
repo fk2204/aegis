@@ -4166,7 +4166,16 @@ async def merchant_detail(
     except ValueError:
         intake_docs_failed = 0
 
-    all_docs = docs.list_documents(merchant_id=merchant_id, limit=50)
+    # 2026-06-28 perf — slim list + batched flag fetch. ``soft_signals``
+    # (parse_soft_signal_flags(latest_doc.all_flags)) + the
+    # ``_fintech_bank_warning_from_flags`` match-card helper both need
+    # ``all_flags`` on the latest doc. One ``in.(...)`` query populates
+    # flags on every row in this merchant's window so chip rendering
+    # stays correct after the slim swap.
+    all_docs = docs.list_documents_slim(merchant_id=merchant_id, limit=50)
+    _doc_flags = docs.get_document_flags([d.id for d in all_docs])
+    for _d in all_docs:
+        _d.all_flags = _doc_flags.get(_d.id, [])
     # Batch fetch analyses for every document in one query rather than
     # N+1 per-document calls. analyses_by_doc.get(doc.id) yields the
     # AnalysisRow when present, None when the document hasn't been
@@ -4849,7 +4858,14 @@ def _build_pdf_dossier_context(
     submit-to-funders flow which historically built the PDF without
     these repos.
     """
-    all_docs = docs.list_documents(merchant_id=merchant.id, limit=50)
+    # 2026-06-28 perf — slim list + batched flag fetch. Same shape as
+    # the on-screen dossier route above; ``_fintech_bank_warning_from_flags``
+    # at the match-cards site below reads ``latest_doc.all_flags`` so we
+    # need them attached on the latest row.
+    all_docs = docs.list_documents_slim(merchant_id=merchant.id, limit=50)
+    _pdf_doc_flags = docs.get_document_flags([d.id for d in all_docs])
+    for _d in all_docs:
+        _d.all_flags = _pdf_doc_flags.get(_d.id, [])
     analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in all_docs])
     documents_table: list[dict[str, Any]] = [
         {"document": d, "analysis": analyses_by_doc.get(d.id)} for d in all_docs

@@ -751,6 +751,9 @@ MIGRATION_PROBES: dict[str, str] = {
         # Probe pg_proc — function presence is the load-bearing signal.
         "SELECT 1 FROM pg_proc WHERE proname='count_documents_by_status'"
     ),
+    "090_documents_indexes.sql": (
+        "SELECT 1 FROM pg_indexes WHERE indexname='idx_documents_merchant_uploaded'"
+    ),
 }
 
 

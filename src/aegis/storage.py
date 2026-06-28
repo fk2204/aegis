@@ -254,6 +254,49 @@ class DocumentRepository(Protocol):
         ``parse_status`` powers the ``/ui/review`` queue (filter for
         ``"manual_review"``). ``merchant_id`` powers the ``/ui/deals``
         derived view. ``limit`` caps page size.
+
+        Returns rows with ``all_flags`` populated. Callers that don't
+        need the (potentially large) flag array should use
+        ``list_documents_slim`` + ``get_document_flags`` instead — the
+        slim variant drops ``all_flags`` from the wire payload.
+        """
+
+    def list_documents_slim(
+        self,
+        *,
+        parse_status: ParseStatus | None = None,
+        merchant_id: UUID | None = None,
+        limit: int = 100,
+    ) -> list[DocumentRow]:
+        """Same shape as ``list_documents`` but ``all_flags`` is ``[]``
+        on every returned row — the column is intentionally not fetched.
+
+        ``all_flags`` is a TEXT[] that grows with every parser +
+        forensic detector pass (dozens of entries on real prod rows).
+        The dashboard hot paths read flags via a separate batched
+        ``get_document_flags`` call so the wide-list query stays small.
+
+        Callers that need ``all_flags`` populated must either:
+          1. Pair this with ``get_document_flags`` and attach manually, or
+          2. Use ``list_documents`` (returns wide rows with ``all_flags``).
+
+        Per-doc ``DocumentRow.metadata_flags`` and ``fraud_score_breakdown``
+        are still populated — only the cumulative ``all_flags`` array
+        is dropped.
+        """
+
+    def get_document_flags(self, document_ids: list[UUID]) -> dict[UUID, list[str]]:
+        """Batch fetch ``documents.all_flags`` for the supplied ids.
+
+        Returns ``{document_id: list[flag_strings]}``. Missing ids are
+        absent from the result (not keys with empty lists) — callers
+        handle with ``.get(id, [])``. Empty ``document_ids`` returns
+        ``{}`` without hitting the database.
+
+        Companion to ``list_documents_slim``: the route does the slim
+        list to drive layout, then this batched call to populate the
+        chip rendering. Single ``in.(...)`` query regardless of batch
+        size.
         """
 
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None: ...
@@ -462,6 +505,28 @@ class InMemoryDocumentRepository:
             rows = [r for r in rows if r.merchant_id == merchant_id]
         rows.sort(key=lambda r: r.uploaded_at, reverse=True)
         return rows[:limit]
+
+    def list_documents_slim(
+        self,
+        *,
+        parse_status: ParseStatus | None = None,
+        merchant_id: UUID | None = None,
+        limit: int = 100,
+    ) -> list[DocumentRow]:
+        # In-memory backend mirrors the Supabase ``all_flags=[]`` contract
+        # — DocumentRow copies with the flag list emptied so a caller that
+        # forgets the companion ``get_document_flags`` call gets the same
+        # silent-empty behaviour both implementations produce.
+        rows = self.list_documents(parse_status=parse_status, merchant_id=merchant_id, limit=limit)
+        return [r.model_copy(update={"all_flags": []}) for r in rows]
+
+    def get_document_flags(self, document_ids: list[UUID]) -> dict[UUID, list[str]]:
+        if not document_ids:
+            return {}
+        wanted = set(document_ids)
+        return {
+            doc_id: list(self._docs[doc_id].all_flags) for doc_id in wanted if doc_id in self._docs
+        }
 
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None:
         return self._analyses.get(document_id)
@@ -777,14 +842,13 @@ class SupabaseDocumentRepository:
         merchant_id: UUID | None = None,
         limit: int = 100,
     ) -> list[DocumentRow]:
-        # Wide ``select("*")`` retained: multiple dashboard call paths
-        # consume ``all_flags`` off the returned rows — _build_attention_groups
-        # and the review-queue card builder in ``web/routers/dashboard.py``,
-        # the match-card / soft-signal helpers in
-        # ``web/routers/merchants.py``. Slimming here would silently
-        # collapse every chip to ``[]`` without raising. A future cleanup
-        # could push ``all_flags`` into a separate batched fetch keyed
-        # on document_id and slim this query then.
+        # Wide ``select("*")`` retained: callers that haven't migrated to
+        # ``list_documents_slim`` + ``get_document_flags`` still need
+        # ``all_flags`` populated on the returned rows. The dashboard
+        # attention-group / review-queue / dossier paths use the slim
+        # variant; bulk-scanning call sites (``portfolio_view``,
+        # ``bank_coverage``, ``_load_latest_score_tier_per_merchant``) and
+        # any new caller can opt into slim explicitly.
         query = (
             get_supabase()
             .table("documents")
@@ -798,6 +862,61 @@ class SupabaseDocumentRepository:
             query = query.eq("merchant_id", str(merchant_id))
         result = query.execute()
         return [_row_to_document(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    def list_documents_slim(
+        self,
+        *,
+        parse_status: ParseStatus | None = None,
+        merchant_id: UUID | None = None,
+        limit: int = 100,
+    ) -> list[DocumentRow]:
+        """Slim variant — wire payload drops the ``all_flags`` TEXT[] so
+        list-style reads don't pay for a column that can carry dozens of
+        entries per row.
+
+        ``_row_to_document`` defaults ``all_flags`` to ``[]`` when the
+        column is absent from the row dict, so the returned ``DocumentRow``
+        objects validate cleanly without round-tripping the field.
+        Callers that need flags must pair this with a
+        ``get_document_flags`` batch fetch and attach the result.
+
+        Same ordering + filter contract as ``list_documents``.
+        """
+        query = (
+            get_supabase()
+            .table("documents")
+            .select(DOCUMENTS_SLIM_COLUMNS)
+            .order("uploaded_at", desc=True)
+            .limit(limit)
+        )
+        if parse_status is not None:
+            query = query.eq("parse_status", parse_status)
+        if merchant_id is not None:
+            query = query.eq("merchant_id", str(merchant_id))
+        result = query.execute()
+        return [_row_to_document(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    def get_document_flags(self, document_ids: list[UUID]) -> dict[UUID, list[str]]:
+        """Single ``in.(...)`` PostgREST query reading only ``id`` +
+        ``all_flags``. Companion to ``list_documents_slim`` — the
+        dashboard hot path issues one slim list query and then one of
+        these to populate chips, instead of pulling ``all_flags`` on
+        every list-style read.
+        """
+        if not document_ids:
+            return {}
+        id_strings = [str(d) for d in document_ids]
+        result = (
+            get_supabase().table("documents").select("id,all_flags").in_("id", id_strings).execute()
+        )
+        out: dict[UUID, list[str]] = {}
+        for raw in cast(list[dict[str, Any]], result.data or []):
+            id_val = raw.get("id")
+            if id_val is None:
+                continue
+            doc_id = UUID(str(id_val))
+            out[doc_id] = list(raw.get("all_flags") or [])
+        return out
 
     def get_analysis(self, document_id: UUID) -> AnalysisRow | None:
         result = (

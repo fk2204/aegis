@@ -129,7 +129,17 @@ async def index(
         for r in recent_activity_rows
     ]
 
-    attention_docs = docs.list_documents(parse_status="manual_review", limit=40)
+    # 2026-06-28 perf — slim list + batched flag fetch. ``list_documents``
+    # previously pulled ``all_flags`` (a TEXT[] that grows with every
+    # parser + forensic detector pass — dozens of entries per row on
+    # prod) on every list-style read. The slim variant drops the column
+    # from the wire payload; ``get_document_flags`` re-fetches it as a
+    # single ``in.(...)`` query then attaches per-doc before the helper
+    # consumes ``d.all_flags``. Net: same render, smaller list payload.
+    attention_docs = docs.list_documents_slim(parse_status="manual_review", limit=40)
+    _attention_flags = docs.get_document_flags([d.id for d in attention_docs])
+    for _d in attention_docs:
+        _d.all_flags = _attention_flags.get(_d.id, [])
     attention = _build_attention_groups(attention_docs, merchants_repo, docs, max_groups=8)
     # 2026-06-28 perf — tier enrichment dropped from the dashboard hot
     # path. Per-card profiling showed
@@ -1208,7 +1218,14 @@ async def review_queue(
     is hit the template surfaces a banner so the operator knows the
     queue is deeper than what they see — no silent truncation.
     """
-    review_docs = docs.list_documents(parse_status="manual_review", limit=_REVIEW_QUEUE_DISPLAY_CAP)
+    # 2026-06-28 perf — slim list + batched flag fetch. Same shape as
+    # the Today attention block above (see comment there).
+    review_docs = docs.list_documents_slim(
+        parse_status="manual_review", limit=_REVIEW_QUEUE_DISPLAY_CAP
+    )
+    _review_flags = docs.get_document_flags([d.id for d in review_docs])
+    for _d in review_docs:
+        _d.all_flags = _review_flags.get(_d.id, [])
     cards = _build_review_queue_cards(review_docs, merchants, docs, ofac)
     return templates.TemplateResponse(
         request,
