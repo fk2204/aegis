@@ -41,10 +41,12 @@ dependencies = [
     # cryptography: AES-256-GCM for client-side PDF encryption (PDF
     # retention redesign chunk A, see docs/PDF_RETENTION_DESIGN.md §6).
     "cryptography>=44",
-    # jellyfish: fast string-similarity primitives (Jaro-Winkler,
-    # Levenshtein, soundex). Used by the OFAC SDN screener
-    # (compliance/ofac.py) for fuzzy name match at threshold 0.88.
-    # Pure-C extension, no transitive deps, MIT licence.
+    # jellyfish: Jaro-Winkler + token-sort + Levenshtein primitives.
+    # Used by the OFAC SDN screener (compliance/ofac.py, Phase A,
+    # migration 083) AND the SOS local-cache fuzzy lookup
+    # (business_intel/sos_checker.py, Phase C, migration 085) — both
+    # use threshold 0.88. Pure-C extension w/ pure-Python fallback,
+    # no transitive deps, MIT licence.
     "jellyfish>=1.0.0",
 ]
 

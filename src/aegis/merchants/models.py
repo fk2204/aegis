@@ -244,6 +244,24 @@ class MerchantRow(_StrictModel):
     ucc_operator_verified: bool = False
     ucc_verified_at: datetime | None = None
 
+    # ------------------------------------------------------------------
+    # Secretary of State entity check (migration 085, Phase C). Populated
+    # by ``aegis.business_intel.sos_checker.SOSChecker`` — local SQLite
+    # cache first, Bedrock fallback for uncovered states. 30-day TTL via
+    # ``ensure_sos_check``. ``sos_checked_at is None`` is the "needs
+    # first check" signal; all other fields land per the registry's
+    # response shape (entity_name may differ from business_name; status
+    # tokens are state-specific; is_active is the operator-facing
+    # boolean derived from status).
+    # ------------------------------------------------------------------
+    sos_checked_at: datetime | None = None
+    sos_status: str | None = None
+    sos_entity_name: str | None = None
+    sos_formation_date: str | None = None
+    sos_is_active: bool | None = None
+    sos_data_source: str | None = None
+    sos_state_checked: str | None = None
+
     # Phase 7B funder-submission tracking (Pydantic-only — no Supabase
     # column yet, so these reset on a Supabase round-trip; audit_log is
     # the durable record. Persistence moves to a real submissions table
