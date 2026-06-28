@@ -152,11 +152,12 @@ STATE_SOURCES: Final[tuple[StateSource, ...]] = (
     ),
     StateSource(
         state="MN",
-        # 2026-06-28 — old www.sos.state.mn.us URL redirected to a
-        # Radware bot-manager challenge. Direct portal download page is
-        # at mblsportal.sos.state.mn.us; falls through to Bedrock if
-        # the form-submission path doesn't deliver a CSV.
-        url="https://mblsportal.sos.state.mn.us/Business/DownloadData",
+        # 2026-06-28 — sos.state.mn.us redirected to the bot-manager
+        # challenge; the portal moved to mblsportal.sos.mn.gov (.mn.gov
+        # not .state.mn.us, observed in the 302 Location header on
+        # the .state.mn.us URL). Falls through to Bedrock if the
+        # download page doesn't expose a direct CSV link.
+        url="https://mblsportal.sos.mn.gov/Business/DownloadData",
         format="mn_csv",
         notes=("MN ships CSV bulk downloads. Build script crawls the index page for CSV links."),
     ),
