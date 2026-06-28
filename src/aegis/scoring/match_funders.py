@@ -62,10 +62,6 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Final
 
 from aegis.compliance.apr import APRCalculationError, calculate_apr
-from aegis.compliance.broker_compensation import (
-    BrokerCompensationDisclosureMissing,
-    validate_broker_compensation_disclosure,
-)
 from aegis.funders.models import FunderRow, FunderTier
 from aegis.merchants.models import MerchantRow
 from aegis.product_types import coerce_product_type
@@ -547,21 +543,22 @@ def match_funder(
         if deal.state.upper() not in {s.upper() for s in funder.preferred_states}:
             soft.append(f"state_not_preferred: {deal.state}")
 
-    # NY § 600.21(f) broker-compensation guard.
-    # For NY merchants, the chosen funder must carry
-    # ``aegis_compensation_disclosure_text`` so the funder's
-    # § 600.21(f) letter pipeline can render and the AEGIS-side audit
-    # row (``NY_BROKER_COMP_v1``) can be written. Missing text →
-    # hard-fail BEFORE submission so the operator updates the funder
-    # row via ``/ui/funders/{id}``. Currently NY-only; the guard
-    # function in ``aegis.compliance.broker_compensation`` is the
-    # single source of truth for which states are covered (other
-    # states pass through silently).
-    try:
-        validate_broker_compensation_disclosure(merchant_state=deal.state, funder=funder)
-    except BrokerCompensationDisclosureMissing as exc:
-        criteria_count += 1
-        hard.append(f"broker_compensation_text_missing: {exc}")
+    # NY § 600.21(f) broker-compensation requirement is intentionally
+    # NOT enforced here. Per ``.claude/rules/compliance.md`` SCOPE NOTE
+    # (2026-05-25) Commera operates as a pure ISO broker; per-state
+    # CFDL disclosure obligations (including the § 600.21(f) broker-
+    # compensation letter) are funder concerns and must not gate
+    # broker-side routing. The earlier wire-in (commit 6f595a4) hard-
+    # failed every NY merchant against every funder lacking
+    # ``aegis_compensation_disclosure_text`` — with 0/28 funders
+    # carrying text in production this produced 100% no-match for NY
+    # merchants, contradicting the scope rule that broker behavior
+    # must not branch on state CFDL tiers.
+    #
+    # The disclosure letter pipeline (``record_broker_compensation_transmission``)
+    # remains intact for callers that explicitly choose to render +
+    # archive the letter (e.g. the submission-time disclosure path).
+    # Matching does not pre-flight it.
 
     # R4.3: auto_decline_conditions + conditional_requirements
     # ---------------------------------------------------------

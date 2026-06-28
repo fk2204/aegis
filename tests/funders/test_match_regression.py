@@ -106,12 +106,19 @@ def test_excluded_state_hard_fails() -> None:
     assert any("state_excluded" in c for c in match.soft_concerns)
 
 
-def test_ny_merchant_funder_missing_compensation_text_hard_fails() -> None:
-    """NY § 600.21(f) guard fires when funder lacks compensation text.
+def test_ny_merchant_funder_missing_compensation_text_does_not_gate_match() -> None:
+    """match_funder must NOT gate NY merchants on broker comp disclosure text.
 
-    Plan 2.2 wire-in: NY merchant + funder.aegis_compensation_disclosure_text=""
-    surfaces as a hard-fail so the operator updates the funder row via
-    /ui/funders before the § 600.21(f) letter pipeline runs.
+    Per ``.claude/rules/compliance.md`` SCOPE NOTE (2026-05-25), Commera
+    operates as a pure ISO broker; per-state CFDL disclosure obligations
+    (including the NY § 600.21(f) broker-compensation letter) are funder
+    concerns and must not gate broker-side routing.
+
+    The prior wire-in (commit 6f595a4) hard-failed every NY merchant
+    against every funder lacking ``aegis_compensation_disclosure_text``;
+    with 0/28 production funders carrying that text it produced 100%
+    no-match for NY merchants. This regression locks in the corrected
+    scope: the matcher does not pre-flight the disclosure letter.
     """
     funder = FunderRow(
         id=uuid4(),
@@ -123,17 +130,15 @@ def test_ny_merchant_funder_missing_compensation_text_hard_fails() -> None:
     score = _baseline_score_result()
     match = match_funder(funder, deal, score)
     assert match is not None
-    assert match.match_score == 0, (
-        f"NY merchant must hard-fail when funder has no comp text; "
+    assert match.match_score > 0, (
+        f"NY merchant must qualify regardless of funder comp text; "
         f"got soft_concerns={match.soft_concerns!r}"
     )
-    assert any(
-        "broker_compensation_text_missing" in c for c in match.soft_concerns
-    )
+    assert not any("broker_compensation" in c for c in match.soft_concerns)
 
 
-def test_ny_merchant_funder_with_compensation_text_passes() -> None:
-    """NY § 600.21(f) guard passes silently when funder has text on file."""
+def test_ny_merchant_funder_with_compensation_text_also_passes() -> None:
+    """Funder carrying disclosure text matches identically — no extra signal."""
     funder = FunderRow(
         id=uuid4(),
         name="Disclosed Fund",
@@ -147,21 +152,16 @@ def test_ny_merchant_funder_with_compensation_text_passes() -> None:
     score = _baseline_score_result()
     match = match_funder(funder, deal, score)
     assert match is not None
-    assert match.match_score > 0, (
-        f"NY merchant with disclosed funder must qualify; "
-        f"got soft_concerns={match.soft_concerns!r}"
-    )
-    assert not any(
-        "broker_compensation" in c for c in match.soft_concerns
-    )
+    assert match.match_score > 0
+    assert not any("broker_compensation" in c for c in match.soft_concerns)
 
 
-def test_non_ny_merchant_skips_broker_compensation_guard() -> None:
-    """Non-NY merchant pairs with empty-disclosure funder without firing.
+def test_non_ny_merchant_no_broker_compensation_signal() -> None:
+    """Non-NY merchant pairs with empty-disclosure funder cleanly.
 
-    The guard is currently NY-only per
-    aegis.compliance.broker_compensation._STATE_RULES. CA / TX / FL
-    merchants must pass through silently regardless of disclosure text.
+    Unchanged behaviour: the matcher never emits a broker_compensation
+    signal regardless of merchant state — the scope rule removed it
+    everywhere, not just for NY.
     """
     funder = FunderRow(
         id=uuid4(),
@@ -174,6 +174,4 @@ def test_non_ny_merchant_skips_broker_compensation_guard() -> None:
     score = _baseline_score_result()
     match = match_funder(funder, deal, score)
     assert match is not None
-    assert not any(
-        "broker_compensation" in c for c in match.soft_concerns
-    )
+    assert not any("broker_compensation" in c for c in match.soft_concerns)
