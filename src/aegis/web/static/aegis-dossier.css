@@ -455,22 +455,50 @@
  * horizontally scrollable but only needs to be when the viewport
  * is narrow.
  */
+.dossier-page .dossier-main-grid {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 40px;
+  align-items: start;
+  margin-bottom: 56px;
+}
+.dossier-page .dossier-col-left,
+.dossier-page .dossier-col-right {
+  min-width: 0; /* allow grid children to shrink instead of overflowing */
+}
+.dossier-page .dossier-col-left > .section:last-child,
+.dossier-page .dossier-col-right > .section:last-child {
+  margin-bottom: 0;
+}
+@media (max-width: 1100px) {
+  .dossier-page .dossier-main-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
+    margin-bottom: 0;
+  }
+}
+
+/* Legacy aliases — c81a64b's first-pass class names. Kept (dead-but-
+ * harmless) so any out-of-tree snippet or operator bookmark using the
+ * old data-test-id and class names still resolves identically. The
+ * live layout uses .dossier-main-grid / .dossier-col-left /
+ * .dossier-col-right per the 2026-06-28 re-name. */
 .dossier-page .dossier-two-col {
   display: grid;
   grid-template-columns: 3fr 2fr;
-  gap: 32px;
+  gap: 40px;
   align-items: start;
   margin-bottom: 56px;
 }
 .dossier-page .dossier-col-primary,
 .dossier-page .dossier-col-secondary {
-  min-width: 0; /* allow grid children to shrink instead of overflowing */
+  min-width: 0;
 }
 .dossier-page .dossier-col-primary > .section:last-child,
 .dossier-page .dossier-col-secondary > .section:last-child {
   margin-bottom: 0;
 }
-@media (max-width: 1200px) {
+@media (max-width: 1100px) {
   .dossier-page .dossier-two-col {
     grid-template-columns: 1fr;
     gap: 0;

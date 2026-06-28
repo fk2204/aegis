@@ -555,8 +555,8 @@
        the underwriter references against the narrative.
        Below the wrapper, Disposition / Submissions / Operator notes
        resume full-width so they span the whole page. #}
-    <div class="dossier-two-col" data-test-id="dossier-main-two-col">
-    <div class="dossier-col-primary">
+    <div class="dossier-main-grid" data-test-id="dossier-main-two-col">
+    <div class="dossier-col-left">
 
     {# ============== § 1 VERDICT ============== #}
     <section id="verdict" class="section">
@@ -1547,8 +1547,8 @@
       </section>
     {% endif %}
 
-    </div>{# /.dossier-col-primary — Verdict + Cashflow + Findings #}
-    <div class="dossier-col-secondary">
+    </div>{# /.dossier-col-left — Verdict + Cashflow + Findings #}
+    <div class="dossier-col-right">
 
     {# Background-checks section (§ 3¾) sits between Track C (pattern
        findings + concentration) and § 4 (funder matching) so the
@@ -1999,8 +1999,8 @@
       </div>
     </section>
 
-    </div>{# /.dossier-col-secondary — Background + Funder + Ledger + Profile #}
-    </div>{# /.dossier-two-col — main 60/40 split #}
+    </div>{# /.dossier-col-right — Background + Funder + Ledger + Profile #}
+    </div>{# /.dossier-main-grid — main 60/40 split #}
 
     {# ============== § 5 DISPOSITION ============== #}
     <section id="disposition" class="section">
