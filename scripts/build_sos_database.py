@@ -137,11 +137,19 @@ STATE_SOURCES: Final[tuple[StateSource, ...]] = (
     # ``data_source="bedrock_web_search"`` instead of
     # ``"sos_bulk_<state>"``):
     #
-    #   * FL — every Sunbiz HTTP candidate 403/404s; the documented
-    #     quarterly file lives on the SUNBIZ FTP host and the HTTPS
-    #     mirror is gone (search.sunbiz.org/.../Download → 403;
-    #     files.floridados.gov/media/704800/cordata.zip → 404). A
-    #     proper FL ingest needs a Sunbiz data-license arrangement.
+    #   * FL — re-verified 2026-06-28 from the prod box (network egress
+    #     works there; localhost was 403'd by Sunbiz's bot manager). The
+    #     public HTTPS portal at dos.fl.gov/sunbiz/other-services/
+    #     data-downloads/ returns 0 downloadable corp/llc/entity links
+    #     under any sensible User-Agent — the index page advertises the
+    #     "Quarterly Data" tab but every direct .txt/.zip URL is gated
+    #     behind sftp.floridados.gov (which serves an HTTPS login portal
+    #     only — no anonymous bulk export). The legacy ftp://
+    #     ftp.dos.state.fl.us host resets the TCP connection. A proper FL
+    #     ingest needs a SUNBIZ SFTP licensed account; until then FL
+    #     falls back to Bedrock web_search per
+    #     business_intel/sos_checker.py (data_source=
+    #     "bedrock_web_search").
     #   * IA — Iowa shut down their open-data portal's catalog API
     #     (data.iowa.gov/api/catalog/v1 → 404 across every search
     #     term); resource endpoints follow with 404. No Socrata
