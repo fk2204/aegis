@@ -291,6 +291,157 @@ _BANK_HINTS: Final[dict[str, str]] = {
         "multi-line (purchase line, then 'Seq# ... Date ... Time ...' "
         "metadata line) and must be merged client-side."
     ),
+    # ────────────────────────────────────────────────────────────────
+    # 2026-06-28 seed pass — 14 major US banks added with bank-
+    # identifier-only hints. These hints contain ONLY operator-verified
+    # facts (header keyword strings + ABA routing number) and DELIBERATELY
+    # do NOT describe statement layout (column headers, period format,
+    # summary block structure, transaction sections). Layout-specific
+    # fields will be added on a per-bank basis once we have real
+    # successful parses to derive from — per CLAUDE.md operating-
+    # principles §4 funder-seeding sub-rule, inventing industry-typical
+    # layout defaults that look right but match nothing is worse than
+    # leaving them out. Activation is gated by HINTS_AVAILABLE_THRESHOLD
+    # (3 successful parses for source='manual') so these primed rows
+    # have no immediate effect on parse routing until 3 organic parses
+    # land per bank.
+    # ────────────────────────────────────────────────────────────────
+    "Wells Fargo Bank, N.A.": (
+        "Bank-identifier banner is 'Wells Fargo Bank, N.A.' with the "
+        "'wellsfargo.com' domain near the top of page 1; the header may "
+        "also appear in all-caps as 'WELLS FARGO BANK'. ABA routing "
+        "number is 121042882. Statement-layout specifics (period "
+        "format, summary block labels, transaction section headers, "
+        "running-balance column presence) are NOT yet authored — wait "
+        "for a real successful parse to derive them rather than "
+        "inventing industry-typical defaults."
+    ),
+    "Capital One, N.A.": (
+        "Bank-identifier banner is 'Capital One' with the 'capitalone.com' "
+        "domain near the top of page 1; the header may also appear in "
+        "all-caps as 'CAPITAL ONE'. ABA routing number is 051405515. "
+        "Statement-layout specifics (period format, summary block labels, "
+        "transaction section headers, running-balance column presence) "
+        "are NOT yet authored — wait for a real successful parse to "
+        "derive them rather than inventing industry-typical defaults."
+    ),
+    "U.S. Bank National Association": (
+        "Bank-identifier banner is 'U.S. Bank' with the 'usbank.com' "
+        "domain near the top of page 1; the header may also appear in "
+        "all-caps as 'US BANK'. ABA routing number is 091000022. "
+        "Statement-layout specifics (period format, summary block labels, "
+        "transaction section headers, running-balance column presence) "
+        "are NOT yet authored — wait for a real successful parse to "
+        "derive them rather than inventing industry-typical defaults."
+    ),
+    "Citibank, N.A.": (
+        "Bank-identifier banner is 'Citibank' with the 'citi.com' "
+        "domain near the top of page 1; the header may also appear in "
+        "all-caps as 'CITIBANK'. ABA routing number is 021000089. "
+        "Statement-layout specifics (period format, summary block labels, "
+        "transaction section headers, running-balance column presence) "
+        "are NOT yet authored — wait for a real successful parse to "
+        "derive them rather than inventing industry-typical defaults."
+    ),
+    "Truist Bank": (
+        "Bank-identifier banner is 'Truist' with the 'truist.com' "
+        "domain near the top of page 1; legacy statements from the "
+        "pre-merger predecessors may still surface 'BB&T' or 'SunTrust' "
+        "in headers or footers. ABA routing number is 053101121. "
+        "Statement-layout specifics (period format, summary block labels, "
+        "transaction section headers, running-balance column presence) "
+        "are NOT yet authored — wait for a real successful parse to "
+        "derive them rather than inventing industry-typical defaults."
+    ),
+    "Regions Bank": (
+        "Bank-identifier banner is 'Regions' with the 'regions.com' "
+        "domain near the top of page 1; the header may also appear in "
+        "all-caps as 'REGIONS BANK'. ABA routing number is 062000019. "
+        "Statement-layout specifics (period format, summary block labels, "
+        "transaction section headers, running-balance column presence) "
+        "are NOT yet authored — wait for a real successful parse to "
+        "derive them rather than inventing industry-typical defaults."
+    ),
+    "Fifth Third Bank, N.A.": (
+        "Bank-identifier banner is 'Fifth Third' with the '53.com' "
+        "domain near the top of page 1; the header may also appear in "
+        "all-caps as 'FIFTH THIRD'. ABA routing number is 042000314. "
+        "Statement-layout specifics (period format, summary block labels, "
+        "transaction section headers, running-balance column presence) "
+        "are NOT yet authored — wait for a real successful parse to "
+        "derive them rather than inventing industry-typical defaults."
+    ),
+    "The Huntington National Bank": (
+        "Bank-identifier banner is 'Huntington' with the 'huntington.com' "
+        "domain near the top of page 1; the header may also appear in "
+        "all-caps as 'HUNTINGTON'. ABA routing number is 044000024. "
+        "Statement-layout specifics (period format, summary block labels, "
+        "transaction section headers, running-balance column presence) "
+        "are NOT yet authored — wait for a real successful parse to "
+        "derive them rather than inventing industry-typical defaults."
+    ),
+    "BMO Bank N.A.": (
+        "Bank-identifier banner is 'BMO' or 'BMO Bank' with the 'bmo.com' "
+        "domain near the top of page 1; legacy statements from the "
+        "pre-rebrand period may still surface 'BMO HARRIS'. ABA routing "
+        "number is 071000288. Statement-layout specifics (period format, "
+        "summary block labels, transaction section headers, running-"
+        "balance column presence) are NOT yet authored — wait for a real "
+        "successful parse to derive them rather than inventing industry-"
+        "typical defaults."
+    ),
+    "Citizens Bank, N.A.": (
+        "Bank-identifier banner is 'Citizens' with the 'citizensbank.com' "
+        "domain near the top of page 1; the header may also appear in "
+        "all-caps as 'CITIZENS BANK'. ABA routing number is 011500010. "
+        "Statement-layout specifics (period format, summary block labels, "
+        "transaction section headers, running-balance column presence) "
+        "are NOT yet authored — wait for a real successful parse to "
+        "derive them rather than inventing industry-typical defaults."
+    ),
+    "KeyBank National Association": (
+        "Bank-identifier banner is 'KeyBank' with the 'key.com' "
+        "domain near the top of page 1; the header may also appear in "
+        "all-caps as 'KEYBANK'. ABA routing number is 041001039. "
+        "Statement-layout specifics (period format, summary block labels, "
+        "transaction section headers, running-balance column presence) "
+        "are NOT yet authored — wait for a real successful parse to "
+        "derive them rather than inventing industry-typical defaults."
+    ),
+    "Manufacturers and Traders Trust Company": (
+        "Bank-identifier banner is 'M&T Bank' with the 'mtb.com' "
+        "domain near the top of page 1; the header may also appear in "
+        "all-caps as 'M&T BANK'. The legal name on the chartered entity "
+        "is 'Manufacturers and Traders Trust Company'. ABA routing "
+        "number is 022000046. Statement-layout specifics (period format, "
+        "summary block labels, transaction section headers, running-"
+        "balance column presence) are NOT yet authored — wait for a real "
+        "successful parse to derive them rather than inventing industry-"
+        "typical defaults."
+    ),
+    "Santander Bank, N.A.": (
+        "Bank-identifier banner is 'Santander' with the "
+        "'santanderbank.com' domain near the top of page 1; the header "
+        "may also appear in all-caps as 'SANTANDER'. ABA routing number "
+        "is 011075150. Statement-layout specifics (period format, "
+        "summary block labels, transaction section headers, running-"
+        "balance column presence) are NOT yet authored — wait for a real "
+        "successful parse to derive them rather than inventing industry-"
+        "typical defaults."
+    ),
+    "TD Bank": (
+        "Short-form bank identifier; the chartered entity name 'TD Bank, "
+        "N.A.' is already covered by a separate row in this seed dict "
+        "with full layout authoring. Bank-identifier banner is 'TD Bank' "
+        "with the 'tdbank.com' domain near the top of page 1; the header "
+        "may also appear in all-caps as 'TD BANK'. ABA routing number "
+        "for TD Bank, N.A. (US chartered entity) is 031101266. "
+        "Statement-layout specifics for the short-form variant follow "
+        "the same TD Convenience Checking layout described on the "
+        "'TD Bank, N.A.' row — see that row for full structural hints. "
+        "Full canonicalization between 'TD Bank' and 'TD Bank, N.A.' "
+        "belongs in the parser, separate scope."
+    ),
 }
 
 
