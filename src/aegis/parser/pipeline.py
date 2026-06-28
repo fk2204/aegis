@@ -79,7 +79,11 @@ from aegis.parser.extract import (
     extract_statement_via_vision,
 )
 from aegis.parser.fintech_banks import detect_fintech_bank
-from aegis.parser.metadata import MetadataAnalysis, analyze_metadata
+from aegis.parser.metadata import (
+    MetadataAnalysis,
+    _probe_text_layer_v2_shadow,
+    analyze_metadata,
+)
 from aegis.parser.models import Aggregates, ClassifiedTransaction, ValidationResult
 from aegis.parser.nsf_secondary import secondary_validate_nsf
 from aegis.parser.page_router import (
@@ -413,6 +417,37 @@ def run_pipeline(
     """
     metadata = analyze_metadata(pdf_path)
 
+    # SHADOW v2 text-layer probe (2026-06-28). Stricter heuristic that
+    # checks per-page char average AND numeric-line count, designed to
+    # catch image-only PDFs whose watermark/header clears the live
+    # 50-char aggregate floor (Arthur State, PNC, Bank of Bennington).
+    # Emits a [SHADOW] disagreement flag below — NOT live-gated, NOT
+    # routing-affecting. The live path still reads
+    # ``metadata.has_text_layer`` for the routing decision. Per
+    # CLAUDE.md "Decision-boundary changes — deliberate + shadow-first":
+    # the operator must validate the disagreement set on a corpus
+    # before any flip to live.
+    v2_route_to_vision, v2_debug = _probe_text_layer_v2_shadow(pdf_path)
+    live_route_to_vision = not metadata.has_text_layer
+    shadow_text_probe_flag: str | None = None
+    if v2_route_to_vision != live_route_to_vision:
+        # ``v2_debug`` values are typed ``object`` so the probe can
+        # carry mixed types (float / int / str) in a single dict
+        # without leaking ``Any``. Cast through the known shape here
+        # — the probe contract is pinned by
+        # ``tests/parser/test_text_layer_probe_v2_shadow.py``.
+        chars_avg_val = v2_debug["chars_per_page_avg"]
+        numeric_lines_val = v2_debug["numeric_lines"]
+        chars_avg = chars_avg_val if isinstance(chars_avg_val, float) else 0.0
+        numeric_lines = numeric_lines_val if isinstance(numeric_lines_val, int) else 0
+        shadow_text_probe_flag = (
+            f"[SHADOW] text_layer_probe_v2_disagrees: "
+            f"v2_route_vision={v2_route_to_vision} "
+            f"live_route_vision={live_route_to_vision} "
+            f"chars_avg={chars_avg:.0f} "
+            f"numeric_lines={numeric_lines}"
+        )
+
     pdf_bytes = _read_pdf(pdf_path)
 
     settings = get_settings()
@@ -431,12 +466,15 @@ def run_pipeline(
                 passed=False,
                 failures=["page_router_low_confidence"],
             )
+            early_flags = _collect_flags(metadata, synthetic_validation, None, [])
+            if shadow_text_probe_flag is not None:
+                early_flags.append(shadow_text_probe_flag)
             return PipelineResult(
                 parse_status="manual_review",
                 metadata=metadata,
                 extraction=None,
                 validation=synthetic_validation,
-                all_flags=_collect_flags(metadata, synthetic_validation, None, []),
+                all_flags=early_flags,
             )
 
     # Bank-layout hint injection. Only fires when the caller wired a
@@ -480,12 +518,15 @@ def run_pipeline(
                     f"ocr_oversize_image_pdf: page_count={metadata.page_count} max={MAX_OCR_PAGES}"
                 ],
             )
+            early_flags = _collect_flags(metadata, synthetic_validation, None, [])
+            if shadow_text_probe_flag is not None:
+                early_flags.append(shadow_text_probe_flag)
             return PipelineResult(
                 parse_status="manual_review",
                 metadata=metadata,
                 extraction=None,
                 validation=synthetic_validation,
-                all_flags=_collect_flags(metadata, synthetic_validation, None, []),
+                all_flags=early_flags,
             )
         # Image-only → vision-first. Skip the layout-hints block: hints
         # describe text-layer structure (column labels, section
@@ -579,6 +620,8 @@ def run_pipeline(
             flags.append("[META] ocr_fallback_used")
         if used_per_page_routing:
             flags.append("[META] per_page_routing_used")
+        if shadow_text_probe_flag is not None:
+            flags.append(shadow_text_probe_flag)
         return PipelineResult(
             parse_status="manual_review",
             metadata=metadata,
@@ -674,6 +717,8 @@ def run_pipeline(
         all_flags.append("[META] ocr_fallback_used")
     if used_per_page_routing:
         all_flags.append("[META] per_page_routing_used")
+    if shadow_text_probe_flag is not None:
+        all_flags.append(shadow_text_probe_flag)
 
     # Period regex fallback — surface the matched pattern + fragment on
     # ``all_flags`` so the worker writes the corresponding audit row
