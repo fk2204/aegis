@@ -249,12 +249,39 @@ def build_unified_tracks_view(
     # ── Track B + C: load transactions for each doc that has them.
     #                Both tracks share the same bundle/aggregation; we
     #                only walk the document list once.
+    #
+    # Exception handling: previously this loop swallowed ALL exceptions
+    # silently and fell back to ``txns = []``. That masked a class of
+    # bugs where a SINGLE malformed transaction row (e.g. a row whose
+    # ``source_page`` came back NULL, a description that failed
+    # ``min_length=1`` after strip, a category not in the ``TransactionCategory``
+    # Literal) crashed ``list_transactions``'s list-comprehension mapper —
+    # dropping the ENTIRE document's transactions, every time. When this
+    # happened on every doc for a merchant, ``transactions_by_doc`` came
+    # out empty, ``risk_band`` was set to ``None``, and the dossier
+    # rendered "Documents present but no classified transactions are
+    # persisted" — looking like a parser-write bug when it was actually a
+    # row-mapper read failure. We still fall back to ``txns = []`` (the
+    # dossier MUST render even when one doc's transactions are corrupt),
+    # but the exception is now logged with the offending document_id so
+    # the operator can find and fix the underlying row, rather than
+    # silently losing every Track B / Track C signal.
     transactions_by_doc: dict[str, list[ClassifiedTransaction]] = {}
     accounts: set[str] = set()
     for d in sorted_docs:
         try:
             txns = list_transactions(d.id)
-        except Exception:
+        except Exception as exc:
+            # Import deferred so module import doesn't trip the boot
+            # guard in ``aegis.logger.configure_logging`` (mirrors the
+            # pattern used in ``score_deal_inputs.py``).
+            from aegis.logger import get_logger
+
+            get_logger(__name__).warning(
+                "dossier_panel.list_transactions_failed document_id=%s err=%s",
+                d.id,
+                exc.__class__.__name__,
+            )
             txns = []
         if not txns:
             continue
