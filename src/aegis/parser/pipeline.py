@@ -10,17 +10,33 @@ Order of operations
 5. patterns    -> deterministic fraud detectors over classified rows
 6. aggregate   -> deterministic metrics with full source attribution
 
-Fraud-score weights are centralized as ONE constant (`FRAUD_WEIGHTS`).
-TS had three threshold constants in different files that drifted; fix is
-to read all thresholds from this module.
+``fraud_score`` is still computed and persisted for analytics / audit
+(portfolio_analytics reads it, the dossier renders the breakdown), but
+NO routing decision in this module reads it as of 2026-06-25 — the
+parser-layer pre-screening gate now uses Track A integrity signals
+exclusively. See ``TRACK_A_PRESCREEN_THRESHOLD`` and
+``_track_a_prescreen_severity_sum`` below.
 
 Hard-decline triggers
 ---------------------
-- `metadata.eof_markers > EOF_HARD_DECLINE` (incremental save spam)
-- `metadata.fraud_score >= 60`
-- `weighted fraud_score >= HARD_DECLINE_THRESHOLD`
-- compound-signal floor (two moderate signals together) elevates score
-  to at least HARD_DECLINE_THRESHOLD
+- ``metadata.eof_markers > EOF_HARD_DECLINE`` — incremental save spam.
+  Pre-extraction signal; runs independently of any score.
+- ``Track A integrity pre-screen severity sum >=
+  TRACK_A_PRESCREEN_THRESHOLD`` — when the [META] forensic-family
+  signals (editor_detected, page_layer_anomaly,
+  text_overlay_detected, creator_mismatch_detected,
+  font_inconsistency_detected) sum to or above the threshold, the
+  document routes to manual_review with reason
+  ``track_a_prescreen_integrity_fail``. Replaces the prior
+  ``fraud_score >= HARD_DECLINE_THRESHOLD`` /
+  ``metadata.fraud_score >= METADATA_HARD_DECLINE`` gates so the parser
+  pre-screen and the scoring engine no longer split-brain on which
+  number gates the decline path (the live engine has been
+  ``track_abc`` since 2026-06-23 — ``fraud_score`` was already
+  informational at the scorer layer).
+- ``confidence_failures`` — LLM signaled it couldn't classify
+  accurately; labels are suspect and downstream patterns + aggregates
+  inherit the noise.
 
 EOF threshold
 -------------
@@ -119,9 +135,81 @@ FRAUD_WEIGHTS: Final[dict[str, float]] = {
     # ``[SHADOW] ai_generated_statement: ...`` entry in ``all_flags``.
     "shadow_ai_generated_statement": 0.0,
 }
-HARD_DECLINE_THRESHOLD: Final[int] = 65
+# Severity-sum threshold for the Track A integrity pre-screen. When the
+# sum of severities of [META] family forensic flags
+# (``editor_detected``, ``page_layer_anomaly``,
+# ``text_overlay_detected``, ``creator_mismatch_detected``,
+# ``font_inconsistency_detected``) meets or exceeds this value, the
+# pipeline routes the document to ``manual_review`` with reason
+# ``track_a_prescreen_integrity_fail`` (synthetic validation failure).
+# Replaces the old ``HARD_DECLINE_THRESHOLD`` (which gated on the
+# weighted ``fraud_score``) — the value 65 is preserved so existing
+# downstream consumers that compare a recomputed legacy ``fraud_score``
+# against this constant continue to behave identically. The pre-screen
+# is a SEVERITY SUM, not a weighted average — every signal that fires
+# is direct evidence of paste-over / editor-touch fraud, and adding
+# multiple weak signals to clear the threshold matches the underwriting
+# reality that two forensic hits beat one strong hit alone. The per-
+# signal contributions live in ``_PRESCREEN_FLAG_SEVERITIES`` below
+# (mirrored from the values ``parser.metadata`` adds to
+# ``metadata.fraud_score`` so the two stay aligned).
+TRACK_A_PRESCREEN_THRESHOLD: Final[int] = 65
+# Backwards-compatible alias. ``HARD_DECLINE_THRESHOLD`` was the
+# pre-2026-06-25 name when the gate compared against the weighted
+# ``fraud_score``; existing consumers (legacy scoring engine,
+# Track A historical lookback, portfolio analytics) still want the
+# numeric value 65 as a stable score-comparison constant. Keep the
+# alias so those callers don't need to import a new symbol and don't
+# accidentally drift from the canonical value.
+HARD_DECLINE_THRESHOLD: Final[int] = TRACK_A_PRESCREEN_THRESHOLD
 REVIEW_THRESHOLD: Final[int] = 35
-METADATA_HARD_DECLINE: Final[int] = 60
+
+# Per-flag severities used by the Track A integrity pre-screen. Keys
+# are the literal prefixes that ``parser.metadata`` and
+# ``parser.pipeline`` emit on ``MetadataAnalysis.flags`` (without the
+# ``[META] `` category prefix — the pre-screen reads the metadata
+# object directly, before ``_collect_flags`` prefixes the entries).
+# Values mirror the deltas those modules add to ``metadata.fraud_score``
+# so the pre-screen sum tracks the metadata-score contribution exactly
+# for these five families. Other [META] families that contribute to
+# ``metadata.fraud_score`` (``incremental_saves``, ``page_size_inconsistency``,
+# ``stripped_metadata``, ``personal_author``, the date-gap signals,
+# ``xref_offset_mismatch``, the page-level ``font_inconsistency``) are
+# INTENTIONALLY EXCLUDED — they're useful audit signals but the new
+# Track A pre-screen scopes itself to the five forensic-family signals
+# the redesign identified as the load-bearing integrity gate.
+_PRESCREEN_FLAG_SEVERITIES: Final[tuple[tuple[str, int], ...]] = (
+    # Hard editors (itext / pdflib / foxit phantompdf / etc.) — emitted
+    # by ``parser.metadata`` with +35 contribution. Medium editors
+    # (Adobe Acrobat / Preview / Word) share the ``editor_detected:``
+    # prefix and contribute +15 to metadata.fraud_score. The pre-screen
+    # uses the hard-editor value here so a hard-editor hit alone (35)
+    # plus one strong forensic signal (text_overlay_detected +25 or
+    # creator_mismatch_detected +20) crosses the 65 threshold. Medium
+    # editors stay informational on their own; the operator can tune
+    # this later by splitting the prefix match into hard vs medium
+    # families if the corpus shows the gate is too aggressive.
+    ("editor_detected:", 35),
+    # Forensic layer #3 (text_overlay_detected) — +25 in metadata.py.
+    # Strongest of the three deterministic forensic detectors;
+    # direct evidence of content-stream manipulation.
+    ("text_overlay_detected:", 25),
+    # Forensic layer #2 (creator_mismatch_detected) — +20 in
+    # parser.pipeline.run_pipeline (post-extraction because it needs
+    # bank_name). Specific fingerprint: editing-tool family in
+    # /Creator + bank doesn't match the known-good profile.
+    ("creator_mismatch_detected:", 20),
+    # Page-level layer anomaly (_page_layer_anomaly) — +15 in
+    # metadata.py. Multiple /Contents streams on a subset of pages —
+    # paste-over composition signature.
+    ("page_layer_anomaly:", 15),
+    # Forensic layer (row-level font_inconsistency_detected) — +15
+    # in metadata.py. Row-level font/size mismatch across transaction
+    # spans. Distinct from the page-level ``font_inconsistency:``
+    # signal (which is intentionally NOT in this table).
+    ("font_inconsistency_detected:", 15),
+)
+
 # EOF marker count above which a PDF is treated as genuinely tampered.
 # 2 EOFs are normal for legit online-banking exports (bank writes one,
 # viewer/browser re-save appends another). 3+ indicates real incremental
@@ -543,9 +631,39 @@ def run_pipeline(
         validation_failures=list(validation.failures),
     )
 
-    parse_status = _decide(metadata, fraud_score, validation, confidence_failures)
+    # Track A integrity pre-screen — replaces the legacy
+    # ``fraud_score >= HARD_DECLINE_THRESHOLD`` /
+    # ``metadata.fraud_score >= METADATA_HARD_DECLINE`` gates. Sums the
+    # severities of the five [META] forensic-family flags emitted by
+    # ``parser.metadata`` + the ``creator_mismatch_detected`` flag
+    # appended above. See ``_PRESCREEN_FLAG_SEVERITIES`` for the
+    # per-signal contributions.
+    track_a_prescreen_sum = _track_a_prescreen_severity_sum(metadata)
+    parse_status = _decide(
+        metadata,
+        validation,
+        confidence_failures,
+        track_a_prescreen_sum=track_a_prescreen_sum,
+    )
 
     all_flags = _collect_flags(metadata, validation, patterns, compound_flags)
+    if (
+        parse_status == "manual_review"
+        and track_a_prescreen_sum >= TRACK_A_PRESCREEN_THRESHOLD
+        and metadata.eof_markers <= EOF_HARD_DECLINE
+        and not confidence_failures
+    ):
+        # Surface the gate that fired so the operator can see WHY the
+        # pipeline routed to manual_review. Mirrors the
+        # ``page_router_low_confidence`` / ``ocr_oversize_image_pdf``
+        # synthetic-reason pattern; lands on ``all_flags`` with the
+        # ``[META] `` category prefix via ``_collect_flags``'s output
+        # already, so we append directly to ``all_flags`` here with the
+        # explicit prefix and the severity sum for audit.
+        all_flags.append(
+            f"[META] track_a_prescreen_integrity_fail: severity_sum={track_a_prescreen_sum} "
+            f"threshold={TRACK_A_PRESCREEN_THRESHOLD}"
+        )
     all_flags.extend(f"[AGGREGATE] {f}" for f in aggregate_result.flags)
     all_flags.extend(f"[CONFIDENCE] {f}" for f in confidence_failures)
     if triangulation_flag is not None:
@@ -955,26 +1073,82 @@ def _fraud_score(
     )
 
 
+# fraud_score is informational only — routing decisions use Track A
+# integrity pre-screen + track_abc scoring engine.
 def _decide(
     metadata: MetadataAnalysis,
-    fraud_score: int,
     validation: ValidationResult,
     confidence_failures: list[str],
+    *,
+    track_a_prescreen_sum: int,
 ) -> ParseStatus:
+    """Resolve ``parse_status`` from deterministic pre-screen signals.
+
+    Decision ladder (top wins):
+
+    1. ``metadata.eof_markers > EOF_HARD_DECLINE`` → ``manual_review``.
+       Independent gate — incremental-save spam is its own signal class
+       and never blended into the integrity sum.
+    2. ``track_a_prescreen_sum >= TRACK_A_PRESCREEN_THRESHOLD`` →
+       ``manual_review``. Replaces the prior fraud_score-based gates
+       (``metadata.fraud_score >= METADATA_HARD_DECLINE`` and
+       ``fraud_score >= HARD_DECLINE_THRESHOLD``) — pre-screen now reads
+       Track A integrity signals exclusively. Reason
+       ``track_a_prescreen_integrity_fail`` is appended to the
+       synthetic validation failures by the caller so the operator
+       sees the gate that fired.
+    3. ``confidence_failures`` → ``manual_review``. LLM classifier
+       can't read the rows; downstream metrics inherit the noise.
+    4. ``metadata.eof_markers > 1`` → ``review``. Single extra EOF is
+       a soft signal that the operator can clear.
+    5. Otherwise ``proceed``.
+
+    Note: ``validation.passed`` is always True here — the caller short-
+    circuits to ``manual_review`` BEFORE this function on a failed
+    validation, so a ``review`` branch keyed on ``not validation.passed``
+    would be unreachable.
+    """
     if metadata.eof_markers > EOF_HARD_DECLINE:
         return "manual_review"
-    if metadata.fraud_score >= METADATA_HARD_DECLINE:
-        return "manual_review"
-    if fraud_score >= HARD_DECLINE_THRESHOLD:
+    if track_a_prescreen_sum >= TRACK_A_PRESCREEN_THRESHOLD:
         return "manual_review"
     if confidence_failures:
         # LLM signaled it couldn't classify accurately — labels are
         # suspect and downstream patterns/aggregates inherit the noise.
         # Same severity as a math gate failure.
         return "manual_review"
-    if fraud_score >= REVIEW_THRESHOLD or not validation.passed or metadata.eof_markers > 1:
+    if metadata.eof_markers > 1:
         return "review"
     return "proceed"
+
+
+def _track_a_prescreen_severity_sum(metadata: MetadataAnalysis) -> int:
+    """Sum severities of the [META] forensic-family flags on ``metadata``.
+
+    Walks ``metadata.flags`` (the raw, unprefixed form — the caller
+    has not yet run ``_collect_flags`` to add the ``[META] `` prefix)
+    and adds the severity for each entry whose prefix matches an entry
+    in ``_PRESCREEN_FLAG_SEVERITIES``. Order-independent and
+    duplicate-tolerant (parser emits at most one entry per flag family
+    per document, but the helper sums all matches rather than dedupes
+    to keep the math transparent).
+
+    Returns 0 when no qualifying flags fired — that's the clean-statement
+    case and the pre-screen passes the document through to scoring.
+
+    Per-signal contributions mirror the deltas
+    ``parser.metadata.analyze_metadata`` adds to
+    ``metadata.fraud_score`` so the pre-screen sum tracks the underlying
+    metadata-score contribution for these five families. See
+    ``_PRESCREEN_FLAG_SEVERITIES`` for the table and rationale.
+    """
+    total = 0
+    for flag in metadata.flags:
+        for prefix, severity in _PRESCREEN_FLAG_SEVERITIES:
+            if flag.startswith(prefix):
+                total += severity
+                break
+    return total
 
 
 def _fraud_cluster_triangulation(patterns: PatternAnalysis | None) -> str | None:
@@ -1142,12 +1316,15 @@ __all__ = [
     "CLASSIFICATION_CONFIDENCE_FLOOR",
     "EOF_HARD_DECLINE",
     "FRAUD_WEIGHTS",
+    # Backwards-compatible alias for ``TRACK_A_PRESCREEN_THRESHOLD`` —
+    # retained so downstream consumers (legacy scoring engine, track_a
+    # historical lookback, portfolio analytics) don't break on import.
     "HARD_DECLINE_THRESHOLD",
     "HIGH_IMPACT_CATEGORIES",
     "HIGH_IMPACT_CATEGORY_CONFIDENCE_FLOOR",
     "MAX_OCR_PAGES",
-    "METADATA_HARD_DECLINE",
     "REVIEW_THRESHOLD",
+    "TRACK_A_PRESCREEN_THRESHOLD",
     "MerchantContext",
     "PipelineResult",
     "determine_processor_type",
