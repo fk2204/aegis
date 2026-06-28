@@ -312,6 +312,23 @@ def _coerce_dt(value: object) -> datetime | None:
 _TEXT_LAYER_MIN_CHARS: Final[int] = 50
 _TEXT_LAYER_PROBE_PAGES: Final[int] = 3
 
+# Shadow-mode v2 thresholds (2026-06-28). Stricter heuristic that asks
+# "does this PDF's text layer look like REAL transaction data?" by
+# combining a per-page character floor with a count of numeric-looking
+# lines (currency amounts / comma-grouped numbers / decimal-cent
+# amounts). Real bank statements typically yield hundreds of chars per
+# page AND tens of numeric lines; image-only PDFs with a watermark or
+# page-number header can clear the 50-char aggregate floor (today's
+# live probe) but still have zero numeric content — which is exactly
+# the misclassification we want to catch (Arthur State / PNC / Bank of
+# Bennington image-only exports with brand watermarks). NOT live-gated:
+# emits a [SHADOW] disagreement flag for operator validation against a
+# corpus before flipping the routing decision. See
+# ``parser.pipeline.run_pipeline`` for the emission site.
+_V2_NUMERIC_PATTERN: Final[re.Pattern[str]] = re.compile(r"\$[\d,]+|\d{1,3},\d{3}|\d+\.\d{2}")
+_V2_MIN_NUMERIC_LINES: Final[int] = 5
+_V2_MIN_CHARS_PER_PAGE: Final[int] = 150
+
 
 def _probe_text_layer(pdf_path: str | Path) -> tuple[bool, int]:
     """Return ``(has_text_layer, total_chars)`` for the first probe-window
@@ -350,6 +367,85 @@ def _detect_text_layer(pdf_path: str | Path) -> bool:
     """
     has_text_layer, _ = _probe_text_layer(pdf_path)
     return has_text_layer
+
+
+def _probe_text_layer_v2_shadow(
+    pdf_path: str | Path,
+) -> tuple[bool, dict[str, object]]:
+    """Stricter SHADOW-MODE text-layer probe — returns vision-routing intent.
+
+    Returns ``(would_route_to_vision, debug)`` where ``debug`` carries:
+
+      * ``chars_per_page_avg``: float — average non-whitespace chars
+        across the first ``_TEXT_LAYER_PROBE_PAGES`` pages
+      * ``numeric_lines``: int — total count of lines (across probed
+        pages) whose text matches ``_V2_NUMERIC_PATTERN`` (currency,
+        comma-grouped numbers, or decimal-cent amounts)
+      * ``reason``: str — short verdict reason
+        ("low_chars_per_page" / "low_numeric_lines" / "passes_v2_floor" /
+        "probe_failure")
+
+    A doc routes to vision (``True``) when EITHER the average chars
+    per page is below ``_V2_MIN_CHARS_PER_PAGE`` (150) OR the numeric-
+    line count is below ``_V2_MIN_NUMERIC_LINES`` (5). Real bank
+    statements comfortably clear both bars; image-only PDFs with a
+    watermark or page-number header (the bug class this probe targets)
+    fail the numeric-line bar even when their watermark chars cross
+    the live 50-char aggregate floor.
+
+    Defaults to ``(True, {...})`` on any exception — matches the
+    existing pymupdf probe's conservative posture (any detection
+    failure stays away from the text path so an OCR fallback can rescue
+    the parse). NOT live-gated: callers MUST emit this as a
+    ``[SHADOW] text_layer_probe_v2_disagrees: ...`` diagnostic only.
+    """
+    debug: dict[str, object] = {
+        "chars_per_page_avg": 0.0,
+        "numeric_lines": 0,
+        "reason": "probe_failure",
+    }
+    try:
+        with pymupdf.open(pdf_path) as doc:  # type: ignore[no-untyped-call]
+            pages_to_probe = min(_TEXT_LAYER_PROBE_PAGES, doc.page_count)
+            if pages_to_probe == 0:
+                debug["reason"] = "empty_pdf"
+                return True, debug
+
+            total_chars = 0
+            numeric_lines = 0
+            for i in range(pages_to_probe):
+                text = doc.load_page(i).get_text("text") or ""
+                # Per-page non-whitespace char count.
+                total_chars += sum(1 for ch in text if not ch.isspace())
+                # Numeric-line count: a "line" is a newline-delimited
+                # segment of the page's text. A line counts when ANY
+                # match of the numeric pattern fires inside it.
+                for line in text.splitlines():
+                    if _V2_NUMERIC_PATTERN.search(line):
+                        numeric_lines += 1
+
+            chars_per_page_avg = total_chars / pages_to_probe
+            debug["chars_per_page_avg"] = chars_per_page_avg
+            debug["numeric_lines"] = numeric_lines
+
+            if chars_per_page_avg < _V2_MIN_CHARS_PER_PAGE:
+                debug["reason"] = "low_chars_per_page"
+                return True, debug
+            if numeric_lines < _V2_MIN_NUMERIC_LINES:
+                debug["reason"] = "low_numeric_lines"
+                return True, debug
+            debug["reason"] = "passes_v2_floor"
+            return False, debug
+    except Exception:
+        # Conservative — mirror ``_probe_text_layer``'s safe default by
+        # leaning toward "route to vision" rather than masking a bad
+        # PDF behind the text path. The live probe's defensive default
+        # is the opposite (``True, 0`` so text-path runs and surfaces
+        # the real error) because it gates the live routing. This
+        # function is shadow-only, so the safer conservative choice is
+        # "would have routed to vision" — i.e. trigger the disagreement
+        # flag instead of silently saying "v2 agrees with live".
+        return True, debug
 
 
 def analyze_metadata(pdf_path: str | Path) -> MetadataAnalysis:
