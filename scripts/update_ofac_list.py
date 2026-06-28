@@ -69,9 +69,20 @@ import httpx
 SDN_URL: Final[str] = (
     "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.XML"
 )
+# 2026-06-28 — Treasury renamed CONS_ADV.XML to CONS_ADVANCED.XML on the
+# sanctionslistservice.ofac.treas.gov API. The old path now returns a
+# 200/0-byte response (silent break — no HTTP error to trip _fetch), so
+# the cache was missing ~17k consolidated entries (saw 38,163 SDN-only
+# entries instead of the expected ~55,000). Probe confirmed CONS_ADVANCED
+# returns 4.1 MB of valid sdnList XML.
 CONSOLIDATED_URL: Final[str] = (
-    "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/CONS_ADV.XML"
+    "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/CONS_ADVANCED.XML"
 )
+
+# Hard floor for a successful consolidated fetch. CONS_ADVANCED.XML is
+# ~4 MB; anything under 1 KB is a silent breakage (renamed endpoint,
+# 200/empty body, etc) and must not overwrite the prior cache entries.
+_CONSOLIDATED_MIN_BYTES: Final[int] = 1000
 OPENSANCTIONS_URL: Final[str] = (
     "https://data.opensanctions.org/datasets/latest/us_ofac_sdn/entities.ftm.json"
 )
@@ -325,7 +336,20 @@ def update_cache(cache_dir: Path) -> int:
 
     # Consolidated
     cons_bytes = _fetch(CONSOLIDATED_URL)
-    if cons_bytes:
+    if cons_bytes is None or len(cons_bytes) < _CONSOLIDATED_MIN_BYTES:
+        # Silent-break guard: Treasury's renamed endpoints (e.g. the
+        # 2026-Q2 CONS_ADV→CONS_ADVANCED rename) can return 200/empty
+        # instead of 404. Treat a too-small body as failure so the prior
+        # cache's consolidated entries carry through instead of being
+        # overwritten with nothing. See bytes-floor rationale at
+        # _CONSOLIDATED_MIN_BYTES.
+        actual = 0 if cons_bytes is None else len(cons_bytes)
+        print(
+            f"CONS_ADV.too_small_response bytes={actual} url={CONSOLIDATED_URL}",
+            file=sys.stderr,
+        )
+        all_entries.extend(_existing_entries_by_list(cache_path, "consolidated"))
+    else:
         cons_entries = _parse_ofac_xml(cons_bytes, "consolidated")
         if cons_entries:
             all_entries.extend(cons_entries)
@@ -333,8 +357,6 @@ def update_cache(cache_dir: Path) -> int:
             any_succeeded = True
         else:
             all_entries.extend(_existing_entries_by_list(cache_path, "consolidated"))
-    else:
-        all_entries.extend(_existing_entries_by_list(cache_path, "consolidated"))
 
     # OpenSanctions
     os_bytes = _fetch(OPENSANCTIONS_URL)
