@@ -117,7 +117,16 @@
 
         {# Secretary of State entity chip (migration 085 / Phase C).
            Mirrors the UCC chip pattern: empty-state + Run-now when
-           never checked, otherwise a one-line summary of the SOS row. #}
+           never checked, otherwise a one-line summary of the SOS row.
+
+           ``data_source`` taxonomy → plain-English suffix:
+             local_db:XX         → "looked up via XX state DB"
+             bedrock             → "looked up via Bedrock"
+             bedrock_not_found   → "Bedrock returned no entity"
+             bedrock_unparseable → "Bedrock response unparseable"
+             bedrock_error       → "Bedrock unreachable"
+             no_data             → "insufficient input"
+        #}
         {% if sos_result %}
           <div class="bg-check-row"
                data-test-id="bg-check-sos"
@@ -127,7 +136,23 @@
             {% if sos_result.entity_name %} — {{ sos_result.entity_name }}{% endif %}
             {% if sos_result.formation_date %} (formed {{ sos_result.formation_date }}){% endif %}
             {% if sos_result.data_source %}
-              <span style="font-size:11px;color:#666"> — via {{ sos_result.data_source }}</span>
+              {% set _ds = sos_result.data_source %}
+              {% if _ds.startswith('local_db:') %}
+                {% set _ds_label = 'looked up via ' ~ _ds.split(':', 1)[1] ~ ' state DB' %}
+              {% elif _ds == 'bedrock' %}
+                {% set _ds_label = 'looked up via Bedrock' %}
+              {% elif _ds == 'bedrock_not_found' %}
+                {% set _ds_label = 'Bedrock returned no entity' %}
+              {% elif _ds == 'bedrock_unparseable' %}
+                {% set _ds_label = 'Bedrock response unparseable' %}
+              {% elif _ds == 'bedrock_error' %}
+                {% set _ds_label = 'Bedrock unreachable' %}
+              {% elif _ds == 'no_data' %}
+                {% set _ds_label = 'insufficient input' %}
+              {% else %}
+                {% set _ds_label = _ds %}
+              {% endif %}
+              <span style="font-size:11px;color:#666"> — {{ _ds_label }}</span>
             {% endif %}
           </div>
         {% else %}

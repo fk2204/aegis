@@ -331,6 +331,28 @@ class BedrockClient:
         )
         return _text_blocks(response)
 
+    def invoke_prompt_only(self, prompt: str, *, max_tokens: int = 512) -> str:
+        """Send a prompt with NO tools attached; return concatenated text blocks.
+
+        Distinguished from ``generate_text`` only by intent: callers that
+        previously reached for ``invoke_with_web_search`` but discovered
+        the server-side ``web_search_20250305`` tool is rejected for their
+        account / region fall back through this method. The SOS lookup
+        path uses it as the Bedrock fallback when the local SQLite cache
+        misses the merchant's state — the prompt asks the model to answer
+        from training-time knowledge with a strict JSON schema and a hard
+        ``"Not Found"`` opt-out when it can't.
+
+        Does NOT retry. Callers that need retry wrap with their own
+        ``tenacity`` decorator (mirroring ``generate_text``).
+        """
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return _text_blocks(response)
+
 
 def _text_blocks(response: object) -> str:
     """Concatenate all text blocks from an Anthropic Messages response."""
