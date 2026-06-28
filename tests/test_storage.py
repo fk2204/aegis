@@ -106,9 +106,7 @@ def _make_pipeline_result() -> PipelineResult:
 
 def test_create_and_get() -> None:
     repo = InMemoryDocumentRepository()
-    row = repo.create_document(
-        file_hash="a" * 64, byte_size=1234, original_filename="x.pdf"
-    )
+    row = repo.create_document(file_hash="a" * 64, byte_size=1234, original_filename="x.pdf")
     assert repo.get_document(row.id) == row
     assert repo.find_by_hash("a" * 64) == row
 
@@ -128,9 +126,7 @@ def test_get_unknown_id_raises() -> None:
 
 def test_persist_parse_result_writes_status_transactions_and_analysis() -> None:
     repo = InMemoryDocumentRepository()
-    row = repo.create_document(
-        file_hash="c" * 64, byte_size=4096, original_filename="stmt.pdf"
-    )
+    row = repo.create_document(file_hash="c" * 64, byte_size=4096, original_filename="stmt.pdf")
     result = _make_pipeline_result()
     repo.persist_parse_result(row.id, result=result)
 
@@ -152,12 +148,104 @@ def test_persist_parse_result_writes_status_transactions_and_analysis() -> None:
 
 def test_list_transactions_filter_by_category() -> None:
     repo = InMemoryDocumentRepository()
-    row = repo.create_document(
-        file_hash="d" * 64, byte_size=10, original_filename="s.pdf"
-    )
+    row = repo.create_document(file_hash="d" * 64, byte_size=10, original_filename="s.pdf")
     repo.persist_parse_result(row.id, result=_make_pipeline_result())
     assert repo.list_transactions(row.id, category="deposit")
     assert repo.list_transactions(row.id, category="mca_debit") == []
+
+
+# ---------------------------------------------------------------------------
+# _db_row_to_classified — defensive against legacy / partial rows
+#
+# Background: migrations/001_pgcrypto_and_transactions.sql declares
+# ``category TEXT`` (NULLABLE) and ``classification_confidence INT``
+# (NULLABLE, only CHECK BETWEEN 0 AND 100). Before this fix the mapper
+# raised Pydantic ValidationError on rows where either column was NULL
+# or where ``category`` was out-of-band, which made ``list_transactions``
+# fail the whole batch (list-comprehension dies on first bad row). The
+# dossier panel then silently swallowed the exception and reported
+# "Documents present but no classified transactions are persisted" on
+# documents that DO have transactions in the DB.
+#
+# The mapper is now defensive: NULL / unknown category → "other",
+# NULL / out-of-range confidence → 0, empty description → " ". Audit
+# trail (id, posted_date, source_page, source_line, amount) survives —
+# the operator can still drill back to the PDF page/line.
+# ---------------------------------------------------------------------------
+
+
+def _row_with(**overrides: Any) -> dict[str, Any]:
+    """A valid Supabase transactions row, optionally with one field
+    swapped to a NULL / legacy value to exercise the mapper guards."""
+    base: dict[str, Any] = {
+        "id": str(uuid4()),
+        "posted_date": "2026-03-01",
+        "description": "ACH CREDIT CUSTOMER A",
+        "amount": "1234.56",
+        "running_balance": "5678.90",
+        "source_page": 1,
+        "source_line": 1,
+        "category": "ach_credit",
+        "classification_confidence": 95,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_db_row_to_classified_coerces_null_category_to_other() -> None:
+    from aegis.storage import _db_row_to_classified
+
+    tx = _db_row_to_classified(_row_with(category=None))
+    assert tx.category == "other"
+    # Confidence still trusted from the row.
+    assert tx.classification_confidence == 95
+
+
+def test_db_row_to_classified_coerces_unknown_category_to_other() -> None:
+    from aegis.storage import _db_row_to_classified
+
+    tx = _db_row_to_classified(_row_with(category="not_a_real_category"))
+    assert tx.category == "other"
+
+
+def test_db_row_to_classified_coerces_null_confidence_to_zero() -> None:
+    from aegis.storage import _db_row_to_classified
+
+    tx = _db_row_to_classified(_row_with(classification_confidence=None))
+    assert tx.classification_confidence == 0
+
+
+def test_db_row_to_classified_clamps_out_of_range_confidence() -> None:
+    from aegis.storage import _db_row_to_classified
+
+    high = _db_row_to_classified(_row_with(classification_confidence=150))
+    assert high.classification_confidence == 100
+    low = _db_row_to_classified(_row_with(classification_confidence=-5))
+    assert low.classification_confidence == 0
+
+
+def test_db_row_to_classified_substitutes_blank_description() -> None:
+    """Schema allows empty TEXT but ``Transaction.description`` requires
+    ``min_length=1``. Substitute a single-space placeholder so the row
+    survives the round-trip (audit trail intact via id + source_page)."""
+    from aegis.storage import _db_row_to_classified
+
+    tx = _db_row_to_classified(_row_with(description=""))
+    assert len(tx.description) >= 1
+    # The page/line audit anchors are preserved so the operator can
+    # find the corrupt row in the PDF.
+    assert tx.source_page == 1
+    assert tx.source_line == 1
+
+
+def test_db_row_to_classified_preserves_valid_fields_unchanged() -> None:
+    """Sanity-check the defensive guards do not accidentally rewrite
+    valid rows (regression guard against over-eager coercion)."""
+    from aegis.storage import _db_row_to_classified
+
+    tx = _db_row_to_classified(_row_with(category="mca_debit", classification_confidence=72))
+    assert tx.category == "mca_debit"
+    assert tx.classification_confidence == 72
 
 
 # ---------------------------------------------------------------------------
@@ -592,9 +680,7 @@ def test_persist_parse_result_populates_pattern_analysis_with_codes_and_source_i
     can look up per-flag transactions via the stored DTO without
     re-running analyze_patterns()."""
     repo = InMemoryDocumentRepository()
-    row = repo.create_document(
-        file_hash="e" * 64, byte_size=4096, original_filename="stmt.pdf"
-    )
+    row = repo.create_document(file_hash="e" * 64, byte_size=4096, original_filename="stmt.pdf")
 
     result, deposit_id, withdrawal_id = _patternful_pipeline_result()
     repo.persist_parse_result(row.id, result=result)
@@ -637,9 +723,7 @@ def test_persist_parse_result_leaves_pattern_analysis_none_when_patterns_absent(
     this test confirms the write path doesn't accidentally synthesize
     an empty populated DTO instead)."""
     repo = InMemoryDocumentRepository()
-    row = repo.create_document(
-        file_hash="f" * 64, byte_size=4096, original_filename="empty.pdf"
-    )
+    row = repo.create_document(file_hash="f" * 64, byte_size=4096, original_filename="empty.pdf")
 
     # The existing _make_pipeline_result helper builds a PipelineResult
     # with patterns=None — reused here so the no-patterns shape stays
@@ -667,9 +751,7 @@ def test_persist_parse_result_overwrites_legacy_null_pattern_analysis() -> None:
     blocks the in-place case at the constraint level (it's not a code
     bug, it's a schema invariant)."""
     repo = InMemoryDocumentRepository()
-    row = repo.create_document(
-        file_hash="9" * 64, byte_size=4096, original_filename="legacy.pdf"
-    )
+    row = repo.create_document(file_hash="9" * 64, byte_size=4096, original_filename="legacy.pdf")
 
     # Stuff a legacy-shaped AnalysisRow directly into the repo: same
     # document_id, pattern_analysis=None (mimics a row written before

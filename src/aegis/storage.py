@@ -1028,19 +1028,74 @@ def _classified_to_db_row(
     }
 
 
+_VALID_TRANSACTION_CATEGORIES = frozenset(
+    {
+        "deposit",
+        "payroll",
+        "ach_credit",
+        "mca_debit",
+        "nsf_fee",
+        "wire_in",
+        "wire_out",
+        "transfer",
+        "fee",
+        "chargeback",
+        "refund",
+        "other",
+    }
+)
+
+
 def _db_row_to_classified(row: dict[str, Any]) -> ClassifiedTransaction:
+    """Hydrate a ``ClassifiedTransaction`` from a Supabase ``transactions`` row.
+
+    Defensive against legacy / partial rows: ``category`` and
+    ``classification_confidence`` are nullable in the schema
+    (``migrations/001_pgcrypto_and_transactions.sql``) so a single row
+    with NULL ``category`` or out-of-band value would otherwise raise a
+    Pydantic ``ValidationError`` against ``ClassifiedTransaction``'s
+    Literal-typed ``category`` field and tank the entire batch via the
+    list-comprehension in ``list_transactions`` — which Track B / Track C
+    then silently report as "no classified transactions are persisted"
+    on the dossier.
+
+    Rule: never let a single bad row drop the whole document's
+    transaction stream. NULL / unknown category → ``"other"`` (the
+    audit drill-down still shows the row with its source page/line so
+    the operator can investigate). NULL confidence → 0. NULL
+    ``running_balance`` is already handled (legacy parser path).
+
+    The ``description`` is also gracefully coerced: the schema declares
+    it NOT NULL but does NOT enforce non-empty, while
+    ``Transaction.description`` requires ``min_length=1`` (and the
+    model's ``str_strip_whitespace=True`` would strip a placeholder
+    space back to empty). Blank descriptions become ``"(blank)"`` so
+    the audit trail survives.
+    """
+    raw_category = row.get("category")
+    category = raw_category if raw_category in _VALID_TRANSACTION_CATEGORIES else "other"
+    raw_confidence = row.get("classification_confidence")
+    try:
+        confidence = int(raw_confidence) if raw_confidence is not None else 0
+    except (TypeError, ValueError):
+        confidence = 0
+    confidence = max(0, min(100, confidence))
+
+    raw_description = row.get("description")
+    description = raw_description if raw_description and raw_description.strip() else "(blank)"
+
     return ClassifiedTransaction(
         id=UUID(row["id"]),
         posted_date=date.fromisoformat(row["posted_date"]),
-        description=row["description"],
+        description=description,
         amount=Decimal(str(row["amount"])),
         running_balance=(
             Decimal(str(row["running_balance"])) if row.get("running_balance") else None
         ),
         source_page=row["source_page"],
         source_line=row["source_line"],
-        category=row["category"],
-        classification_confidence=row["classification_confidence"],
+        category=category,
+        classification_confidence=confidence,
     )
 
 
