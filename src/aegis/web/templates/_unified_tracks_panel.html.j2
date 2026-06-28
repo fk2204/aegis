@@ -1,7 +1,6 @@
 {#
   Unified A+B+C tracks panel. ADDITIVE — renders ALONGSIDE the
-  existing score block, not in place of it. Step 2 of the scoring
-  redesign retires fraud_score; this commit only surfaces A/B/C.
+  existing score block, not in place of it.
 
   Inputs (from build_unified_tracks_view):
     unified_tracks.integrity_verdicts       tuple[IntegrityVerdict, …]
@@ -287,10 +286,9 @@
       {% endif %}
     </div>
 
-    <div class="marginalia" style="margin-top:10px;font-size:11px">
-      The 3-track view is informational. The existing score block above
-      continues to drive the production decision; Step 2 of the
-      scoring redesign retires fraud_score and flips A/B/C live.
-    </div>
+    {# Engineering marginalia removed 2026-06-28 — the "Step 2 retires
+       fraud_score / flips A/B/C live" note was build-process narration
+       that leaked onto the production dossier. Track A/B/C are now the
+       authoritative scorer; no operator-facing caveat needed. #}
   </div>
 </section>

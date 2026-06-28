@@ -2031,6 +2031,120 @@ async def merchant_prepare_renewal(
 MERCHANT_NOTE_BODY_MAX_CHARS: Final[int] = MERCHANT_NOTE_MAX_CHARS
 
 
+# Human-readable industry labels for the ~50 most common MCA-broker
+# NAICS codes. The merchant.industry_naics column stores the raw 4-6
+# digit code; the dossier surfaces the friendly label so underwriters
+# don't have to memorize the taxonomy. Lookup is exact-match on the
+# stored code first; the route falls back to a 4-digit prefix lookup so
+# a stored 6-digit code (722513) still resolves through the 4-digit
+# parent (7225 → "Restaurants & food service"). Codes covered:
+# restaurants, construction, healthcare, auto, trucking, retail, legal,
+# accounting, real estate, plus a handful of other common SMB lines.
+NAICS_NAMES: Final[dict[str, str]] = {
+    # Restaurants & food service
+    "7225": "Restaurants & food service",
+    "722511": "Full-service restaurants",
+    "722513": "Limited-service restaurants",
+    "722514": "Cafeterias & buffets",
+    "722515": "Snack & nonalcoholic beverage bars",
+    "7224": "Drinking places (alcoholic beverages)",
+    "722410": "Drinking places (bars / taverns)",
+    "7223": "Special food services (catering)",
+    "722320": "Caterers",
+    # Construction
+    "236": "Construction of buildings",
+    "236115": "New single-family housing construction",
+    "236220": "Commercial & institutional building construction",
+    "237": "Heavy & civil engineering construction",
+    "238": "Specialty trade contractors",
+    "238210": "Electrical contractors",
+    "238220": "Plumbing, heating & air-conditioning contractors",
+    "238320": "Painting & wall covering contractors",
+    "238910": "Site preparation contractors",
+    # Healthcare
+    "621": "Ambulatory health care services",
+    "621111": "Offices of physicians",
+    "621210": "Offices of dentists",
+    "621310": "Offices of chiropractors",
+    "621399": "Offices of misc. health practitioners",
+    "621610": "Home health care services",
+    "623": "Nursing & residential care facilities",
+    # Auto
+    "441": "Motor vehicle & parts dealers",
+    "441110": "New car dealers",
+    "441120": "Used car dealers",
+    "441310": "Automotive parts & accessories stores",
+    "811": "Repair & maintenance",
+    "811111": "General automotive repair",
+    "811121": "Automotive body, paint & interior repair",
+    # Trucking & transportation
+    "484": "Truck transportation",
+    "484110": "General freight trucking, local",
+    "484121": "General freight trucking, long-distance truckload",
+    "484122": "General freight trucking, long-distance LTL",
+    "484220": "Specialized freight trucking (local)",
+    "484230": "Specialized freight trucking (long-distance)",
+    "485": "Transit & ground passenger transportation",
+    "492": "Couriers & messengers",
+    # Retail
+    "445": "Food & beverage retailers",
+    "445110": "Supermarkets & other grocery stores",
+    "445120": "Convenience stores",
+    "446": "Health & personal care retailers",
+    "447": "Gasoline stations",
+    "448": "Clothing & accessories retailers",
+    "451": "Sporting goods, hobby & musical instrument retailers",
+    "452": "General merchandise retailers",
+    "453": "Miscellaneous retailers",
+    # Legal & accounting
+    "5411": "Legal services",
+    "541110": "Offices of lawyers",
+    "5412": "Accounting, tax prep & bookkeeping",
+    "541211": "Offices of certified public accountants",
+    "541213": "Tax preparation services",
+    "541219": "Other accounting services",
+    # Real estate
+    "531": "Real estate",
+    "531210": "Offices of real estate agents & brokers",
+    "531311": "Residential property managers",
+    "531312": "Nonresidential property managers",
+    # Other common SMB lines that show up in MCA underwriting
+    "541": "Professional, scientific & technical services",
+    "5418": "Advertising, PR & related services",
+    "561": "Administrative & support services",
+    "561720": "Janitorial services",
+    "561730": "Landscaping services",
+    "561740": "Carpet & upholstery cleaning",
+    "812": "Personal & laundry services",
+    "812111": "Barber shops",
+    "812112": "Beauty salons",
+    "812113": "Nail salons",
+    "713940": "Fitness & recreational sports centers",
+    "541511": "Custom computer programming services",
+    "541512": "Computer systems design services",
+}
+
+
+def _naics_name(code: str | None) -> str | None:
+    """Look up the human-readable label for a NAICS code.
+
+    Tries exact match first, then progressively shorter prefixes (6-digit
+    falls back to 4-digit parent, 4-digit to 3-digit) so stored codes
+    resolve through the closest parent entry. Returns None when the code
+    has no entry at any prefix length — callers render the raw code in
+    that case so an unmapped industry still surfaces something.
+    """
+    if not code:
+        return None
+    if code in NAICS_NAMES:
+        return NAICS_NAMES[code]
+    for length in (5, 4, 3, 2):
+        prefix = code[:length]
+        if prefix in NAICS_NAMES:
+            return NAICS_NAMES[prefix]
+    return None
+
+
 @router.post("/merchants/{merchant_id}/notes", response_model=None)
 async def merchant_save_note(
     merchant_id: UUID,
@@ -4337,6 +4451,11 @@ async def merchant_detail(
         template_name,
         {
             "merchant": merchant,
+            # Friendly NAICS label resolved through ``_naics_name`` (covers
+            # ~50 common MCA-broker industry codes). Template uses
+            # ``naics_name`` when present, falls back to the raw code,
+            # then to the em-dash when both are missing.
+            "naics_name": _naics_name(merchant.industry_naics),
             "documents": documents_table,
             "ucc_result": background_checks_context["ucc_result"],
             "web_presence_result": background_checks_context["web_presence_result"],
@@ -4707,6 +4826,10 @@ def _build_pdf_dossier_context(
 
     return {
         "merchant": merchant,
+        # Friendly NAICS label (see ``_naics_name``). Mirrors the on-screen
+        # dossier context so the PDF surfaces the same human-readable
+        # industry label the operator sees in the browser.
+        "naics_name": _naics_name(merchant.industry_naics),
         "document": latest_doc,
         "analysis": latest_analysis,
         "documents": documents_table,
