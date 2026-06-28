@@ -115,6 +115,29 @@
           {% endif %}
         </div>
 
+        {# Secretary of State entity chip (migration 085 / Phase C).
+           Mirrors the UCC chip pattern: empty-state + Run-now when
+           never checked, otherwise a one-line summary of the SOS row. #}
+        {% if sos_result %}
+          <div class="bg-check-row"
+               data-test-id="bg-check-sos"
+               style="padding:8px 12px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+            <strong>SOS entity:</strong>
+            {% if sos_result.status %}{{ sos_result.status }}{% endif %}
+            {% if sos_result.entity_name %} — {{ sos_result.entity_name }}{% endif %}
+            {% if sos_result.formation_date %} (formed {{ sos_result.formation_date }}){% endif %}
+            {% if sos_result.data_source %}
+              <span style="font-size:11px;color:#666"> — via {{ sos_result.data_source }}</span>
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="bg-check-row"
+               data-test-id="bg-check-sos-empty"
+               style="padding:8px 12px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7);display:flex;align-items:center;justify-content:space-between">
+            <span><strong>SOS entity:</strong> <em>Not checked</em></span>
+          </div>
+        {% endif %}
+
         <div class="bg-check-row"
              data-test-id="bg-check-ofac"
              style="padding:8px 12px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">

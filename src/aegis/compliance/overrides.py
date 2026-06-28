@@ -71,6 +71,7 @@ ReasonCode = Literal[
     "data_quality_concern",
     "pattern_false_positive",
     "pattern_false_negative",
+    "license_verified_manually",
     "gut",
 ]
 

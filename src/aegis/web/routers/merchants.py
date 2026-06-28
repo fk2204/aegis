@@ -3384,6 +3384,24 @@ def _build_background_checks_context(merchant: MerchantRow) -> dict[str, Any]:
     if not portal_url and merchant.state:
         portal_url = UCC_STATE_PORTALS.get(merchant.state.upper())
 
+    # Secretary of State entity check (migration 085 / Phase C). ``None``
+    # when never checked (template renders an empty-state + Run-now
+    # button). Otherwise a dict the template projects into a chip
+    # alongside the UCC chip — same shape conventions: a short status
+    # label + the entity-name + formation-date + data-source.
+    sos_result: dict[str, Any] | None
+    if merchant.sos_checked_at is None:
+        sos_result = None
+    else:
+        sos_result = {
+            "status": merchant.sos_status,
+            "entity_name": merchant.sos_entity_name,
+            "formation_date": merchant.sos_formation_date,
+            "is_active": merchant.sos_is_active,
+            "data_source": merchant.sos_data_source,
+            "state_checked": merchant.sos_state_checked,
+        }
+
     return {
         "ucc_result": ucc_result,
         "web_presence_result": web_presence_result,
@@ -3391,6 +3409,7 @@ def _build_background_checks_context(merchant: MerchantRow) -> dict[str, Any]:
         "ucc_portal_url": portal_url,
         "ucc_operator_verified": merchant.ucc_operator_verified,
         "ucc_verified_at": merchant.ucc_verified_at,
+        "sos_result": sos_result,
     }
 
 
@@ -4034,6 +4053,21 @@ async def merchant_detail(
     )
     ofac_blocked = merchant.ofac_is_clear is False
 
+    # Federal bankruptcy check (migration 084 / Phase B). Lazy hook
+    # alongside ``ensure_ofac_check`` — runs once per merchant via
+    # CourtListener v4; persisted result reused until the operator
+    # clicks Refresh from the dossier. Does NOT gate funder rendering;
+    # findings surface on the dossier as informational.
+    from aegis.business_intel.bankruptcy_refresh import (
+        ensure_bankruptcy_check as _ensure_bankruptcy_check,
+    )
+
+    merchant = await _ensure_bankruptcy_check(
+        merchant,
+        merchants_repo=merchants,
+        audit=audit,
+    )
+
     matched_funders_cards: list[dict[str, Any]] = []
     top_matched_funder: FunderRow | None = None
     stips_result: StipsResult | None = None
@@ -4229,6 +4263,7 @@ async def merchant_detail(
             "ucc_portal_url": background_checks_context["ucc_portal_url"],
             "ucc_operator_verified": background_checks_context["ucc_operator_verified"],
             "ucc_verified_at": background_checks_context["ucc_verified_at"],
+            "sos_result": background_checks_context["sos_result"],
             "document": latest_doc,
             "analysis": latest_analysis,
             "aggregate_labels": _AGGREGATE_LABELS,

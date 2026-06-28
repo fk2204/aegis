@@ -70,14 +70,14 @@ UCC_STATE_PORTALS: Final[dict[str, str]] = {
     "KS": "https://www.kansas.gov/ucc/index.do",
     "KY": "https://web.sos.ky.gov/UCC/Search",
     "LA": "https://coraweb.sos.la.gov/UCCSearchOnline/UCCSearchOnline.aspx",
-    "ME": "https://icrs.informe.org/nei-sos-icrs/ICRS",  # TODO: confirm dedicated UCC search URL
+    "ME": "https://icrs.informe.org/nei-sos-icrs/",
     "MD": "https://egov.maryland.gov/businessexpress/entitysearch",
     "MA": "https://www.sec.state.ma.us/ucc/uccsearch/uccsearch.asp",
     "MI": "https://cofs.lara.state.mi.us/SOSCRA/UCC/UCCSearch",
     "MN": "https://www.sos.state.mn.us/business-liens/business-filings-search/",
-    "MS": "https://www.sos.ms.gov/UCC/Pages/default.aspx",  # TODO: confirm direct search URL
+    "MS": "https://corp.sos.ms.gov/corp/portal/c/page/corpBusinessSearch/portal.aspx",
     "MO": "https://bsd.sos.mo.gov/ucc/ucc.aspx",
-    "MT": "https://sosmt.gov/business/ucc/",  # TODO: confirm direct UCC search URL
+    "MT": "https://biz.sosmt.gov/",
     "NE": "https://www.nebraska.gov/sos/ucc/index.cgi",
     "NV": "https://esos.nv.gov/EnterpriseUI/Pages/UCC/UCCFiling.aspx",
     "NH": "https://quickstart.sos.nh.gov/online/UCC/UCCSearch",
@@ -86,8 +86,7 @@ UCC_STATE_PORTALS: Final[dict[str, str]] = {
     "NY": "https://appext20.dos.ny.gov/pls/ucc_public/web_search.main_frame",
     "NC": "https://www.sosnc.gov/online_services/search/by_title/_UCC",
     "ND": "https://firststop.sos.nd.gov/search/ucc",
-    # TODO: confirm UCC search URL (OH redirects search through CIS)
-    "OH": "https://bizimage.ohiosos.gov/api/image/pdf/",
+    "OH": "https://www5.sos.state.oh.us/ords/f?p=100:1",
     "OK": "https://www.sos.ok.gov/business/ucc/default.aspx",
     "OR": "https://sos.oregon.gov/business/Pages/find.aspx",
     "PA": "https://www.corporations.pa.gov/search/UCCsearch",

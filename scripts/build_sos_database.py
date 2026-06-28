@@ -129,7 +129,14 @@ STATE_SOURCES: Final[tuple[StateSource, ...]] = (
         state="WY",
         url="https://wyobiz.wy.gov/Business/FilingSearch.aspx",
         format="wy_scrape",
-        notes="HTML scrape (1 req/sec throttle). Opt-in via --include-wy.",
+        notes=(
+            "HTML scrape (1 req/sec throttle). Opt-in via --include-wy. "
+            "TODO: WY does not publish a bulk CSV/JSON export — the "
+            "FilingSearch.aspx page is JS-rendered, so a true bulk "
+            "ingest needs Playwright (or a paid bulk-data feed). Until "
+            "that lands, WY merchant lookups fall through to the "
+            "Bedrock web_search fallback."
+        ),
     ),
     StateSource(
         state="MN",

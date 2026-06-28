@@ -247,7 +247,7 @@ def _record_decision(
     response_model=ScoreResult,
     summary="Score a deal (hard declines + soft scoring + tier/payback).",
 )
-def score(
+async def score(
     deal: ScoreInput,
     request: Request,
     audit: Annotated[AuditLog, Depends(get_audit)],
@@ -318,6 +318,18 @@ def score(
         from aegis.compliance.ofac import ensure_ofac_check
 
         ensure_ofac_check(
+            merchant_row,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+
+        # Federal bankruptcy check (migration 084 / Phase B). Lazy hook
+        # alongside the UCC + OFAC sibling — runs once per merchant via
+        # CourtListener v4, persisted result reused until the operator
+        # refreshes from the dossier.
+        from aegis.business_intel.bankruptcy_refresh import ensure_bankruptcy_check
+
+        await ensure_bankruptcy_check(
             merchant_row,
             merchants_repo=merchants,
             audit=audit,
