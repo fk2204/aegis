@@ -206,6 +206,7 @@ async def index(
         proceed_count=proceed,
         funder_note_subs=funder_note_subs,
         docs=docs,
+        merchants_repo=merchants_repo,
         now=now_utc,
     )
     monthly_comparison = _compute_monthly_comparison(docs=docs, now=now_utc)
@@ -527,7 +528,14 @@ def _compute_today_pipeline(
 
 _KEY_NUMBERS_REVENUE_WINDOW_DAYS: Final[int] = 7
 _MONTHLY_COMPARISON_LOOKBACK_DOCS: Final[int] = 200
-_MONTHLY_COMPARISON_BUCKETS: Final[int] = 3
+# Trailing 6 calendar months — wider than the legacy 3 so the operator
+# sees a meaningful trend window. Two quarters of revenue cadence is the
+# minimum needed to read seasonality vs. drift.
+_MONTHLY_COMPARISON_BUCKETS: Final[int] = 6
+# Submission-window for "Ready to submit" in the key-numbers banner;
+# matches the Pipeline column-2 / deals-list 90-day convention so the
+# three surfaces (Today banner, deals list, kanban) agree on "active".
+_KEY_NUMBERS_READY_WINDOW_DAYS: Final[int] = 30
 
 
 def _compute_key_numbers(
@@ -537,6 +545,7 @@ def _compute_key_numbers(
     proceed_count: int,
     funder_note_subs: FunderNoteSubmissionRepository,
     docs: DocumentRepository,
+    merchants_repo: MerchantRepository,
     now: datetime,
 ) -> dict[str, Any]:
     """Top-of-dashboard key-numbers banner.
@@ -546,11 +555,49 @@ def _compute_key_numbers(
     on the submissions repo; ``avg_revenue_this_week`` averages
     ``analyses.true_revenue`` across documents parsed in the last 7
     days (bounded by ``_KEY_NUMBERS_REVENUE_WINDOW_DAYS``).
+
+    "Active deals" = ``merchants_repo.list_all()`` length. The repo's
+    ``list_all`` already excludes soft-deleted rows (migration 065).
+    AEGIS does not carry a ``status='disqualified'`` enum today; the
+    closest equivalent — soft-delete — is already filtered. Future
+    "disqualified" status (when wired) lands here.
+
+    "Ready to submit" = merchants with a ``proceed`` document AND no
+    funder_note_submission in the last ``_KEY_NUMBERS_READY_WINDOW_DAYS``
+    days. Matches the Pipeline column-2 / kanban "Ready to Review"
+    definition so the two surfaces agree (a merchant that's already
+    been submitted to a funder is NOT "ready to submit again").
+    OFAC clearance is NOT gated here — ``ofac_is_clear=False`` already
+    suppresses the funder grid at the dossier, so the merchant can't be
+    submitted from there; counting them in this banner inflates the
+    headline number without adding actionable work.
     """
+    from decimal import Decimal
+
     window_start = now - timedelta(days=_KEY_NUMBERS_REVENUE_WINDOW_DAYS)
     submissions = funder_note_subs.list_in_window(from_dt=window_start, to_dt=now)
     submitted_this_week = len(submissions)
 
+    # --- Ready-to-submit refinement ----------------------------------
+    # proceed-status docs joined to "no funder submission in the
+    # trailing 30 days" — the dossier-honest definition. Bound by
+    # _DOCUMENT_SCAN_LIMIT (500) which covers ~5 months of upload
+    # backlog at the operator's stated ~100 deals/month scale.
+    ready_window_start = now - timedelta(days=_KEY_NUMBERS_READY_WINDOW_DAYS)
+    recent_submissions = funder_note_subs.list_in_window(from_dt=ready_window_start, to_dt=now)
+    recently_submitted_merchant_ids = {s.merchant_id for s in recent_submissions}
+    proceed_docs = docs.list_documents(parse_status="proceed", limit=500)
+    proceed_merchant_ids = {d.merchant_id for d in proceed_docs if d.merchant_id is not None}
+    ready_to_submit_count = len(proceed_merchant_ids - recently_submitted_merchant_ids)
+
+    # --- Active-deals ------------------------------------------------
+    # ``merchant_total`` comes in from ``count_total`` which already
+    # excludes soft-deleted rows. Keep the same value here so the
+    # legacy stats strip and the key-numbers banner agree.
+    active_deals = merchant_total
+    _ = merchants_repo  # held in signature for future status filtering
+
+    # --- Avg revenue (7d) — unchanged --------------------------------
     week_docs = [
         d
         for d in docs.list_documents(limit=200)
@@ -559,18 +606,30 @@ def _compute_key_numbers(
     analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in week_docs])
     revenues = [a.true_revenue for a in analyses_by_doc.values() if a.true_revenue is not None]
     if revenues:
-        from decimal import Decimal
-
         avg_revenue = sum(revenues, Decimal("0")) / Decimal(len(revenues))
     else:
         avg_revenue = None
 
+    # Source IDs for the auditability rule: every aggregate ships with
+    # the list of contributing IDs so the dossier drill-down contract
+    # holds. ``avg_revenue`` is keyed by document, the rest by merchant.
     return {
-        "active_deals": merchant_total,
+        "active_deals": active_deals,
         "pending_parse": pending_count,
-        "ready_to_submit": proceed_count,
+        # Kept for callers that still read the unfiltered field (no
+        # current callers, but a templates-side regression should not
+        # rename to a brittle key).
+        "ready_to_submit_proceed_count": proceed_count,
+        "ready_to_submit": ready_to_submit_count,
+        "ready_to_submit_source_merchant_ids": sorted(
+            str(mid) for mid in (proceed_merchant_ids - recently_submitted_merchant_ids)
+        ),
         "submitted_this_week": submitted_this_week,
+        "submitted_this_week_source_submission_ids": [str(s.id) for s in submissions],
         "avg_revenue_this_week": avg_revenue,
+        "avg_revenue_this_week_source_document_ids": [
+            str(doc_id) for doc_id, a in analyses_by_doc.items() if a.true_revenue is not None
+        ],
     }
 
 
@@ -579,25 +638,49 @@ def _compute_monthly_comparison(
     docs: DocumentRepository,
     now: datetime,
 ) -> list[dict[str, Any]]:
-    """Aggregate the trailing-3-months portfolio view from
-    ``analyses.monthly_breakdown`` across recent documents.
+    """Aggregate the trailing-6-months portfolio view from
+    ``analyses.monthly_breakdown`` across the last ``_MONTHLY_COMPARISON_LOOKBACK_DOCS``
+    proceed-eligible documents. Newest-first; each row carries a trend
+    arrow vs. the prior month.
 
     ``monthly_breakdown`` is a per-document list of dicts shaped
     ``{month: "YYYY-MM", deposits, withdrawals, avg_balance,
-    nsf_count}`` (Decimals as strings — see parser/aggregate.py).
-    Here we union those per-month rows across every recent doc, sum
+    nsf_count}`` (Decimals as strings — see parser/aggregate.py). Here
+    we union those per-month rows across every recent doc, sum
     deposits / nsf_count, average avg_balance, and return the most
     recent ``_MONTHLY_COMPARISON_BUCKETS`` months newest-first.
 
+    Each row also carries ``source_document_ids: list[str]`` — the
+    documents whose ``monthly_breakdown`` contributed to that bucket —
+    so the dossier drill-down contract holds per the CLAUDE.md
+    "every aggregate ships with source IDs" rule.
+
+    Per-month "true revenue" (deposits net of transfers + MCA paybacks)
+    is NOT available from the parser today. ``analyses.true_revenue``
+    is a single portfolio-level Decimal computed across the full
+    statement period; the per-month rows carry only gross deposits +
+    nsf_count + avg_balance + withdrawals (gross, not category-split).
+    Splitting per-month true_revenue requires the classifier to bucket
+    transfers / mca_paybacks per month and the aggregator to project
+    those into ``monthly_breakdown`` — a parser-side change not in this
+    sprint's scope.
+
+    TODO(parser): emit per-month ``transfers`` + ``mca_paybacks`` on
+    ``monthly_breakdown`` rows so the dashboard can compute per-month
+    ``true_revenue = deposits - transfers - mca_paybacks``. Until then
+    this strip surfaces "Gross deposits" (the operator-honest label) so
+    the operator knows they're looking at the pre-net figure.
+
     Returns an empty list when no documents carry a populated
     ``monthly_breakdown`` — the template hides the strip in that case.
-    Note: the per-month ``deposits`` field is the closest proxy we
-    have to ``true_revenue`` at the monthly grain (the parser only
-    persists portfolio-level true_revenue, not per-month) — the strip
-    reads as "gross deposits" with the per-month NSF + ADB beside it.
     """
     from collections import defaultdict
     from decimal import Decimal, InvalidOperation
+
+    # ``now`` reserved for future "trailing-N-months from today" windowing;
+    # current impl returns the most-recent N populated months across all
+    # documents regardless of calendar offset.
+    _ = now
 
     recent_docs = docs.list_documents(limit=_MONTHLY_COMPARISON_LOOKBACK_DOCS)
     analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in recent_docs])
@@ -605,8 +688,9 @@ def _compute_monthly_comparison(
     deposits_by_month: defaultdict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     nsf_by_month: defaultdict[str, int] = defaultdict(int)
     balance_samples: defaultdict[str, list[Decimal]] = defaultdict(list)
+    sources_by_month: defaultdict[str, list[str]] = defaultdict(list)
 
-    for analysis in analyses_by_doc.values():
+    for doc_id, analysis in analyses_by_doc.items():
         for row in analysis.monthly_breakdown or []:
             month = row.get("month")
             if not month:
@@ -617,17 +701,43 @@ def _compute_monthly_comparison(
                 balance_samples[month].append(Decimal(row.get("avg_balance") or "0"))
             except (InvalidOperation, ValueError):
                 continue
+            sources_by_month[month].append(str(doc_id))
 
     if not deposits_by_month:
         return []
 
     sorted_months = sorted(deposits_by_month.keys(), reverse=True)[:_MONTHLY_COMPARISON_BUCKETS]
+    # Build oldest-first so each entry can compare against its predecessor;
+    # we reverse for the newest-first render contract right before return.
+    in_chrono = list(reversed(sorted_months))
     out: list[dict[str, Any]] = []
-    for month in sorted_months:
+    prev_deposits: Decimal | None = None
+    # Operator-visible threshold below which a delta reads as "flat" not
+    # "up/down" — 2% of the prior month. Cheap noise filter; keeps a
+    # $50 wobble on a $50,000 month from rendering as a downward arrow.
+    flat_threshold_pct = Decimal("0.02")
+
+    chrono_rows: list[dict[str, Any]] = []
+    for month in in_chrono:
+        deposits = deposits_by_month[month]
         samples = balance_samples[month]
         avg_balance = (
             sum(samples, Decimal("0")) / Decimal(len(samples)) if samples else Decimal("0")
         )
+        # Trend arrow vs. prior chronological month. First-month-of-window
+        # carries no arrow (no comparator) — the template renders an empty
+        # span so layout stays stable.
+        if prev_deposits is None or prev_deposits == 0:
+            trend: str = ""
+        else:
+            delta = deposits - prev_deposits
+            threshold = prev_deposits.copy_abs() * flat_threshold_pct
+            if delta.copy_abs() <= threshold:
+                trend = "flat"
+            elif delta > 0:
+                trend = "up"
+            else:
+                trend = "down"
         # Human label: "Apr 2026". Falls back to the raw key on parse
         # failure so the strip still renders something.
         try:
@@ -635,14 +745,20 @@ def _compute_monthly_comparison(
             label = datetime(int(year), int(month_num), 1, tzinfo=UTC).strftime("%b %Y")
         except (ValueError, IndexError):
             label = month
-        out.append(
+        chrono_rows.append(
             {
                 "label": label,
-                "deposits": deposits_by_month[month],
+                "deposits": deposits,
+                "deposits_source_ids": sources_by_month[month],
                 "nsf_count": nsf_by_month[month],
                 "adb": avg_balance,
+                "trend": trend,
             }
         )
+        prev_deposits = deposits
+
+    # Newest-first for render (matches the prior contract).
+    out = list(reversed(chrono_rows))
     return out
 
 

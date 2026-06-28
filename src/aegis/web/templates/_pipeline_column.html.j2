@@ -98,7 +98,10 @@
           </div>
           <div class="muted" style="font-size:11px;margin-top:2px">
             Revenue: {{ money(row.true_revenue) }}
-            · Top match: {{ row.top_funder_match or "—" }}
+            · Est. advance: <span data-test-id="pipeline-est-advance">{{ money(row.estimated_advance) }}</span>
+          </div>
+          <div class="muted" style="font-size:11px">
+            Top match: {{ row.top_funder_match or "—" }}
           </div>
           {% if row.action_chip %}
             <div style="margin-top:4px">{{ action_chip(row.action_chip) }}</div>
@@ -171,7 +174,7 @@
         <p class="muted" style="font-size:11px;margin-top:8px">+{{ columns.outcomes_tail }} more</p>
       {% endif %}
     {% else %}
-      <p class="muted" style="font-size:12px;margin-top:8px" data-test-id="pipeline-empty-outcomes">No outcomes in the last 30 days.</p>
+      <p class="muted" style="font-size:12px;margin-top:8px" data-test-id="pipeline-empty-outcomes">No outcomes in the last 90 days.</p>
     {% endif %}
   </div>
 

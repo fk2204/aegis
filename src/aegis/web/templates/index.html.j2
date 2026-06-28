@@ -74,16 +74,38 @@
 {% endblock %}
 
 {% block body %}
-{# 2026-06-28 — trailing 3-month revenue/NSF/ADB comparison strip.
+{# 2026-06-28 — trailing 6-month gross-deposits comparison strip.
    Aggregated from analyses.monthly_breakdown across the last
    ~200 documents (see _compute_monthly_comparison). Hidden when no
-   recent doc carries a populated breakdown (sparse-data degrade). #}
+   recent doc carries a populated breakdown (sparse-data degrade).
+
+   Label says "Gross deposits" — NOT "true revenue" — because
+   monthly_breakdown.deposits is the unfiltered deposit total. A
+   per-month true-revenue split (deposits net of transfers + MCA
+   paybacks) requires parser-side changes (see TODO in
+   _compute_monthly_comparison) and is not available yet.
+
+   Trend arrow is set by the route from the prior-month delta vs. a 2%
+   noise floor: "up" / "down" / "flat" / "" (first month, no comparator).
+#}
 {% if monthly_comparison %}
 <section class="monthly-strip" data-test-id="dashboard-monthly-strip">
   {% for month in monthly_comparison %}
-  <div class="month-cell">
+  <div class="month-cell" data-test-id="monthly-cell-{{ loop.index }}" data-trend="{{ month.trend }}">
     <div class="month-label">{{ month.label }}</div>
-    <div class="month-revenue">${{ '{:,.0f}'.format(month.deposits) }}</div>
+    <div class="month-revenue">
+      ${{ '{:,.0f}'.format(month.deposits) }}
+      {% if month.trend == 'up' %}
+        <span class="month-trend month-trend--up" data-test-id="monthly-trend-up" title="Up vs. prior month">↑</span>
+      {% elif month.trend == 'down' %}
+        <span class="month-trend month-trend--down" data-test-id="monthly-trend-down" title="Down vs. prior month">↓</span>
+      {% elif month.trend == 'flat' %}
+        <span class="month-trend month-trend--flat" data-test-id="monthly-trend-flat" title="Flat vs. prior month (within 2%)">→</span>
+      {% else %}
+        <span class="month-trend month-trend--none" aria-hidden="true"></span>
+      {% endif %}
+    </div>
+    <div class="month-revenue-label">Gross deposits</div>
     <div class="month-nsf {{ 'bad' if month.nsf_count > 0 else '' }}">{{ month.nsf_count }} NSF</div>
     <div class="month-adb">${{ '{:,.0f}'.format(month.adb) }} ADB</div>
   </div>

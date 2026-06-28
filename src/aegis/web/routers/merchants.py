@@ -160,6 +160,7 @@ from aegis.submissions import (
     SubmissionWriteError,
     record_submission,
 )
+from aegis.web._attention_card import derive_fraud_band
 from aegis.web._flag_labels import HumanFlag, humanize_flag
 from aegis.web._pattern_cards import (
     build_pattern_cards,
@@ -200,12 +201,27 @@ router = APIRouter()
 async def list_merchants(
     request: Request,
     repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
     assignments: Annotated[DealAssignmentRepository, Depends(get_deal_assignment_repository)],
     operators: Annotated[OperatorRepository, Depends(get_operator_repository)],
     operator: Annotated[Operator, Depends(current_operator)],
 ) -> HTMLResponse:
     """List merchants. Supports ``?mine=1`` to filter to the current
     operator's assignments only.
+
+    Each row carries the operator-useful columns: state, stated revenue
+    (merchant.monthly_revenue equivalent — derived from
+    ``requested_amount`` until a dedicated column lands), measured
+    revenue (latest analysis ``true_revenue``), paper grade letter
+    (derived from latest document's fraud_score band), parse status of
+    the most-recent document, last-activity (days since most recent
+    document upload), and assignee. Sorted by last-activity DESC so
+    the freshest deals top the list.
+
+    Two batched queries feed every row regardless of merchant count:
+    one ``list_documents`` to map merchant → latest doc, one
+    ``get_analyses_by_document_ids`` to map that doc → its analysis.
+    The N+1 risk would have been calling per merchant; this is N=2.
     """
     merchants = repo.list_all()
     mine_only = request.query_params.get("mine") == "1"
@@ -230,11 +246,114 @@ async def list_merchants(
             if m.id in assignment_map and assignment_map[m.id].operator_id == operator.id
         ]
 
+    # --- batched enrichment ------------------------------------------
+    # ``list_documents`` returns newest-first; dedupe by merchant_id and
+    # keep the first occurrence to get each merchant's latest. Limit
+    # 500 covers ~5 months of upload backlog at ~100 deals/month — same
+    # convention as ``/ui/deals`` and ``_compute_stale_deals``.
+    all_docs = docs.list_documents(limit=500)
+    latest_doc_by_merchant: dict[UUID, DocumentRow] = {}
+    for d in all_docs:
+        if d.merchant_id is None or d.merchant_id in latest_doc_by_merchant:
+            continue
+        latest_doc_by_merchant[d.merchant_id] = d
+
+    analyses_by_doc = docs.get_analyses_by_document_ids(
+        [d.id for d in latest_doc_by_merchant.values()]
+    )
+
+    now_utc = datetime.now(UTC)
+    rows: list[dict[str, Any]] = []
+    for m in merchants:
+        latest_doc = latest_doc_by_merchant.get(m.id)
+        latest_analysis = analyses_by_doc.get(latest_doc.id) if latest_doc is not None else None
+        # Days-since-last-upload. ``None`` for merchants with no docs;
+        # the sort key collapses ``None`` to +inf so "Awaiting upload"
+        # rows land at the bottom of the default sort.
+        days_since_activity: int | None = None
+        if latest_doc is not None:
+            days_since_activity = max(0, (now_utc - latest_doc.uploaded_at).days)
+
+        # Paper grade — cheap operator-honest proxy from the latest
+        # document's fraud_band. Cannot run score_deal per merchant in
+        # the list path (cost + OFAC side effects); the dossier surfaces
+        # the authoritative Track A/B/C verdict. Mapping:
+        #   clear   -> "B"   (low fraud signal; eligible for review)
+        #   review  -> "D"   (mid band; needs operator look)
+        #   decline -> "F"   (high fraud signal; manual_review territory)
+        #   unknown -> None  (no scored doc yet)
+        paper_grade: str | None = None
+        if latest_doc is not None and latest_doc.fraud_score is not None:
+            band = derive_fraud_band(latest_doc.fraud_score)
+            paper_grade = {
+                "clear": "B",
+                "review": "D",
+                "decline": "F",
+            }.get(band)
+
+        # Stated revenue — merchants today do NOT carry a
+        # ``monthly_revenue`` column. ``requested_amount`` is the
+        # closest operator-supplied figure at intake; surface it under
+        # the "Stated" header so the column has meaning rather than
+        # silently displaying None. Real monthly_revenue lives on the
+        # analysis side.
+        stated_revenue = m.requested_amount
+
+        # Assignee resolution — repurpose the existing assignment chain.
+        # Per CLAUDE.md "no fabricated defaults" the brief's
+        # ``merchant.assigned_to_email`` does not exist; use the
+        # operator email from the DealAssignment chain, fall back to
+        # MerchantRow.email only if explicitly present (some legacy
+        # merchants carry the broker contact there).
+        assignee_label: str | None = None
+        assigned = assignment_map.get(m.id)
+        if assigned is not None:
+            assignee_op = assignee_by_id.get(assigned.operator_id)
+            if assignee_op is not None:
+                assignee_label = assignee_op.display_name
+        if assignee_label is None:
+            # Pydantic-only field; ``getattr`` with sentinel keeps the
+            # contract loose so a future column add doesn't crash the
+            # list. Equivalent to the brief's
+            # ``getattr(m, "assigned_to_email", None)`` pattern.
+            assignee_label = getattr(m, "assigned_to_email", None)
+
+        rows.append(
+            {
+                "id": str(m.id),
+                "business_name": m.business_name,
+                "state": m.state or "—",
+                "stated_revenue": stated_revenue,
+                "measured_revenue": latest_analysis.true_revenue if latest_analysis else None,
+                "paper_grade": paper_grade,
+                "parse_status": latest_doc.parse_status if latest_doc else "no_upload",
+                "days_since_activity": days_since_activity,
+                "assignee_label": assignee_label or "—",
+                # Preserve the existing status-chip inputs for the
+                # template's PROVISIONAL / NEEDS NAMING markers.
+                "is_provisional": m.is_provisional,
+                "needs_manual_naming": m.needs_manual_naming,
+                "close_lead_id": m.close_lead_id,
+                # Owner kept for the secondary line under business_name
+                # — the template no longer renders it as its own column
+                # but the field is still useful below the name.
+                "owner_name": m.owner_name,
+                "industry_naics": m.industry_naics,
+            }
+        )
+
+    # Default sort: last-activity DESC. ``None`` (no docs yet) lands at
+    # the bottom because the comparator pushes it to +inf.
+    rows.sort(
+        key=lambda r: r["days_since_activity"] if r["days_since_activity"] is not None else 10**9
+    )
+
     return templates.TemplateResponse(
         request,
         "merchants.html.j2",
         {
             "merchants": merchants,
+            "merchant_rows": rows,
             "assignment_map": assignment_map,
             "assignee_by_id": assignee_by_id,
             "mine_only": mine_only,
