@@ -4105,13 +4105,25 @@ async def merchant_detail(
     # dossier Refresh button). The audit row is written inside the
     # helper. ``ofac_is_clear=False`` short-circuits funder rendering;
     # the template renders a red banner in place of the grid.
+    #
+    # Per-render 24h cache-first guard (2026-06-28): the underlying
+    # ``ensure_*`` helpers carry a 30-day TTL inside, but every dossier
+    # load was still re-entering the helper and consulting the in-memory
+    # SDN dataset / CourtListener API / SOS dataset. Operator reported
+    # the dossier was slow; this short-circuits the helper call when the
+    # persisted ``*_checked_at`` is < 24h old so the dossier render never
+    # blocks on a fresh check. Refresh button still bypasses (it calls
+    # ``refresh_*`` directly, not ``ensure_*``).
     from aegis.compliance.ofac import ensure_ofac_check as _ensure_ofac_check
 
-    merchant = _ensure_ofac_check(
-        merchant,
-        merchants_repo=merchants,
-        audit=audit,
-    )
+    _check_ttl = timedelta(hours=24)
+    _now = datetime.now(UTC)
+    if merchant.ofac_checked_at is None or (_now - merchant.ofac_checked_at) > _check_ttl:
+        merchant = _ensure_ofac_check(
+            merchant,
+            merchants_repo=merchants,
+            audit=audit,
+        )
     ofac_blocked = merchant.ofac_is_clear is False
 
     # Federal bankruptcy check (migration 084 / Phase B). Lazy hook
@@ -4119,15 +4131,23 @@ async def merchant_detail(
     # CourtListener v4; persisted result reused until the operator
     # clicks Refresh from the dossier. Does NOT gate funder rendering;
     # findings surface on the dossier as informational.
+    #
+    # 24h cache-first guard — see OFAC block above. CourtListener's
+    # anonymous tier is 100 req/day so a fresh check on every dossier
+    # render would hit the rate-limit ceiling quickly.
     from aegis.business_intel.bankruptcy_refresh import (
         ensure_bankruptcy_check as _ensure_bankruptcy_check,
     )
 
-    merchant = await _ensure_bankruptcy_check(
-        merchant,
-        merchants_repo=merchants,
-        audit=audit,
-    )
+    if (
+        merchant.bankruptcy_checked_at is None
+        or (_now - merchant.bankruptcy_checked_at) > _check_ttl
+    ):
+        merchant = await _ensure_bankruptcy_check(
+            merchant,
+            merchants_repo=merchants,
+            audit=audit,
+        )
 
     matched_funders_cards: list[dict[str, Any]] = []
     top_matched_funder: FunderRow | None = None
