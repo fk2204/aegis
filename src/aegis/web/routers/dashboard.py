@@ -194,12 +194,17 @@ async def index(
     today_pipeline = _compute_today_pipeline(docs, funder_note_subs, now=now_utc)
     today_recent_activity = _build_today_recent_activity(recent_activity_rows)
 
-    # 2026-06-28 dashboard refresh — key numbers banner above the stats
-    # strip and 3-month revenue-comparison strip below it. Both reuse
-    # data the route already has (counts above + the documents/analyses
-    # join) so they don't add round-trips. Empty / sparse data degrades
-    # to None so the template can hide the section instead of rendering
-    # zero-state noise.
+    # 2026-06-28 perf — fetch the documents window ONCE and pass to both
+    # helpers. The prior implementation hit ``docs.list_documents`` 3-4
+    # times across this route (stale_deals at limit=500 + key_numbers at
+    # limit=500 for proceed + key_numbers at limit=200 for the week +
+    # monthly_comparison at limit=200). Each call was a 740ms+ SELECT *
+    # against the wide documents table — they were stacking to a
+    # 23-second dashboard load (operator report 2026-06-28 15:13). One
+    # cached fetch at the widest limit (500) covers every helper that
+    # filters in Python downstream.
+    all_recent_docs = docs.list_documents(limit=500)
+
     key_numbers = _compute_key_numbers(
         merchant_total=merchant_total,
         pending_count=pending,
@@ -208,8 +213,13 @@ async def index(
         docs=docs,
         merchants_repo=merchants_repo,
         now=now_utc,
+        all_recent_docs=all_recent_docs,
     )
-    monthly_comparison = _compute_monthly_comparison(docs=docs, now=now_utc)
+    monthly_comparison = _compute_monthly_comparison(
+        docs=docs,
+        now=now_utc,
+        all_recent_docs=all_recent_docs,
+    )
 
     # Quick-action buttons are static — declared here so the template
     # iterates a list rather than hardcoding three blocks. Labels are
@@ -547,6 +557,7 @@ def _compute_key_numbers(
     docs: DocumentRepository,
     merchants_repo: MerchantRepository,
     now: datetime,
+    all_recent_docs: list[DocumentRow] | None = None,
 ) -> dict[str, Any]:
     """Top-of-dashboard key-numbers banner.
 
@@ -580,13 +591,15 @@ def _compute_key_numbers(
 
     # --- Ready-to-submit refinement ----------------------------------
     # proceed-status docs joined to "no funder submission in the
-    # trailing 30 days" — the dossier-honest definition. Bound by
-    # _DOCUMENT_SCAN_LIMIT (500) which covers ~5 months of upload
-    # backlog at the operator's stated ~100 deals/month scale.
+    # trailing 30 days" — the dossier-honest definition. Filters the
+    # shared ``all_recent_docs`` window in Python rather than running a
+    # second ``list_documents(parse_status="proceed")`` round-trip.
     ready_window_start = now - timedelta(days=_KEY_NUMBERS_READY_WINDOW_DAYS)
     recent_submissions = funder_note_subs.list_in_window(from_dt=ready_window_start, to_dt=now)
     recently_submitted_merchant_ids = {s.merchant_id for s in recent_submissions}
-    proceed_docs = docs.list_documents(parse_status="proceed", limit=500)
+    if all_recent_docs is None:
+        all_recent_docs = docs.list_documents(limit=500)
+    proceed_docs = [d for d in all_recent_docs if d.parse_status == "proceed"]
     proceed_merchant_ids = {d.merchant_id for d in proceed_docs if d.merchant_id is not None}
     ready_to_submit_count = len(proceed_merchant_ids - recently_submitted_merchant_ids)
 
@@ -597,11 +610,9 @@ def _compute_key_numbers(
     active_deals = merchant_total
     _ = merchants_repo  # held in signature for future status filtering
 
-    # --- Avg revenue (7d) — unchanged --------------------------------
+    # --- Avg revenue (7d) — re-uses shared docs window ---------------
     week_docs = [
-        d
-        for d in docs.list_documents(limit=200)
-        if d.parsed_at is not None and d.parsed_at >= window_start
+        d for d in all_recent_docs if d.parsed_at is not None and d.parsed_at >= window_start
     ]
     analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in week_docs])
     revenues = [a.true_revenue for a in analyses_by_doc.values() if a.true_revenue is not None]
@@ -637,6 +648,7 @@ def _compute_monthly_comparison(
     *,
     docs: DocumentRepository,
     now: datetime,
+    all_recent_docs: list[DocumentRow] | None = None,
 ) -> list[dict[str, Any]]:
     """Aggregate the trailing-6-months portfolio view from
     ``analyses.monthly_breakdown`` across the last ``_MONTHLY_COMPARISON_LOOKBACK_DOCS``
@@ -682,7 +694,10 @@ def _compute_monthly_comparison(
     # documents regardless of calendar offset.
     _ = now
 
-    recent_docs = docs.list_documents(limit=_MONTHLY_COMPARISON_LOOKBACK_DOCS)
+    # Re-uses the shared route-level fetch when provided (saves a 740ms
+    # SELECT * round-trip). Falls back to its own query for callers that
+    # invoke this helper standalone (tests / future surfaces).
+    recent_docs = all_recent_docs or docs.list_documents(limit=_MONTHLY_COMPARISON_LOOKBACK_DOCS)
     analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in recent_docs])
 
     deposits_by_month: defaultdict[str, Decimal] = defaultdict(lambda: Decimal("0"))
