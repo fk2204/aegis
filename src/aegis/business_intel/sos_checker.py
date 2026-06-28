@@ -2,29 +2,48 @@
 
 Lookup-then-Bedrock pattern: hit a local SQLite cache (populated by
 ``scripts/build_sos_database.py`` on a weekly systemd timer) first;
-fall back to a Bedrock ``web_search_20250305`` invocation only when
-the merchant's state isn't covered by bulk data or the name has no
-fuzzy match.
+fall back to a prompt-only Bedrock invocation when the merchant's
+state isn't covered by bulk data or the name has no fuzzy match.
 
-Local hits are instant + $0. Bedrock fallback is bounded (one search
-budget) and uses the cost-tracking client wrapper so per-call cost
-rolls up in ``llm_costs``.
+Local hits are instant + $0. Bedrock fallback uses the cost-tracking
+client wrapper so per-call cost rolls up in ``llm_costs``.
+
+The original fallback used the ``web_search_20250305`` server tool
+(see :meth:`aegis.llm.BedrockClient.invoke_with_web_search`). That
+tool was rejected for the AEGIS Bedrock account during the bulk
+SOS pass — every fallback collapsed to ``data_source="no_data"`` on
+the dossier, making the panel look broken. The current default is
+prompt-only (:meth:`aegis.llm.BedrockClient.invoke_prompt_only`):
+the model answers from training-time knowledge and is told to
+return ``"Not Found"`` when it can't reliably identify the entity.
+Set ``AEGIS_SOS_FALLBACK_MODE=web_search`` to flip back to the old
+tool-call path while iterating.
 
 Mirrors ``aegis.business_intel.ucc_checker`` posture: frozen dataclass
 result, Protocol client, every failure mode collapses to an empty
 ``SOSResult``. Caller treats the result as a soft signal — the dossier
 renders a chip but never auto-decides on it.
 
-Empty result spec:
-- ``found = False``
-- ``data_source = "no_data"``
-- ``checked_at`` populated (so ensure_sos_check doesn't re-fire on the
-  next score until the TTL window expires)
+Data-source taxonomy on the returned ``SOSResult``:
+
+* ``local_db:{STATE}`` — matched from the local SQLite cache.
+* ``bedrock`` — matched via Bedrock (prompt-only or web-search).
+* ``bedrock_not_found`` — Bedrock answered cleanly with "Not Found".
+* ``bedrock_unparseable`` — Bedrock answered, response not valid JSON.
+* ``bedrock_error`` — Bedrock invocation raised (network, throttle,
+  permission, etc.). The "we tried and the call failed" signal.
+* ``no_data`` — we never tried (empty business name; Bedrock client
+  could not be constructed). The "didn't even try" signal.
+
+The dossier template renders each taxonomy entry in plain English so
+the operator can distinguish "Bedrock unreachable" from "Bedrock said
+no such entity exists".
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -92,8 +111,15 @@ class SOSResult:
 
 
 class _BedrockClientLike(Protocol):
-    """Minimal protocol the checker needs."""
+    """Minimal protocol the checker needs.
 
+    Both methods are listed because the env-var-gated rollback to the
+    web-search path needs them coexisting. The prompt-only method is
+    the default; the web-search method is only called when
+    ``AEGIS_SOS_FALLBACK_MODE=web_search``.
+    """
+
+    def invoke_prompt_only(self, prompt: str) -> str: ...
     def invoke_with_web_search(self, prompt: str) -> str: ...
 
 
@@ -266,13 +292,28 @@ class SOSChecker:
                     error="bedrock_init_failed",
                 )
 
-        prompt = _build_bedrock_prompt(name, state)
+        # Default path is prompt-only — the ``web_search_20250305`` server
+        # tool was rejected for the AEGIS Bedrock account during the bulk
+        # SOS pass, collapsing every fallback to data_source="no_data".
+        # Conservative env-var rollback keeps the old code path available
+        # while iterating; see module docstring for the taxonomy.
+        use_web_search = (
+            os.environ.get("AEGIS_SOS_FALLBACK_MODE", "prompt_only").strip().lower() == "web_search"
+        )
+        if use_web_search:
+            prompt = _build_bedrock_prompt_web_search(name, state)
+            invoke = client.invoke_with_web_search
+        else:
+            prompt = _build_bedrock_prompt_prompt_only(name, state)
+            invoke = client.invoke_prompt_only
+
         try:
-            raw = client.invoke_with_web_search(prompt)
+            raw = invoke(prompt)
         except Exception:
             _log.warning(
-                "sos_checker.bedrock_invoke_failed business_name_hash=%s",
+                "sos_checker.bedrock_invoke_failed business_name_hash=%s mode=%s",
                 hash(name),
+                "web_search" if use_web_search else "prompt_only",
                 exc_info=True,
             )
             return SOSResult(
@@ -281,7 +322,7 @@ class SOSChecker:
                 entity_name=None,
                 formation_date=None,
                 is_active=None,
-                data_source="no_data",
+                data_source="bedrock_error",
                 checked_at=now,
                 error="bedrock_invoke_failed",
             )
@@ -299,7 +340,7 @@ class SOSChecker:
                 entity_name=None,
                 formation_date=None,
                 is_active=None,
-                data_source="bedrock_fallback",
+                data_source="bedrock_unparseable",
                 checked_at=now,
                 error="bedrock_parse_failed",
             )
@@ -311,7 +352,7 @@ class SOSChecker:
                 entity_name=None,
                 formation_date=None,
                 is_active=None,
-                data_source="bedrock_fallback",
+                data_source="bedrock_not_found",
                 checked_at=now,
             )
 
@@ -322,7 +363,7 @@ class SOSChecker:
             entity_name=_coerce_str(parsed.get("entity_name")),
             formation_date=_coerce_str(parsed.get("formation_date")),
             is_active=_coerce_is_active(status_raw),
-            data_source="bedrock_fallback",
+            data_source="bedrock",
             checked_at=now,
         )
 
@@ -344,7 +385,7 @@ _CODE_FENCE_OPEN = re.compile(r"^```(?:json)?\s*", flags=re.IGNORECASE)
 _CODE_FENCE_CLOSE = re.compile(r"\s*```\s*$")
 
 
-def _build_bedrock_prompt(name: str, state: str | None) -> str:
+def _build_bedrock_prompt_web_search(name: str, state: str | None) -> str:
     target_state = state or "(unknown state — search nationally)"
     return f"""\
 You have access to a web_search tool. Use AT MOST 3 web searches total.
@@ -367,6 +408,37 @@ Search the official state SOS registry first (e.g. for FL try sunbiz.org).
 Do not use third-party aggregator sites unless the official registry is
 unreachable. Verify the entity matches the searched name closely — do
 not return a different business that merely contains similar words."""
+
+
+def _build_bedrock_prompt_prompt_only(name: str, state: str | None) -> str:
+    """Prompt-only fallback used when the ``web_search`` tool is unavailable.
+
+    The model answers from training-time knowledge with a strict JSON
+    schema and is told to return ``{"found": false}`` whenever it cannot
+    confidently identify the entity. That conservative default is what
+    keeps an LLM-only lookup from manufacturing false positives.
+    """
+    target_state = state or "(unknown state)"
+    return f"""\
+Look up the Secretary of State business-entity registration for
+{name!r} in {target_state}.
+
+Return ONE JSON object and nothing else. No prose, no code fence.
+
+{{
+  "found": true,
+  "status": "<one of: ACTIVE | INACTIVE | DISSOLVED | WITHDRAWN | NOT FOUND>",
+  "entity_name": "<official entity name as recorded, or null>",
+  "formation_date": "<YYYY-MM-DD or null>"
+}}
+
+When you cannot reliably confirm the entity exists (no training-time
+knowledge, ambiguous name, multiple unrelated matches), return
+{{"found": false}}.
+
+Do NOT guess. Do NOT fabricate a formation date. Do NOT return a
+different business that merely contains similar words. Verify the
+entity matches the searched name closely; otherwise return found=false."""
 
 
 def _parse_bedrock_response(raw: str) -> dict[str, object]:

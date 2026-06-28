@@ -353,6 +353,18 @@ class CostTrackingBedrockClient:
 
         return _text_blocks(response)
 
+    def invoke_prompt_only(self, prompt: str, *, max_tokens: int = 512) -> str:
+        """Mirror :meth:`BedrockClient.invoke_prompt_only` with cost recording."""
+        response = self._inner._client.messages.create(
+            model=self._inner._model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        self._audit_usage("invoke_prompt_only", response)
+        from aegis.llm import _text_blocks
+
+        return _text_blocks(response)
+
     def invoke_tool_json(
         self,
         *,

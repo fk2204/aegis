@@ -1,10 +1,14 @@
 """Tests for ``aegis.business_intel.sos_checker``.
 
-Three concerns mirror ``test_ucc_checker``:
+Four concerns mirror ``test_ucc_checker`` plus the new taxonomy:
 
 1. Local SQLite hit short-circuits Bedrock — counts must be 0.
-2. Missing state / DB falls back to Bedrock; failures collapse to empty.
+2. Missing state / DB falls back to Bedrock; failures collapse to the
+   appropriate ``data_source`` (no_data / bedrock_error /
+   bedrock_unparseable / bedrock_not_found / bedrock).
 3. Name-normalization absorbs entity-suffix variants.
+4. The ``AEGIS_SOS_FALLBACK_MODE`` env var routes between the
+   prompt-only default and the legacy web-search path.
 
 The 30-day TTL on ``ensure_sos_check`` is tested in
 ``test_sos_refresh.py``.
@@ -28,20 +32,40 @@ from aegis.business_intel.sos_checker import (
 # Bedrock client stubs
 # ---------------------------------------------------------------------------
 class _StubBedrock:
+    """Stub that returns a canned response from BOTH fallback methods.
+
+    The checker dispatches to ``invoke_prompt_only`` by default and to
+    ``invoke_with_web_search`` when ``AEGIS_SOS_FALLBACK_MODE=web_search``.
+    The stub implements both so a test can flip the env var without
+    rewriting the stub.
+    """
+
     def __init__(self, raw: str) -> None:
         self.raw = raw
         self.calls = 0
         self.last_prompt: str | None = None
+        self.last_method: str | None = None
+
+    def invoke_prompt_only(self, prompt: str) -> str:
+        self.calls += 1
+        self.last_prompt = prompt
+        self.last_method = "invoke_prompt_only"
+        return self.raw
 
     def invoke_with_web_search(self, prompt: str) -> str:
         self.calls += 1
         self.last_prompt = prompt
+        self.last_method = "invoke_with_web_search"
         return self.raw
 
 
 class _RaisingBedrock:
     def __init__(self) -> None:
         self.calls = 0
+
+    def invoke_prompt_only(self, prompt: str) -> str:
+        self.calls += 1
+        raise RuntimeError("bedrock_unreachable")
 
     def invoke_with_web_search(self, prompt: str) -> str:
         self.calls += 1
@@ -152,8 +176,9 @@ def test_uncovered_state_falls_back_to_bedrock(tmp_path: Path) -> None:
     result = checker.check_entity("Test Corp", "VT")
 
     assert bedrock.calls == 1
+    assert bedrock.last_method == "invoke_prompt_only"
     assert result.found is True
-    assert result.data_source == "bedrock_fallback"
+    assert result.data_source == "bedrock"
     assert result.is_active is True
     assert "Vermont" in (bedrock.last_prompt or "") or "VT" in (bedrock.last_prompt or "")
 
@@ -248,7 +273,7 @@ def test_normalization_strips_punctuation_and_spaces() -> None:
 # ---------------------------------------------------------------------------
 # 6. Bedrock failure → empty result with bedrock_fallback source
 # ---------------------------------------------------------------------------
-def test_bedrock_raise_collapses_to_empty(tmp_path: Path) -> None:
+def test_bedrock_raise_collapses_to_bedrock_error(tmp_path: Path) -> None:
     db = tmp_path / "sos_entities.db"
     _seed_db(db, [])  # empty → forces fallback
     bedrock = _RaisingBedrock()
@@ -258,11 +283,13 @@ def test_bedrock_raise_collapses_to_empty(tmp_path: Path) -> None:
 
     assert bedrock.calls == 1
     assert result.found is False
-    assert result.data_source == "no_data"
+    # Distinguishes "we tried and the call failed" (bedrock_error) from
+    # "we never tried" (no_data).
+    assert result.data_source == "bedrock_error"
     assert result.error == "bedrock_invoke_failed"
 
 
-def test_bedrock_malformed_json_collapses_to_empty(tmp_path: Path) -> None:
+def test_bedrock_malformed_json_collapses_to_bedrock_unparseable(tmp_path: Path) -> None:
     db = tmp_path / "sos_entities.db"
     _seed_db(db, [])
     bedrock = _StubBedrock("not json at all")
@@ -272,8 +299,24 @@ def test_bedrock_malformed_json_collapses_to_empty(tmp_path: Path) -> None:
 
     assert bedrock.calls == 1
     assert result.found is False
-    assert result.data_source == "bedrock_fallback"
+    assert result.data_source == "bedrock_unparseable"
     assert result.error == "bedrock_parse_failed"
+
+
+def test_bedrock_explicit_not_found_collapses_to_bedrock_not_found(tmp_path: Path) -> None:
+    """The model answered cleanly but said no such entity — distinct
+    signal from an unparseable / errored Bedrock call."""
+    db = tmp_path / "sos_entities.db"
+    _seed_db(db, [])
+    bedrock = _StubBedrock(json.dumps({"found": False}))
+    checker = SOSChecker(db_path=db, bedrock_client=bedrock)
+
+    result = checker.check_entity("Whatever", "CA")
+
+    assert bedrock.calls == 1
+    assert result.found is False
+    assert result.data_source == "bedrock_not_found"
+    assert result.error is None
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +331,24 @@ def test_missing_db_falls_back_to_bedrock(tmp_path: Path) -> None:
 
     assert bedrock.calls == 1
     assert result.found is True
-    assert result.data_source == "bedrock_fallback"
+    assert result.data_source == "bedrock"
+
+
+def test_web_search_mode_uses_legacy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AEGIS_SOS_FALLBACK_MODE=web_search routes through the old tool-call
+    method; the default ``prompt_only`` (or any other value) uses the new
+    prompt-only path."""
+    db = tmp_path / "sos_entities.db"
+    _seed_db(db, [])
+    bedrock = _StubBedrock(json.dumps({"found": True, "status": "ACTIVE", "entity_name": "X"}))
+    checker = SOSChecker(db_path=db, bedrock_client=bedrock)
+
+    monkeypatch.setenv("AEGIS_SOS_FALLBACK_MODE", "web_search")
+    result = checker.check_entity("X", "NV")
+
+    assert result.found is True
+    assert bedrock.last_method == "invoke_with_web_search"
+    assert result.data_source == "bedrock"
 
 
 # ---------------------------------------------------------------------------
