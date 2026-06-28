@@ -99,12 +99,14 @@ class FlagExplanation(_StrictModel):
     )
     severity: NarratorSeverity
     explanation: str = Field(
-        max_length=400,
+        max_length=800,
         description=(
             "Plain-English sentence(s) citing THIS deal's actual numbers "
             "(e.g. '$12,500 unexplained deposit on 2026-04-03 — 7x the "
             "merchant's usual daily deposit'). Never a generic flag-"
-            "dictionary definition."
+            "dictionary definition. Hard cap 800 chars so the dossier "
+            "row stays readable; the tool schema mirrors this so Bedrock "
+            "stays within budget."
         ),
     )
 
@@ -114,11 +116,13 @@ class RecommendedAction(_StrictModel):
 
     action: NarratorAction
     next_step: str = Field(
-        max_length=400,
+        max_length=800,
         description=(
             "Exact next thing to do. If action == 'call_first', the "
             "EXACT question to ask the merchant. If 'request_documents', "
-            "the named documents. If 'submit_now', the next click."
+            "the named documents. If 'submit_now', the next click. Hard "
+            "cap 800 chars so the dossier action row stays readable; the "
+            "tool schema mirrors this so Bedrock stays within budget."
         ),
     )
     top_funder_match: str | None = Field(
@@ -311,7 +315,8 @@ Hard rules:
 4. For each fired flag, cite THIS deal's actual numbers in the explanation, not a textbook definition. "$12,400 deposit on 2026-04-03, 7x the merchant's usual daily deposit" — not "preloan spike means an unusual large deposit before underwriting."
 5. The recommended action is one of {submit_now, call_first, request_documents, do_not_submit}. Pick the most actionable. If call_first, write the EXACT question to ask the merchant.
 6. deal_summary is 3-5 sentences. Cover: what the business is, the cashflow picture, the integrity picture, and what makes this deal interesting or risky. Use the actual monthly revenue figure from the context.
-7. Output ONLY through the supplied tool. Do not write any conversational text outside the tool call.
+7. Length budget: each flag explanation and the next_step must be at most ~800 characters (roughly 2-4 sentences). If several signals point the same direction, name the two strongest with their numbers — do NOT list every signal. The tool schema enforces this; outputs over the cap are rejected.
+8. Output ONLY through the supplied tool. Do not write any conversational text outside the tool call.
 
 Action selection logic (apply in order):
 - Track A integrity verdict == "fail" → do_not_submit. next_step = "Decline — [integrity reason]."
@@ -470,14 +475,30 @@ def _build_user_payload(ctx: NarratorContext) -> dict[str, Any]:
 # matches this schema.
 _NARRATOR_TOOL_NAME = "emit_deal_summary"
 
+# maxLength values mirror the Pydantic Field constraints on
+# ``NarratorSummary`` / ``FlagExplanation`` / ``RecommendedAction``. The
+# JSON schema is what Bedrock actually sees; the Pydantic limits validate
+# the response on the way back. Keeping them in lockstep prevents the
+# 2026-06-28 failure mode where Bedrock produced 600-1000-char
+# explanations that blew past a silent 400-char Pydantic cap and the
+# whole call was discarded as ``NarratorError``.
+_MAX_DEAL_SUMMARY_CHARS = 2000
+_MAX_FLAG_EXPLANATION_CHARS = 800
+_MAX_NEXT_STEP_CHARS = 800
+_MAX_FUNDER_NAME_CHARS = 120
+_MAX_TERMS_CHARS = 160
+_MAX_FLAG_CODE_CHARS = 80
+
 _NARRATOR_TOOL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "deal_summary": {
             "type": "string",
+            "maxLength": _MAX_DEAL_SUMMARY_CHARS,
             "description": (
                 "3-5 sentences. Plain English. Cite the actual monthly "
-                "revenue figure. No hedge words. ALWAYS present."
+                "revenue figure. No hedge words. ALWAYS present. "
+                f"Hard cap {_MAX_DEAL_SUMMARY_CHARS} characters."
             ),
         },
         "flag_explanations": {
@@ -489,12 +510,25 @@ _NARRATOR_TOOL_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "flag_code": {"type": "string"},
+                    "flag_code": {
+                        "type": "string",
+                        "maxLength": _MAX_FLAG_CODE_CHARS,
+                    },
                     "severity": {
                         "type": "string",
                         "enum": ["info", "warn", "decline"],
                     },
-                    "explanation": {"type": "string"},
+                    "explanation": {
+                        "type": "string",
+                        "maxLength": _MAX_FLAG_EXPLANATION_CHARS,
+                        "description": (
+                            "Plain-English explanation citing this deal's "
+                            "numbers. Hard cap "
+                            f"{_MAX_FLAG_EXPLANATION_CHARS} characters — "
+                            "stay concise; if several signals fire, pick "
+                            "the two strongest rather than listing all."
+                        ),
+                    },
                 },
                 "required": ["flag_code", "severity", "explanation"],
             },
@@ -511,9 +545,23 @@ _NARRATOR_TOOL_SCHEMA: dict[str, Any] = {
                         "do_not_submit",
                     ],
                 },
-                "next_step": {"type": "string"},
-                "top_funder_match": {"type": ["string", "null"]},
-                "estimated_terms": {"type": ["string", "null"]},
+                "next_step": {
+                    "type": "string",
+                    "maxLength": _MAX_NEXT_STEP_CHARS,
+                    "description": (
+                        "Exact next thing to do. Hard cap "
+                        f"{_MAX_NEXT_STEP_CHARS} characters — one or two "
+                        "short sentences, not a paragraph."
+                    ),
+                },
+                "top_funder_match": {
+                    "type": ["string", "null"],
+                    "maxLength": _MAX_FUNDER_NAME_CHARS,
+                },
+                "estimated_terms": {
+                    "type": ["string", "null"],
+                    "maxLength": _MAX_TERMS_CHARS,
+                },
             },
             "required": ["action", "next_step"],
         },

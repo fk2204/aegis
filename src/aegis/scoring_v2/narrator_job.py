@@ -366,6 +366,11 @@ async def generate_narrator_summary(
         }
     except NarratorError as exc:
         # Bedrock returned non-conforming output. Audit + swallow.
+        # The message cap is 1000 chars here (vs 200 elsewhere) so the
+        # full Pydantic ``ValidationError`` shape — which names the
+        # offending field plus the constraint that fired — survives into
+        # the audit row. Truncating at 200 hid the 2026-06-28 root cause
+        # (length-cap rejections looked identical from the outside).
         audit.record(
             actor="system",
             action="narrator.failed",
@@ -374,7 +379,7 @@ async def generate_narrator_summary(
             details={
                 "merchant_id": str(merchant_id),
                 "error": "NarratorError",
-                "message": str(exc)[:200],
+                "message": str(exc)[:1000],
             },
         )
         _log.warning(
