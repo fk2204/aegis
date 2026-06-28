@@ -551,6 +551,29 @@ class InMemoryDocumentRepository:
 # Supabase implementation ------------------------------------------------------
 
 
+# Slim column list for `documents` reads that don't need ``all_flags``.
+#
+# ``all_flags`` is a TEXT[] that grows with every parser + forensic
+# detector pass — on production rows it routinely carries dozens of
+# entries (META / MATH / PATTERN / SHADOW / WARN families). Pulling it
+# back on every list-style read inflates wire payload for callers that
+# only render aggregate columns (uploaded_at / parse_status / fraud_score
+# /etc). Routes that DO need ``all_flags`` (the dossier raw-flags lazy
+# partial via ``get_document``, the dashboard attention groups + review
+# queue cards via ``list_documents``) keep the wide ``select("*")``.
+#
+# Column names verified against migrations 000 (base schema) and 033
+# (chunk-B PDF retention columns). Order mirrors the ``DocumentRow``
+# field declaration so the mapper stays easy to audit. ``all_flags``
+# is the only DocumentRow field intentionally omitted here.
+DOCUMENTS_SLIM_COLUMNS = (
+    "id,file_hash,byte_size,original_filename,merchant_id,"
+    "parse_status,fraud_score,fraud_score_breakdown,metadata_flags,"
+    "error_detail,uploaded_at,parsed_at,uploaded_by,"
+    "storage_path,sha256_original,encryption_key_version,retention_until"
+)
+
+
 class SupabaseDocumentRepository:
     """Persistence backed by Postgres via supabase-py.
 
@@ -572,7 +595,11 @@ class SupabaseDocumentRepository:
     ) -> DocumentRow:
         client = get_supabase()
         existing = (
-            client.table("documents").select("*").eq("file_hash", file_hash).limit(1).execute()
+            client.table("documents")
+            .select(DOCUMENTS_SLIM_COLUMNS)
+            .eq("file_hash", file_hash)
+            .limit(1)
+            .execute()
         )
         if existing.data:
             row = cast(dict[str, Any], existing.data[0])
@@ -593,6 +620,10 @@ class SupabaseDocumentRepository:
         return _row_to_document(cast(dict[str, Any], inserted.data[0]))
 
     def get_document(self, document_id: UUID) -> DocumentRow:
+        # Wide ``select("*")`` retained: the dossier raw-flags lazy
+        # partial (``merchant_document_raw_flags_lazy`` in
+        # ``web/routers/merchants.py``) reads ``document.all_flags`` off
+        # the result. Single-row fetch — no list-scan perf concern.
         result = (
             get_supabase()
             .table("documents")
@@ -606,10 +637,15 @@ class SupabaseDocumentRepository:
         return _row_to_document(cast(dict[str, Any], result.data[0]))
 
     def find_by_hash(self, file_hash: str) -> DocumentRow | None:
+        # Slim select — upload dedupe path only reads ``id`` +
+        # ``parse_status`` off the result (see ``api/routes/upload.py``).
+        # ``all_flags`` is intentionally dropped; the mapper's
+        # ``.get("all_flags") or []`` defaults to an empty list on
+        # absence, matching legacy-row behavior.
         result = (
             get_supabase()
             .table("documents")
-            .select("*")
+            .select(DOCUMENTS_SLIM_COLUMNS)
             .eq("file_hash", file_hash)
             .limit(1)
             .execute()
@@ -741,6 +777,14 @@ class SupabaseDocumentRepository:
         merchant_id: UUID | None = None,
         limit: int = 100,
     ) -> list[DocumentRow]:
+        # Wide ``select("*")`` retained: multiple dashboard call paths
+        # consume ``all_flags`` off the returned rows — _build_attention_groups
+        # and the review-queue card builder in ``web/routers/dashboard.py``,
+        # the match-card / soft-signal helpers in
+        # ``web/routers/merchants.py``. Slimming here would silently
+        # collapse every chip to ``[]`` without raising. A future cleanup
+        # could push ``all_flags`` into a separate batched fetch keyed
+        # on document_id and slim this query then.
         query = (
             get_supabase()
             .table("documents")
@@ -887,12 +931,17 @@ class SupabaseDocumentRepository:
         """Scan the partial index ``idx_documents_retention_until``
         for rows whose retention has passed. Oldest expiry first so
         the chunk-E sweep makes deterministic per-run progress on a
-        large backlog."""
+        large backlog.
+
+        Uses the slim column set — the sweep only reads ``id`` +
+        ``storage_path`` + ``retention_until`` off each row to drive
+        the blob delete + audit. ``all_flags`` is omitted.
+        """
         now_iso = datetime.now(UTC).isoformat()
         result = (
             get_supabase()
             .table("documents")
-            .select("*")
+            .select(DOCUMENTS_SLIM_COLUMNS)
             .lt("retention_until", now_iso)
             .not_.is_("storage_path", "null")
             .order("retention_until", desc=False)
