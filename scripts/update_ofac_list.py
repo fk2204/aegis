@@ -69,14 +69,19 @@ import httpx
 SDN_URL: Final[str] = (
     "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.XML"
 )
-# 2026-06-28 — Treasury renamed CONS_ADV.XML to CONS_ADVANCED.XML on the
-# sanctionslistservice.ofac.treas.gov API. The old path now returns a
-# 200/0-byte response (silent break — no HTTP error to trip _fetch), so
-# the cache was missing ~17k consolidated entries (saw 38,163 SDN-only
-# entries instead of the expected ~55,000). Probe confirmed CONS_ADVANCED
-# returns 4.1 MB of valid sdnList XML.
+# 2026-06-28 — Treasury renamed the consolidated export multiple times
+# during the 2026-Q2 migration. The path that returns SDN-format XML
+# (``<sdnList><sdnEntry>...`` — what ``_parse_ofac_xml`` walks) is
+# CONSOLIDATED.XML. Confirmed via prod-box probe:
+#   * CONS_ADV.XML        → 200 / 0-byte (Treasury still serves the
+#     URL, just empty)
+#   * CONS_ADVANCED.XML   → 200 / 4.1 MB but uses the new "Advanced
+#     XML" schema (``<Sanctions><DistinctParty>...``) which our parser
+#     does NOT understand — returned 0 entries
+#   * CONSOLIDATED.XML    → 200 / sdnList format — the parser-compatible
+#     one. Selected.
 CONSOLIDATED_URL: Final[str] = (
-    "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/CONS_ADVANCED.XML"
+    "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/CONSOLIDATED.XML"
 )
 
 # Hard floor for a successful consolidated fetch. CONS_ADVANCED.XML is
