@@ -364,6 +364,31 @@ def run_shadow_review_pass(
     )
 
 
+# 5-minute Redis cache for the dashboard attention section. Operator
+# report 2026-06-28: shadow_review_attention_section was taking 2.3s on
+# every dashboard render (walks the trailing 7 days of audit log per
+# merchant). The result is stable enough to memoize for 5 minutes; the
+# Wed 06:00 UTC ``run_shadow_review_cron`` does the authoritative weekly
+# pass via ``run_shadow_review_pass`` which doesn't go through this
+# cache.
+_SHADOW_CACHE_KEY: Final[str] = "aegis:shadow_review:attention"
+_SHADOW_CACHE_TTL_SECONDS: Final[int] = 300
+
+
+def _get_redis_client() -> Any:  # noqa: ANN401 — redis.Redis comes back loosely typed
+    """Best-effort Redis client builder. Returns None on any failure so
+    the dashboard render falls through to a cold compute rather than
+    failing the page."""
+    try:
+        import redis
+
+        from aegis.config import get_settings
+
+        return redis.Redis.from_url(get_settings().redis_url, socket_timeout=1.0)
+    except Exception:
+        return None
+
+
 def build_shadow_review_attention_section(
     *,
     docs: DocumentRepository,
@@ -382,7 +407,48 @@ def build_shadow_review_attention_section(
     is the union of those distinct document ids (satisfies the CLAUDE.md
     aggregate-with-source-ids rule). ``cards`` is the first ``max_cards``
     documents sorted most-recently-parsed first.
+
+    Result is cached in Redis for 5 minutes (see ``_SHADOW_CACHE_KEY``).
+    Cache misses fall through to the cold compute and re-populate the
+    cache; cache failures (Redis down, network blip) also fall through
+    to cold compute so the dashboard never 500s on a transient infra
+    blip.
     """
+    # Cache key folds in ``today``/``window_days``/``max_cards`` so a
+    # caller with non-default args doesn't clobber another caller's
+    # result. ``today=None`` (the live default) gets a stable midnight-
+    # rounded key so two renders in the same minute share the cache.
+    today_key = (today or datetime.now(UTC).date()).isoformat()
+    cache_key = f"{_SHADOW_CACHE_KEY}:{today_key}:{window_days}:{max_cards}"
+
+    redis_client = _get_redis_client()
+    if redis_client is not None:
+        try:
+            cached = redis_client.get(cache_key)
+            if cached:
+                import json
+
+                payload = json.loads(cached)
+                cached_cards: list[ShadowReviewCard] = [
+                    ShadowReviewCard(
+                        document_id=UUID(c["document_id"]),
+                        document_filename=c["document_filename"],
+                        merchant_id=UUID(c["merchant_id"]),
+                        merchant_name=c["merchant_name"],
+                        parsed_at=datetime.fromisoformat(c["parsed_at"]),
+                        contributing_codes=tuple(c["contributing_codes"]),
+                        href=c["href"],
+                        test_id=c["test_id"],
+                    )
+                    for c in payload["cards"]
+                ]
+                source_ids = [UUID(s) for s in payload["source_document_ids"]]
+                return int(payload["count"]), source_ids, cached_cards
+        except Exception as exc:
+            # Cache read failure — fall through to cold compute. Don't
+            # let a transient Redis blip 500 the dashboard.
+            _log.warning("shadow_review.cache_read_failed err=%s", exc)
+
     today = today or datetime.now(UTC).date()
     window_start = today - timedelta(days=window_days)
     since_dt = datetime.combine(window_start, datetime.min.time(), tzinfo=UTC)
@@ -417,6 +483,36 @@ def build_shadow_review_attention_section(
         )
 
     source_document_ids = list(by_doc.keys())
+
+    # Best-effort write-through. A cache write failure is non-fatal —
+    # the next render takes the same 2.3s cold compute again.
+    if redis_client is not None:
+        try:
+            import json
+
+            payload = {
+                "count": len(by_doc),
+                "source_document_ids": [str(s) for s in source_document_ids],
+                "cards": [
+                    {
+                        "document_id": str(c.document_id),
+                        "document_filename": c.document_filename,
+                        "merchant_id": str(c.merchant_id),
+                        "merchant_name": c.merchant_name,
+                        "parsed_at": c.parsed_at.isoformat(),
+                        "contributing_codes": list(c.contributing_codes),
+                        "href": c.href,
+                        "test_id": c.test_id,
+                    }
+                    for c in cards
+                ],
+            }
+            redis_client.set(cache_key, json.dumps(payload), ex=_SHADOW_CACHE_TTL_SECONDS)
+        except Exception as exc:
+            # Non-fatal: next render re-runs the cold compute. Log so
+            # operators can spot a sustained cache outage.
+            _log.warning("shadow_review.cache_write_failed err=%s", exc)
+
     return len(by_doc), source_document_ids, cards
 
 
