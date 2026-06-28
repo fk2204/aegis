@@ -440,14 +440,17 @@ def test_raw_flags_section_renders_when_document_has_flags() -> None:
     assert "[H-02] high_nsf_rate" in html
 
 
-def test_raw_flags_details_open_when_narrator_summary_absent() -> None:
+def test_raw_flags_details_always_closed() -> None:
+    """2026-06-28 — the technical-audit-log details block is ALWAYS
+    closed regardless of narrator_summary presence. The raw [META] /
+    [MATH] tokens never serve as primary content; the Track A/B/C
+    plain-English panel above is the canonical render. Operators who
+    need the raw audit strings still have one-click access via the
+    <summary>.
+    """
     doc = _make_doc(all_flags=["[H-01] mca_stacking"])
-    html = _render(document=doc, analysis=_make_analysis(), narrator_summary=None)
-    assert 'data-test-id="dossier-raw-flags-details" open' in html
-
-
-def test_raw_flags_details_closed_when_narrator_summary_present() -> None:
-    doc = _make_doc(all_flags=["[H-01] mca_stacking"])
+    # Both branches (narrator present / absent) must render closed.
+    html_no_narrator = _render(document=doc, analysis=_make_analysis(), narrator_summary=None)
     narrator = {
         "deal_summary": "Stable five-month history.",
         "flag_explanations": [],
@@ -458,11 +461,13 @@ def test_raw_flags_details_closed_when_narrator_summary_present() -> None:
             "estimated_terms": None,
         },
     }
-    html = _render(document=doc, analysis=_make_analysis(), narrator_summary=narrator)
-    # Open attribute is gated on `narrator_summary is none` — present
-    # narrator means the details element renders without it.
-    assert 'data-test-id="dossier-raw-flags-details" open' not in html
-    assert 'data-test-id="dossier-raw-flags-details"' in html
+    html_with_narrator = _render(document=doc, analysis=_make_analysis(), narrator_summary=narrator)
+    for html in (html_no_narrator, html_with_narrator):
+        assert 'data-test-id="dossier-raw-flags-details"' in html
+        # ``open`` attribute MUST be absent in both branches.
+        assert 'data-test-id="dossier-raw-flags-details" open' not in html
+        # Summary text renamed from "Show flags" → "Technical audit log".
+        assert "Technical audit log" in html
 
 
 def test_raw_flags_section_absent_when_no_flags() -> None:

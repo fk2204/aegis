@@ -1725,33 +1725,45 @@
 }
 
 /* 2026-06-28 — key numbers banner above the dashboard stats strip.
- * 5 cells, evenly spaced; calm tone for "Ready to submit" when
- * non-zero, otherwise neutral. */
+ * Bordered-box treatment (flex w/ wrap so it tolerates a 6th or 7th
+ * cell without a layout break). Replaced the prior 5-col grid +
+ * bottom-border strip because the operator reported the cells were
+ * reading as unstyled text — a bordered card visually anchors them
+ * as a single component. */
 .dossier-page .key-numbers-banner {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
-  padding: 12px 24px;
-  margin: 0 0 8px;
-  background: var(--paper-2, var(--paper));
-  border-bottom: 1px solid var(--rule);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  margin: 0 24px 20px;
+  overflow: hidden;
+  background: var(--paper);
 }
 .dossier-page .key-numbers-banner .key-cell {
-  text-align: center;
+  flex: 1;
+  min-width: 140px;
+  padding: 14px 20px;
+  border-right: 1px solid var(--rule);
 }
-.dossier-page .key-numbers-banner .k {
-  font: 10px/1 var(--mono, "JetBrains Mono", monospace);
-  letter-spacing: 0.14em;
+.dossier-page .key-numbers-banner .key-cell:last-child { border-right: 0; }
+.dossier-page .key-numbers-banner .key-cell .k {
+  font-size: 10px;
   text-transform: uppercase;
+  letter-spacing: 0.1em;
   color: var(--ink-3);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  font-family: var(--mono, monospace);
 }
-.dossier-page .key-numbers-banner .v {
-  font: 600 22px/1 var(--serif, "Fraunces", Georgia);
+.dossier-page .key-numbers-banner .key-cell .v {
+  font-size: 26px;
+  font-weight: 700;
+  font-family: var(--mono, monospace);
   color: var(--ink);
+  line-height: 1;
   font-variant-numeric: tabular-nums;
 }
-.dossier-page .key-numbers-banner .v.calm { color: var(--approve, #2a5a2a); }
+.dossier-page .key-numbers-banner .key-cell .v.calm { color: var(--approve, #2a5a2a); }
 
 /* 2026-06-28 — monthly revenue comparison strip between the existing
  * stats strip and the 3-column body. 6 cells (newest-first); deposits
@@ -1761,19 +1773,21 @@
  * (deposits net of transfers + MCA paybacks) is not persisted by the
  * parser today — see TODO(parser) in _compute_monthly_comparison. */
 .dossier-page .monthly-strip {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 10px;
-  padding: 12px 24px;
-  margin: 0 0 16px;
-}
-.dossier-page .monthly-strip .month-cell {
-  padding: 10px 12px;
+  display: flex;
+  gap: 0;
   border: 1px solid var(--rule);
-  border-left: 3px solid var(--accent, #1a5490);
-  border-radius: 4px;
+  border-radius: 6px;
+  margin: 0 24px 24px;
+  overflow: hidden;
   background: var(--paper);
 }
+.dossier-page .monthly-strip .month-cell {
+  flex: 1;
+  min-width: 130px;
+  padding: 12px 16px;
+  border-right: 1px solid var(--rule);
+}
+.dossier-page .monthly-strip .month-cell:last-child { border-right: 0; }
 .dossier-page .monthly-strip .month-label {
   font: 10px/1 var(--mono, "JetBrains Mono", monospace);
   letter-spacing: 0.12em;
@@ -1817,19 +1831,50 @@
   color: var(--ink-3);
 }
 
-/* Narrower viewports — 3 columns at tablet, 1 at mobile (handled by
- * the existing @media (max-width: 768px) rule below). */
-@media (max-width: 1100px) {
-  .dossier-page .monthly-strip {
-    grid-template-columns: repeat(3, 1fr);
-  }
-}
-
+/* Narrower viewports — flex+min-width handles the wrap automatically;
+ * tablet keeps cells visible by allowing wrap rather than collapsing
+ * to a single column. */
 @media (max-width: 768px) {
   .dossier-page .key-numbers-banner,
   .dossier-page .monthly-strip {
-    grid-template-columns: 1fr;
+    flex-wrap: wrap;
   }
+  .dossier-page .key-numbers-banner .key-cell,
+  .dossier-page .monthly-strip .month-cell {
+    min-width: 100%;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .dossier-page .key-numbers-banner .key-cell:last-child,
+  .dossier-page .monthly-strip .month-cell:last-child {
+    border-bottom: 0;
+  }
+}
+
+/* 2026-06-28 — collapsed technical-audit-log details block at the
+ * bottom of the dossier. Closed by default; serves the operator's
+ * raw [META]/[MATH] tokens behind one click while the Track A/B/C
+ * panel above is the canonical render of these signals. */
+.dossier-page .raw-flags-details {
+  margin: 16px 24px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.dossier-page .raw-flags-details summary {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 6px 0;
+}
+.dossier-page .raw-flags-details ul {
+  margin: 6px 0 0 16px;
+  line-height: 1.7;
+  font-family: var(--mono);
+  color: var(--ink-2);
+  font-size: 11.5px;
 }
 
 /* Attention queue sub-sections — manual review keeps the existing

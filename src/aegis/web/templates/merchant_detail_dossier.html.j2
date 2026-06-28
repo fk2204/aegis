@@ -2146,23 +2146,18 @@
     {% endif %}
     <!-- END: record-outcome -->
 
-    {# ============== Raw flags (audit / drill-down) ==============
-       Fix 5 (2026-06-26) — drop the raw ``all_flags`` list into a
-       collapsible at the bottom of the main area. Open-by-default ONLY
-       when ``narrator_summary`` is absent so legacy / unsummarized
-       deals still surface their underlying flags without an extra
-       click; collapsed when the narrator already explains the deal in
-       plain English. #}
+    {# ============== Technical audit log ==============
+       2026-06-28 — formerly "Raw flags". Always-closed <details> so the
+       [META] / [MATH] / etc. tokens never surface to the underwriter as
+       primary content; the Track A/B/C plain-English panel above is the
+       canonical render of these signals. Operators who need the raw
+       audit strings (debugging a parser regression, building a manual
+       hand-decline note) still have one-click access. #}
     {% if document and document.all_flags %}
       <section id="raw-flags" class="section" data-test-id="dossier-raw-flags-section">
-        <header>
-          <span class="n">&sect;</span>
-          <h2>Raw <em>flags</em></h2>
-          <span class="footnote">{{ document.all_flags|length }} flag{{ '' if document.all_flags|length == 1 else 's' }} on the latest document &middot; audit-only drill-down</span>
-        </header>
-        <details data-test-id="dossier-raw-flags-details"{% if narrator_summary is none %} open{% endif %}>
-          <summary>Show flags</summary>
-          <ul style="margin:8px 0 0 0;padding-left:18px;font-family:var(--mono);font-size:11.5px;color:var(--ink-2);line-height:1.6">
+        <details class="raw-flags-details" data-test-id="dossier-raw-flags-details">
+          <summary>Technical audit log ({{ document.all_flags|length }} flag{{ '' if document.all_flags|length == 1 else 's' }})</summary>
+          <ul>
             {% for f in document.all_flags %}
               <li>{{ f }}</li>
             {% endfor %}
