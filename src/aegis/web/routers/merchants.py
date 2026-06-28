@@ -66,6 +66,10 @@ from aegis.api.deps import (
 )
 from aegis.audit import AuditLog
 from aegis.background_checks import enqueue_background_checks
+from aegis.business_intel.license_checker import (
+    evaluate_license_gate,
+    record_license_verification,
+)
 from aegis.close.client import CloseClient, CloseError
 from aegis.close.funder_note import RenewalContext, format_funder_note
 from aegis.close.orchestration import enqueue_close_orchestration
@@ -2333,6 +2337,53 @@ async def merchant_refresh_ucc(
     )
 
 
+@router.post(
+    "/merchants/{merchant_id}/verify-license",
+    response_class=HTMLResponse,
+    dependencies=[Depends(underwriter_or_admin)],
+)
+async def merchant_verify_license(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    operator: Annotated[Operator, Depends(current_operator)],
+) -> HTMLResponse:
+    """Operator attestation: "I verified the merchant's license on the
+    state portal." Writes one audit row; subsequent dossier renders see
+    that row via ``_is_already_verified`` and unblock the submit grid.
+
+    Returns an HX-Refresh response so the operator's view reloads with
+    the per-funder submit buttons enabled. The HTMX `outerHTML` swap on
+    the gate banner is still honored — the small HTML body confirms
+    the verification before the full-page refresh fires.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    actor = f"operator:{operator.email}" if operator.email else str(operator.id)
+    record_license_verification(
+        merchant_id=merchant.id,
+        state=merchant.state,
+        industry_naics=merchant.industry_naics,
+        actor=actor,
+        actor_email=operator.email,
+        audit=audit,
+    )
+
+    body = (
+        '<div id="license-gate" class="alert" '
+        'data-test-id="dossier-license-gate-verified" '
+        'style="padding:10px 12px;border:1px solid var(--approve,#2a7d3a);'
+        "background:color-mix(in oklch, var(--approve,#2a7d3a) 12%, transparent);"
+        'color:var(--ink,#222);font-family:var(--serif,serif);font-size:13px">'
+        "✓ License verified. Refreshing dossier…"
+        "</div>"
+    )
+    return HTMLResponse(content=body, headers={"HX-Refresh": "true"})
+
+
 @router.post("/merchants/{merchant_id}/refresh-web-presence", response_model=None)
 async def merchant_refresh_web_presence(
     merchant_id: UUID,
@@ -4017,6 +4068,18 @@ async def merchant_detail(
     # template renders an empty-state + Run-now button in that branch).
     background_checks_context = _build_background_checks_context(merchant)
 
+    # Phase E — trade-licensing gate. Fires when the merchant's
+    # industry_naics requires state licensure AND we have a verified
+    # portal URL for that state+industry AND the operator hasn't yet
+    # clicked "Mark license verified". Bypass design (skip when we
+    # can't verify) keeps the gate from blocking with a wrong link.
+    license_gate = evaluate_license_gate(
+        merchant_id=merchant_id,
+        state=merchant.state,
+        industry_naics=merchant.industry_naics,
+        audit=audit,
+    )
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -4084,6 +4147,11 @@ async def merchant_detail(
             # when the merchant is unassigned; the chip renders the
             # "Unassigned + Assign" CTA in that case.
             "assignee": assignment_assignee,
+            # Phase E — license-verification gate (above § 4 funder grid).
+            # When ``required`` is True, the dossier renders a banner and
+            # disables per-funder submit buttons. ``LicenseGateContext``
+            # carries ``industry_label``, ``portal_url``, ``state_name``.
+            "license_gate": license_gate,
         },
     )
 

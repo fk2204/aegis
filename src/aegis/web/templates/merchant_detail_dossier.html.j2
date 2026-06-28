@@ -1561,6 +1561,44 @@
         </span>
       </header>
 
+      {# Phase E — trade-licensing gate. Replaces the per-funder Submit
+         buttons with a verification banner when the merchant's
+         industry_naics requires state licensure AND we know a verified
+         portal URL for the state+industry. The operator clicks through
+         to the state portal, verifies the license, and clicks "✓ Mark
+         license verified" to unblock submission (HX-Refresh on success
+         reloads the dossier with the gate cleared). Per AEGIS rule:
+         when we don't know how to verify, the gate doesn't fire — never
+         block with a wrong portal link. #}
+      {% if license_gate and license_gate.required %}
+        <div id="license-gate"
+             class="alert manual-review-banner"
+             data-test-id="dossier-license-gate"
+             data-industry-key="{{ license_gate.industry_key }}"
+             style="padding:10px 12px;margin-bottom:12px">
+          <strong>⚠️ License verification required.</strong>
+          Industry: <strong>{{ license_gate.industry_label }}</strong>
+          &middot;
+          State: <strong>{{ merchant.state }}</strong>
+          <br>
+          →
+          <a href="{{ license_gate.portal_url }}"
+             target="_blank"
+             rel="noopener noreferrer"
+             data-test-id="dossier-license-gate-portal-link">
+            Search {{ license_gate.state_name or merchant.state }} licensing portal
+          </a>
+          <button class="btn"
+                  type="button"
+                  data-test-id="dossier-license-gate-verify-button"
+                  hx-post="/ui/merchants/{{ merchant.id }}/verify-license"
+                  hx-target="#license-gate"
+                  hx-swap="outerHTML"
+                  hx-confirm="Confirm: you've verified the merchant holds an active license on the state portal. This unblocks Submit-to-funder."
+                  style="margin-left:8px">✓ Mark license verified</button>
+        </div>
+      {% endif %}
+
       {% if score_result and score_result.recommendation == 'decline' %}
         <div class="funder-summary" data-test-id="dossier-funder-matching-decline">
           <div class="copy">
@@ -1734,6 +1772,15 @@
                         data-test-id="dossier-submit-funder-already-submitted"
                         data-submit-to-funder="already-submitted"
                         aria-disabled="true">Submitted &check;</span>
+                {% elif license_gate and license_gate.required %}
+                  {# Phase E — trade licensing gate. Banner above explains;
+                     per-card buttons render disabled so the operator can't
+                     submit via keyboard tab-stop or HTMX bypass. #}
+                  <span class="btn is-disabled"
+                        data-test-id="dossier-submit-funder-disabled-license-gate"
+                        data-submit-to-funder="disabled-license-gate"
+                        aria-disabled="true"
+                        title="License verification required — see the banner at the top of § 4.">Submit to {{ c.funder_name }}</span>
                 {% elif c.color == 'red' %}
                   <span class="btn is-disabled"
                         data-test-id="dossier-submit-funder-disabled-hard-fail"
