@@ -117,13 +117,34 @@ def test_no_email_sending_libraries_imported() -> None:
 _URL_RE = re.compile(r"""https?://[^\s'"`<>)]+""", re.IGNORECASE)
 
 
+# Files that carry operator-facing portal-reference URLs as data
+# dictionaries (not outbound HTTP calls). These dicts surface official
+# state-government search URLs on the dossier so the operator can click
+# through and verify findings; AEGIS itself never makes outbound calls
+# to them — the actual UCC / licensing search runs through Bedrock
+# ``web_search``, not direct HTTPS. Treating these as outbound hosts
+# would force an unwieldy 50-state allowlist explosion for no real
+# security benefit, since none of these URLs are dialed by AEGIS code.
+_REFERENCE_URL_FILES: set[str] = {
+    "src/aegis/business_intel/ucc_checker.py",  # UCC_STATE_PORTALS (51 entries)
+    "src/aegis/business_intel/license_checker.py",  # LICENSE_PORTALS (~28 entries)
+}
+
+
 def test_outbound_hosts_restricted_to_allowlist() -> None:
     """Any explicit ``http(s)://`` URL in src/aegis must map to a known
     non-funder destination. A net-new outbound host means a deliberate
     security decision — add it to ``_ALLOWED_OUTBOUND_HOSTS`` with a
-    justification or remove the call."""
+    justification or remove the call.
+
+    Files in ``_REFERENCE_URL_FILES`` are exempt because they carry
+    operator-facing portal-reference URL dicts (not outbound callers).
+    """
     findings: list[tuple[Path, str]] = []
     for path in _iter_python_files():
+        rel = path.relative_to(_REPO_ROOT).as_posix()
+        if rel in _REFERENCE_URL_FILES:
+            continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         for match in _URL_RE.finditer(text):
             raw = match.group(0).lower()
