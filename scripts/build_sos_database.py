@@ -81,61 +81,41 @@ class StateSource:
 
 STATE_SOURCES: Final[tuple[StateSource, ...]] = (
     StateSource(
-        state="FL",
-        # SUNBIZ publishes the quarterly corporate-data file as
-        # fixed-width ASCII. Field positions documented at
-        # https://dos.myflorida.com/sunbiz/other-services/data-downloads/corporate-data-file/
-        # The direct download lives on the SUNBIZ FTP host (HTTPS
-        # mirror); _fetch_fl discovers the latest archive at runtime
-        # by listing the cordata directory.
-        url="https://search.sunbiz.org/Inquiry/CorporationSearch/Download",
-        format="fl_fixed_width",
-        notes="SUNBIZ quarterly fixed-width corporate-data file.",
-    ),
-    StateSource(
         state="CO",
-        # Socrata SODA API (works as of 2026-06 — CO is the canonical
-        # working endpoint; ~1.2M active entities).
+        # Socrata SODA API. Canonical working endpoint as of 2026-06-28;
+        # paginates cleanly through ~3M historical + active rows. Field
+        # name is ``entityname`` (one word) — handled by
+        # ``_socrata_row_to_canonical``.
         url="https://data.colorado.gov/resource/4ykn-tg5h.json",
         format="socrata_json",
     ),
     StateSource(
         state="OR",
-        # 2026-06-28 — Socrata SODA /resource/{id}.json returned 404 on
-        # 2026-06-27 build. Switching to the Socrata Download API
-        # (/api/views/{id}/rows.json?accessType=DOWNLOAD) which the
-        # state's open-data portal advertises as the canonical export
-        # endpoint. The Socrata Download API returns a {meta, data}
-        # envelope (columns + array-of-arrays) — see _fetch_socrata_rows_json.
-        url="https://data.oregon.gov/api/views/bhk3-b7qd/rows.json?accessType=DOWNLOAD",
-        format="socrata_rows_json",
+        # 2026-06-28 — refreshed dataset id ``tckn-sxa6`` ("Active
+        # Businesses - ALL") replaces the retired ``bhk3-b7qd``.
+        # Confirmed live via data.oregon.gov catalog search +
+        # /resource/ probe (returns ``business_name`` field).
+        url="https://data.oregon.gov/resource/tckn-sxa6.json",
+        format="socrata_json",
     ),
     StateSource(
         state="CT",
-        # 2026-06-28 — dataset id refreshed (old w3e7-gxs7 returned 404).
-        url="https://data.ct.gov/api/views/n3p2-res3/rows.json?accessType=DOWNLOAD",
-        format="socrata_rows_json",
+        # 2026-06-28 — refreshed dataset id ``n7gp-d28j`` ("Connecticut
+        # Business Registry - Business Master") replaces the retired
+        # ``w3e7-gxs7`` / ``n3p2-res3``. Returns ``name`` field —
+        # canonicalised by ``_socrata_row_to_canonical``'s fallback chain.
+        url="https://data.ct.gov/resource/n7gp-d28j.json",
+        format="socrata_json",
     ),
     StateSource(
-        state="IA",
-        url="https://data.iowa.gov/api/views/kaxi-bdpi/rows.json?accessType=DOWNLOAD",
-        format="socrata_rows_json",
-    ),
-    StateSource(
-        state="NY",
-        url="https://data.ny.gov/api/views/ej5i-dqpf/rows.json?accessType=DOWNLOAD",
-        format="socrata_rows_json",
-    ),
-    StateSource(
-        state="OH",
-        # 2026-06-28 — old /globalassets/businesses/ index returned 403.
-        # The business-filings page hosts the current bulk-export links.
-        url="https://www.ohiosos.gov/businesses/business-filings/",
-        format="oh_bulk_csv_index",
-        notes=(
-            "Ohio SOS publishes monthly bulk files. Build script crawls "
-            "the index page for CSV links."
-        ),
+        state="MN",
+        # 2026-06-28 — sos.state.mn.us 302-redirects to sos.mn.gov
+        # (different subdomain). httpx follows the redirect with
+        # ``follow_redirects=True``. The portal returns an HTML index;
+        # ``_fetch_mn`` scrapes it for a direct CSV link.
+        url="https://mblsportal.sos.mn.gov/Business/DownloadData",
+        format="mn_csv",
+        notes="MN ships CSV bulk downloads. Build script crawls the index page for CSV links.",
     ),
     StateSource(
         state="WY",
@@ -143,24 +123,38 @@ STATE_SOURCES: Final[tuple[StateSource, ...]] = (
         format="wy_scrape",
         notes=(
             "HTML scrape (1 req/sec throttle). Opt-in via --include-wy. "
-            "TODO: WY does not publish a bulk CSV/JSON export — the "
+            "WY does not publish a bulk CSV/JSON export — the "
             "FilingSearch.aspx page is JS-rendered, so a true bulk "
             "ingest needs Playwright (or a paid bulk-data feed). Until "
             "that lands, WY merchant lookups fall through to the "
             "Bedrock web_search fallback."
         ),
     ),
-    StateSource(
-        state="MN",
-        # 2026-06-28 — sos.state.mn.us redirected to the bot-manager
-        # challenge; the portal moved to mblsportal.sos.mn.gov (.mn.gov
-        # not .state.mn.us, observed in the 302 Location header on
-        # the .state.mn.us URL). Falls through to Bedrock if the
-        # download page doesn't expose a direct CSV link.
-        url="https://mblsportal.sos.mn.gov/Business/DownloadData",
-        format="mn_csv",
-        notes=("MN ships CSV bulk downloads. Build script crawls the index page for CSV links."),
-    ),
+    # ------------------------------------------------------------------
+    # States with no working bulk endpoint as of 2026-06-28 — verified
+    # individually. They fall through to the Bedrock web_search lookup
+    # path in ``business_intel/sos_checker.py`` (which returns
+    # ``data_source="bedrock_web_search"`` instead of
+    # ``"sos_bulk_<state>"``):
+    #
+    #   * FL — every Sunbiz HTTP candidate 403/404s; the documented
+    #     quarterly file lives on the SUNBIZ FTP host and the HTTPS
+    #     mirror is gone (search.sunbiz.org/.../Download → 403;
+    #     files.floridados.gov/media/704800/cordata.zip → 404). A
+    #     proper FL ingest needs a Sunbiz data-license arrangement.
+    #   * IA — Iowa shut down their open-data portal's catalog API
+    #     (data.iowa.gov/api/catalog/v1 → 404 across every search
+    #     term); resource endpoints follow with 404. No Socrata
+    #     replacement found.
+    #   * NY — data.ny.gov publishes DOS *filing-history* datasets
+    #     (e.g. ``63wc-4exh``, ``ekwr-p59j``) but no current
+    #     active-entity master list. Filing rows would inflate the
+    #     SQLite without giving us cleaner Jaro-Winkler matches
+    #     than Bedrock can.
+    #   * OH — Ohio SOS HTML pages return 403 for non-browser UAs
+    #     (including the curl UA spoof). The bulk-export page is
+    #     gated behind their bot-manager.
+    # ------------------------------------------------------------------
 )
 
 
