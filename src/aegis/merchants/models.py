@@ -269,6 +269,19 @@ class MerchantRow(_StrictModel):
     use_of_funds: str | None = None
 
     # ------------------------------------------------------------------
+    # Migration 089 — Close Lead description-parsed staging blob.
+    # Populated by ``aegis.close.description_extractor.extract_from_description``
+    # when the structured FINANCIAL-block parser returns an empty dict.
+    # The dossier surfaces this as an editable preview card; the
+    # operator confirms (promotes to ``stated_*`` columns) or discards.
+    # Scoring NEVER reads this column — only confirmed ``stated_*`` data
+    # drives decisions, per CLAUDE.md's extraction-assists-not-replaces
+    # rule. Shape documented in migration 089 + the
+    # ``ExtractedFieldsPayload`` model.
+    # ------------------------------------------------------------------
+    stated_extracted_pending: dict[str, Any] | None = None
+
+    # ------------------------------------------------------------------
     # Migration 086 — enhanced UCC flow. ``ucc_portal_url`` is the
     # state SOS / UCC search URL the dossier surfaces for one-click
     # operator verification; populated from ``UCC_STATE_PORTALS`` at

@@ -1189,6 +1189,14 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         ),
         stated_bank=_none_if_empty(row.get("stated_bank")),
         use_of_funds=_none_if_empty(row.get("use_of_funds")),
+        # Migration 089 — Close description-parsed staging blob. ``None``
+        # for any row that's never been through the description fallback;
+        # populated as a JSONB dict by ``scripts/resync_close_leads.py``
+        # / ``aegis.close.description_extractor.extract_from_description``.
+        # The repository round-trip preserves the dict verbatim; the
+        # dossier confirm route promotes individual fields into the
+        # ``stated_*`` columns.
+        stated_extracted_pending=row.get("stated_extracted_pending"),
         # Migration 085 — Secretary of State entity check.
         sos_checked_at=_parse_dt(row.get("sos_checked_at")),
         sos_status=_none_if_empty(row.get("sos_status")),
@@ -1334,6 +1342,10 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         ),
         "stated_bank": m.stated_bank,
         "use_of_funds": m.use_of_funds,
+        # Migration 089 — JSONB blob ships as a native dict; supabase-py
+        # serialises through json.dumps so the Decimal-safe-string shape
+        # used by the extractor must already be in place at write time.
+        "stated_extracted_pending": m.stated_extracted_pending,
         # Migration 085 — SOS entity check.
         "sos_checked_at": m.sos_checked_at.isoformat() if m.sos_checked_at else None,
         "sos_status": m.sos_status,
