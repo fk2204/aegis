@@ -733,6 +733,17 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='merchants' "
         "AND column_name='ucc_portal_url'"
     ),
+    "087_merchants_close_stated_fields.sql": (
+        # 087 adds 9 additive columns to ``merchants`` for the Close
+        # FINANCIAL block parser (Agent 2 work). Probe
+        # ``stated_daily_payment`` — the migration is a single ALTER
+        # TABLE ADD COLUMN IF NOT EXISTS group, and stated_daily_payment
+        # is the field Agent 5's impossible-payment-load detector
+        # hard-depends on, so its presence is the load-bearing signal.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='stated_daily_payment'"
+    ),
 }
 
 
