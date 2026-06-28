@@ -61,6 +61,7 @@ _ALLOWED_OUTBOUND_HOSTS: dict[str, str] = {
         "refuses API-key Basic auth, returns 400 'use api.close.com')"
     ),
     "treas.gov": "endpoint — Treasury OFAC SDN list (sanctions check)",
+    "courtlistener.com": "endpoint — CourtListener v4 federal bankruptcy search (Phase B)",
     "ntfy.sh": "endpoint — ops push notifications",
     "hc-ping.com": "endpoint — healthchecks.io heartbeat pings",
     "127.0.0.1": "endpoint — localhost healthcheck (heartbeat_cli)",
