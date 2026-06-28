@@ -1196,6 +1196,23 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--run-background-checks-all",
+        action="store_true",
+        help=(
+            "Pre-warm the OFAC + bankruptcy + SOS background-check caches "
+            "for every merchant. For each merchant in ``merchants.list_all()``: "
+            "if ``ofac_checked_at`` is None, run ``ensure_ofac_check``; if "
+            "``bankruptcy_checked_at`` is None, run ``ensure_bankruptcy_check`` "
+            "(async); if ``sos_checked_at`` is None, run ``ensure_sos_check``. "
+            "Sleeps 1 second every 10 merchants to stay under CourtListener's "
+            "anonymous rate ceiling. Bypasses the Close traversal entirely; "
+            "always writes (the ``ensure_*`` functions persist results + "
+            "audit rows) — there is no separate ``--apply`` for this mode. "
+            "Useful paired with the dossier's cache-first read path: once "
+            "warmed, the dossier renders without on-demand check latency."
+        ),
+    )
+    p.add_argument(
         "--merchant",
         default=None,
         help=(
@@ -2475,6 +2492,65 @@ def _process_lead_all_mode(
     )
 
 
+async def _run_background_checks_all(
+    *,
+    merchants_repo: SupabaseMerchantRepository,
+    audit: AuditLog,
+) -> tuple[int, int, int, int]:
+    """Pre-warm OFAC + bankruptcy + SOS for every merchant.
+
+    For each ``MerchantRow`` in ``merchants.list_all()``: skip the per-
+    domain check when its ``*_checked_at`` is already populated (the
+    ``ensure_*`` helpers handle TTL logic internally and return the row
+    untouched in that case, but the explicit guard saves the function
+    call cost and matches the operator-facing semantics — "warm only
+    what's cold"). Bankruptcy is async (CourtListener via httpx); OFAC
+    + SOS are sync. A ``time.sleep(1)`` between every 10 merchants
+    keeps the script under CourtListener's anonymous per-minute rate
+    ceiling, mirroring the pacing in ``--all-merchants``.
+
+    Returns ``(processed, ofac_warmed, bankruptcy_warmed, sos_warmed)``
+    so the caller can summarise the run.
+    """
+    import time
+
+    from aegis.business_intel.bankruptcy_refresh import ensure_bankruptcy_check
+    from aegis.business_intel.sos_refresh import ensure_sos_check
+    from aegis.compliance.ofac import ensure_ofac_check
+
+    merchants = merchants_repo.list_all()
+    ofac_warmed = 0
+    bankruptcy_warmed = 0
+    sos_warmed = 0
+
+    for i, merchant in enumerate(merchants):
+        if merchant.ofac_checked_at is None:
+            merchant = ensure_ofac_check(
+                merchant,
+                merchants_repo=merchants_repo,
+                audit=audit,
+            )
+            ofac_warmed += 1
+        if merchant.bankruptcy_checked_at is None:
+            merchant = await ensure_bankruptcy_check(
+                merchant,
+                merchants_repo=merchants_repo,
+                audit=audit,
+            )
+            bankruptcy_warmed += 1
+        if merchant.sos_checked_at is None:
+            merchant = ensure_sos_check(
+                merchant,
+                merchants_repo=merchants_repo,
+                audit=audit,
+            )
+            sos_warmed += 1
+        if i > 0 and i % 10 == 0:
+            time.sleep(1)
+
+    return len(merchants), ofac_warmed, bankruptcy_warmed, sos_warmed
+
+
 def main() -> int:
     args = _parse_args()
 
@@ -2711,6 +2787,28 @@ def main() -> int:
             file=sys.stderr,
         )
         return EXIT_ISSUES_FOUND if issues > 0 else EXIT_OK
+
+    # --run-background-checks-all: pre-warm OFAC + bankruptcy + SOS for
+    # every merchant. Bypasses Close entirely. Persists results via the
+    # ``ensure_*`` helpers (audit rows included). Sleeps 1 second every
+    # 10 merchants to stay under CourtListener's anonymous rate ceiling.
+    if args.run_background_checks_all:
+        try:
+            processed, ofac_warmed, bankruptcy_warmed, sos_warmed = asyncio.run(
+                _run_background_checks_all(
+                    merchants_repo=merchants_repo,
+                    audit=audit,
+                )
+            )
+        finally:
+            close_client.close()
+        print(
+            f"# +run-background-checks-all processed={processed} "
+            f"ofac_warmed={ofac_warmed} bankruptcy_warmed={bankruptcy_warmed} "
+            f"sos_warmed={sos_warmed}",
+            file=sys.stderr,
+        )
+        return EXIT_OK
 
     # --all-merchants: scan every merchant with a close_lead_id, regardless
     # of backlog status. Batches of 10 with a 1-second sleep between to
