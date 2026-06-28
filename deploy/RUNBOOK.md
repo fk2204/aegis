@@ -993,3 +993,35 @@ is still bootstrapping — wait 30 s and retry.)
       real Bedrock.
 - [ ] Decommission the dead box in the Hetzner console after 48 hours
       (long enough to copy off anything if a postmortem needs it).
+
+---
+
+## CourtListener API token (optional — Phase B bankruptcy check)
+
+The federal bankruptcy check (`aegis.business_intel.bankruptcy_checker`)
+queries the CourtListener v4 REST API. Authentication is **optional**:
+
+- **Anonymous** (no token): ~100 requests/day shared across all callers
+  on the same source IP. Enough for ~30 merchant checks/day at the
+  current 3-API-call-per-check rate.
+- **Authenticated** (`COURTLISTENER_API_TOKEN` env var): 5,000
+  requests/day per token. Required if the merchant book grows past
+  ~30 checks/day or to make Thursday-maintenance-window resilience
+  more forgiving (the auth quota is per-day, not per-request).
+
+To set the token on the box:
+
+```bash
+ssh aegis@aegis-ssh.commerafunding.com 'echo "COURTLISTENER_API_TOKEN=<token>" | sudo tee -a /etc/aegis/aegis.env'
+sudo -n /usr/bin/systemctl restart aegis-worker
+```
+
+Without the env var the checker reads `os.environ.get("COURTLISTENER_API_TOKEN", "")`
+which evaluates to empty, and the `Authorization` header is omitted from
+every request — the anonymous quota applies.
+
+CourtListener publishes a Thursday 21:00-23:59 PT maintenance window;
+the checker has built-in 2-retry × 30s backoff so a maintenance hit
+collapses to `BankruptcyResult(error="courtlistener_unreachable")`
+instead of failing the merchant pipeline. Treat any sustained spike of
+those audit rows as a CourtListener outage, not an AEGIS bug.

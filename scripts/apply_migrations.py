@@ -704,6 +704,15 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='merchants' "
         "AND column_name='ofac_is_clear'"
     ),
+    "084_merchants_bankruptcy.sql": (
+        # 084 adds the federal bankruptcy check columns on merchants
+        # (Phase B). Probe one of the new columns — they ship as a
+        # group inside a single BEGIN/COMMIT so any one column's
+        # presence implies the rest landed too.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='bankruptcy_chapter'"
+    ),
 }
 
 

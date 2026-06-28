@@ -1116,6 +1116,12 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         ofac_is_clear=row.get("ofac_is_clear"),
         ofac_match_detail=list(row.get("ofac_match_detail") or []),
         ofac_cache_date=_parse_dt(row.get("ofac_cache_date")),
+        # Migration 084 — federal bankruptcy check (CourtListener v4).
+        bankruptcy_checked_at=_parse_dt(row.get("bankruptcy_checked_at")),
+        bankruptcy_active=row.get("bankruptcy_active"),
+        bankruptcy_recent=row.get("bankruptcy_recent"),
+        bankruptcy_chapter=row.get("bankruptcy_chapter"),
+        bankruptcy_cases=list(row.get("bankruptcy_cases") or []),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
         # Migration 065. None for every pre-065 row + every live row;
@@ -1211,6 +1217,12 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "ofac_is_clear": m.ofac_is_clear,
         "ofac_match_detail": list(m.ofac_match_detail),
         "ofac_cache_date": m.ofac_cache_date,
+        # Migration 084 — federal bankruptcy check columns.
+        "bankruptcy_checked_at": m.bankruptcy_checked_at,
+        "bankruptcy_active": m.bankruptcy_active,
+        "bankruptcy_recent": m.bankruptcy_recent,
+        "bankruptcy_chapter": m.bankruptcy_chapter,
+        "bankruptcy_cases": list(m.bankruptcy_cases),
         # Migration 080 — round-trips on every upsert so the column is
         # always written explicitly (rather than relying on the DB
         # DEFAULT to land on inserts only).
