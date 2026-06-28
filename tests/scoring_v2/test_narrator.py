@@ -384,6 +384,62 @@ def test_narrator_raises_on_invalid_response_shape() -> None:
         narrate_deal(ctx, bedrock=_StubNarratorClient(broken))
 
 
+def test_narrator_accepts_long_explanations_within_800_char_budget() -> None:
+    """Regression test for the 2026-06-28 prod outage.
+
+    Bedrock produced 500-700 char ``flag_explanations[].explanation`` and
+    ``recommended_action.next_step`` strings when several integrity
+    signals fired together (multi-signal decline cases). The old
+    ``max_length=400`` cap rejected the whole response as
+    ``NarratorError``, leaving the dossier without a summary. The fix
+    bumps the Pydantic caps to 800 AND advertises ``maxLength`` to
+    Bedrock via the tool schema so the model knows the budget.
+
+    This test exercises the post-fix tolerance: a 700-char explanation
+    + a 700-char next_step round-trip cleanly without raising.
+    """
+    ctx = _build_ctx(all_flags=("editor_detected:itext",))
+    long_explanation = "x" * 700
+    long_next_step = "y" * 700
+    tool_input = {
+        "deal_summary": "Merchant statement carries decline-grade integrity signals.",
+        "flag_explanations": [
+            {
+                "flag_code": "editor_detected:itext",
+                "severity": "decline",
+                "explanation": long_explanation,
+            }
+        ],
+        "recommended_action": {
+            "action": "do_not_submit",
+            "next_step": long_next_step,
+            "top_funder_match": None,
+            "estimated_terms": None,
+        },
+    }
+    summary = narrate_deal(ctx, bedrock=_StubNarratorClient(tool_input))
+    assert summary.flag_explanations[0].explanation == long_explanation
+    assert summary.recommended_action.next_step == long_next_step
+
+
+def test_narrator_tool_schema_advertises_max_length_to_bedrock() -> None:
+    """Bedrock must SEE the length caps in the tool schema so it stays
+    within budget. The cap-only-on-Pydantic posture is what blew up
+    2026-06-28: the model had no signal about how long it could go.
+    """
+    from aegis.scoring_v2.narrator import _NARRATOR_TOOL_SCHEMA
+
+    props = _NARRATOR_TOOL_SCHEMA["properties"]
+    assert props["deal_summary"]["maxLength"] == 2000
+    flag_props = props["flag_explanations"]["items"]["properties"]
+    assert flag_props["explanation"]["maxLength"] == 800
+    assert flag_props["flag_code"]["maxLength"] == 80
+    action_props = props["recommended_action"]["properties"]
+    assert action_props["next_step"]["maxLength"] == 800
+    assert action_props["top_funder_match"]["maxLength"] == 120
+    assert action_props["estimated_terms"]["maxLength"] == 160
+
+
 # ---------------------------------------------------------------------------
 # Storage round-trip via InMemoryDocumentRepository.set_narrator_summary
 # ---------------------------------------------------------------------------
