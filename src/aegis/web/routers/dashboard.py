@@ -863,6 +863,18 @@ def _build_attention_groups(
     analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in documents])
     transactions_by_doc: dict[UUID, list[ClassifiedTransaction]] = {}
 
+    # 2026-06-28 perf — batch the merchant fetch. Was N x merchants_repo.get(key)
+    # (one PostgREST round-trip per unique merchant in the queue, ~100ms each
+    # x 8 cards = ~800ms). The new ``get_many_by_ids`` collapses that to one
+    # ``in.(...)`` query. Missing merchants simply don't appear in the dict,
+    # mirroring the absent-key semantics the per-card branch below already
+    # handled via MerchantNotFoundError.
+    candidate_merchant_ids: list[UUID] = []
+    for d in documents:
+        if d.merchant_id is not None and d.merchant_id not in candidate_merchant_ids:
+            candidate_merchant_ids.append(d.merchant_id)
+    merchants_by_id = merchants_repo.get_many_by_ids(candidate_merchant_ids)
+
     groups: dict[UUID | None, dict[str, Any]] = {}
     group_docs: dict[UUID | None, list[DocumentRow]] = {}
 
@@ -874,10 +886,10 @@ def _build_attention_groups(
             label = "—"
             merchant: MerchantRow | None = None
             if key is not None:
-                try:
-                    merchant = merchants_repo.get(key)
+                merchant = merchants_by_id.get(key)
+                if merchant is not None:
                     label = merchant.business_name
-                except MerchantNotFoundError:
+                else:
                     label = f"merchant {str(key)[:8]}"
             groups[key] = {
                 "merchant_id": str(key) if key is not None else None,

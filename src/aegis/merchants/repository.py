@@ -352,6 +352,7 @@ class MerchantRepository(Protocol):
     def find_by_close_opportunity_id(self, close_opportunity_id: str) -> MerchantRow | None: ...
     def find_by_email(self, email: str) -> MerchantRow | None: ...
     def list_all(self, *, state: str | None = None) -> list[MerchantRow]: ...
+    def get_many_by_ids(self, merchant_ids: list[UUID]) -> dict[UUID, MerchantRow]: ...
     def count_total(self) -> int: ...
     def upsert(self, merchant: MerchantRow) -> MerchantRow: ...
     def delete(self, merchant_id: UUID) -> None: ...
@@ -540,6 +541,12 @@ class InMemoryMerchantRepository:
             s = state.upper()
             rows = [m for m in rows if m.state == s]
         return sorted(rows, key=lambda m: m.business_name.lower())
+
+    def get_many_by_ids(self, merchant_ids: list[UUID]) -> dict[UUID, MerchantRow]:
+        if not merchant_ids:
+            return {}
+        wanted = set(merchant_ids)
+        return {m.id: m for m in self._by_id.values() if m.id in wanted and m.deleted_at is None}
 
     def count_total(self) -> int:
         return sum(1 for m in self._by_id.values() if m.deleted_at is None)
@@ -797,6 +804,33 @@ class SupabaseMerchantRepository:
             query = query.eq("state", state.upper())
         result = query.execute()
         return [_row_to_merchant(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    def get_many_by_ids(self, merchant_ids: list[UUID]) -> dict[UUID, MerchantRow]:
+        """Batch read — one PostgREST ``in.(…)`` query for every id in
+        the list. The dashboard's ``_build_attention_groups`` was
+        previously calling ``get()`` per unique merchant id in the
+        manual_review queue (8 round-trips x ~100ms = ~800ms). Batching
+        collapses that to one round-trip.
+
+        Filters out soft-deleted rows. Missing ids simply don't appear
+        in the result dict (mirrors the absent-key semantics callers
+        expect from a Python dict)."""
+        if not merchant_ids:
+            return {}
+        id_strings = [str(mid) for mid in merchant_ids]
+        result = (
+            get_supabase()
+            .table("merchants")
+            .select("*")
+            .in_("id", id_strings)
+            .is_("deleted_at", "null")
+            .execute()
+        )
+        out: dict[UUID, MerchantRow] = {}
+        for raw in cast(list[dict[str, Any]], result.data or []):
+            m = _row_to_merchant(raw)
+            out[m.id] = m
+        return out
 
     def count_total(self) -> int:
         try:
