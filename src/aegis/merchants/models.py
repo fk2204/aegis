@@ -232,6 +232,18 @@ class MerchantRow(_StrictModel):
     bankruptcy_chapter: str | None = None
     bankruptcy_cases: list[dict[str, Any]] = Field(default_factory=list)
 
+    # ------------------------------------------------------------------
+    # Migration 086 — enhanced UCC flow. ``ucc_portal_url`` is the
+    # state SOS / UCC search URL the dossier surfaces for one-click
+    # operator verification; populated from ``UCC_STATE_PORTALS`` at
+    # write time based on ``state``. ``ucc_operator_verified`` flips
+    # to True after the operator confirms findings via the dossier
+    # button; ``ucc_verified_at`` captures the click timestamp.
+    # ------------------------------------------------------------------
+    ucc_portal_url: str | None = None
+    ucc_operator_verified: bool = False
+    ucc_verified_at: datetime | None = None
+
     # Phase 7B funder-submission tracking (Pydantic-only — no Supabase
     # column yet, so these reset on a Supabase round-trip; audit_log is
     # the durable record. Persistence moves to a real submissions table

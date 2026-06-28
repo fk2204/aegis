@@ -1122,6 +1122,13 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         bankruptcy_recent=row.get("bankruptcy_recent"),
         bankruptcy_chapter=row.get("bankruptcy_chapter"),
         bankruptcy_cases=list(row.get("bankruptcy_cases") or []),
+        # Migration 086 — additive UCC verification columns. Pre-086
+        # reads collapse to (None, False, None) which is the "needs
+        # populating on next write / unverified" default the dossier
+        # treats as the initial state.
+        ucc_portal_url=_none_if_empty(row.get("ucc_portal_url")),
+        ucc_operator_verified=bool(row.get("ucc_operator_verified")),
+        ucc_verified_at=_parse_dt(row.get("ucc_verified_at")),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
         # Migration 065. None for every pre-065 row + every live row;
@@ -1223,6 +1230,10 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "bankruptcy_recent": m.bankruptcy_recent,
         "bankruptcy_chapter": m.bankruptcy_chapter,
         "bankruptcy_cases": list(m.bankruptcy_cases),
+        # Migration 086 — additive UCC verification columns.
+        "ucc_portal_url": m.ucc_portal_url,
+        "ucc_operator_verified": m.ucc_operator_verified,
+        "ucc_verified_at": m.ucc_verified_at,
         # Migration 080 — round-trips on every upsert so the column is
         # always written explicitly (rather than relying on the DB
         # DEFAULT to land on inserts only).

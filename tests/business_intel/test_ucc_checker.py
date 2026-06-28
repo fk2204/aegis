@@ -94,13 +94,16 @@ def test_lists_capped_at_fifteen() -> None:
     assert len(result.ucc_filings) == 15
 
 
-def test_prompt_includes_business_state_and_owner() -> None:
+def test_prompt_includes_business_name_and_state_portal_url() -> None:
+    """Migration 086 — state-targeted prompt. The prompt no longer
+    interpolates owner_name (it's not load-bearing for UCC search);
+    state appears via the portal URL rather than as a bare token, so
+    we assert the NY SOS UCC search URL is present."""
     client = _StubClient('{"ucc_filings":[],"default_indicators":[],"source_summary":""}')
     check_ucc_and_defaults("Joe's Diner", "NY", "John Smith", client=client)
     assert client.last_prompt is not None
     assert "Joe's Diner" in client.last_prompt
-    assert "NY" in client.last_prompt
-    assert "John Smith" in client.last_prompt
+    assert "dos.ny.gov" in client.last_prompt
 
 
 # ---------------------------------------------------------------------------
