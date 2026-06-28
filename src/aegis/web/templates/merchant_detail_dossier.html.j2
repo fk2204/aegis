@@ -546,6 +546,18 @@
   {# ============ main ============ #}
   <main class="main">
 
+    {# 2026-06-28 — 60/40 split wrapper.
+       Left column (60%): Verdict (with Track A/B/C inline via
+       _unified_tracks_panel) → Cashflow evidence → Pattern findings —
+       the analytical narrative the underwriter reads top-to-bottom.
+       Right column (40%): Background checks → Funder matching →
+       Statements ledger → Merchant profile — the lookup-table layer
+       the underwriter references against the narrative.
+       Below the wrapper, Disposition / Submissions / Operator notes
+       resume full-width so they span the whole page. #}
+    <div class="dossier-two-col" data-test-id="dossier-main-two-col">
+    <div class="dossier-col-primary">
+
     {# ============== § 1 VERDICT ============== #}
     <section id="verdict" class="section">
       <header>
@@ -1536,6 +1548,9 @@
       </section>
     {% endif %}
 
+    </div>{# /.dossier-col-primary — Verdict + Cashflow + Findings #}
+    <div class="dossier-col-secondary">
+
     {# Background-checks section (§ 3¾) sits between Track C (pattern
        findings + concentration) and § 4 (funder matching) so the
        underwriter sees the soft-signal layer (UCC filings / previous
@@ -1877,11 +1892,6 @@
       {% endif %}
     </section>
 
-    {# 2-col pairing (2026-06-28): Statements ledger + Merchant profile
-       are both compact look-up tables — fit comfortably side-by-side
-       on >1200px viewports. The .dossier-two-col CSS collapses to a
-       single column under that breakpoint. #}
-    <div class="dossier-two-col">
     {# ============== § 4½ STATEMENTS LEDGER ============== #}
     {% if documents %}
     <section id="statements" class="section">
@@ -1989,7 +1999,9 @@
       </table>
       </div>
     </section>
-    </div>{# /.dossier-two-col — Statements + Merchant profile #}
+
+    </div>{# /.dossier-col-secondary — Background + Funder + Ledger + Profile #}
+    </div>{# /.dossier-two-col — main 60/40 split #}
 
     {# ============== § 5 DISPOSITION ============== #}
     <section id="disposition" class="section">

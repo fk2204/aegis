@@ -436,35 +436,45 @@
   min-width: 0;
 }
 
-/* ============ 2-col section pairing (2026-06-28) ============
- * Wraps two adjacent <section>s so they sit side-by-side on wide
- * viewports instead of stacking vertically and leaving the right
- * half empty. Used for compact look-up tables (Statements ledger
- * + Merchant profile, Disposition + Submissions). Wide-content
- * sections (Verdict, Cashflow evidence, Pattern findings, Funder
- * routing) stay full-width — they have their own multi-column
- * inner grids that would collide with a parent column constraint.
+/* ============ 60/40 main split (2026-06-28) ============
+ * The dossier's primary 2-column layout. Wraps the whole "verdict +
+ * evidence + findings" reading flow on the left (60%) and the
+ * "background checks + funder routing + statements ledger + merchant
+ * profile" lookup-table flow on the right (40%). Closes the
+ * "unused right whitespace" complaint operators reported on wide
+ * displays.
+ *
+ * Sections that need full page width (Disposition, Submissions,
+ * Operator notes, Raw flags, etc.) live BELOW the wrapper in main
+ * and render unmodified — the wrapper only covers the four
+ * left-column + four right-column sections explicitly listed in
+ * the template.
  *
  * Collapses to one column below 1200px so the inner tables don't
- * crush — these blocks include the audit-ledger which is already
- * scrollable but only needs to be when the viewport is narrow.
+ * crush — the audit-ledger inside Statements is already
+ * horizontally scrollable but only needs to be when the viewport
+ * is narrow.
  */
 .dossier-page .dossier-two-col {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 3fr 2fr;
   gap: 32px;
   align-items: start;
+  margin-bottom: 56px;
 }
-.dossier-page .dossier-two-col > .section {
+.dossier-page .dossier-col-primary,
+.dossier-page .dossier-col-secondary {
+  min-width: 0; /* allow grid children to shrink instead of overflowing */
+}
+.dossier-page .dossier-col-primary > .section:last-child,
+.dossier-page .dossier-col-secondary > .section:last-child {
   margin-bottom: 0;
 }
 @media (max-width: 1200px) {
   .dossier-page .dossier-two-col {
     grid-template-columns: 1fr;
     gap: 0;
-  }
-  .dossier-page .dossier-two-col > .section {
-    margin-bottom: 56px;
+    margin-bottom: 0;
   }
 }
 

@@ -2472,6 +2472,7 @@ async def merchant_background_check_refresh_ucc(
             "ucc_portal_url": bg["ucc_portal_url"],
             "ucc_operator_verified": bg["ucc_operator_verified"],
             "ucc_verified_at": bg["ucc_verified_at"],
+            "sos_result": bg["sos_result"],
             "ofac_status": ofac_dossier_status,
             "ofac_match": ofac_match,
         },
@@ -2529,6 +2530,66 @@ async def merchant_background_check_refresh_web_presence(
             "ucc_portal_url": bg["ucc_portal_url"],
             "ucc_operator_verified": bg["ucc_operator_verified"],
             "ucc_verified_at": bg["ucc_verified_at"],
+            "sos_result": bg["sos_result"],
+            "ofac_status": ofac_dossier_status,
+            "ofac_match": ofac_match,
+        },
+    )
+
+
+@router.post(
+    "/merchants/{merchant_id}/background-checks/refresh-sos",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+async def merchant_background_check_refresh_sos(
+    request: Request,
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    ofac: Annotated[OFACClient | None, Depends(get_ofac_client)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+) -> HTMLResponse:
+    """HTMX endpoint — synchronously re-run the Secretary of State entity
+    check, then re-render just the background-checks section. Same
+    posture as ``merchant_background_check_refresh_ucc`` /
+    ``refresh_web_presence`` above."""
+    from aegis.business_intel.sos_refresh import refresh_sos_for_merchant
+
+    try:
+        refresh_sos_for_merchant(
+            merchant_id,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    ofac_status, ofac_match = (
+        _ofac_ribbon_status(ofac, merchant.business_name)
+        if merchant.is_finalized
+        else ("not_consulted", None)
+    )
+    if ofac_status == "checked":
+        ofac_dossier_status = "match" if ofac_match else "clean"
+    elif ofac_status in {"stale", "unavailable"}:
+        ofac_dossier_status = "unavailable"
+    else:
+        ofac_dossier_status = "pending"
+
+    bg = _build_background_checks_context(merchant)
+    return templates.TemplateResponse(
+        request,
+        "_background_checks_section.html.j2",
+        {
+            "merchant": merchant,
+            "ucc_result": bg["ucc_result"],
+            "web_presence_result": bg["web_presence_result"],
+            "previous_default": bg["previous_default"],
+            "ucc_portal_url": bg["ucc_portal_url"],
+            "ucc_operator_verified": bg["ucc_operator_verified"],
+            "ucc_verified_at": bg["ucc_verified_at"],
+            "sos_result": bg["sos_result"],
             "ofac_status": ofac_dossier_status,
             "ofac_match": ofac_match,
         },

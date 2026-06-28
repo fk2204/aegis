@@ -194,6 +194,22 @@ async def index(
     today_pipeline = _compute_today_pipeline(docs, funder_note_subs, now=now_utc)
     today_recent_activity = _build_today_recent_activity(recent_activity_rows)
 
+    # 2026-06-28 dashboard refresh — key numbers banner above the stats
+    # strip and 3-month revenue-comparison strip below it. Both reuse
+    # data the route already has (counts above + the documents/analyses
+    # join) so they don't add round-trips. Empty / sparse data degrades
+    # to None so the template can hide the section instead of rendering
+    # zero-state noise.
+    key_numbers = _compute_key_numbers(
+        merchant_total=merchant_total,
+        pending_count=pending,
+        proceed_count=proceed,
+        funder_note_subs=funder_note_subs,
+        docs=docs,
+        now=now_utc,
+    )
+    monthly_comparison = _compute_monthly_comparison(docs=docs, now=now_utc)
+
     # Quick-action buttons are static — declared here so the template
     # iterates a list rather than hardcoding three blocks. Labels are
     # operator-facing; URLs go to existing routes (no new routes added).
@@ -247,6 +263,9 @@ async def index(
             "today_pipeline": today_pipeline,
             "today_recent_activity": today_recent_activity,
             "quick_actions": quick_actions,
+            # 2026-06-28 refresh — key numbers banner + 3-month strip.
+            "key_numbers": key_numbers,
+            "monthly_comparison": monthly_comparison,
         },
     )
 
@@ -504,6 +523,127 @@ def _compute_today_pipeline(
         "tiers": tiers,
         "funnel_stages": funnel_stages,
     }
+
+
+_KEY_NUMBERS_REVENUE_WINDOW_DAYS: Final[int] = 7
+_MONTHLY_COMPARISON_LOOKBACK_DOCS: Final[int] = 200
+_MONTHLY_COMPARISON_BUCKETS: Final[int] = 3
+
+
+def _compute_key_numbers(
+    *,
+    merchant_total: int,
+    pending_count: int,
+    proceed_count: int,
+    funder_note_subs: FunderNoteSubmissionRepository,
+    docs: DocumentRepository,
+    now: datetime,
+) -> dict[str, Any]:
+    """Top-of-dashboard key-numbers banner.
+
+    Cheap reads only — three counts come in already-computed from the
+    route; ``submitted_this_week`` is a single ``list_in_window`` call
+    on the submissions repo; ``avg_revenue_this_week`` averages
+    ``analyses.true_revenue`` across documents parsed in the last 7
+    days (bounded by ``_KEY_NUMBERS_REVENUE_WINDOW_DAYS``).
+    """
+    window_start = now - timedelta(days=_KEY_NUMBERS_REVENUE_WINDOW_DAYS)
+    submissions = funder_note_subs.list_in_window(from_dt=window_start, to_dt=now)
+    submitted_this_week = len(submissions)
+
+    week_docs = [
+        d
+        for d in docs.list_documents(limit=200)
+        if d.parsed_at is not None and d.parsed_at >= window_start
+    ]
+    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in week_docs])
+    revenues = [a.true_revenue for a in analyses_by_doc.values() if a.true_revenue is not None]
+    if revenues:
+        from decimal import Decimal
+
+        avg_revenue = sum(revenues, Decimal("0")) / Decimal(len(revenues))
+    else:
+        avg_revenue = None
+
+    return {
+        "active_deals": merchant_total,
+        "pending_parse": pending_count,
+        "ready_to_submit": proceed_count,
+        "submitted_this_week": submitted_this_week,
+        "avg_revenue_this_week": avg_revenue,
+    }
+
+
+def _compute_monthly_comparison(
+    *,
+    docs: DocumentRepository,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Aggregate the trailing-3-months portfolio view from
+    ``analyses.monthly_breakdown`` across recent documents.
+
+    ``monthly_breakdown`` is a per-document list of dicts shaped
+    ``{month: "YYYY-MM", deposits, withdrawals, avg_balance,
+    nsf_count}`` (Decimals as strings — see parser/aggregate.py).
+    Here we union those per-month rows across every recent doc, sum
+    deposits / nsf_count, average avg_balance, and return the most
+    recent ``_MONTHLY_COMPARISON_BUCKETS`` months newest-first.
+
+    Returns an empty list when no documents carry a populated
+    ``monthly_breakdown`` — the template hides the strip in that case.
+    Note: the per-month ``deposits`` field is the closest proxy we
+    have to ``true_revenue`` at the monthly grain (the parser only
+    persists portfolio-level true_revenue, not per-month) — the strip
+    reads as "gross deposits" with the per-month NSF + ADB beside it.
+    """
+    from collections import defaultdict
+    from decimal import Decimal, InvalidOperation
+
+    recent_docs = docs.list_documents(limit=_MONTHLY_COMPARISON_LOOKBACK_DOCS)
+    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in recent_docs])
+
+    deposits_by_month: defaultdict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    nsf_by_month: defaultdict[str, int] = defaultdict(int)
+    balance_samples: defaultdict[str, list[Decimal]] = defaultdict(list)
+
+    for analysis in analyses_by_doc.values():
+        for row in analysis.monthly_breakdown or []:
+            month = row.get("month")
+            if not month:
+                continue
+            try:
+                deposits_by_month[month] += Decimal(row.get("deposits") or "0")
+                nsf_by_month[month] += int(row.get("nsf_count") or "0")
+                balance_samples[month].append(Decimal(row.get("avg_balance") or "0"))
+            except (InvalidOperation, ValueError):
+                continue
+
+    if not deposits_by_month:
+        return []
+
+    sorted_months = sorted(deposits_by_month.keys(), reverse=True)[:_MONTHLY_COMPARISON_BUCKETS]
+    out: list[dict[str, Any]] = []
+    for month in sorted_months:
+        samples = balance_samples[month]
+        avg_balance = (
+            sum(samples, Decimal("0")) / Decimal(len(samples)) if samples else Decimal("0")
+        )
+        # Human label: "Apr 2026". Falls back to the raw key on parse
+        # failure so the strip still renders something.
+        try:
+            year, month_num = month.split("-")
+            label = datetime(int(year), int(month_num), 1, tzinfo=UTC).strftime("%b %Y")
+        except (ValueError, IndexError):
+            label = month
+        out.append(
+            {
+                "label": label,
+                "deposits": deposits_by_month[month],
+                "nsf_count": nsf_by_month[month],
+                "adb": avg_balance,
+            }
+        )
+    return out
 
 
 def _build_today_recent_activity(

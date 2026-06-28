@@ -12,6 +12,35 @@
 ] %}
 {% include "_page_header.html.j2" %}
 
+{# 2026-06-28 — key numbers banner. Sits ABOVE the existing stats strip
+   so the operator's first read is the pipeline-state-at-a-glance. All
+   five values reuse the route's already-computed counts; no extra DB
+   round-trips on the dashboard render. #}
+{% if key_numbers %}
+<section class="key-numbers-banner" data-test-id="dashboard-key-numbers">
+  <div class="key-cell">
+    <div class="k">Active deals</div>
+    <div class="v">{{ key_numbers.active_deals }}</div>
+  </div>
+  <div class="key-cell">
+    <div class="k">Pending parse</div>
+    <div class="v">{{ key_numbers.pending_parse }}</div>
+  </div>
+  <div class="key-cell">
+    <div class="k">Ready to submit</div>
+    <div class="v {{ 'calm' if key_numbers.ready_to_submit > 0 else '' }}">{{ key_numbers.ready_to_submit }}</div>
+  </div>
+  <div class="key-cell">
+    <div class="k">Submitted (7d)</div>
+    <div class="v">{{ key_numbers.submitted_this_week }}</div>
+  </div>
+  <div class="key-cell">
+    <div class="k">Avg revenue (7d)</div>
+    <div class="v">{% if key_numbers.avg_revenue_this_week is not none %}${{ '{:,.0f}'.format(key_numbers.avg_revenue_this_week) }}{% else %}—{% endif %}</div>
+  </div>
+</section>
+{% endif %}
+
 <section class="strip">
   <div class="cell">
     <div class="k">Merchants</div>
@@ -45,6 +74,23 @@
 {% endblock %}
 
 {% block body %}
+{# 2026-06-28 — trailing 3-month revenue/NSF/ADB comparison strip.
+   Aggregated from analyses.monthly_breakdown across the last
+   ~200 documents (see _compute_monthly_comparison). Hidden when no
+   recent doc carries a populated breakdown (sparse-data degrade). #}
+{% if monthly_comparison %}
+<section class="monthly-strip" data-test-id="dashboard-monthly-strip">
+  {% for month in monthly_comparison %}
+  <div class="month-cell">
+    <div class="month-label">{{ month.label }}</div>
+    <div class="month-revenue">${{ '{:,.0f}'.format(month.deposits) }}</div>
+    <div class="month-nsf {{ 'bad' if month.nsf_count > 0 else '' }}">{{ month.nsf_count }} NSF</div>
+    <div class="month-adb">${{ '{:,.0f}'.format(month.adb) }} ADB</div>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
 {# Today three-column layout (2026-06-16) — attention queue / pipeline
    today / quick-actions + recent activity. Mobile (<768px) stacks the
    three columns in the order operators care about most: attention

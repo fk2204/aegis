@@ -135,6 +135,11 @@
                data-test-id="bg-check-sos-empty"
                style="padding:8px 12px;border:1px solid var(--ink-4,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7);display:flex;align-items:center;justify-content:space-between">
             <span><strong>SOS entity:</strong> <em>Not checked</em></span>
+            <button hx-post="/ui/merchants/{{ merchant.id }}/background-checks/refresh-sos"
+                    hx-target="#background-checks"
+                    hx-swap="outerHTML"
+                    data-test-id="bg-check-refresh-sos"
+                    style="font-size:11px">Run now</button>
           </div>
         {% endif %}
 
