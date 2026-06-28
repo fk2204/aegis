@@ -115,6 +115,40 @@ Expected: the restart line reads `Deactivated successfully` rather than
 `Failed with result 'exit-code'`. One-time op; future deploys keep the
 whitelist because the unit file on disk is now the new version.
 
+### One-time: install `aegis-sos-update.timer` (migration 085, Phase C)
+
+Phase C ships a weekly Secretary of State bulk-data refresh that builds
+the local SQLite cache at `/var/lib/aegis/sos_cache/sos_entities.db`.
+The unit files ship in the repo (`deploy/aegis-sos-update.service` +
+`deploy/aegis-sos-update.timer`) but — same as the SuccessExitStatus
+sync above — auto-deploy does NOT copy them into `/etc/systemd/system/`.
+One-time install:
+
+```bash
+ssh root@5.161.51.105
+install -m 0644 /opt/aegis/deploy/aegis-sos-update.service  /etc/systemd/system/aegis-sos-update.service
+install -m 0644 /opt/aegis/deploy/aegis-sos-update.timer    /etc/systemd/system/aegis-sos-update.timer
+install -d -o aegis -g aegis /var/lib/aegis/sos_cache
+systemctl daemon-reload
+systemctl enable --now aegis-sos-update.timer
+systemctl list-timers --all | grep sos-update
+# Optional: run the initial build now (otherwise the first cron firing
+# happens at next Sunday 04:00 UTC).
+systemctl start aegis-sos-update.service
+journalctl -u aegis-sos-update --output=cat -n 100
+```
+
+Expected initial build:
+- Each state logs its per-state outcome (`FL: skipped (no current URL)` —
+  see SUNBIZ quarterly-URL TODO in `scripts/build_sos_database.py`,
+  Socrata states show row counts, OH/MN crawl their index pages, WY is
+  skipped unless `--include-wy` is also passed in the override).
+- Final log: `DB written to /var/lib/aegis/sos_cache/sos_entities.db`.
+
+Operator updates `STATE_SOURCES["FL"].url` ahead of each quarterly
+SUNBIZ release (the portal index URL doesn't auto-resolve to the
+latest .txt bundle); the build then picks up FL on the next run.
+
 ---
 
 ## Deployment

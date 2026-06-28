@@ -685,6 +685,16 @@ MIGRATION_PROBES: dict[str, str] = {
         # cover the column re-apply path).
         "SELECT 1 FROM pg_type WHERE typname='product_type'"
     ),
+    "085_merchants_sos.sql": (
+        # 085 adds the Secretary of State entity-check columns to
+        # merchants. Probe ``sos_entity_name`` — every column lands in
+        # the same BEGIN/COMMIT and ``sos_entity_name`` is the most
+        # distinctively-named of the new columns (lowest risk of a
+        # false-positive backfill detection against a future replica).
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='sos_entity_name'"
+    ),
     "082_decisions_analysis_fk_cascade.sql": (
         # 082 swaps ``decisions_analysis_id_fkey`` from RESTRICT to
         # CASCADE so reparse-driven analyses upserts no longer abort

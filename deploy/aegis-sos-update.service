@@ -1,0 +1,52 @@
+# /etc/systemd/system/aegis-sos-update.service
+#
+# Weekly Secretary of State bulk-data refresh (Phase C, migration 085).
+# Triggered by aegis-sos-update.timer every Sunday 04:00 UTC. One-shot
+# unit; the timer is the install unit.
+#
+# Downloads multiple state SOS bulk exports (FL fixed-width, several
+# Socrata JSON APIs, two index-page CSVs, WY scrape opt-in) and
+# rebuilds the SQLite cache at /var/lib/aegis/sos_cache/sos_entities.db
+# atomically (write to .tmp → fsync → rename).
+#
+# Failure mode: a failed state is logged and skipped — the build does
+# NOT abort on one state's failure. ``systemctl status`` returns
+# success unless the SQLite write itself fails.
+#
+# Operator queries:
+#   sudo systemctl is-active aegis-sos-update.timer    # boolean
+#   sudo systemctl list-timers --all | grep sos        # next firing
+#   journalctl -u aegis-sos-update --output=cat -n 200 # last run log
+
+[Unit]
+Description=AEGIS Secretary of State bulk-data refresh
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=aegis
+Group=aegis
+WorkingDirectory=/opt/aegis
+EnvironmentFile=/etc/aegis/aegis.env
+
+ExecStart=/usr/local/bin/uv run python -m scripts.build_sos_database
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+PrivateTmp=true
+# /var/lib/aegis/sos_cache owns the SQLite. install.sh creates it
+# during first-time setup with `aegis:aegis` ownership.
+ReadWritePaths=/var/log/aegis /var/lib/aegis /tmp
+
+# Multi-state downloads can take 30+ minutes on slow days; give the
+# job 2 hours before systemd considers it hung.
+TimeoutStartSec=2h
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aegis-sos-update

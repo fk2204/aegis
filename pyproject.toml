@@ -41,6 +41,12 @@ dependencies = [
     # cryptography: AES-256-GCM for client-side PDF encryption (PDF
     # retention redesign chunk A, see docs/PDF_RETENTION_DESIGN.md §6).
     "cryptography>=44",
+    # jellyfish: Jaro-Winkler similarity for fuzzy business-name
+    # matching against the local Secretary of State cache (Phase C,
+    # migration 085) and OFAC name screening (Phase A). Pure Python
+    # fallback when the C extension isn't built; same threshold (0.88)
+    # used by both checkers.
+    "jellyfish>=1.0.0",
 ]
 
 [dependency-groups]

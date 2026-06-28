@@ -1,0 +1,25 @@
+# /etc/systemd/system/aegis-sos-update.timer
+#
+# Fires aegis-sos-update.service weekly on Sunday at 04:00 UTC. Picked
+# off-peak — the multi-state downloads are bandwidth-heavy and the
+# nightly Supabase backup at 02:00 UTC has cleared by 04:00.
+#
+# Persistent=true back-fills a missed run (Hetzner outage on Sunday →
+# unit fires when the box returns).
+#
+# Weekly cadence matches the slowest publication schedule among the
+# bulk sources (OH ships monthly; MN ships every two weeks); weekly
+# gives a comfortable freshness window without re-downloading the same
+# data several times per cycle.
+
+[Unit]
+Description=AEGIS weekly Secretary of State refresh — fires Sun 04:00 UTC
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00 UTC
+Persistent=true
+AccuracySec=15min
+Unit=aegis-sos-update.service
+
+[Install]
+WantedBy=timers.target
