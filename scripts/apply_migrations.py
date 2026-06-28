@@ -744,6 +744,13 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' AND table_name='merchants' "
         "AND column_name='stated_daily_payment'"
     ),
+    "088_count_documents_by_status_function.sql": (
+        # 088 creates the count_documents_by_status() Postgres function
+        # so the dashboard's parse-status histogram runs as a single
+        # GROUP BY instead of pulling 10k rows for a Python-side count.
+        # Probe pg_proc — function presence is the load-bearing signal.
+        "SELECT 1 FROM pg_proc WHERE proname='count_documents_by_status'"
+    ),
 }
 
 

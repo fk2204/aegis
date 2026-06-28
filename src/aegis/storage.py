@@ -736,14 +736,17 @@ class SupabaseDocumentRepository:
         return out
 
     def count_by_parse_status(self) -> dict[str, int]:
-        """Histogram of documents by parse_status.
+        """Histogram of documents by parse_status — uses the
+        ``count_documents_by_status()`` Postgres function (migration 088)
+        so the work is a single GROUP BY server-side instead of pulling
+        10k rows over the wire for a Python-side count.
 
-        Caps the scan at 10 000 rows — at 100 deals/month + ~3 statements
-        each, this covers 28 years; the cap is defensive against an
-        unexpected blow-out without paying for a Postgres-side GROUP BY.
+        Returns ``{}`` on any failure (Supabase outage / function
+        missing on a pre-088 schema) — dashboard treats absent values as
+        zero, so the page still renders.
         """
         try:
-            result = get_supabase().table("documents").select("parse_status").limit(10000).execute()
+            result = get_supabase().rpc("count_documents_by_status", {}).execute()
         except Exception:
             return {}
         counts: dict[str, int] = {}
@@ -751,7 +754,7 @@ class SupabaseDocumentRepository:
             status_val = str(r.get("parse_status", ""))
             if not status_val:
                 continue
-            counts[status_val] = counts.get(status_val, 0) + 1
+            counts[status_val] = int(r.get("count", 0))
         return counts
 
     def mark_error(self, document_id: UUID, detail: str) -> None:
