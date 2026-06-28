@@ -52,7 +52,7 @@ import struct
 import sys
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Final
@@ -186,7 +186,15 @@ class StateBuildOutcome:
     error: str | None = None
     seconds: float = 0.0
     download_bytes: int = 0
-    rows: list[dict[str, str | None]] = field(default_factory=list)
+
+
+# Batch size for the streaming SQLite writer. Bounds peak memory in
+# ``_stream_state_into_conn`` to ``BATCH_SIZE * ~500 bytes`` ≈ 12 MB
+# regardless of the source dataset's total row count. Larger values
+# trade memory for fewer SQLite commits; 25 000 keeps a 4 GB box well
+# clear of OOM (see 2026-06-27 incident: prior collect-then-write
+# pattern hit 3.14 GB anon RSS on CO at ~2.85M rows and got killed).
+BATCH_SIZE: Final[int] = 25_000
 
 
 def main() -> int:
@@ -200,29 +208,74 @@ def main() -> int:
         log.error("No states matched --states %s", args.states)
         return 2
 
-    outcomes: list[StateBuildOutcome] = []
-    for src in sources:
-        if src.state == "WY" and not args.include_wy:
-            log.info("%s: skipping (HTML scrape, opt-in via --include-wy)", src.state)
-            outcomes.append(StateBuildOutcome(state=src.state, skipped=True))
-            continue
-        outcome = _build_one_state(src, args.max_rows_per_state)
-        outcomes.append(outcome)
-        log.info(
-            "%s: %s",
-            src.state,
-            (
-                f"skipped ({outcome.error})"
-                if outcome.skipped
-                else f"{outcome.rows_inserted} rows in {outcome.seconds:.1f}s"
-            ),
-        )
-
     if args.dry_run:
+        outcomes: list[StateBuildOutcome] = []
+        for src in sources:
+            if src.state == "WY" and not args.include_wy:
+                log.info("%s: skipping (HTML scrape, opt-in via --include-wy)", src.state)
+                outcomes.append(StateBuildOutcome(state=src.state, skipped=True))
+                continue
+            outcome = _dry_run_count(src, args.max_rows_per_state)
+            outcomes.append(outcome)
+            log.info(
+                "%s: %s",
+                src.state,
+                (
+                    f"skipped ({outcome.error})"
+                    if outcome.skipped
+                    else f"dry-run {outcome.rows_inserted} rows in {outcome.seconds:.1f}s"
+                ),
+            )
         log.info("--dry-run: skipping SQLite write")
         return 0
 
-    _write_atomic(db_path, outcomes, replace_states=requested_states)
+    # Live build: open the tmp DB, stream every state in, then atomic
+    # rename. Memory stays bounded by BATCH_SIZE rows.
+    tmp_path = db_path.with_suffix(db_path.suffix + ".tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    if requested_states is not None and db_path.exists():
+        import shutil
+
+        shutil.copy2(db_path, tmp_path)
+
+    outcomes = []
+    with sqlite3.connect(tmp_path) as conn:
+        conn.executescript(_SCHEMA_DDL)
+        if requested_states is not None:
+            placeholders = ",".join("?" * len(requested_states))
+            conn.execute(
+                f"DELETE FROM sos_entities WHERE state IN ({placeholders})",  # noqa: S608
+                tuple(requested_states),
+            )
+            conn.commit()
+        for src in sources:
+            if src.state == "WY" and not args.include_wy:
+                log.info("%s: skipping (HTML scrape, opt-in via --include-wy)", src.state)
+                outcomes.append(StateBuildOutcome(state=src.state, skipped=True))
+                continue
+            outcome = _stream_state_into_conn(src, conn, args.max_rows_per_state)
+            outcomes.append(outcome)
+            log.info(
+                "%s: %s",
+                src.state,
+                (
+                    f"skipped ({outcome.error})"
+                    if outcome.skipped
+                    else f"{outcome.rows_inserted} rows in {outcome.seconds:.1f}s"
+                ),
+            )
+
+    # fsync the tmp file then atomic rename so a crash mid-build never
+    # leaves a half-populated SQLite at the canonical path.
+    fd = os.open(tmp_path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp_path, db_path)
+    total = sum(o.rows_inserted for o in outcomes)
+    log.info("SQLite: %d rows written across %d states", total, len(outcomes))
     log.info("DB written to %s", db_path)
     return 0
 
@@ -261,31 +314,87 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _build_one_state(src: StateSource, max_rows: int) -> StateBuildOutcome:
+def _iter_rows(src: StateSource, max_rows: int) -> Iterator[dict[str, str | None]]:
+    """Dispatch to the right per-format fetcher. Each fetcher is a
+    generator that yields canonical-shape dicts; callers stream the
+    rows without buffering them into a list (see _stream_state_into_conn)."""
+    if src.format == "socrata_json":
+        return _fetch_socrata(src.url, max_rows)
+    if src.format == "socrata_rows_json":
+        return _fetch_socrata_rows_json(src.url, max_rows)
+    if src.format == "fl_fixed_width":
+        return _fetch_fl(src.url, max_rows)
+    if src.format == "oh_bulk_csv_index":
+        return _fetch_oh(src.url, max_rows)
+    if src.format == "wy_scrape":
+        return _fetch_wy(src.url, max_rows)
+    if src.format == "mn_csv":
+        return _fetch_mn(src.url, max_rows)
+    raise ValueError(f"unknown format {src.format}")
+
+
+def _stream_state_into_conn(
+    src: StateSource,
+    conn: sqlite3.Connection,
+    max_rows: int,
+    *,
+    batch_size: int = BATCH_SIZE,
+) -> StateBuildOutcome:
+    """Stream rows from the per-state fetcher into the SQLite connection
+    in fixed-size batches.
+
+    Peak in-memory footprint is bounded by ``batch_size`` rows
+    regardless of the source dataset's total row count — fixes the OOM
+    that killed the 2026-06-27 CO build at offset 2.85M rows / 3.14 GB
+    anon RSS on a 4 GB box (root cause: the prior collect-then-write
+    pattern buffered every fetched row into ``outcome.rows`` before the
+    write step).
+
+    Commits per batch so even if the build crashes mid-state the rows
+    persisted so far stay durable in the tmp file (the atomic rename at
+    the end of main() decides whether the tmp file lands as the
+    canonical DB).
+    """
     start = time.monotonic()
     outcome = StateBuildOutcome(state=src.state)
+    batch: list[tuple[str | None, ...]] = []
     try:
-        if src.format == "socrata_json":
-            outcome.rows = list(_fetch_socrata(src.url, max_rows))
-        elif src.format == "socrata_rows_json":
-            outcome.rows = list(_fetch_socrata_rows_json(src.url, max_rows))
-        elif src.format == "fl_fixed_width":
-            outcome.rows = list(_fetch_fl(src.url, max_rows))
-        elif src.format == "oh_bulk_csv_index":
-            outcome.rows = list(_fetch_oh(src.url, max_rows))
-        elif src.format == "wy_scrape":
-            outcome.rows = list(_fetch_wy(src.url, max_rows))
-        elif src.format == "mn_csv":
-            outcome.rows = list(_fetch_mn(src.url, max_rows))
-        else:
-            raise ValueError(f"unknown format {src.format}")
+        for row in _iter_rows(src, max_rows):
+            if not row.get("business_name"):
+                continue
+            batch.append(_row_to_insert_tuple(row, src.state))
+            if len(batch) >= batch_size:
+                conn.executemany(_INSERT_SQL, batch)
+                conn.commit()
+                outcome.rows_inserted += len(batch)
+                batch.clear()
+        if batch:
+            conn.executemany(_INSERT_SQL, batch)
+            conn.commit()
+            outcome.rows_inserted += len(batch)
     except (httpx.HTTPError, OSError, ValueError) as exc:
         log.warning("%s: build failed: %s", src.state, exc)
         outcome.skipped = True
         outcome.error = str(exc)
     finally:
         outcome.seconds = time.monotonic() - start
-        outcome.rows_inserted = len(outcome.rows)
+    return outcome
+
+
+def _dry_run_count(src: StateSource, max_rows: int) -> StateBuildOutcome:
+    """``--dry-run`` mode: walk the fetcher, count rows, never touch SQLite.
+    Same fail-soft handling as the live path."""
+    start = time.monotonic()
+    outcome = StateBuildOutcome(state=src.state)
+    try:
+        for row in _iter_rows(src, max_rows):
+            if row.get("business_name"):
+                outcome.rows_inserted += 1
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        log.warning("%s: dry-run failed: %s", src.state, exc)
+        outcome.skipped = True
+        outcome.error = str(exc)
+    outcome.seconds = time.monotonic() - start
     return outcome
 
 
@@ -552,71 +661,20 @@ def _as_str(value: object) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# SQLite write
+# SQLite write — schema + per-batch INSERT, used by _stream_state_into_conn.
+# The atomic-rename ceremony (tmp → fsync → rename) lives in ``main`` now
+# so a single connection spans every state and per-batch commits keep
+# memory bounded; ``_write_atomic`` was retired in the 2026-06-28 streaming
+# rewrite (collect-then-write hit OOM on CO at 3 GB anon RSS).
 # ---------------------------------------------------------------------------
-def _write_atomic(
-    db_path: Path,
-    outcomes: list[StateBuildOutcome],
-    *,
-    replace_states: set[str] | None,
-) -> None:
-    """Write the SQLite atomically: tmp → fsync → rename.
 
-    When ``replace_states`` is None (full rebuild), the tmp file
-    receives every fetched row. When non-None (partial rebuild), the
-    tmp file is seeded from the existing DB, then DELETE + INSERT only
-    for the listed states.
-    """
-    tmp_path = db_path.with_suffix(db_path.suffix + ".tmp")
-    if tmp_path.exists():
-        tmp_path.unlink()
-
-    if replace_states is not None and db_path.exists():
-        # Copy existing DB to tmp, then mutate only the listed states.
-        import shutil
-
-        shutil.copy2(db_path, tmp_path)
-
-    with sqlite3.connect(tmp_path) as conn:
-        conn.executescript(_SCHEMA_DDL)
-        if replace_states is not None:
-            placeholders = ",".join("?" * len(replace_states))
-            conn.execute(
-                f"DELETE FROM sos_entities WHERE state IN ({placeholders})",  # noqa: S608 — bind list
-                tuple(replace_states),
-            )
-        rows_written = 0
-        for outcome in outcomes:
-            if outcome.skipped or not outcome.rows:
-                continue
-            payload = [
-                _row_to_insert_tuple(row, outcome.state)
-                for row in outcome.rows
-                if row.get("business_name")
-            ]
-            if not payload:
-                continue
-            conn.executemany(
-                """
-                INSERT INTO sos_entities (
-                    business_name, business_name_normalized, state, status,
-                    entity_type, formation_date, registered_agent,
-                    principal_address, officer_names, data_source, last_updated
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                payload,
-            )
-            rows_written += len(payload)
-        conn.commit()
-        log.info("SQLite: %d rows written across %d states", rows_written, len(outcomes))
-
-    # fsync then atomic rename.
-    fd = os.open(tmp_path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(tmp_path, db_path)
+_INSERT_SQL: Final[str] = """
+INSERT INTO sos_entities (
+    business_name, business_name_normalized, state, status,
+    entity_type, formation_date, registered_agent,
+    principal_address, officer_names, data_source, last_updated
+) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+"""
 
 
 _SCHEMA_DDL: Final[str] = """
