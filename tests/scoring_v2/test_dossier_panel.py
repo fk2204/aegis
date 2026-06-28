@@ -171,9 +171,7 @@ def test_unified_view_with_transactions_computes_b_and_c() -> None:
         ClassifiedTransaction(
             id=uuid4(),
             posted_date=date(2026, 3, 1),
-            description=(
-                "INTERNATIONAL WH DES:SENDER ID:XXX INDN:REDACTED MERCHANT CO ID:X"
-            ),
+            description=("INTERNATIONAL WH DES:SENDER ID:XXX INDN:REDACTED MERCHANT CO ID:X"),
             amount=Decimal("99500.00"),
             running_balance=Decimal("99500.00"),
             source_page=1,
@@ -189,6 +187,162 @@ def test_unified_view_with_transactions_computes_b_and_c() -> None:
     assert view.risk_band is not None
     assert view.context_panel is not None
     assert view.risk_band.cashflow.true_revenue_total > Decimal("0")
+
+
+def test_unified_view_proceed_doc_prod_shaped_categories_produces_risk_band() -> None:
+    """Regression for the 2026-06-28 prod symptom: proceed documents
+    whose ``transactions`` rows persisted with the realistic prod
+    category mix (``transfer``, ``deposit``, ``ach_credit``, ``other``)
+    MUST produce a non-None ``risk_band``.
+
+    The prod symptom — "Documents present but no classified
+    transactions are persisted" rendered on the dossier despite the
+    parser persisting hundreds of transactions per merchant — was
+    caused by ``build_unified_tracks_view`` silently swallowing every
+    exception from ``list_transactions`` and falling back to
+    ``txns = []`` for the offending document. When the swallow fired
+    on every doc, ``transactions_by_doc`` came out empty and
+    ``risk_band`` returned ``None``.
+
+    This test does NOT exercise the exception-swallow directly (that
+    is covered by ``test_unified_view_logs_when_list_transactions_raises``
+    below); instead it asserts the happy path returns the band the
+    prod operator was seeing as ``None``. Categories chosen to match
+    the prod SQL audit (transfer / deposit / ach_credit / other) so a
+    future regression that filters these out fails the test.
+    """
+    doc = _doc(
+        metadata_flags=("page_count: 4",),
+        all_flags=(),
+        parse_status="proceed",
+    )
+    # Realistic prod-shaped bundle: deposits + transfers + ACH credits
+    # + uncategorised, 5+ rows like the operator's audit confirmed.
+    txns = [
+        ClassifiedTransaction(
+            id=uuid4(),
+            posted_date=date(2026, 3, 1),
+            description="ACH CREDIT XYZ MERCHANT SERVICES",
+            amount=Decimal("12500.00"),
+            running_balance=Decimal("12500.00"),
+            source_page=1,
+            source_line=1,
+            category="ach_credit",
+            classification_confidence=95,
+        ),
+        ClassifiedTransaction(
+            id=uuid4(),
+            posted_date=date(2026, 3, 2),
+            description="MOBILE DEPOSIT REF12345",
+            amount=Decimal("4500.00"),
+            running_balance=Decimal("17000.00"),
+            source_page=1,
+            source_line=2,
+            category="deposit",
+            classification_confidence=92,
+        ),
+        ClassifiedTransaction(
+            id=uuid4(),
+            posted_date=date(2026, 3, 3),
+            description="TRANSFER TO SAVINGS XX1234",
+            amount=Decimal("-2000.00"),
+            running_balance=Decimal("15000.00"),
+            source_page=1,
+            source_line=3,
+            category="transfer",
+            classification_confidence=90,
+        ),
+        ClassifiedTransaction(
+            id=uuid4(),
+            posted_date=date(2026, 3, 4),
+            description="MISC DEBIT",
+            amount=Decimal("-150.00"),
+            running_balance=Decimal("14850.00"),
+            source_page=2,
+            source_line=1,
+            category="other",
+            classification_confidence=85,
+        ),
+        ClassifiedTransaction(
+            id=uuid4(),
+            posted_date=date(2026, 3, 5),
+            description="ACH CREDIT STRIPE PAYOUT",
+            amount=Decimal("8750.00"),
+            running_balance=Decimal("23600.00"),
+            source_page=2,
+            source_line=2,
+            category="ach_credit",
+            classification_confidence=98,
+        ),
+    ]
+    view = build_unified_tracks_view(
+        documents=[doc],
+        list_transactions=lambda _id: txns,
+    )
+    # The actual symptom the operator hit: risk_band came back None.
+    # With real transactions persisted it MUST be populated.
+    assert view.risk_band is not None, (
+        "Track B returned risk_band=None for a proceed document with "
+        "5 persisted transactions. The dossier would render "
+        "'insufficient data' instead of a band — same as the prod "
+        "symptom on 2026-06-28."
+    )
+    assert view.context_panel is not None
+    # Track B's cashflow must reflect the bundle: 5 transactions, a
+    # positive transfer-net, and the band/action are populated.
+    assert view.risk_band.cashflow.statement_period_days >= 1
+    assert view.risk_band.band in {"low", "moderate", "elevated", "high"}
+    assert view.risk_band.action  # non-empty action string
+    # No empty-state copy bleeds through.
+    assert view.insufficient_data_reason == ""
+
+
+def test_unified_view_logs_when_list_transactions_raises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``list_transactions`` failures used to be silently swallowed.
+
+    The 2026-06-28 prod fix replaced the bare ``except Exception:`` with
+    a structured-log warning so the operator can find the offending
+    document_id instead of seeing "insufficient data" on the dossier
+    with no diagnostic trail. This test pins that contract — any
+    future refactor that drops the log breaks the operator's only
+    handle on the failure mode.
+    """
+    doc = _doc(
+        metadata_flags=("page_count: 4",),
+        all_flags=(),
+        parse_status="proceed",
+    )
+
+    def raising_list(_id: Any) -> list[ClassifiedTransaction]:
+        # Mirrors the kind of failure the silent-except was hiding:
+        # a row mapper that crashes on a malformed prod row.
+        raise ValueError("simulated mapper crash on malformed row")
+
+    with caplog.at_level("WARNING", logger="aegis.scoring_v2.dossier_panel"):
+        view = build_unified_tracks_view(
+            documents=[doc],
+            list_transactions=raising_list,
+        )
+
+    # The fallback contract is preserved: dossier still renders, with
+    # the insufficient-data copy in place of the band.
+    assert view.risk_band is None
+    # The diagnostic log MUST surface — that's the whole point of the fix.
+    matched = [
+        r for r in caplog.records if "dossier_panel.list_transactions_failed" in r.getMessage()
+    ]
+    assert matched, (
+        "build_unified_tracks_view must log a structured WARNING when "
+        "list_transactions raises, so the operator can diagnose the "
+        "underlying row-mapper failure instead of seeing 'insufficient "
+        "data' with no audit trail."
+    )
+    # Message carries the offending document_id + exception class name.
+    msg = matched[0].getMessage()
+    assert str(doc.id) in msg
+    assert "ValueError" in msg
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -211,10 +365,7 @@ def test_unified_view_has_no_decline_or_score_field() -> None:
         "verdict_action",
     }
     leaked = fields & forbidden
-    assert not leaked, (
-        f"UnifiedTracksView must not carry decline/score fields; "
-        f"leaked: {leaked}"
-    )
+    assert not leaked, f"UnifiedTracksView must not carry decline/score fields; leaked: {leaked}"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -255,8 +406,7 @@ def repos_with_arkm_shaped_merchant() -> tuple[
             "parse_status": "manual_review",
             "metadata_flags": ["editor_detected: iText 2.1.7 by 1T3XT"],
             "all_flags": [
-                "[MATH] reconciliation_failed_period: "
-                "expected 197.45 got 364.12",
+                "[MATH] reconciliation_failed_period: expected 197.45 got 364.12",
                 "[MATH] reconciliation_failed_withdrawal_total: "
                 "listed 32508.86 vs printed 32167.19",
                 "[MATH] reconciliation_failed_intraday: "
@@ -516,8 +666,7 @@ def repos_with_strong_metadata_plus_drift_merchant() -> tuple[
             # Reconciliation drift — branch 1 must surface this as
             # evidence (F2). Without F2 this row would be dropped.
             "all_flags": [
-                "[MATH] reconciliation_failed_period: "
-                "expected 1000 got 950",
+                "[MATH] reconciliation_failed_period: expected 1000 got 950",
             ],
             "fraud_score_breakdown": {"metadata": 72},
             "uploaded_at": datetime.now(UTC),
@@ -538,9 +687,7 @@ def strong_metadata_plus_drift_client(
     ],
     empty_funder_repo: InMemoryFunderRepository,
 ) -> Iterator[TestClient]:
-    merchants, docs, audit, _, _ = (
-        repos_with_strong_metadata_plus_drift_merchant
-    )
+    merchants, docs, audit, _, _ = repos_with_strong_metadata_plus_drift_merchant
     reset_dependency_caches()
     app = create_app()
     app.dependency_overrides[get_merchant_repository] = lambda: merchants
@@ -575,9 +722,7 @@ def test_strong_metadata_dossier_surfaces_drift_evidence_end_to_end(
     look for the drift signal in the body will fail.
     """
     _, _, _, merchant, _ = repos_with_strong_metadata_plus_drift_merchant
-    resp = strong_metadata_plus_drift_client.get(
-        f"/ui/merchants/{merchant.id}"
-    )
+    resp = strong_metadata_plus_drift_client.get(f"/ui/merchants/{merchant.id}")
     assert resp.status_code == 200
     html = resp.text
 
