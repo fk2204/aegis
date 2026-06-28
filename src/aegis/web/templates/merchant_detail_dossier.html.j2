@@ -41,13 +41,19 @@
     .narrator-action a { color:inherit; }
     /* Fix 1 — visible prompt card when narrator_summary is None but the
        deal already has a scoreable analysis on file. The HTMX swap targets
-       this class so the response replaces the card in place. */
+       this class so the response replaces the card in place.
+       2026-06-28: bumped padding + horizontal margin to match the
+       deal-summary-card so the prompt actually reads as the top-of-
+       dossier element underwriters land on (was getting visually
+       lost under the masthead at full width). */
     .narrator-prompt {
       background:#fff3cd;
       border:1px solid #ffeeba;
-      border-radius:6px;
-      padding:14px;
-      margin-bottom:16px;
+      border-left:4px solid #ffc107;
+      border-radius:8px;
+      padding:18px 22px;
+      margin:14px 24px 0;
+      font-size:14px;
     }
     .narrator-prompt p { margin:0 0 10px 0; }
     .narrator-prompt button {
@@ -978,16 +984,29 @@
                 {% else %}last-resort / high-decline band &mdash; factor 1.45&ndash;1.55{% endif %}
               </span>
             </div>
-            <div class="row">
-              <span class="k">Fraud score</span>
-              {% set _fraud = (document.fraud_score if document else 0) or 0 %}
-              <span class="v {% if _fraud >= 65 %}bad{% elif _fraud >= 35 %}warn{% endif %}">{{ _fraud }}<span class="small">/100</span></span>
-              <span class="qual">
-                {% if _fraud >= 65 %}manual-review band &mdash; patterns demand attention
-                {% elif _fraud >= 35 %}review band &mdash; verify findings below
-                {% else %}clear band &mdash; no fraud signal of consequence{% endif %}
-              </span>
-            </div>
+            {# 2026-06-28 — fraud_score row demoted from scoreboard. The
+               retired single-axis score confused non-engineer underwriters
+               ("0/100" read as "worst possible") and is no longer the
+               decline driver (Track A integrity verdict + Track B band are,
+               see scoring_v2/). Raw fraud_score still surfaces in the
+               Statements ledger column for engineer audit. #}
+            {% if unified_tracks and unified_tracks.integrity_worst_verdict %}
+              <div class="row">
+                <span class="k">Document integrity</span>
+                <span class="v {% if unified_tracks.integrity_worst_verdict == 'fail' %}bad{% elif unified_tracks.integrity_worst_verdict == 'review' %}warn{% endif %}">
+                  {% if unified_tracks.integrity_worst_verdict == 'fail' %}FAIL
+                  {% elif unified_tracks.integrity_worst_verdict == 'review' %}REVIEW
+                  {% elif unified_tracks.integrity_worst_verdict == 'clean' %}CLEAN
+                  {% else %}—{% endif %}
+                </span>
+                <span class="qual">
+                  {% if unified_tracks.integrity_worst_verdict == 'fail' %}Track A — request original bank export before submitting
+                  {% elif unified_tracks.integrity_worst_verdict == 'review' %}Track A — verify integrity findings below
+                  {% elif unified_tracks.integrity_worst_verdict == 'clean' %}Track A — statement appears unmodified
+                  {% else %}Track A — no integrity signals captured{% endif %}
+                </span>
+              </div>
+            {% endif %}
             <div class="row">
               <span class="k">Suggested max</span>
               <span class="v">{{ score_result.suggested_max_advance | whole_money }}</span>
@@ -1858,6 +1877,11 @@
       {% endif %}
     </section>
 
+    {# 2-col pairing (2026-06-28): Statements ledger + Merchant profile
+       are both compact look-up tables — fit comfortably side-by-side
+       on >1200px viewports. The .dossier-two-col CSS collapses to a
+       single column under that breakpoint. #}
+    <div class="dossier-two-col">
     {# ============== § 4½ STATEMENTS LEDGER ============== #}
     {% if documents %}
     <section id="statements" class="section">
@@ -1965,6 +1989,7 @@
       </table>
       </div>
     </section>
+    </div>{# /.dossier-two-col — Statements + Merchant profile #}
 
     {# ============== § 5 DISPOSITION ============== #}
     <section id="disposition" class="section">

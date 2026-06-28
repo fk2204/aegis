@@ -29,7 +29,8 @@
   'drift_alone': "Math discrepancy detected. Could be OCR error or real manipulation. Compare the printed totals on the PDF to the numbers shown here.",
   'strong_metadata': "PDF editing tool detected in file metadata. Could be innocent compression — but request original bank export to confirm.",
   'medium_corroborated': "PDF metadata raises a concern AND math discrepancies were found. Request original statements directly from the bank to confirm.",
-  'clean': "No integrity concerns detected.",
+  'editor_detected': "PDF was opened and re-saved by an editing tool after the original bank export. Request the original bank-exported file to confirm nothing was changed.",
+  'clean': "No integrity concerns detected — statement appears unmodified.",
 } %}
 {% set _TRACK_A_SIGNAL_PLAIN = {
   'font_inconsistency_detected': "Transaction text uses a different font than the rest of the page. Possible paste-over fraud.",
