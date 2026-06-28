@@ -60,6 +60,7 @@ from aegis.background_checks import enqueue_background_checks
 from aegis.close.client import CloseClient, CloseError
 from aegis.close.field_map import (
     FieldMapError,
+    _parse_close_lead_description,
     get_custom_field,
     industry_to_naics_safe,
     normalize_entity_type_safe,
@@ -1395,6 +1396,24 @@ def _lead_to_merchant_fields(
         )
     product_type_value = product_value or DEFAULT_PRODUCT_TYPE
 
+    # Migration 087 — parse the structured FINANCIAL block out of the
+    # Lead ``description`` text field. Most application-intake data
+    # (monthly revenue, daily payment, stated MCA positions, etc.)
+    # lives only there — the Close custom-field set covers a strict
+    # subset. Returns an empty dict when the description has no
+    # FINANCIAL block, so the rest of this function is unaffected on
+    # leads created the old way.
+    raw_description = lead.get("description")
+    description_str = raw_description if isinstance(raw_description, str) else None
+    financial = _parse_close_lead_description(description_str)
+
+    # When the custom-field requested_amount didn't parse (legacy lead
+    # or unset custom field) AND the FINANCIAL block carries one, use
+    # the FINANCIAL value. The custom field is authoritative when set —
+    # it's the operator's explicit override surface in the Close UI.
+    if requested_amount is None and financial.get("requested_amount") is not None:
+        requested_amount = financial["requested_amount"]
+
     return {
         "business_name": str(business_name),
         "dba": _str_or_none(get_custom_field(lead, "dba_name")),
@@ -1415,6 +1434,20 @@ def _lead_to_merchant_fields(
         # Migration 080 — product type at merchant create time. Drives
         # offer sizing, narrator framing, and funder matching.
         "product_type": product_type_value,
+        # Migration 087 — Close FINANCIAL-block stated application data.
+        # Every field is ``None`` / empty list when the description had
+        # no FINANCIAL block OR when that specific line was absent /
+        # blank. The detectors short-circuit on ``None`` / non-positive,
+        # so an absent value never trips a divergence check.
+        "monthly_revenue": financial.get("monthly_revenue"),
+        "avg_monthly_cc_sales": financial.get("avg_monthly_cc_sales"),
+        "stated_monthly_deposits": financial.get("stated_monthly_deposits"),
+        "stated_mca_positions": financial.get("stated_mca_positions"),
+        "stated_current_lenders": financial.get("stated_current_lenders") or [],
+        "stated_mca_balance": financial.get("stated_mca_balance"),
+        "stated_daily_payment": financial.get("stated_daily_payment"),
+        "stated_bank": financial.get("stated_bank"),
+        "use_of_funds": financial.get("use_of_funds"),
     }
 
 

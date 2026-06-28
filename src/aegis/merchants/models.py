@@ -233,6 +233,42 @@ class MerchantRow(_StrictModel):
     bankruptcy_cases: list[dict[str, Any]] = Field(default_factory=list)
 
     # ------------------------------------------------------------------
+    # Migration 087 — application data parsed from the Close Lead
+    # ``description`` FINANCIAL block (operator-typed at intake). Drives
+    # the dossier "Application data from Close" panel (what the merchant
+    # told us) AND two existing scoring detectors that compare stated
+    # against bank-measured values:
+    #
+    #   * ``monthly_revenue``      — fed to
+    #     ``detect_stated_vs_measured_revenue_divergence`` (severity 60).
+    #     Named ``monthly_revenue`` (NOT ``stated_monthly_revenue``)
+    #     because the detector hard-codes this attribute name; renaming
+    #     would silently disable the detector.
+    #   * ``stated_daily_payment`` — fed to
+    #     ``detect_impossible_payment_load`` (severity 85). Same naming
+    #     hard-dep — the detector reads this attribute name verbatim.
+    #
+    # Every other field surfaces only on the dossier today; the *stated*
+    # vs *measured* drift checks (positions, balance, bank name) are
+    # follow-on detectors. The fields are populated NOW so the dossier
+    # surface lights up immediately and the detector hooks are ready.
+    #
+    # All fields default to ``None`` / empty list. The detectors
+    # short-circuit when the field is ``None`` or non-positive, so a
+    # legacy merchant (pre-087) reads as "merchant didn't tell us" and
+    # never trips a divergence check on absence of stated data.
+    # ------------------------------------------------------------------
+    monthly_revenue: Money | None = None
+    avg_monthly_cc_sales: Money | None = None
+    stated_monthly_deposits: Annotated[int, Field(ge=0)] | None = None
+    stated_mca_positions: Annotated[int, Field(ge=0)] | None = None
+    stated_current_lenders: list[str] = Field(default_factory=list)
+    stated_mca_balance: Money | None = None
+    stated_daily_payment: Money | None = None
+    stated_bank: str | None = None
+    use_of_funds: str | None = None
+
+    # ------------------------------------------------------------------
     # Migration 086 — enhanced UCC flow. ``ucc_portal_url`` is the
     # state SOS / UCC search URL the dossier surfaces for one-click
     # operator verification; populated from ``UCC_STATE_PORTALS`` at

@@ -450,6 +450,7 @@
       {% if pattern_cards or stacking or (soft_signals and not soft_signals.is_empty) %}<a href="#findings"><span class="n">§ 3</span> Pattern findings</a>{% endif %}
       <a href="#routing"><span class="n">§ 4</span> Funder routing</a>
       {% if documents %}<a href="#statements"><span class="n">§ 4½</span> Statements ledger</a>{% endif %}
+      {% if merchant.monthly_revenue or merchant.stated_daily_payment or merchant.stated_mca_positions or merchant.stated_current_lenders or merchant.stated_bank or merchant.use_of_funds or merchant.stated_mca_balance or merchant.stated_monthly_deposits or merchant.avg_monthly_cc_sales %}<a href="#application-data"><span class="n">§ 4⅔</span> Application data</a>{% endif %}
       <a href="#profile"><span class="n">§ 4¾</span> Merchant profile</a>
       <a href="#disposition"><span class="n">§ 5</span> Disposition</a>
       {% if funder_note_submissions %}<a href="#submissions"><span class="n">§ 5½</span> Funder submissions</a>{% endif %}
@@ -1956,6 +1957,41 @@
               </td>
             </tr>
           {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </section>
+    {% endif %}
+
+    {# ============== § 4⅔ APPLICATION DATA FROM CLOSE ==============
+       What the MERCHANT told us at intake (Close FINANCIAL block,
+       parsed from the Lead description by migration 087). Distinct
+       from § 2 (AEGIS-measured cashflow) — the contrast between the
+       two is exactly what the impossible-payment-load + stated-vs-
+       measured-revenue-divergence detectors evaluate.
+       Visual contrast: amber border-left so the operator can see at a
+       glance that this band is unverified-merchant-assertion data,
+       not AEGIS-measured. #}
+    {% set has_application_data = merchant.monthly_revenue or merchant.stated_daily_payment or merchant.stated_mca_positions or merchant.stated_current_lenders or merchant.stated_bank or merchant.use_of_funds or merchant.stated_mca_balance or merchant.stated_monthly_deposits or merchant.avg_monthly_cc_sales or merchant.requested_amount %}
+    {% if has_application_data %}
+    <section id="application-data" class="section" style="border-left:3px solid var(--amber, #c99317);padding-left:14px">
+      <header>
+        <span class="n">§ 4⅔</span>
+        <h2>Application data <em>· what the merchant told us</em></h2>
+        <span class="footnote">parsed from Close · unverified merchant assertions</span>
+      </header>
+      <div class="table-scroll">
+      <table class="audit-ledger">
+        <tbody>
+          {% if merchant.requested_amount %}<tr><td class="when" style="width:200px">Requested advance</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.requested_amount) }}</span></td></tr>{% endif %}
+          {% if merchant.use_of_funds %}<tr><td class="when">Use of funds</td><td class="details">{{ merchant.use_of_funds }}</td></tr>{% endif %}
+          {% if merchant.monthly_revenue %}<tr><td class="when">Stated monthly revenue</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.monthly_revenue) }}</span> <span style="color:var(--ink-3);font-size:11px">/ month (merchant-reported)</span></td></tr>{% endif %}
+          {% if merchant.avg_monthly_cc_sales %}<tr><td class="when">Avg monthly CC sales</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.avg_monthly_cc_sales) }}</span></td></tr>{% endif %}
+          {% if merchant.stated_monthly_deposits is not none %}<tr><td class="when">Monthly deposit count</td><td class="details"><span class="mono">{{ merchant.stated_monthly_deposits }}</span> deposits/month</td></tr>{% endif %}
+          {% if merchant.stated_mca_positions is not none %}<tr><td class="when">Existing MCA positions</td><td class="details"><span class="mono">{{ merchant.stated_mca_positions }}</span>{% if merchant.stated_current_lenders %} · {{ merchant.stated_current_lenders | join(', ') }}{% endif %}</td></tr>{% elif merchant.stated_current_lenders %}<tr><td class="when">Current lenders</td><td class="details">{{ merchant.stated_current_lenders | join(', ') }}</td></tr>{% endif %}
+          {% if merchant.stated_mca_balance %}<tr><td class="when">Existing MCA balance</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.stated_mca_balance) }}</span></td></tr>{% endif %}
+          {% if merchant.stated_daily_payment %}<tr><td class="when">Daily/weekly payment</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.stated_daily_payment) }}</span></td></tr>{% endif %}
+          {% if merchant.stated_bank %}<tr><td class="when">Bank</td><td class="details">{{ merchant.stated_bank }}</td></tr>{% endif %}
         </tbody>
       </table>
       </div>

@@ -636,6 +636,194 @@ def get_custom_field(payload: dict[str, Any], aegis_field_name: str) -> Any:  # 
     return payload.get(f"custom.{cf_id}")
 
 
+# ----------------------------------------------------------------------
+# Close Lead description "FINANCIAL:" block parser (migration 087).
+#
+# Close stores application-intake data as a structured block inside the
+# Lead ``description`` text field (rarely surfaces as a Close custom
+# field). Verified shape on prod leads:
+#
+#   FINANCIAL:
+#     Requested Amount: 499999
+#     Use of Funds: Expansion / Build-out
+#     Monthly Gross Revenue: 199999
+#     Avg Monthly CC Sales: 200000
+#     Monthly Deposits: 20
+#     Existing MCA Positions: 2
+#     Current Lenders: Diesel, Finpoint
+#     Existing MCA Balance: 8001
+#     Daily/Weekly Payment: 125000
+#     Bank: Third Coast Bank
+#
+# The parser is permissive on whitespace, the optional ``$`` prefix on
+# money values, and missing fields (any subset may be present). Bad
+# money strings degrade to ``None`` for that field — they do NOT raise
+# (the webhook would lose every other field that did parse).
+# ----------------------------------------------------------------------
+
+
+# Header line that opens the block. Match the start anchored against any
+# leading whitespace to survive operator indentation drift.
+_FINANCIAL_HEADER: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*FINANCIAL\s*:[ \t]*$",
+    re.MULTILINE,
+)
+
+
+# Single "Key: Value" body line. We deliberately do NOT require leading
+# whitespace — operator indentation has been observed at zero, two, and
+# four spaces. Anchored within a single line: ``[ \t]`` (NOT ``\s``)
+# on the key, colon, and value side so the lazy quantifiers can't
+# silently span newlines and accidentally pair a blank-value key with
+# the next line's value.
+_KV_LINE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*(?P<key>[A-Za-z][A-Za-z0-9 /._&-]*?)[ \t]*:[ \t]*(?P<value>[^\n]*?)[ \t]*$",
+    re.MULTILINE,
+)
+
+
+# Maps the Close-side label (lowercased, whitespace-collapsed) to the
+# MerchantRow field name. Lowercase + whitespace-collapse on the lookup
+# side absorbs operator drift on capitalization and stray spaces
+# ("Avg Monthly  CC  Sales").
+_FINANCIAL_LABEL_TO_FIELD: Final[dict[str, str]] = {
+    "requested amount": "requested_amount",
+    "use of funds": "use_of_funds",
+    "monthly gross revenue": "monthly_revenue",
+    "avg monthly cc sales": "avg_monthly_cc_sales",
+    "monthly deposits": "stated_monthly_deposits",
+    "existing mca positions": "stated_mca_positions",
+    "current lenders": "stated_current_lenders",
+    "existing mca balance": "stated_mca_balance",
+    "daily/weekly payment": "stated_daily_payment",
+    "bank": "stated_bank",
+}
+
+
+# Money fields land as Decimal; integer fields land as int; list fields
+# split on comma; the remainder (use_of_funds, stated_bank) stay as str.
+_MONEY_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "requested_amount",
+        "monthly_revenue",
+        "avg_monthly_cc_sales",
+        "stated_mca_balance",
+        "stated_daily_payment",
+    }
+)
+_INT_FIELDS: Final[frozenset[str]] = frozenset({"stated_monthly_deposits", "stated_mca_positions"})
+_LIST_FIELDS: Final[frozenset[str]] = frozenset({"stated_current_lenders"})
+
+
+def _normalize_label(raw: str) -> str:
+    """Lowercase + collapse internal whitespace so the lookup absorbs
+    operator drift on capitalization and stray spaces."""
+    return " ".join(raw.lower().split())
+
+
+def _parse_close_lead_description(description: str | None) -> dict[str, Any]:
+    """Extract the structured ``FINANCIAL:`` block from a Close Lead
+    description into a dict keyed by ``MerchantRow`` field names.
+
+    Returns an empty dict when:
+      * ``description`` is ``None`` / empty / whitespace-only,
+      * there is no ``FINANCIAL:`` header line in the description,
+      * the header line exists but no recognized KV lines follow.
+
+    Returns ``None`` for any field whose value is blank, whose money
+    string fails to parse, or whose integer string fails to parse —
+    NEVER raises. The webhook caller merges this dict into the larger
+    ``MerchantRow`` upsert payload, so a single bad line cannot drop
+    every other field that did parse.
+
+    Output value types:
+      * Money fields (requested_amount, monthly_revenue,
+        avg_monthly_cc_sales, stated_mca_balance, stated_daily_payment)
+        → ``Decimal | None``.
+      * Integer fields (stated_monthly_deposits, stated_mca_positions)
+        → ``int | None``.
+      * List fields (stated_current_lenders) → ``list[str]``. Empty
+        value yields an empty list, NOT ``None``, so the merchant row
+        column stays consistent with the DB DEFAULT (``ARRAY[]``).
+      * Free-text fields (use_of_funds, stated_bank) → ``str | None``.
+    """
+    if description is None:
+        return {}
+    text = description.strip()
+    if text == "":
+        return {}
+
+    header_match = _FINANCIAL_HEADER.search(text)
+    if header_match is None:
+        return {}
+
+    # Only scan lines AFTER the header. The header line itself may
+    # carry an inline KV the operator pasted; stripping by header end
+    # avoids accidentally re-matching the header as a KV.
+    body = text[header_match.end() :]
+
+    out: dict[str, Any] = {}
+    for kv_match in _KV_LINE.finditer(body):
+        label_raw = kv_match.group("key")
+        value_raw = kv_match.group("value")
+        # Stop the block scan as soon as we hit a blank line OR a new
+        # all-caps section header (e.g. ``OWNER:``, ``COMPANY:``). The
+        # ``_KV_LINE`` pattern itself doesn't catch the blank-line case
+        # (it requires a key/colon), so the only stop condition is a
+        # heuristic: another label that ends in ``:`` and whose
+        # normalized form is NOT in our label table treated as a new
+        # section IF its value is empty.
+        normalized = _normalize_label(label_raw)
+        if normalized not in _FINANCIAL_LABEL_TO_FIELD:
+            # Likely the start of the next block (OWNER:, COMPANY:,
+            # CONTACT:) — value will be blank. Stop scanning so a later
+            # block doesn't bleed in.
+            if value_raw.strip() == "":
+                break
+            # Otherwise it's a label we don't recognize but with a value
+            # — operator added a new line we haven't mapped. Skip
+            # silently rather than erroring; the operator's untracked
+            # KV doesn't belong on the merchant row.
+            continue
+
+        field = _FINANCIAL_LABEL_TO_FIELD[normalized]
+        stripped_value = value_raw.strip()
+
+        if field in _LIST_FIELDS:
+            # Comma-split, trim each element, drop empties. ``""``
+            # yields ``[]`` rather than ``[""]`` so the DB column stays
+            # consistent with the empty-list DEFAULT.
+            parts = [piece.strip() for piece in stripped_value.split(",")]
+            out[field] = [piece for piece in parts if piece]
+            continue
+
+        if stripped_value == "":
+            out[field] = None
+            continue
+
+        if field in _MONEY_FIELDS:
+            parsed, _warn = parse_money_safe(stripped_value)
+            out[field] = parsed
+            continue
+
+        if field in _INT_FIELDS:
+            # ``int(...)`` rejects ``"2,000"`` and ``"$2"`` — strip the
+            # same noise ``parse_money`` does so operator drift on the
+            # numeric formatting doesn't drop the field. Garbage =>
+            # ``None`` per the no-raise contract.
+            cleaned = stripped_value.replace("$", "").replace(",", "").strip()
+            try:
+                out[field] = int(cleaned)
+            except ValueError:
+                out[field] = None
+            continue
+
+        # Free-text field (use_of_funds, stated_bank).
+        out[field] = stripped_value
+
+    return out
+
+
 def extract_lead_description(close_lead_payload: dict[str, Any]) -> str | None:
     """Pull the Close Lead ``description`` field.
 
@@ -775,6 +963,7 @@ __all__ = [
     "FICO_RANGE_LOWER_BOUND",
     "NON_STATEMENT_FILENAME_TERMS",
     "FieldMapError",
+    "_parse_close_lead_description",
     "extract_lead_description",
     "filename_is_non_statement",
     "filename_matches_statement_filter",

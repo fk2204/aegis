@@ -1124,6 +1124,37 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         ucc_portal_url=_none_if_empty(row.get("ucc_portal_url")),
         ucc_operator_verified=bool(row.get("ucc_operator_verified")),
         ucc_verified_at=_parse_dt(row.get("ucc_verified_at")),
+        # Migration 087 — Close FINANCIAL-block stated application data.
+        # Money columns flow through ``_Decimal(str(...))`` so a Supabase
+        # ``numeric`` round-trip (which arrives as a string) lands as a
+        # safe ``Decimal``. Pre-087 reads (replica, restored backup)
+        # collapse to ``None`` / empty list which the detectors treat as
+        # "merchant didn't tell us" — the safe default.
+        monthly_revenue=(
+            _Decimal(str(row["monthly_revenue"]))
+            if row.get("monthly_revenue") is not None
+            else None
+        ),
+        avg_monthly_cc_sales=(
+            _Decimal(str(row["avg_monthly_cc_sales"]))
+            if row.get("avg_monthly_cc_sales") is not None
+            else None
+        ),
+        stated_monthly_deposits=row.get("stated_monthly_deposits"),
+        stated_mca_positions=row.get("stated_mca_positions"),
+        stated_current_lenders=list(row.get("stated_current_lenders") or []),
+        stated_mca_balance=(
+            _Decimal(str(row["stated_mca_balance"]))
+            if row.get("stated_mca_balance") is not None
+            else None
+        ),
+        stated_daily_payment=(
+            _Decimal(str(row["stated_daily_payment"]))
+            if row.get("stated_daily_payment") is not None
+            else None
+        ),
+        stated_bank=_none_if_empty(row.get("stated_bank")),
+        use_of_funds=_none_if_empty(row.get("use_of_funds")),
         # Migration 085 — Secretary of State entity check.
         sos_checked_at=_parse_dt(row.get("sos_checked_at")),
         sos_status=_none_if_empty(row.get("sos_status")),
@@ -1250,6 +1281,25 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "ucc_portal_url": m.ucc_portal_url,
         "ucc_operator_verified": m.ucc_operator_verified,
         "ucc_verified_at": m.ucc_verified_at.isoformat() if m.ucc_verified_at else None,
+        # Migration 087 — Close FINANCIAL-block stated application data.
+        # ``Decimal`` columns ship as ``str`` so the postgrest JSON
+        # serialiser doesn't lose precision; the list column ships as a
+        # native list (empty list = explicit "no lenders supplied").
+        "monthly_revenue": str(m.monthly_revenue) if m.monthly_revenue is not None else None,
+        "avg_monthly_cc_sales": (
+            str(m.avg_monthly_cc_sales) if m.avg_monthly_cc_sales is not None else None
+        ),
+        "stated_monthly_deposits": m.stated_monthly_deposits,
+        "stated_mca_positions": m.stated_mca_positions,
+        "stated_current_lenders": list(m.stated_current_lenders),
+        "stated_mca_balance": (
+            str(m.stated_mca_balance) if m.stated_mca_balance is not None else None
+        ),
+        "stated_daily_payment": (
+            str(m.stated_daily_payment) if m.stated_daily_payment is not None else None
+        ),
+        "stated_bank": m.stated_bank,
+        "use_of_funds": m.use_of_funds,
         # Migration 085 — SOS entity check.
         "sos_checked_at": m.sos_checked_at.isoformat() if m.sos_checked_at else None,
         "sos_status": m.sos_status,
