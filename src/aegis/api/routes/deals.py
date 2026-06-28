@@ -308,6 +308,21 @@ def score(
             audit=audit,
         )
 
+        # OFAC SDN + Consolidated screening (migration 083). Local
+        # cache lookup — no Bedrock, no network. Fail-closed: cache
+        # missing / stale blocks. ``ofac_is_clear=False`` suppresses
+        # the funder-matching grid downstream (the dossier route
+        # surfaces the same column as a red banner). Sibling lazy hook
+        # to ``ensure_ucc_check`` — runs once per merchant; refreshed
+        # via the dossier ``Refresh`` button.
+        from aegis.compliance.ofac import ensure_ofac_check
+
+        ensure_ofac_check(
+            merchant_row,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+
     # U33 — feed Track A/B verdicts. The route operates on an operator-
     # provided ScoreInput payload but the merchant's docs are available
     # via ``deal.merchant_id`` so the active-engine flip has live inputs.

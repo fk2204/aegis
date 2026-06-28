@@ -1109,6 +1109,13 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         ucc_filings=list(row.get("ucc_filings") or []),
         ucc_default_indicators=list(row.get("ucc_default_indicators") or []),
         ucc_checked_at=_parse_dt(row.get("ucc_checked_at")),
+        # Migration 083 — OFAC SDN screening. Pre-083 rows collapse to
+        # None which is the "needs first check" signal the scorer
+        # hook reads before invoking the screener.
+        ofac_checked_at=_parse_dt(row.get("ofac_checked_at")),
+        ofac_is_clear=row.get("ofac_is_clear"),
+        ofac_match_detail=list(row.get("ofac_match_detail") or []),
+        ofac_cache_date=_parse_dt(row.get("ofac_cache_date")),
         created_at=_parse_dt(row.get("created_at")),
         updated_at=_parse_dt(row.get("updated_at")),
         # Migration 065. None for every pre-065 row + every live row;
@@ -1199,6 +1206,11 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         "ucc_filings": list(m.ucc_filings),
         "ucc_default_indicators": list(m.ucc_default_indicators),
         "ucc_checked_at": m.ucc_checked_at,
+        # Migration 083 — OFAC SDN screening.
+        "ofac_checked_at": m.ofac_checked_at,
+        "ofac_is_clear": m.ofac_is_clear,
+        "ofac_match_detail": list(m.ofac_match_detail),
+        "ofac_cache_date": m.ofac_cache_date,
         # Migration 080 — round-trips on every upsert so the column is
         # always written explicitly (rather than relying on the DB
         # DEFAULT to land on inserts only).

@@ -1528,6 +1528,42 @@
        section now exposes ``data-test-id="dossier-background-checks"``. #}
     {% include "_background_checks_section.html.j2" %}
 
+    {# Migration 083 — OFAC SDN hard gate. Red banner replaces the
+       funder-matching grid when ``ofac_blocked`` is true. The
+       compliance team's call: a sanctioned merchant must not see a
+       funder list, even a degraded one. Operator can refresh the
+       check via the Background-checks ``Refresh`` button after
+       resolving a false-positive with the compliance team. #}
+    {% if ofac_blocked %}
+      <section class="section section-blocked"
+               data-test-id="dossier-ofac-block-banner"
+               style="border:2px solid var(--danger,#b91c1c);
+                      background:#fef2f2;
+                      padding:16px;
+                      border-radius:6px;">
+        <header>
+          <span class="n">⛔</span>
+          <h2 style="color:var(--danger,#b91c1c);">OFAC SDN match —
+              funder matching blocked</h2>
+        </header>
+        <p style="margin-top:8px;">
+          This merchant matched the OFAC Specially Designated Nationals
+          list (or the Consolidated Sanctions list). Funder matching is
+          suppressed pending compliance review.
+        </p>
+        {% if ofac_match_detail %}
+          <details style="margin-top:8px;">
+            <summary>Match details ({{ ofac_match_detail|length }})</summary>
+            <ul style="margin-top:8px;font-family:monospace;font-size:12px;">
+              {% for m in ofac_match_detail %}
+                <li>{{ m }}</li>
+              {% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+      </section>
+    {% endif %}
+
     {# ============== § 4 FUNDER MATCHING (inline) ==============
        Phase 7B inline-match (2026-06-19). Lifted the side-by-side
        comparison from /ui/merchants/{id}/match into the dossier so the

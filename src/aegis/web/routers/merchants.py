@@ -3846,10 +3846,26 @@ async def merchant_detail(
     # for the stipulations evaluator below; previously the dossier ran its
     # own match loop here, which drifted from /match whenever the matcher
     # gained a parameter.
+    # Migration 083 — OFAC SDN hard gate. Run the lazy screening before
+    # the funder-matching grid so a sanctioned merchant never surfaces
+    # eligible funders. ``ensure_ofac_check`` is the same pattern as
+    # ``ensure_ucc_check`` (scored once per merchant; refresh via the
+    # dossier Refresh button). The audit row is written inside the
+    # helper. ``ofac_is_clear=False`` short-circuits funder rendering;
+    # the template renders a red banner in place of the grid.
+    from aegis.compliance.ofac import ensure_ofac_check as _ensure_ofac_check
+
+    merchant = _ensure_ofac_check(
+        merchant,
+        merchants_repo=merchants,
+        audit=audit,
+    )
+    ofac_blocked = merchant.ofac_is_clear is False
+
     matched_funders_cards: list[dict[str, Any]] = []
     top_matched_funder: FunderRow | None = None
     stips_result: StipsResult | None = None
-    if score_result is not None and score_input is not None:
+    if not ofac_blocked and score_result is not None and score_input is not None:
         matched_funders_cards = _build_match_cards(
             merchant=merchant,
             score_input=score_input,
@@ -4080,6 +4096,11 @@ async def merchant_detail(
             "override_latest_decision_id": override_latest_decision_id,
             "show_override_button": show_override_button,
             "all_statements_manual_review": all_statements_manual_review,
+            # OFAC SDN hard gate (migration 083). True surfaces a red
+            # banner on the dossier and suppresses the funder-matching
+            # grid. ``None`` (pre-083 / never checked) renders nothing.
+            "ofac_blocked": ofac_blocked,
+            "ofac_match_detail": list(merchant.ofac_match_detail),
             # Assignment chip on the dossier header. ``assignee`` is None
             # when the merchant is unassigned; the chip renders the
             # "Unassigned + Assign" CTA in that case.

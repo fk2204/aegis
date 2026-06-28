@@ -1,0 +1,27 @@
+[Unit]
+Description=AEGIS — refresh OFAC SDN + Consolidated + OpenSanctions cache
+Documentation=https://github.com/fk2204/aegis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aegis
+Group=aegis
+WorkingDirectory=/opt/aegis
+EnvironmentFile=/etc/aegis/aegis.env
+ExecStart=/opt/aegis/.venv/bin/python /opt/aegis/scripts/update_ofac_list.py --cache-dir /var/lib/aegis/ofac_cache
+# Sandbox the unit. The script only needs network egress + write
+# access to the cache directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/aegis/ofac_cache
+ReadOnlyPaths=/opt/aegis /etc/aegis
+# Generous: ~80 MB of downloads + XML parse. Bound to 5 min so a
+# hung connection cancels rather than starving the next firing.
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
