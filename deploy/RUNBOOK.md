@@ -93,6 +93,47 @@ the next-firing-slot reset would have been masked by Redis outages.
 See `tests/workers/test_cron_registrations.py` for the registration
 regression guard that catches the inverse failure mode.)
 
+### OFAC SDN cache (one-time setup — migration 083)
+
+The OFAC SDN screener (`aegis.compliance.ofac`) reads from a local
+unified-cache JSON file built by `scripts/update_ofac_list.py`. A
+systemd timer refreshes the cache daily at 05:00 UTC; without the
+timer the runtime checker fails closed after 7 days (`cache_stale`)
+or immediately if no cache exists (`cache_missing`).
+
+One-time setup on the prod box (after migration 083 deploys):
+
+```bash
+ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 "
+  # Cache directory — survives deploys, owned by aegis.
+  install -d -o aegis -g aegis -m 0755 /var/lib/aegis/ofac_cache &&
+  # Sync the unit files from the repo to /etc/systemd/system/.
+  install -m 0644 /opt/aegis/deploy/aegis-ofac-update.service /etc/systemd/system/ &&
+  install -m 0644 /opt/aegis/deploy/aegis-ofac-update.timer   /etc/systemd/system/ &&
+  systemctl daemon-reload &&
+  systemctl enable --now aegis-ofac-update.timer &&
+  # Run the service once immediately so the dossier route has a
+  # non-empty cache to screen against (otherwise every
+  # ensure_ofac_check fires 'cache_missing' until 05:00 UTC tomorrow).
+  systemctl start aegis-ofac-update.service &&
+  echo 'OFAC cache initialised'
+"
+```
+
+Verify:
+
+```bash
+ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 "
+  systemctl status aegis-ofac-update.timer | head -5 &&
+  ls -la /var/lib/aegis/ofac_cache/ofac_unified.json
+"
+```
+
+If a refresh fails (network outage, OFAC site down), the script
+preserves the previous merged cache so screening continues. The
+checker fails closed only after the cache ages past 7 days, so the
+operator has a week of grace before manual intervention is needed.
+
 ### One-time: sync `SuccessExitStatus=143` after this commit lands
 
 The repo's `deploy/aegis-web.service` + `deploy/aegis-worker.service`

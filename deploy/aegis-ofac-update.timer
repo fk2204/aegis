@@ -1,0 +1,20 @@
+[Unit]
+Description=AEGIS — daily OFAC SDN cache refresh (05:00 UTC)
+Documentation=https://github.com/fk2204/aegis
+
+[Timer]
+# Daily at 05:00 UTC. Pre-business-hours so the cache is fresh for
+# every dossier scored during the workday. OFAC publishes updates
+# throughout the day; once-per-day is sufficient for screening
+# given the 7-day fail-closed cutoff in compliance/ofac.py.
+OnCalendar=*-*-* 05:00:00 UTC
+# Recover quickly after a box reboot — if the box was off at 05:00
+# UTC the timer fires within 5 min of boot.
+Persistent=true
+# Random jitter to avoid herd pressure on ofac.treasury.gov when
+# many sites poll at the same minute.
+RandomizedDelaySec=600
+Unit=aegis-ofac-update.service
+
+[Install]
+WantedBy=timers.target

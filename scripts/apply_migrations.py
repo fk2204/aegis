@@ -695,6 +695,15 @@ MIGRATION_PROBES: dict[str, str] = {
         # is ``'c'``.
         "SELECT 1 FROM pg_constraint WHERE conname='decisions_analysis_id_fkey' AND confdeltype='c'"
     ),
+    "083_merchants_ofac.sql": (
+        # 083 adds ``ofac_{checked_at,is_clear,match_detail,cache_date}``
+        # to merchants for the OFAC SDN screener. Four columns in one
+        # ADD COLUMN block; probe the boolean as the most distinctive
+        # column name on merchants.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='merchants' "
+        "AND column_name='ofac_is_clear'"
+    ),
 }
 
 

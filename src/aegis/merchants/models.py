@@ -202,6 +202,19 @@ class MerchantRow(_StrictModel):
     ucc_default_indicators: list[str] = Field(default_factory=list)
     ucc_checked_at: datetime | None = None
 
+    # ------------------------------------------------------------------
+    # OFAC SDN + Consolidated sanctions screening (migration 083).
+    # Populated by ``aegis.compliance.ofac.ensure_ofac_check`` on first
+    # score, or refreshed via the dossier ``Refresh`` button. HARD GATE:
+    # ``ofac_is_clear=False`` suppresses the funder-matching grid and
+    # renders a red banner. ``ofac_checked_at is None`` is the
+    # "needs first check" signal.
+    # ------------------------------------------------------------------
+    ofac_checked_at: datetime | None = None
+    ofac_is_clear: bool | None = None
+    ofac_match_detail: list[str] = Field(default_factory=list)
+    ofac_cache_date: datetime | None = None
+
     # Phase 7B funder-submission tracking (Pydantic-only — no Supabase
     # column yet, so these reset on a Supabase round-trip; audit_log is
     # the durable record. Persistence moves to a real submissions table
