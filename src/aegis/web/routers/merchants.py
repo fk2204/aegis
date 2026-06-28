@@ -4080,6 +4080,7 @@ async def merchant_detail(
         list_transactions=docs.list_transactions,
         analyses_by_doc=analyses_by_doc,
         industry_tier=industry_risk_tier(merchant.industry_choice),
+        merchant=merchant,
     )
 
     # Funder-note submission history (newest-first). Dossier renders a
@@ -4646,6 +4647,7 @@ def _build_pdf_dossier_context(
         list_transactions=docs.list_transactions,
         analyses_by_doc=analyses_by_doc,
         industry_tier=industry_risk_tier(merchant.industry_choice),
+        merchant=merchant,
     )
 
     # Top 3 funder matches. Only computed when a finalized merchant has a

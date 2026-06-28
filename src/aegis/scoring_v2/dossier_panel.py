@@ -14,7 +14,7 @@ it; this commit just adds the A/B/C surface.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,6 +22,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from aegis.counterparty import classify_bundle
 from aegis.parser.models import ClassifiedTransaction
 from aegis.scoring_v2.industry import IndustryTier
+
+if TYPE_CHECKING:
+    from aegis.merchants.models import MerchantRow
 from aegis.scoring_v2.track_a import (
     DocumentIntegritySignals,
     IntegrityVerdict,
@@ -178,6 +181,7 @@ def build_unified_tracks_view(
     list_transactions: Callable[[UUID], list[ClassifiedTransaction]],
     analyses_by_doc: dict[UUID, Any] | None = None,
     industry_tier: IndustryTier | None = None,
+    merchant: MerchantRow | None = None,
 ) -> UnifiedTracksView:
     """Assemble the A+B+C view for a merchant dossier.
 
@@ -276,6 +280,7 @@ def build_unified_tracks_view(
             transactions_by_doc,
             classifications,
             industry_tier=industry_tier,
+            merchant=merchant,
         )
         context_panel = compute_context_panel(transactions_by_doc, classifications)
     else:
