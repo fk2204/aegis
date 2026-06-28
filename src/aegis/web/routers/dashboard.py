@@ -158,11 +158,22 @@ async def index(
     # count below is paired with a *_source_ids list so the dossier
     # drill-down contract holds.
     now_utc = datetime.now(UTC)
+
+    # 2026-06-28 perf — fetch the documents window ONCE up front and
+    # pass to EVERY helper that needs it. The prior implementation hit
+    # ``docs.list_documents`` 5+ times across this route (stale_deals,
+    # today_pipeline, key_numbers x2, monthly_comparison). Each call
+    # was a 740ms+ SELECT * against the wide documents table — they
+    # were stacking to a 23-second dashboard load (operator report
+    # 2026-06-28 15:13). One cached fetch at the widest limit (500)
+    # covers every helper that filters in Python downstream.
+    all_recent_docs = docs.list_documents(limit=500)
+
     (
         stale_deals_count,
         stale_deals_source_merchant_ids,
         stale_attention_cards,
-    ) = _compute_stale_deals(docs, merchants_repo, now=now_utc)
+    ) = _compute_stale_deals(docs, merchants_repo, now=now_utc, all_recent_docs=all_recent_docs)
     (
         pending_funder_count,
         pending_funder_source_submission_ids,
@@ -191,19 +202,10 @@ async def index(
         shadow_review_source_document_ids,
         shadow_review_cards,
     ) = build_shadow_review_attention_section(docs=docs, merchants=merchants_repo)
-    today_pipeline = _compute_today_pipeline(docs, funder_note_subs, now=now_utc)
+    today_pipeline = _compute_today_pipeline(
+        docs, funder_note_subs, now=now_utc, all_recent_docs=all_recent_docs
+    )
     today_recent_activity = _build_today_recent_activity(recent_activity_rows)
-
-    # 2026-06-28 perf — fetch the documents window ONCE and pass to both
-    # helpers. The prior implementation hit ``docs.list_documents`` 3-4
-    # times across this route (stale_deals at limit=500 + key_numbers at
-    # limit=500 for proceed + key_numbers at limit=200 for the week +
-    # monthly_comparison at limit=200). Each call was a 740ms+ SELECT *
-    # against the wide documents table — they were stacking to a
-    # 23-second dashboard load (operator report 2026-06-28 15:13). One
-    # cached fetch at the widest limit (500) covers every helper that
-    # filters in Python downstream.
-    all_recent_docs = docs.list_documents(limit=500)
 
     key_numbers = _compute_key_numbers(
         merchant_total=merchant_total,
@@ -330,6 +332,7 @@ def _compute_stale_deals(
     merchants_repo: MerchantRepository,
     *,
     now: datetime,
+    all_recent_docs: list[DocumentRow] | None = None,
 ) -> tuple[int, list[str], list[dict[str, Any]]]:
     """Surface merchants whose most-recent document is 7+ days stale.
 
@@ -344,9 +347,11 @@ def _compute_stale_deals(
     activity to be stale against; they belong on the intake queue).
     """
     cutoff = now - _STALE_DOC_THRESHOLD
-    # 500 covers ~5 months of upload backlog at ~100 deals/month — well
-    # above the realistic working window for "is this deal stalled?".
-    all_docs = docs.list_documents(limit=500)
+    # Re-uses the shared route-level fetch when provided (saves a
+    # SELECT * FROM documents LIMIT 500 round-trip). 500 covers ~5
+    # months of upload backlog at ~100 deals/month — well above the
+    # realistic working window for "is this deal stalled?".
+    all_docs = all_recent_docs if all_recent_docs is not None else docs.list_documents(limit=500)
     latest_by_merchant: dict[UUID, DocumentRow] = {}
     for d in all_docs:
         if d.merchant_id is None or d.merchant_id in latest_by_merchant:
@@ -459,6 +464,7 @@ def _compute_today_pipeline(
     funder_note_subs: FunderNoteSubmissionRepository,
     *,
     now: datetime,
+    all_recent_docs: list[DocumentRow] | None = None,
 ) -> dict[str, Any]:
     """Pipeline KPIs scoped to today (UTC).
 
@@ -474,7 +480,10 @@ def _compute_today_pipeline(
     start = _start_of_today_utc(now)
 
     # --- documents-today: uploaded + parsed --------------------------
-    todays_docs = [d for d in docs.list_documents(limit=500) if d.uploaded_at >= start]
+    # Re-uses shared route-level fetch when provided; saves another
+    # SELECT * FROM documents LIMIT 500 round-trip per dashboard render.
+    docs_pool = all_recent_docs if all_recent_docs is not None else docs.list_documents(limit=500)
+    todays_docs = [d for d in docs_pool if d.uploaded_at >= start]
     uploaded_today = len(todays_docs)
     parsed_today = sum(1 for d in todays_docs if d.parsed_at is not None)
 
