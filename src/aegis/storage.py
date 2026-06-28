@@ -231,6 +231,17 @@ class DocumentRepository(Protocol):
     ) -> list[ClassifiedTransaction]:
         """Return classified rows for the document, optionally filtered by category."""
 
+    def list_transactions_for_documents(
+        self, document_ids: list[UUID]
+    ) -> dict[UUID, list[ClassifiedTransaction]]:
+        """Batched variant of ``list_transactions``. Returns a dict mapping
+        each document_id to its (possibly empty) classified-row list.
+
+        Mirrors ``get_analyses_by_document_ids`` — one PostgREST
+        ``in.(…)`` query for the whole batch instead of N per-doc
+        round-trips. Missing document_ids are absent from the result
+        dict (NOT keys with empty lists)."""
+
     def list_documents(
         self,
         *,
@@ -428,6 +439,14 @@ class InMemoryDocumentRepository:
         if category is None:
             return list(rows)
         return [t for t in rows if t.category == category]
+
+    def list_transactions_for_documents(
+        self, document_ids: list[UUID]
+    ) -> dict[UUID, list[ClassifiedTransaction]]:
+        if not document_ids:
+            return {}
+        wanted = set(document_ids)
+        return {doc_id: list(self._txs.get(doc_id, [])) for doc_id in wanted if doc_id in self._txs}
 
     def list_documents(
         self,
@@ -684,6 +703,36 @@ class SupabaseDocumentRepository:
             query = query.eq("category", category)
         result = query.execute()
         return [_db_row_to_classified(cast(dict[str, Any], r)) for r in (result.data or [])]
+
+    def list_transactions_for_documents(
+        self, document_ids: list[UUID]
+    ) -> dict[UUID, list[ClassifiedTransaction]]:
+        """Batched variant — one PostgREST ``in.(…)`` query for every
+        document_id in the list. Dashboard's _build_merchant_pattern_index
+        was previously calling ``list_transactions`` per doc in a loop
+        (8-24 round-trips per dashboard render). One batched query
+        collapses that to a single call; rows group by document_id in
+        Python."""
+        if not document_ids:
+            return {}
+        id_strings = [str(doc_id) for doc_id in document_ids]
+        result = (
+            get_supabase()
+            .table("transactions")
+            .select("*")
+            .in_("document_id", id_strings)
+            .order("posted_date")
+            .execute()
+        )
+        out: dict[UUID, list[ClassifiedTransaction]] = {}
+        for raw in cast(list[dict[str, Any]], result.data or []):
+            tx = _db_row_to_classified(raw)
+            doc_id_str = raw.get("document_id")
+            if doc_id_str is None:
+                continue
+            doc_id = UUID(str(doc_id_str))
+            out.setdefault(doc_id, []).append(tx)
+        return out
 
     def list_documents(
         self,

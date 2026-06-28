@@ -857,11 +857,23 @@ def _build_attention_groups(
     cache is None (legacy pre-chunk-2 rows) contribute no entries and
     their flags degrade to plain spans — graceful by construction.
     """
-    # Pre-fetch all docs' analyses in one batched query. Transactions
-    # are fetched lazily below, only for docs whose pattern_analysis is
-    # populated, so legacy rows skip the per-doc transactions round-trip.
+    # Pre-fetch all docs' analyses in one batched query. Then batch the
+    # transactions fetch for only the docs whose pattern_analysis is
+    # populated (legacy rows have analysis.pattern_analysis is None and
+    # contribute no PatternIndex entries — skip the round-trip).
+    # 2026-06-28 perf: replaced per-doc list_transactions(d.id) loop in
+    # _build_merchant_pattern_index (was 8-24 PostgREST round-trips per
+    # dashboard render) with one in.(...) query across all eligible doc
+    # IDs at the top of the helper.
     analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in documents])
-    transactions_by_doc: dict[UUID, list[ClassifiedTransaction]] = {}
+    txn_doc_ids = [
+        d.id
+        for d in documents
+        if (a := analyses_by_doc.get(d.id)) is not None and a.pattern_analysis is not None
+    ]
+    transactions_by_doc: dict[UUID, list[ClassifiedTransaction]] = (
+        docs.list_transactions_for_documents(txn_doc_ids) if txn_doc_ids else {}
+    )
 
     # 2026-06-28 perf — batch the merchant fetch. Was N x merchants_repo.get(key)
     # (one PostgREST round-trip per unique merchant in the queue, ~100ms each
@@ -975,6 +987,11 @@ def _build_merchant_pattern_index(
             )
             continue
         if d.id not in transactions_cache:
+            # Fallback for any caller that didn't pre-batch (or for a
+            # doc that was somehow missing from the batch). Today's
+            # caller pre-populates the cache via
+            # list_transactions_for_documents, so this branch is dead
+            # on the hot path.
             transactions_cache[d.id] = docs.list_transactions(d.id)
         contexts.append(
             DocumentPatternContext(
