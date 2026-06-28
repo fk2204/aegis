@@ -131,12 +131,18 @@ async def index(
 
     attention_docs = docs.list_documents(parse_status="manual_review", limit=40)
     attention = _build_attention_groups(attention_docs, merchants_repo, docs, max_groups=8)
-    # Decorate each card with its deal tier — runs score_deal per
-    # merchant. Capped at 8 cards so the cost stays bounded; failures
-    # leave tier=None so the queue still renders.
-    attention = [
-        _enrich_attention_card_with_tier(card, merchants_repo, docs, ofac) for card in attention
-    ]
+    # 2026-06-28 perf — tier enrichment dropped from the dashboard hot
+    # path. Per-card profiling showed
+    # ``_enrich_attention_card_with_tier x 8 = 11,967ms`` -- 60%+ of the
+    # 16-second dashboard render. score_deal() per merchant ran a
+    # multi-month scoring pass + OFAC check + Track A/B compute for a
+    # decorative letter chip the template gates on truthy ``g.tier``.
+    # Cards still render fine without it (the {% if g.tier %} branch
+    # just doesn't fire). Revisit when the score_deal path is async /
+    # cached so 8 enrichments fan out concurrently instead of serially.
+    # Refs: ``_enrich_attention_card_with_tier`` in this module (kept
+    # for the Review Queue card builder which can afford the cost).
+    _ = ofac  # held in signature for the dependency wiring + future use
 
     submitted_count = sum(
         1 for r in recent_activity_rows if r.get("action") == "deal.submit_to_funders"
