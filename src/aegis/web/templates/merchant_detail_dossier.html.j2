@@ -23,9 +23,9 @@
      block was moved out of aegis-dossier.css :15-46 by Wave 1) and the
      page renders unstyled. Same load order as base.html.j2: system first,
      then dossier, then tool. ?v= bumps to match base. #}
-  <link rel="stylesheet" href="/ui/static/aegis-system.css?v=6">
-  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=13">
-  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=15">
+  <link rel="stylesheet" href="/ui/static/aegis-system.css?v=7">
+  <link rel="stylesheet" href="/ui/static/aegis-dossier.css?v=14">
+  <link rel="stylesheet" href="/ui/static/aegis-tool.css?v=16">
   <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   <script src="/ui/static/evidence_copy.js?v=1" defer></script>
   <style>
@@ -294,7 +294,7 @@
   <div class="meta-row">
     <div><span class="label">Owner</span><span class="value">{{ merchant.owner_name }}</span></div>
     <div><span class="label">State</span><span class="value">{{ merchant.state }}</span></div>
-    <div><span class="label">NAICS</span><span class="value">{{ merchant.industry_naics or '—' }}</span></div>
+    <div><span class="label">Industry</span><span class="value">{{ (naics_name if naics_name is defined else None) or merchant.industry_naics or '—' }}</span></div>
     <div><span class="label">Entity</span><span class="value">{{ merchant.entity_type or '—' }}{% if merchant.time_in_business_months %} · <em>TIB {{ merchant.time_in_business_months }} mo</em>{% endif %}</span></div>
     <div><span class="label">Credit</span><span class="value">{{ merchant.credit_score or '—' }}{% if merchant.credit_score %} <em>FICO</em>{% endif %}</span></div>
     <div><span class="label">Intake</span><span class="value">{{ merchant.intake_date or '—' }}</span></div>
@@ -1131,8 +1131,7 @@
       {% endif %}
 
       {# Unified A+B+C tracks panel — informational, additive.
-         Renders alongside the score block above; Step 2 of the
-         scoring redesign retires fraud_score and flips this live. #}
+         Renders alongside the score block above. #}
       {% if unified_tracks is defined and unified_tracks %}
         {% include "_unified_tracks_panel.html.j2" %}
       {% endif %}
@@ -1981,7 +1980,7 @@
           <tr><td class="when">State</td><td class="details"><span class="mono">{{ merchant.state }}</span></td></tr>
           <tr><td class="when">Entity type</td><td class="details">{{ merchant.entity_type or '—' }}</td></tr>
           <tr><td class="when">EIN</td><td class="details"><span class="mono">{% if merchant.ein %}{{ merchant.ein[:3] }}-XX-XXXX{% else %}—{% endif %}</span> <span style="font-size:10px;color:var(--ink-3);font-family:var(--mono)">· masked</span></td></tr>
-          <tr><td class="when">NAICS</td><td class="details"><span class="mono">{{ merchant.industry_naics or '—' }}</span>{% if merchant.industry_risk_tier %} · {{ merchant.industry_risk_tier }}{% endif %}</td></tr>
+          <tr><td class="when">Industry</td><td class="details">{{ (naics_name if naics_name is defined else None) or merchant.industry_naics or '—' }}{% if merchant.industry_naics %} <span class="mono" style="color:var(--ink-3);font-size:11px">· NAICS {{ merchant.industry_naics }}</span>{% endif %}{% if merchant.industry_risk_tier %} · {{ merchant.industry_risk_tier }}{% endif %}</td></tr>
           <tr><td class="when">FICO</td><td class="details"><span class="mono">{{ merchant.credit_score or '—' }}</span></td></tr>
           <tr><td class="when">Time in business</td><td class="details">{% if merchant.time_in_business_months %}<span class="mono">{{ merchant.time_in_business_months }}</span> months{% else %}—{% endif %}</td></tr>
           <tr><td class="when">Contact</td><td class="details">{% if merchant.email %}<span class="mono">{{ merchant.email }}</span>{% else %}—{% endif %}{% if merchant.phone %} · <span class="mono">{{ merchant.phone }}</span>{% endif %}</td></tr>

@@ -72,7 +72,7 @@
   <div class="meta">
     {% if merchant.dba %}DBA {{ merchant.dba }} · {% endif %}
     {{ merchant.state | upper }} ·
-    {% if merchant.industry_naics %}NAICS {{ merchant.industry_naics }} · {% endif %}
+    {% if merchant.industry_naics %}{% if naics_name is defined and naics_name %}{{ naics_name }} (NAICS {{ merchant.industry_naics }}){% else %}NAICS {{ merchant.industry_naics }}{% endif %} · {% endif %}
     {% if merchant.time_in_business_months %}{{ merchant.time_in_business_months }} months in business · {% endif %}
     AEGIS dossier generated {{ generated_at }}
   </div>
