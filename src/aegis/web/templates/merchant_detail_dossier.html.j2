@@ -2146,35 +2146,44 @@
     {% endif %}
     <!-- END: record-outcome -->
 
-    {# ============== Technical audit log ==============
-       2026-06-28 — formerly "Raw flags". Always-closed <details> so the
-       [META] / [MATH] / etc. tokens never surface to the underwriter as
-       primary content; the Track A/B/C plain-English panel above is the
-       canonical render of these signals. Operators who need the raw
-       audit strings (debugging a parser regression, building a manual
-       hand-decline note) still have one-click access. #}
+    {# ============== Technical audit log (lazy-load) ==============
+       2026-06-28 — formerly "Raw flags", then collapsed into a closed
+       <details>, now ALSO lazy-loaded via HTMX so the body never
+       renders unless the operator actually opens the <details>. The
+       count in the <summary> uses document.all_flags|length which is
+       already on the row — no extra round-trip just to know the count.
+       The body fetches GET /ui/merchants/{id}/documents/{doc_id}/raw-flags
+       when the <details> opens (HTMX 'revealed' fires when children
+       become visible). #}
     {% if document and document.all_flags %}
       <section id="raw-flags" class="section" data-test-id="dossier-raw-flags-section">
         <details class="raw-flags-details" data-test-id="dossier-raw-flags-details">
           <summary>Technical audit log ({{ document.all_flags|length }} flag{{ '' if document.all_flags|length == 1 else 's' }})</summary>
-          <ul>
-            {% for f in document.all_flags %}
-              <li>{{ f }}</li>
-            {% endfor %}
-          </ul>
+          <div hx-get="/ui/merchants/{{ merchant.id }}/documents/{{ document.id }}/raw-flags"
+               hx-trigger="revealed once"
+               hx-swap="outerHTML"
+               data-test-id="dossier-raw-flags-lazy">
+            <em style="color:var(--ink-3);font-size:11px">Loading flags...</em>
+          </div>
         </details>
       </section>
     {% endif %}
 
-    {# ============== § 6 OPERATOR NOTES ============== #}
-    {# Moved from the top-of-dossier slot (above the chips) to the
-       bottom of main on 2026-06-18, replacing the audit-log section.
-       Audit-log was internal telemetry — operators never read it on
-       the dossier; it stays on the Admin / Audit Log surface. Reads
-       its inputs from the route's TemplateResponse: ``operator_notes``
-       (list, newest-first) + ``operator_note_max_chars``. #}
+    {# ============== § 6 OPERATOR NOTES (lazy-load) ==============
+       2026-06-28 — was a server-side include via _merchant_notes_block.
+       Now lazy-loaded so the dashboard's list_notes() query doesn't run
+       on every dossier render — only when the operator scrolls the
+       notes panel into view. The full panel (editor + cards list)
+       comes back from GET /ui/merchants/{id}/operator-notes. #}
     <section id="operator-notes" class="section">
-      {% include "_merchant_notes_block.html.j2" %}
+      <div hx-get="/ui/merchants/{{ merchant.id }}/operator-notes"
+           hx-trigger="revealed once"
+           hx-swap="outerHTML"
+           data-test-id="dossier-operator-notes-lazy">
+        <em style="color:var(--ink-3);font-size:11px;padding:14px 24px;display:block">
+          Loading operator notes...
+        </em>
+      </div>
     </section>
 
   </main>

@@ -2297,6 +2297,76 @@ def _naics_name(code: str | None) -> str | None:
     return None
 
 
+@router.get(
+    "/merchants/{merchant_id}/operator-notes",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+async def merchant_operator_notes_lazy(
+    request: Request,
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+) -> HTMLResponse:
+    """HTMX lazy-load endpoint for the dossier's § 6 Operator notes
+    panel. The dossier wraps a placeholder div around this URL with
+    ``hx-trigger=revealed once`` so the notes query only runs when the
+    operator scrolls the panel into view.
+
+    Renders the same ``_merchant_notes_block.html.j2`` partial the
+    dossier used to include server-side. Form posts in that block still
+    target ``POST /ui/merchants/{id}/notes`` which 303-redirects back
+    to the dossier — the redirect re-renders the lazy block on the
+    second load, so a newly-saved note appears immediately.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    operator_notes = merchants.list_notes(merchant_id=merchant_id, limit=50)
+    return templates.TemplateResponse(
+        request,
+        "_merchant_notes_block.html.j2",
+        {
+            "merchant": merchant,
+            "operator_notes": operator_notes,
+            "operator_note_max_chars": MERCHANT_NOTE_MAX_CHARS,
+        },
+    )
+
+
+@router.get(
+    "/merchants/{merchant_id}/documents/{document_id}/raw-flags",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+async def merchant_document_raw_flags_lazy(
+    request: Request,
+    merchant_id: UUID,
+    document_id: UUID,
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+) -> HTMLResponse:
+    """HTMX lazy-load endpoint for the dossier's Technical-audit-log
+    <details> body. The dossier wraps a placeholder div around this URL
+    with ``hx-trigger=revealed once`` (placed inside <details> so the
+    placeholder only enters the viewport when the operator opens the
+    block). Returns a <ul> of raw flag strings; the count in the
+    <summary> already renders from ``document.all_flags|length`` on the
+    initial page load so the operator knows how many will appear.
+    """
+    from html import escape as _html_escape
+
+    _ = merchant_id  # path arg; kept for symmetry / future audit attribution
+    try:
+        document = docs.get_document(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return HTMLResponse(
+        "<ul>"
+        + "".join(f"<li>{_html_escape(f)}</li>" for f in (document.all_flags or []))
+        + "</ul>"
+    )
+
+
 @router.post("/merchants/{merchant_id}/notes", response_model=None)
 async def merchant_save_note(
     merchant_id: UUID,
@@ -4452,11 +4522,13 @@ async def merchant_detail(
         str(s.funder_id) for s in funder_note_submissions if s.funder_id is not None
     }
 
-    # Feature C — operator notes panel. Newest-first list of timestamped
-    # cards rendered above the chips section. Bounded to 50 rows to keep
-    # the dossier read cost predictable when a merchant has accumulated
-    # many notes over time.
-    operator_notes = merchants.list_notes(merchant_id=merchant_id, limit=50)
+    # 2026-06-28 perf — operator_notes lazy-loaded via HTMX on the
+    # dossier (see ``GET /ui/merchants/{id}/operator-notes`` below).
+    # Skipping the eager list_notes() call here saves a Supabase
+    # round-trip on every dossier render. Default to empty so any
+    # caller still passing operator_notes through the context never
+    # KeyErrors on the partial.
+    operator_notes: list[Any] = []
 
     # Override-modal context (mp Phase 10 / migration 072). Per-document
     # pattern codes power the "false-positive per pattern" checkbox set

@@ -433,11 +433,20 @@ def test_stacking_alert_absent_when_unified_tracks_missing() -> None:
 
 
 def test_raw_flags_section_renders_when_document_has_flags() -> None:
+    """2026-06-28 — raw flag body is now lazy-loaded via HTMX (the body
+    fetches from /ui/merchants/{id}/documents/{doc_id}/raw-flags when
+    the <details> opens). The section + the HTMX hookup MUST render on
+    the initial page; the raw flag strings only land in the DOM when
+    the operator opens the panel."""
     doc = _make_doc(all_flags=["[H-01] mca_stacking", "[H-02] high_nsf_rate"])
     html = _render(document=doc, analysis=_make_analysis(), narrator_summary=None)
     assert 'data-test-id="dossier-raw-flags-section"' in html
-    assert "[H-01] mca_stacking" in html
-    assert "[H-02] high_nsf_rate" in html
+    # Lazy hookup is present + targets the document-scoped endpoint.
+    assert 'data-test-id="dossier-raw-flags-lazy"' in html
+    assert "/raw-flags" in html
+    # Count still renders inline in the <summary> (uses |length on the
+    # already-on-row all_flags list — no extra round-trip).
+    assert "Technical audit log (2 flags)" in html
 
 
 def test_raw_flags_details_always_closed() -> None:
