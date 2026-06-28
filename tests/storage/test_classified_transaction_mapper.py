@@ -262,12 +262,9 @@ def test_merchant_id_injected_as_str_or_none() -> None:
     [
         "id",
         "posted_date",
-        "description",
         "amount",
         "source_page",
         "source_line",
-        "category",
-        "classification_confidence",
     ],
 )
 def test_missing_required_column_raises(required_key: str) -> None:
@@ -275,9 +272,47 @@ def test_missing_required_column_raises(required_key: str) -> None:
     rather than silently fall through to a default — same discipline as
     ``_row_to_document``'s handling of ``parse_status``. A schema bug
     that silently fills a default would mask real data drift between
-    code and DB."""
+    code and DB.
+
+    Note: ``description``, ``category``, and ``classification_confidence``
+    are intentionally NOT in this list — they are defensively coerced
+    to safe defaults by the mapper (see ``test_missing_defensively_
+    coerced_column_does_not_raise`` below). That coercion landed in
+    ``3e16d6a`` (storage hardening) to recover the BUG-01 production
+    bug where a single NULL category killed an entire document's
+    transaction stream.
+    """
     tx = _full_classified_tx()
     db_row = _classified_to_db_row(tx, uuid4(), None)
     del db_row[required_key]
     with pytest.raises(KeyError):
         _db_row_to_classified(db_row)
+
+
+@pytest.mark.parametrize(
+    ("coerced_key", "expected_attr", "expected_value"),
+    [
+        ("description", "description", "(blank)"),
+        ("category", "category", "other"),
+        ("classification_confidence", "classification_confidence", 0),
+    ],
+)
+def test_missing_defensively_coerced_column_does_not_raise(
+    coerced_key: str, expected_attr: str, expected_value: object
+) -> None:
+    """Defensive-coercion guarantee from 3e16d6a (BUG-01 root layer):
+    NULL / missing ``description`` / ``category`` /
+    ``classification_confidence`` must NOT raise — the mapper coerces
+    to a safe default so a single corrupt row doesn't kill the entire
+    document's transaction stream. The audit anchors (``source_page`` /
+    ``source_line`` / ``id`` / ``posted_date``) are still preserved on
+    the resulting row so the operator can drill into which row needs
+    cleanup."""
+    tx = _full_classified_tx()
+    db_row = _classified_to_db_row(tx, uuid4(), None)
+    del db_row[coerced_key]
+    result = _db_row_to_classified(db_row)
+    assert getattr(result, expected_attr) == expected_value
+    # Audit anchors preserved regardless.
+    assert result.source_page == tx.source_page
+    assert result.source_line == tx.source_line

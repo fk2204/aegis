@@ -298,6 +298,15 @@ _RENDERED_ELSEWHERE: Final[frozenset[str]] = frozenset(
         "mca_stacking",
         "unreconciled_internal_transfer_v2",
         "ai_generated_statement",
+        # 2026-06-28 — Agent 5 application-vs-measured detectors. These
+        # don't render as generic pattern cards; they surface on the
+        # Track B unified panel (``_unified_tracks_panel.html.j2``) as
+        # CRITICAL / ELEVATED ``FactorReason`` rows because their
+        # interpretation is risk-band-anchored, not pattern-detail-
+        # anchored. The pattern_code copy contract treats them as
+        # rendered-elsewhere so the test below doesn't false-positive.
+        "impossible_payment_load",
+        "stated_vs_measured_revenue_divergence",
     }
 )
 
