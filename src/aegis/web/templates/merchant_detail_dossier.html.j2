@@ -2047,6 +2047,37 @@
         <h2>Disposition</h2>
         <span class="footnote">awaiting manager sign-off</span>
       </header>
+
+      {# Prominent post-fund "Record outcome" CTA. Sits at the top of
+         §5 so the underwriter's first action after the deal funds is
+         to record what happened. The HTMX swap target (#deal-outcome-
+         modal-host) lives directly below the CTA box so the modal
+         renders right under the button. Gated on
+         override_latest_decision_id — that's the deepest "scored +
+         decision snapshot exists" signal we have today; without a
+         decision row the outcome write would violate the NOT NULL
+         FK in deal_outcomes.decision_id (migration 074). #}
+      {% if override_latest_decision_id %}
+      <div class="dossier-page record-outcome-cta"
+           data-test-id="record-outcome-cta"
+           style="display:flex;align-items:center;gap:14px;padding:14px 16px;margin:0 0 14px;border:1px solid var(--ink, #233);border-radius:6px;background:rgba(45,90,71,0.04)">
+        <button type="button"
+                class="btn btn-primary record-deal-outcome-btn"
+                hx-get="/ui/merchants/{{ merchant.id }}/decisions/{{ override_latest_decision_id }}/outcome-modal"
+                hx-target="#deal-outcome-modal-host"
+                hx-swap="innerHTML"
+                data-test-id="record-deal-outcome-btn">
+          Record outcome
+        </button>
+        <span style="font-size:12px;color:#444;line-height:1.4">
+          Capture what happened post-fund — paying / paid in full /
+          charged off / defaulted / renewed. Feeds the calibration
+          feedback loop (migration 074 <code>deal_outcomes</code>).
+        </span>
+      </div>
+      <div id="deal-outcome-modal-host"></div>
+      {% endif %}
+
       <div class="disposition">
         <div class="copy">
           {% if score_result and score_result.recommendation == 'approve' %}
@@ -2107,43 +2138,14 @@
     <div id="outcome-modal-host"></div>
 
     <!-- BEGIN: record-outcome -->
-    {# Post-fund outcome capture (migration 074 deal_outcomes — outcome
-       feedback loop). Sibling to the per-row pre-fund "Record outcome"
-       button in § 5½: that one writes to funder_replies (pre-fund);
-       this writes to deal_outcomes (post-fund — paying / paid_in_full /
-       charged_off / etc). Shows only when the merchant has a recorded
-       decision (override_latest_decision_id is the deepest signal we
-       have today for "scored + decision snapshot exists"). #}
-    {% if override_latest_decision_id %}
-      <section id="post-fund-outcome"
-               class="section"
-               data-test-id="post-fund-outcome-section"
-               style="margin-top:1.5rem">
-        <header>
-          <span class="n">§ 5¾</span>
-          <h2>Post-fund <em>outcome</em></h2>
-          <span class="footnote">record what happened after this deal funded</span>
-        </header>
-        <div style="display:flex;gap:10px;align-items:center;padding:8px 0">
-          <button type="button"
-                  class="record-deal-outcome-btn"
-                  style="font-size:12px;padding:6px 12px"
-                  hx-get="/ui/merchants/{{ merchant.id }}/decisions/{{ override_latest_decision_id }}/outcome-modal"
-                  hx-target="#deal-outcome-modal-host"
-                  hx-swap="innerHTML"
-                  data-test-id="record-deal-outcome-btn">
-            Record outcome
-          </button>
-          <span style="font-size:11px;color:#777">
-            Captures paying / paid_in_full / charged_off / defaulted /
-            renewed for the calibration feedback loop. The pre-fund
-            "Record outcome" buttons in § 5½ are distinct — those capture
-            the funder's reply.
-          </span>
-        </div>
-      </section>
-      <div id="deal-outcome-modal-host"></div>
-    {% endif %}
+    {# Post-fund outcome capture moved to the top of § 5 Disposition
+       on 2026-06-28 — the prominent "Record outcome" CTA above the
+       disposition copy replaces the previous § 5¾ section. The HTMX
+       host (#deal-outcome-modal-host) also lives inside § 5 now,
+       directly below the CTA. The pre-fund "Record outcome" buttons
+       in § 5½ remain distinct — those capture the funder's reply
+       (migration 071 funder_replies), not the post-fund outcome
+       (migration 074 deal_outcomes). #}
     <!-- END: record-outcome -->
 
     {# ============== Technical audit log (lazy-load) ==============

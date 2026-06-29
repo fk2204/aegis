@@ -293,3 +293,71 @@ def test_unknown_merchant_returns_404(
         },
     )
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Coverage of every ``outcome`` enum variant.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("outcome", "funder_decision", "extra"),
+    [
+        ("pending", "approved", {}),
+        ("paying", "approved", {"funded_amount": "75000"}),
+        ("paid_in_full", "approved", {"funded_amount": "50000"}),
+        (
+            "charged_off",
+            "approved",
+            {"funded_amount": "60000", "charge_off_amount": "42000"},
+        ),
+        (
+            "defaulted",
+            "approved",
+            {"funded_amount": "60000", "charge_off_amount": "60000"},
+        ),
+        ("renewed", "approved", {"funded_amount": "80000"}),
+        ("pending", "declined", {}),
+        ("pending", "countered", {}),
+    ],
+)
+def test_each_outcome_variant_writes_row_and_audit(
+    client: TestClient,
+    merchant: MerchantRow,
+    decision_id: UUID,
+    audit: InMemoryAuditLog,
+    fake_supabase: _FakeSupabase,
+    outcome: str,
+    funder_decision: str,
+    extra: dict[str, str],
+) -> None:
+    """Every (funder_decision, outcome) variant lands one row + one audit."""
+    payload: dict[str, str] = {
+        "funder_decision": funder_decision,
+        "outcome": outcome,
+        **extra,
+    }
+    resp = client.post(
+        f"/ui/merchants/{merchant.id}/decisions/{decision_id}/outcome",
+        data=payload,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # deal_outcomes row landed with the requested shape.
+    rows = fake_supabase.by_table["deal_outcomes"].rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["merchant_id"] == str(merchant.id)
+    assert row["decision_id"] == str(decision_id)
+    assert row["funder_decision"] == funder_decision
+    assert row["outcome"] == outcome
+
+    # Audit row landed.
+    entries = [e for e in audit.entries if e["action"] == "deal.outcome_recorded"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["subject_type"] == "merchant"
+    assert entry["subject_id"] == str(merchant.id)
+    assert entry["details"]["funder_decision"] == funder_decision
+    assert entry["details"]["outcome"] == outcome
+    assert entry["details"]["decision_id"] == str(decision_id)
