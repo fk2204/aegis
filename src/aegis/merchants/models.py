@@ -23,7 +23,17 @@ from aegis.product_types import DEFAULT_PRODUCT_TYPE, ProductType
 
 IndustryRiskTier = Literal["low", "moderate", "elevated", "high", "avoid"]
 EntityType = Literal["llc", "corp", "sole_prop", "partnership", "other"]
-MerchantStatus = Literal["provisional", "needs_manual_naming", "finalized"]
+MerchantStatus = Literal[
+    "provisional",
+    "needs_manual_naming",
+    "finalized",
+    # Migration 100 (2026-06-29) — operator-confirmed un-fundable
+    # merchants (TCPA serial litigants, unresolvable OFAC matches,
+    # etc). Detector layer (e.g. parser.patterns.detect_tcpa_litigant)
+    # flags the merchant; the operator promotes the flag to this
+    # terminal status; the dossier renders a permanent decline banner.
+    "disqualified",
+]
 
 
 class _StrictModel(BaseModel):

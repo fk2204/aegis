@@ -833,6 +833,16 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM information_schema.columns "
         "WHERE table_name='merchants' AND column_name='sec1071_collected_at'"
     ),
+    "100_merchants_status_disqualified.sql": (
+        # 100 — widens the merchants.status CHECK constraint to include
+        # 'disqualified'. Probe pg_get_constraintdef directly so the
+        # bootstrap distinguishes the pre-100 form (three values) from
+        # the new form (four values) — checking constraint existence
+        # alone would false-match the prior version.
+        "SELECT 1 FROM pg_constraint "
+        "WHERE conname='merchants_status_check' "
+        "AND pg_get_constraintdef(oid) LIKE '%disqualified%'"
+    ),
 }
 
 
