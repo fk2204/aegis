@@ -751,6 +751,16 @@ MIGRATION_PROBES: dict[str, str] = {
         # Probe pg_proc — function presence is the load-bearing signal.
         "SELECT 1 FROM pg_proc WHERE proname='count_documents_by_status'"
     ),
+    "089_merchants_extracted_pending.sql": (
+        # 089 adds merchants.stated_extracted_pending (JSONB) as the
+        # operator-confirmation staging blob for the Close
+        # description-parse fallback. Probe information_schema for
+        # column presence — the only schema-side artifact of the
+        # migration.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='merchants' "
+        "AND column_name='stated_extracted_pending'"
+    ),
     "090_documents_indexes.sql": (
         "SELECT 1 FROM pg_indexes WHERE indexname='idx_documents_merchant_uploaded'"
     ),
