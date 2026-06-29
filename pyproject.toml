@@ -53,6 +53,12 @@ dependencies = [
     # et-xmlfile. Same class as the existing reportlab/pymupdf/pikepdf
     # parsing deps.
     "openpyxl>=3.1",
+    # Google Drive integration — funder guidelines PDF sync
+    # (integrations/google_drive.py + scripts/sync_funders_from_folder.py).
+    # Read-only ``drive.readonly`` scope; service account auth. AEGIS
+    # never writes back to Drive.
+    "google-api-python-client>=2.0",
+    "google-auth>=2.0",
 ]
 
 [dependency-groups]

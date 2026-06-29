@@ -1175,3 +1175,68 @@ the checker has built-in 2-retry × 30s backoff so a maintenance hit
 collapses to `BankruptcyResult(error="courtlistener_unreachable")`
 instead of failing the merchant pipeline. Treat any sustained spike of
 those audit rows as a CourtListener outage, not an AEGIS bug.
+
+---
+
+## Google Drive funder sync (07:00 UTC daily timer)
+
+`aegis-funder-sync.timer` walks the operator's Google Drive funders
+folder once a day, extracts every funder's most-recent guidelines PDF
+via Bedrock, and writes the structured criteria to
+`funders.guidelines_data`. Driven by
+`scripts/sync_funders_from_folder.py --apply` (see the script's
+docstring for behavior + exit codes).
+
+### One-time install on the box
+
+```
+ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 \
+  "cp /opt/aegis/deploy/aegis-funder-sync.{service,timer} /etc/systemd/system/ \
+   && systemctl daemon-reload \
+   && systemctl enable aegis-funder-sync.timer"
+```
+
+**Do NOT `--now` until the env vars below are set** — the script
+exits 1 (config error) when either is missing and a failing timer just
+fills the journal. Once env is wired, run
+`systemctl start aegis-funder-sync.timer` to arm it (the daily
+07:00 UTC cron does the actual work).
+
+### Required env vars in `/etc/aegis/aegis.env`
+
+```
+GOOGLE_DRIVE_CREDENTIALS_JSON=<service-account JSON, single-line OR an absolute path to a JSON file on the box>
+GOOGLE_DRIVE_FUNDERS_FOLDER_ID=<folder ID from the Drive URL — the path component after /folders/>
+```
+
+The service account needs `drive.readonly` on the funders folder
+(share the folder with the service-account email — no need to grant
+domain-wide delegation). AEGIS never writes back to Drive.
+
+### Operator confirmation discipline
+
+The script writes the extracted JSONB to `funders.guidelines_data`
+without operator review (the Bedrock output is reviewed structurally
+by the sanitiser in `aegis.funders.guidelines_extract`). It does NOT
+auto-write to the live FunderRow criteria columns. Promotion of
+individual fields (`min_monthly_revenue` / `min_credit_score` / etc.)
+into FunderRow stays operator-explicit — same rule as the merchant-
+side `stated_extracted_pending` staging pattern.
+
+### Tail logs
+
+```
+journalctl -u aegis-funder-sync -n 100 --no-pager
+```
+
+The output lines use a stable shape (`+ Name: added` / `↑ Name:
+updated` / `= Name: up to date` / `- Name: no PDF` / `! Name: error`)
+so operators can `grep '!'` to triage failures.
+
+### Verify
+
+```
+systemctl list-timers | grep funder
+journalctl -u aegis-funder-sync --since "1 day ago" -n 50
+```
+
