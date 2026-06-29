@@ -604,6 +604,46 @@
         {% endif %}
       </header>
 
+      {# SBA eligibility badge — informational, never drives the verdict.
+         Green when eligible (program + est-max amount visible), gray
+         pill + collapsible blocker details when not. Hidden entirely
+         when sba_eligibility is missing (rendered before the merchant
+         carries the requisite intake fields). #}
+      {% if sba_eligibility %}
+        {% if sba_eligibility.eligible %}
+          <div class="sba-badge" data-test-id="sba-eligible-badge"
+               style="margin-top:8px;padding:8px 12px;border:1px solid var(--ok,#c7e6c7);border-radius:4px;background:#f0f8f0">
+            <span class="badge badge-proceed"
+                  style="display:inline-block;padding:2px 8px;border-radius:3px;background:#2d7a2d;color:white;font-size:11px;text-transform:uppercase;letter-spacing:0.08em">
+              SBA Eligible — {{ sba_eligibility.program }}
+            </span>
+            {% if sba_eligibility.estimated_max_amount %}
+              <span style="margin-left:8px;font-size:12px;color:var(--ink-2,#666)">
+                Est. max ${{ "{:,.0f}".format(sba_eligibility.estimated_max_amount) }}
+              </span>
+            {% endif %}
+          </div>
+        {% else %}
+          <details class="sba-not-eligible" data-test-id="sba-ineligible-details"
+                   style="margin-top:8px;padding:6px 10px;border:1px solid var(--rule,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+            <summary style="cursor:pointer">
+              <span class="badge badge-none"
+                    style="display:inline-block;padding:2px 8px;border-radius:3px;background:#999;color:white;font-size:11px;text-transform:uppercase;letter-spacing:0.08em">
+                SBA: Not eligible
+              </span>
+              <span style="margin-left:8px;font-size:11px;color:var(--ink-2,#666)">
+                {{ sba_eligibility.blockers | length }} blocker{{ '' if sba_eligibility.blockers | length == 1 else 's' }}
+              </span>
+            </summary>
+            <ul style="margin:6px 0 0;padding-left:18px;font-size:12px">
+              {% for blocker in sba_eligibility.blockers %}
+                <li>{{ blocker|e }}</li>
+              {% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+      {% endif %}
+
       {# Override modal. CSS-only :target affordance — anchor click sets
          #override-modal in the URL fragment and the modal becomes visible;
          clicking the X / backdrop navigates to # (back to top) and hides

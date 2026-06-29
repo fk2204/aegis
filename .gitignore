@@ -110,3 +110,4 @@ CLAUDE.local.md
 # to live in git. CI runs synthetic corpus only; the real corpus is
 # the operator's pre-push gate.
 tests/corpus/real/
+.git_commit_msg.tmp

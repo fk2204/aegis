@@ -4811,6 +4811,19 @@ async def merchant_detail(
         analyses_by_doc=analyses_by_doc,
     )
 
+    # SBA eligibility (informational, never gates the verdict). The
+    # detector reads only the merchant profile + the freshest analysis;
+    # when no proceed-track analysis exists yet, ``sba_eligibility``
+    # stays None and the dossier renders no badge.
+    sba_eligibility = None
+    if latest_analysis is not None:
+        from aegis.scoring_v2.sba_eligibility import check_sba_eligibility
+
+        try:
+            sba_eligibility = check_sba_eligibility(merchant, latest_analysis)
+        except Exception:  # pragma: no cover — defensive; never gate dossier
+            sba_eligibility = None
+
     # Phase E — trade-licensing gate. Fires when the merchant's
     # industry_naics requires state licensure AND we have a verified
     # portal URL for that state+industry AND the operator hasn't yet
@@ -4871,6 +4884,7 @@ async def merchant_detail(
             "merchant_shadow_signals": merchant_shadow_signals,
             "revenue_trends": revenue_trends,
             "merchant_monthly_trend": merchant_monthly_trend,
+            "sba_eligibility": sba_eligibility,
             "funder_note_submissions": funder_note_submissions,
             "operator_notes": operator_notes,
             "operator_note_max_chars": MERCHANT_NOTE_MAX_CHARS,
