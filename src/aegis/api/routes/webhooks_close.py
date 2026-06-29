@@ -274,6 +274,22 @@ async def _process_after_receipt(
         audit=audit,
     )
 
+    # Phase 2 / item 7.2 — Lead status change to "Qualified - Opp Open"
+    # auto-creates a merchant row in AEGIS, ahead of any PDF arriving.
+    # Runs alongside the Pre-UW opportunity trigger because the upstream
+    # signal is a LEAD status change (not an opportunity status change).
+    # Best-effort: a Close API failure on get_lead surfaces as 503 so
+    # Close retries within the 72h budget; the upsert is idempotent so
+    # the retry self-heals. The Bedrock description extractor is NOT
+    # invoked inline — latency + cost belong on the resync cron path.
+    await _handle_lead_qualified_opp_open(
+        event=event,
+        settings=settings,
+        close_client=close_client,
+        merchants=merchants,
+        audit=audit,
+    )
+
     # Note-created auto-status. Independent of the Pre-UW trigger and
     # of opportunity lifecycle. Quietly no-ops unless the Close
     # subscription is configured to emit activity.note events AND the
@@ -1048,6 +1064,249 @@ async def _handle_lead_updated(
             audit=audit,
             trigger="close_webhook_lead_updated",
         )
+
+
+# ----------------------------------------------------------------------
+# Phase 2 / item 7.2 — Lead status change to "Qualified - Opp Open"
+# auto-creates an AEGIS merchant row before any PDF arrives.
+# ----------------------------------------------------------------------
+
+
+def _is_qualified_opp_open_status_change(
+    event: dict[str, Any], qualified_status_id: str
+) -> tuple[bool, str | None]:
+    """Classify a webhook event for the Qualified-Opp-Open trigger.
+
+    Returns ``(matches, skip_reason)`` where:
+      * ``(True, None)`` — fire the auto-create branch.
+      * ``(False, "not_lead_updated")`` — event is not a Close lead.updated
+        (e.g. opportunity.updated, activity.note). The dedicated Pre-UW
+        opportunity handler and the existing lead.updated context-refresh
+        path own those.
+      * ``(False, "no_status_change")`` — lead.updated but ``status_id``
+        is not in ``changed_fields``. Most lead.updated traffic is field
+        edits with no status transition; we explicitly skip those.
+      * ``(False, "wrong_status")`` — status_id changed, but to a status
+        other than the configured Qualified-Opp-Open id. Pre-UW
+        transitions, lost-lead transitions, etc. all land here.
+
+    The skip_reason is surfaced in the ``close.webhook.qualified_skipped``
+    audit row so the operator can grep the audit feed for stuck leads.
+    """
+    if event.get("action") != "updated" or event.get("object_type") != "lead":
+        return (False, "not_lead_updated")
+    changed_fields = event.get("changed_fields") or []
+    if "status_id" not in changed_fields:
+        return (False, "no_status_change")
+    data = event.get("data") or {}
+    new_status_id = data.get("status_id")
+    if not isinstance(new_status_id, str) or new_status_id != qualified_status_id:
+        return (False, "wrong_status")
+    return (True, None)
+
+
+async def _handle_lead_qualified_opp_open(
+    *,
+    event: dict[str, Any],
+    settings: Settings,
+    close_client: CloseClient,
+    merchants: MerchantRepository,
+    audit: AuditLog,
+) -> None:
+    """Auto-create an AEGIS merchant row when a Close Lead transitions to
+    the configured Qualified-Opp-Open status.
+
+    Trigger contract:
+      * Event is ``lead.updated`` with ``status_id`` in ``changed_fields``
+        AND ``event.data["status_id"]`` equals
+        ``settings.close_qualified_opp_open_status_id``.
+      * Anything else writes nothing and either no-ops silently (non-
+        status lead.updated events fall under the existing
+        ``_handle_lead_updated`` path) or audits a skip reason.
+
+    Effects when triggered:
+      1. Look up the merchant by ``close_lead_id``. If one already
+         exists, write ``close.webhook.status_change_no_op_existing_merchant``
+         and return — this is the redelivery / re-qualification case.
+      2. If no merchant exists, fetch the Lead via ``CloseClient.get_lead``,
+         translate fields through ``_lead_to_merchant_fields`` (same
+         field-map path the Pre-UW handler uses), and insert a new
+         ``MerchantRow``. Write ``close.webhook.merchant_auto_created``
+         with the count of populated fields so the operator can spot
+         description-only leads (low count) at a glance.
+      3. The Bedrock description extractor (migration 089) is NOT called
+         inline — empty extracted_pending stays empty until
+         ``scripts/resync_close_leads.py`` (or a future scheduled cron)
+         runs. Webhook latency + Bedrock cost stay decoupled.
+
+    Non-trigger paths still write a skip audit row so the operator can
+    see what was filtered:
+      * Non-lead-updated events → silent return (covered by upstream
+        opportunity / activity handlers; no extra audit noise).
+      * lead.updated without status_id change → ``close.webhook.qualified_skipped``
+        with reason=no_status_change.
+      * lead.updated with wrong status_id → ``close.webhook.qualified_skipped``
+        with reason=wrong_status + the observed status id.
+
+    HMAC + timestamp freshness validation already ran upstream in
+    ``_verify_signature``; this handler trusts the caller. Audit-log
+    writes propagate any error per the project's "audit writes are
+    mandatory" rule. A Close API ``get_lead`` failure surfaces as
+    503 so Close retries within the 72h budget; the lookup-then-insert
+    is idempotent on redelivery because we re-check by ``close_lead_id``.
+    """
+    matches, skip_reason = _is_qualified_opp_open_status_change(
+        event, settings.close_qualified_opp_open_status_id
+    )
+    if not matches:
+        if skip_reason == "not_lead_updated":
+            # Other handlers own opportunity / activity events; no audit
+            # noise needed here.
+            return
+        # status_id-related skips DO get an audit row so the operator
+        # can grep ``close.webhook.qualified_skipped`` for leads that
+        # never transitioned into Qualified-Opp-Open.
+        data = event.get("data") or {}
+        observed_status_id = data.get("status_id") if isinstance(data, dict) else None
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.qualified_skipped",
+            details={
+                "reason": skip_reason,
+                "event_id": event.get("id"),
+                "close_lead_id": event.get("lead_id") or event.get("object_id"),
+                "observed_status_id": (
+                    observed_status_id if isinstance(observed_status_id, str) else None
+                ),
+                "trigger_status_id": settings.close_qualified_opp_open_status_id,
+            },
+        )
+        return
+
+    # lead.updated carries the lead id in ``object_id`` (event.object_id
+    # is the resource the event is about); ``event.lead_id`` is also
+    # populated for activity events. Prefer object_id, fall back to
+    # lead_id for defensive compatibility.
+    lead_id_raw = event.get("object_id") or event.get("lead_id")
+    if not isinstance(lead_id_raw, str) or not lead_id_raw:
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.qualified_skipped",
+            details={
+                "reason": "missing_lead_id",
+                "event_id": event.get("id"),
+                "trigger_status_id": settings.close_qualified_opp_open_status_id,
+            },
+        )
+        return
+    lead_id: str = lead_id_raw
+
+    existing = merchants.find_by_close_lead_id(lead_id, include_deleted=True)
+    if existing is not None:
+        # Includes soft-deleted rows so we don't accidentally create a
+        # duplicate for a merchant the operator already deleted; the
+        # standard ``close.webhook.suppressed_soft_deleted_merchant``
+        # path in ``_upsert_merchant_from_lead`` handles re-creates
+        # when the operator restores via SQL.
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.status_change_no_op_existing_merchant",
+            subject_type="merchant",
+            subject_id=existing.id,
+            details={
+                "close_lead_id": lead_id,
+                "event_id": event.get("id"),
+                "trigger_status_id": settings.close_qualified_opp_open_status_id,
+                "existing_merchant_status": existing.status,
+                "soft_deleted": existing.deleted_at is not None,
+            },
+        )
+        return
+
+    try:
+        lead = close_client.get_lead(lead_id)
+    except CloseError as exc:
+        # 503 lets Close retry within the 72h budget; auto-create is
+        # idempotent on redelivery via the find_by_close_lead_id check.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"close_get_lead_failed: {exc}",
+        ) from exc
+
+    try:
+        new_fields = _lead_to_merchant_fields(lead, lead_id, audit)
+    except FieldMapError as exc:
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.qualified_field_map_failed",
+            details={
+                "close_lead_id": lead_id,
+                "event_id": event.get("id"),
+                "error": str(exc)[:200],
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"close_lead_field_parse_failed: {exc}",
+        ) from exc
+
+    # Description-parse staging fallback (migration 089). Webhook
+    # deliberately does NOT call the Bedrock extractor — that path is
+    # owned by ``scripts/resync_close_leads.py`` (and a future cron) so
+    # we don't pay Bedrock latency on the webhook's critical path. An
+    # empty FINANCIAL block stays empty here; the resync pass populates
+    # ``stated_extracted_pending`` for the operator to confirm.
+    fields_populated_count = sum(
+        1 for value in new_fields.values() if value is not None and value != [] and value != ""
+    )
+
+    new_merchant = MerchantRow(
+        id=uuid4(),
+        close_lead_id=lead_id,
+        **new_fields,
+    )
+
+    try:
+        merchants.upsert(new_merchant)
+    except MerchantConflictError:
+        # A concurrent webhook redelivery (Pre-UW + Qualified-Opp-Open
+        # firing within the same window) raced us between the
+        # find_by_close_lead_id None-check above and our INSERT. Treat
+        # the existing row as the winner and audit a no-op so the
+        # operator sees both deliveries left a receipt.
+        race_winner = merchants.find_by_close_lead_id(lead_id, include_deleted=True)
+        if race_winner is not None:
+            audit.record(
+                actor="close_webhook",
+                action="close.webhook.status_change_no_op_existing_merchant",
+                subject_type="merchant",
+                subject_id=race_winner.id,
+                details={
+                    "close_lead_id": lead_id,
+                    "event_id": event.get("id"),
+                    "trigger_status_id": settings.close_qualified_opp_open_status_id,
+                    "race_path": True,
+                    "existing_merchant_status": race_winner.status,
+                    "soft_deleted": race_winner.deleted_at is not None,
+                },
+            )
+            return
+        raise
+
+    audit.record(
+        actor="close_webhook",
+        action="close.webhook.merchant_auto_created",
+        subject_type="merchant",
+        subject_id=new_merchant.id,
+        details={
+            "close_lead_id": lead_id,
+            "merchant_id": str(new_merchant.id),
+            "business_name": new_merchant.business_name,
+            "fields_populated_count": fields_populated_count,
+            "event_id": event.get("id"),
+            "trigger_status_id": settings.close_qualified_opp_open_status_id,
+        },
+    )
 
 
 def _suppress_for_soft_deleted_merchant(

@@ -77,6 +77,16 @@ class Settings(BaseSettings):
     # internal kills / merchant walk-aways, not funder decisions.
     close_funded_status_id: str = "stat_OXb0lwLgcuUwNqtm7S9FjdJxRIFtTRCbFdNZUURxcwh"
     close_dead_lender_status_id: str = "stat_jnyp9hrSneIA2b5z52Cj9EE9C98mEtlslfOlWzw7UTw"
+    # Phase 2 / item 7.2 — Close Lead status id that signals "broker
+    # has qualified this lead and an opportunity is open". When a
+    # ``lead.updated`` webhook reports a status_id change INTO this
+    # value AND no merchant row yet exists for the lead, AEGIS
+    # auto-creates a merchant from the Close Lead application data
+    # (Close custom fields + FINANCIAL block from the description).
+    # The Bedrock description extractor is NOT called inline — that
+    # runs separately via ``scripts/resync_close_leads.py``. Operator
+    # overrides via env when Close-side renames the status.
+    close_qualified_opp_open_status_id: str = "stat_qualified_opp_open_placeholder"
 
     # Filename-substring filters for auto-flowing Close attachments
     # through the parser. Case-insensitive substring match against the
