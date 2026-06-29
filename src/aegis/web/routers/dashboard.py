@@ -20,6 +20,7 @@ cycle previously required is no longer needed.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Final, cast
@@ -41,6 +42,7 @@ from aegis.compliance.obligations import (
     get_compliance_obligation_repository,
 )
 from aegis.funder_note_submissions import FunderNoteSubmissionRepository
+from aegis.logger import get_logger
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import (
     MerchantNotFoundError,
@@ -65,6 +67,28 @@ from aegis.web._attention_card import (
 )
 from aegis.web._flag_labels import humanize_audit_action
 from aegis.web._templates import templates
+
+_log = get_logger(__name__)
+
+
+def _safe_or_default(value: Any, default: Any, label: str) -> Any:  # noqa: ANN401
+    """Collapse a ``gather(return_exceptions=True)`` slot to a usable value.
+
+    When ``value`` is an Exception (because the helper raised), log it
+    and return ``default``. Otherwise pass the value through unchanged.
+    The dashboard surfaces are all best-effort cards — one helper
+    failure should never blank the whole page.
+    """
+    if isinstance(value, BaseException):
+        _log.exception(
+            "dashboard.helper_failed label=%s error=%s",
+            label,
+            type(value).__name__,
+            exc_info=value,
+        )
+        return default
+    return value
+
 
 router = APIRouter()
 
@@ -102,9 +126,81 @@ async def index(
 
     Recent activity: last 10 ``audit_log`` rows. The audit table is
     masked at write time so PII never lands here either.
+
+    Concurrency posture (2026-06-29 perf rewrite — TASK 1 of the
+    asyncio.gather wave): every helper that runs an independent
+    Supabase query is wrapped in ``asyncio.to_thread`` and fanned out
+    via ``asyncio.gather``. Wave 1 collects the inputs every other
+    helper needs (parse_counts, recent_activity, attention_docs,
+    all_recent_docs, compliance/pending/shadow attention triples,
+    queue depth). Wave 2 fans out the helpers that depend on those
+    inputs (attention_groups, stale_deals, today_pipeline,
+    key_numbers, monthly_comparison). ``return_exceptions=True`` on
+    each gather so a single helper failure doesn't blank the dashboard
+    — failures collapse to safe defaults logged via ``_log``.
     """
-    parse_counts = docs.count_by_parse_status()
-    merchant_total = merchants_repo.count_total()
+    _ = ofac  # held in signature for the dependency wiring + future use
+    now_utc = datetime.now(UTC)
+
+    # Local import — keep the queue helper out of the module-import
+    # graph so the monitor's redis/arq deps don't leak into web boot.
+    from aegis.ops.queue_depth_monitor import get_queue_depth_for_ui
+
+    # ============================================================
+    # Wave 1 — independent queries.
+    # Each Supabase call lands in its own thread so the event loop
+    # never blocks; gather() fans them out concurrently. Total wall
+    # time collapses to roughly the slowest single query instead of
+    # the sum of all queries.
+    # ============================================================
+    (
+        parse_counts,
+        merchant_total,
+        recent_activity_rows,
+        attention_docs,
+        all_recent_docs,
+        queue_pair,
+        compliance_triple,
+        pending_funder_triple,
+        shadow_review_triple,
+    ) = await asyncio.gather(
+        asyncio.to_thread(docs.count_by_parse_status),
+        asyncio.to_thread(merchants_repo.count_total),
+        asyncio.to_thread(audit.list_recent, limit=10),
+        asyncio.to_thread(docs.list_documents_slim, parse_status="manual_review", limit=40),
+        asyncio.to_thread(docs.list_documents, limit=500),
+        get_queue_depth_for_ui(),
+        asyncio.to_thread(
+            build_compliance_attention_section,
+            get_compliance_obligation_repository(),
+        ),
+        asyncio.to_thread(
+            _compute_pending_funder_responses,
+            funder_note_subs,
+            merchants_repo,
+            now=now_utc,
+        ),
+        asyncio.to_thread(
+            build_shadow_review_attention_section,
+            docs=docs,
+            merchants=merchants_repo,
+        ),
+        return_exceptions=True,
+    )
+
+    # Collapse any per-task exception to a safe default so one
+    # failure doesn't take the dashboard down. Each branch logs the
+    # exception via ``_log.exception`` for triage; the cards section
+    # just renders empty.
+    parse_counts = _safe_or_default(parse_counts, {}, "parse_counts")
+    merchant_total = _safe_or_default(merchant_total, 0, "merchant_total")
+    recent_activity_rows = _safe_or_default(recent_activity_rows, [], "recent_activity_rows")
+    attention_docs = _safe_or_default(attention_docs, [], "attention_docs")
+    all_recent_docs = _safe_or_default(all_recent_docs, [], "all_recent_docs")
+    queue_pair = _safe_or_default(queue_pair, (None, 20), "queue_depth")
+    compliance_triple = _safe_or_default(compliance_triple, (0, [], []), "compliance")
+    pending_funder_triple = _safe_or_default(pending_funder_triple, (0, [], []), "pending_funder")
+    shadow_review_triple = _safe_or_default(shadow_review_triple, (0, [], []), "shadow_review")
 
     proceed = parse_counts.get("proceed", 0)
     review = parse_counts.get("review", 0)
@@ -114,7 +210,25 @@ async def index(
     parsed_total = proceed + review + manual_review + error
     in_pipeline = parsed_total + pending
 
-    recent_activity_rows = audit.list_recent(limit=10)
+    queue_depth, queue_threshold = queue_pair
+    queue_alert = queue_depth is not None and queue_depth > queue_threshold
+
+    (
+        compliance_count,
+        compliance_source_obligation_ids,
+        compliance_cards,
+    ) = compliance_triple
+    (
+        pending_funder_count,
+        pending_funder_source_submission_ids,
+        pending_funder_cards,
+    ) = pending_funder_triple
+    (
+        shadow_review_count,
+        shadow_review_source_document_ids,
+        shadow_review_cards,
+    ) = shadow_review_triple
+
     recent_activity = [
         {
             "actor": r.get("actor") or "—",
@@ -128,37 +242,10 @@ async def index(
         }
         for r in recent_activity_rows
     ]
-
-    # 2026-06-28 perf — slim list + batched flag fetch. ``list_documents``
-    # previously pulled ``all_flags`` (a TEXT[] that grows with every
-    # parser + forensic detector pass — dozens of entries per row on
-    # prod) on every list-style read. The slim variant drops the column
-    # from the wire payload; ``get_document_flags`` re-fetches it as a
-    # single ``in.(...)`` query then attaches per-doc before the helper
-    # consumes ``d.all_flags``. Net: same render, smaller list payload.
-    attention_docs = docs.list_documents_slim(parse_status="manual_review", limit=40)
-    _attention_flags = docs.get_document_flags([d.id for d in attention_docs])
-    for _d in attention_docs:
-        _d.all_flags = _attention_flags.get(_d.id, [])
-    attention = _build_attention_groups(attention_docs, merchants_repo, docs, max_groups=8)
-    # 2026-06-28 perf — tier enrichment dropped from the dashboard hot
-    # path. Per-card profiling showed
-    # ``_enrich_attention_card_with_tier x 8 = 11,967ms`` -- 60%+ of the
-    # 16-second dashboard render. score_deal() per merchant ran a
-    # multi-month scoring pass + OFAC check + Track A/B compute for a
-    # decorative letter chip the template gates on truthy ``g.tier``.
-    # Cards still render fine without it (the {% if g.tier %} branch
-    # just doesn't fire). Revisit when the score_deal path is async /
-    # cached so 8 enrichments fan out concurrently instead of serially.
-    # Refs: ``_enrich_attention_card_with_tier`` in this module (kept
-    # for the Review Queue card builder which can afford the cost).
-    _ = ofac  # held in signature for the dependency wiring + future use
-
     submitted_count = sum(
         1 for r in recent_activity_rows if r.get("action") == "deal.submit_to_funders"
     )
     funded_count = sum(1 for r in recent_activity_rows if r.get("action") == "deal.funded")
-
     funnel_rows = _build_funnel_rows(
         intake_count=merchant_total,
         docs_uploaded=in_pipeline,
@@ -168,87 +255,79 @@ async def index(
         funded=funded_count,
         declined=manual_review + error,
     )
+    today_recent_activity = _build_today_recent_activity(recent_activity_rows)
 
-    # Three-column Today dashboard (2026-06-16) — additional aggregates.
-    # Per CLAUDE.md "every aggregate exposes its source IDs": each new
-    # count below is paired with a *_source_ids list so the dossier
-    # drill-down contract holds.
-    now_utc = datetime.now(UTC)
+    # Flag attachment for the attention-docs slim list — depends on
+    # attention_docs from Wave 1, so it lives in the Wave-1.5 step.
+    attention_flags = await asyncio.to_thread(
+        docs.get_document_flags, [d.id for d in attention_docs]
+    )
+    for _d in attention_docs:
+        _d.all_flags = attention_flags.get(_d.id, [])
 
-    # 2026-06-28 perf — fetch the documents window ONCE up front and
-    # pass to EVERY helper that needs it. The prior implementation hit
-    # ``docs.list_documents`` 5+ times across this route (stale_deals,
-    # today_pipeline, key_numbers x2, monthly_comparison). Each call
-    # was a 740ms+ SELECT * against the wide documents table — they
-    # were stacking to a 23-second dashboard load (operator report
-    # 2026-06-28 15:13). One cached fetch at the widest limit (500)
-    # covers every helper that filters in Python downstream.
-    all_recent_docs = docs.list_documents(limit=500)
+    # ============================================================
+    # Wave 2 — depends on attention_docs + all_recent_docs.
+    # Each helper still runs in its own thread; gather() fans them
+    # out concurrently.
+    # ============================================================
+    (
+        attention,
+        stale_triple,
+        today_pipeline,
+        key_numbers,
+        monthly_comparison,
+    ) = await asyncio.gather(
+        asyncio.to_thread(
+            _build_attention_groups,
+            attention_docs,
+            merchants_repo,
+            docs,
+            max_groups=8,
+        ),
+        asyncio.to_thread(
+            _compute_stale_deals,
+            docs,
+            merchants_repo,
+            now=now_utc,
+            all_recent_docs=all_recent_docs,
+        ),
+        asyncio.to_thread(
+            _compute_today_pipeline,
+            docs,
+            funder_note_subs,
+            now=now_utc,
+            all_recent_docs=all_recent_docs,
+        ),
+        asyncio.to_thread(
+            _compute_key_numbers,
+            merchant_total=merchant_total,
+            pending_count=pending,
+            proceed_count=proceed,
+            funder_note_subs=funder_note_subs,
+            docs=docs,
+            merchants_repo=merchants_repo,
+            now=now_utc,
+            all_recent_docs=all_recent_docs,
+        ),
+        asyncio.to_thread(
+            _compute_monthly_comparison,
+            docs=docs,
+            now=now_utc,
+            all_recent_docs=all_recent_docs,
+        ),
+        return_exceptions=True,
+    )
 
+    attention = _safe_or_default(attention, [], "attention_groups")
+    stale_triple = _safe_or_default(stale_triple, (0, [], []), "stale_deals")
+    today_pipeline = _safe_or_default(today_pipeline, {}, "today_pipeline")
+    key_numbers = _safe_or_default(key_numbers, {}, "key_numbers")
+    monthly_comparison = _safe_or_default(monthly_comparison, [], "monthly_comparison")
     (
         stale_deals_count,
         stale_deals_source_merchant_ids,
         stale_attention_cards,
-    ) = _compute_stale_deals(docs, merchants_repo, now=now_utc, all_recent_docs=all_recent_docs)
-    (
-        pending_funder_count,
-        pending_funder_source_submission_ids,
-        pending_funder_cards,
-    ) = _compute_pending_funder_responses(funder_note_subs, merchants_repo, now=now_utc)
-    # Compliance deadlines attention card — obligations with
-    # next_due_date within the 90-day horizon. Color buckets: red <=14,
-    # amber <=30, yellow <=60. Sourced from the dedicated obligation
-    # tracker repository (memory/Supabase toggle from settings).
-    (
-        compliance_count,
-        compliance_source_obligation_ids,
-        compliance_cards,
-    ) = build_compliance_attention_section(
-        get_compliance_obligation_repository(),
-    )
-    # Shadow signals attention card — documents parsed in the last 7
-    # days with at least one ``[SHADOW] *`` flag on ``all_flags``.
-    # Surfaces the weekly cron's intake (`run_shadow_review_cron`) on
-    # the dashboard so the corpus-validation review for promoting a
-    # shadow detector to live is one click away from Today. `count` is
-    # the DISTINCT document count, paired with `source_document_ids`
-    # per the CLAUDE.md aggregate-with-source-ids rule.
-    (
-        shadow_review_count,
-        shadow_review_source_document_ids,
-        shadow_review_cards,
-    ) = build_shadow_review_attention_section(docs=docs, merchants=merchants_repo)
-    today_pipeline = _compute_today_pipeline(
-        docs, funder_note_subs, now=now_utc, all_recent_docs=all_recent_docs
-    )
-    today_recent_activity = _build_today_recent_activity(recent_activity_rows)
-
-    key_numbers = _compute_key_numbers(
-        merchant_total=merchant_total,
-        pending_count=pending,
-        proceed_count=proceed,
-        funder_note_subs=funder_note_subs,
-        docs=docs,
-        merchants_repo=merchants_repo,
-        now=now_utc,
-        all_recent_docs=all_recent_docs,
-    )
-    monthly_comparison = _compute_monthly_comparison(
-        docs=docs,
-        now=now_utc,
-        all_recent_docs=all_recent_docs,
-    )
-
-    # Worker queue depth banner (build plan §10.2 / TASK 6E). Polled
-    # inline so the banner shows live state — the cron writes the
-    # audit-log alert at the threshold, but the dashboard surfaces the
-    # depth on every render so the operator sees backed-up workers
-    # without grepping journald. Redis outage → (None, threshold) →
-    # banner hidden (defensive).
-    from aegis.ops.queue_depth_monitor import get_queue_depth_for_ui
-
-    queue_depth, queue_threshold = await get_queue_depth_for_ui()
-    queue_alert = queue_depth is not None and queue_depth > queue_threshold
+    ) = stale_triple
 
     # Quick-action buttons are static — declared here so the template
     # iterates a list rather than hardcoding three blocks. Labels are
