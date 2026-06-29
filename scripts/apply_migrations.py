@@ -775,13 +775,13 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE conname='overrides_reason_code_check' "
         "AND pg_get_constraintdef(oid) LIKE '%license_verified_manually%'"
     ),
-    "091_probe_review_verdicts.sql": (
-        # 091 (parallel to the overrides constraint migration above —
-        # two unrelated migrations briefly collided on the 091 prefix during
-        # the 2026-06-28 parallel-agent run, both lexicographically distinct
-        # so apply order is deterministic). Creates probe_review_verdicts
-        # to back the text-layer probe v2 operator-validation UI. Probe the
-        # table directly — the only schema-side artifact of the migration.
+    "092_probe_review_verdicts.sql": (
+        # Renumbered from 091 → 092 on 2026-06-29 to resolve the
+        # transient prefix collision with the overrides constraint
+        # migration above (both shipped as 091 during the parallel-agent
+        # run). Creates probe_review_verdicts to back the text-layer
+        # probe v2 operator-validation UI. Probe the table directly —
+        # the only schema-side artifact of the migration.
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='probe_review_verdicts'"
     ),

@@ -1707,12 +1707,16 @@
  * right 25% = quick-action buttons + recent audit activity. Mobile
  * (<=768px) stacks: attention → pipeline → actions. */
 
-.dossier-page .today-cols {
+.today-cols {
   /* 2026-06-28 — tightened from 40/35/25 fr-units with 24px gap to a
    * fixed-percentage 38/38/24 with a 16px gap. The percentages keep
    * the attention queue + pipeline parity on wide displays (38% each)
    * and squeeze quick-actions just enough to reclaim the gap whitespace
-   * the operator reported as "too much empty space on the right". */
+   * the operator reported as "too much empty space on the right".
+   * 2026-06-29 — un-scoped from .dossier-page: the dashboard index page
+   * uses <section class="body today-cols"> with NO .dossier-page wrapper,
+   * so the prior selector silently no-op'd and the operator-reported
+   * vertical-gap regression persisted on the dashboard. */
   display: grid;
   grid-template-columns: 38% 38% 24%;
   gap: 16px;
@@ -2114,7 +2118,7 @@
  * second, quick actions third (matches operator priority on small
  * screens: clear the queue, see today, then act). */
 @media (max-width: 768px) {
-  .dossier-page .today-cols {
+  .today-cols {
     display: flex;
     flex-direction: column;
     gap: 20px;
