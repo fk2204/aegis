@@ -1,0 +1,25 @@
+# /etc/systemd/system/aegis-queue-monitor.timer
+#
+# Fires aegis-queue-monitor.service every five minutes. Matches the
+# cadence of the aegis-heartbeat-{web,worker} timers — frequent
+# enough to catch a wedged worker before the queue grows past
+# operator tolerance (~20 jobs at ~150-180s each = ~50min of latent
+# parse work), infrequent enough to keep journald + audit_log noise
+# bounded.
+
+[Unit]
+Description=AEGIS queue depth monitor — fires every 5 minutes
+
+[Timer]
+# First fire 5 min after boot so the unit doesn't race aegis-worker's
+# own startup window. After that, fire every 5 min on the unit-active
+# clock (not wall-clock cron) so a long-running monitor pass can't
+# overlap itself.
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=aegis-queue-monitor.service
+
+[Install]
+WantedBy=timers.target

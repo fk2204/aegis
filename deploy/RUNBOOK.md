@@ -190,6 +190,58 @@ Operator updates `STATE_SOURCES["FL"].url` ahead of each quarterly
 SUNBIZ release (the portal index URL doesn't auto-resolve to the
 latest .txt bundle); the build then picks up FL on the next run.
 
+### Queue depth monitor (build plan §10.2)
+
+`aegis-queue-monitor.timer` fires `python -m aegis.ops.queue_depth_monitor`
+every 5 minutes. The module reads the length of the arq pending list
+(`arq:queue`, sourced from `arq.constants.default_queue_name` — never
+hardcoded) and, when the depth exceeds the alert threshold, writes one
+`system.queue_depth_alert` audit row + a WARNING-level journald line.
+Healthy ticks log at INFO only — no audit noise.
+
+**Threshold:** default 20. Override without a code change by setting
+`AEGIS_QUEUE_DEPTH_ALERT_THRESHOLD=<N>` in `/etc/aegis/aegis.env` and
+waiting for the next 5-min tick (or `systemctl restart` the timer to
+pick it up immediately). The default tracks
+`aegis.ops.alerting.ARQ_QUEUE_DEPTH_THRESHOLD`; raise it if Bedrock
+parse latency drives sustained backlog the operator considers
+expected.
+
+**Where to view alerts:**
+
+```bash
+# Recent WARNING lines from the monitor itself (alert + Redis-down):
+journalctl -u aegis-queue-monitor -p warning --since "24 hours ago" --no-pager
+
+# Durable record of every alert + monitor self-failure:
+#   action='system.queue_depth_alert'    → depth > threshold
+#   action='system.queue_monitor_error'  → Redis unreachable
+```
+
+The unit always exits 0 — `systemctl --failed` will NOT show the
+monitor even when the queue is backed up. The signal lives in the
+audit row + WARNING log, not the exit code (deliberate: failing the
+unit on transient Redis blips would mask the real signal).
+
+**One-time install on the prod box (after this commit deploys):**
+
+```bash
+ssh -o StrictHostKeyChecking=no -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 \
+  "cp /opt/aegis/deploy/aegis-queue-monitor.{service,timer} /etc/systemd/system/ && \
+   systemctl daemon-reload && \
+   systemctl enable --now aegis-queue-monitor.timer && \
+   systemctl list-timers | grep queue"
+```
+
+Expected `list-timers` line shows the next firing time within 5 min.
+Verify the first tick lands cleanly:
+
+```bash
+journalctl -u aegis-queue-monitor --output=cat -n 20
+```
+
+Expected on a healthy box: `ops.queue_monitor.depth_ok depth=0 threshold=20 queue=arq:queue`.
+
 ---
 
 ## Journald retention policy

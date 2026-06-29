@@ -1,0 +1,71 @@
+# /etc/systemd/system/aegis-queue-monitor.service
+#
+# Redis queue depth monitor (build plan §10.2). Runs `python -m
+# aegis.ops.queue_depth_monitor` once per timer tick (every 5 min);
+# when the arq pending queue exceeds the configured threshold
+# (default 20, override via AEGIS_QUEUE_DEPTH_ALERT_THRESHOLD in
+# /etc/aegis/aegis.env), the module writes a system.queue_depth_alert
+# audit row + a WARNING-level journald line. Healthy ticks are
+# INFO-level only — no audit noise.
+#
+# The unit always exits 0 (the audit row + log line is the alert
+# signal; failing the unit would noise up `systemctl --failed` on
+# transient Redis blips and mask real signal).
+#
+# Install via deploy/install.sh or the one-shot in deploy/RUNBOOK.md
+# § "Queue depth monitor".
+
+[Unit]
+Description=AEGIS — Redis queue depth alert monitor
+Documentation=https://github.com/fk2204/aegis
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aegis
+Group=aegis
+WorkingDirectory=/opt/aegis
+EnvironmentFile=/etc/aegis/aegis.env
+# Match the existing aegis-heartbeat-{web,worker}.service shape: invoke
+# the venv through `uv run python -m`, not the bare interpreter. uv
+# resolves /opt/aegis/.venv consistently across both deploy-time
+# `uv sync` runs (which can rotate the python minor-version symlink
+# under .venv/bin) and operator-side `uv run` invocations, so the
+# unit doesn't break the day someone bumps the pinned Python.
+ExecStart=/usr/local/bin/uv run python -m aegis.ops.queue_depth_monitor
+
+# Security hardening — minimum-privilege defaults. Matches
+# aegis-worker.service so the posture review is consistent across the
+# fleet.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+PrivateTmp=true
+# /var/lib/aegis carries the uv-cache directory (UV_CACHE_DIR in
+# /etc/aegis/aegis.env). Without this, ProtectSystem=strict +
+# ProtectHome=true block uv's runtime cache init and the unit
+# crash-loops with "Permission denied" — same gotcha that bit
+# aegis-web/aegis-worker.
+ReadWritePaths=/var/log/aegis /var/lib/aegis /tmp
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aegis-queue-monitor
+# Honor the syslog-priority prefix that aegis.logger emits when running
+# under the journal — without this flag, WARNING lines land at the
+# default priority (notice/info) and `journalctl -p warning` returns
+# "-- No entries --" even when the monitor fired an alert. See
+# src/aegis/logger.py for the priority mapping.
+SyslogLevelPrefix=true
+
+# Bound the run so a wedged Redis connection cancels rather than
+# starving the next firing slot. The actual LLEN round-trip is
+# sub-millisecond on a healthy box; 30 s is generous.
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
