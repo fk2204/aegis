@@ -307,6 +307,11 @@ _RENDERED_ELSEWHERE: Final[frozenset[str]] = frozenset(
         # rendered-elsewhere so the test below doesn't false-positive.
         "impossible_payment_load",
         "stated_vs_measured_revenue_divergence",
+        # 2026-06-29 — TCPA litigant detector (severity 100 instant
+        # decline). Surfaces as a top-of-dossier hard-decline reason,
+        # not a pattern detail card. Same render-elsewhere contract.
+        "tcpa_litigant_known",
+        "tcpa_litigant_suspected",
     }
 )
 
