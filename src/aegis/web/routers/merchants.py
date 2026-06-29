@@ -4811,16 +4811,27 @@ async def merchant_detail(
         analyses_by_doc=analyses_by_doc,
     )
 
-    # SBA eligibility (informational, never gates the verdict). The
-    # detector reads only the merchant profile + the freshest analysis;
-    # when no proceed-track analysis exists yet, ``sba_eligibility``
-    # stays None and the dossier renders no badge.
+    # SBA eligibility (informational, never gates the verdict). Walk
+    # `all_docs` newest-first looking for the most recent PROCEED-track
+    # doc that has an analysis row — the freshest doc may be pending /
+    # manual_review without an analysis yet, in which case we still want
+    # the badge to render based on the most recent successful parse.
+    # When no proceed analysis exists at all, ``sba_eligibility`` stays
+    # ``None`` and the dossier renders no badge.
     sba_eligibility = None
-    if latest_analysis is not None:
+    sba_analysis = next(
+        (
+            analyses_by_doc.get(d.id)
+            for d in all_docs
+            if d.parse_status == "proceed" and analyses_by_doc.get(d.id) is not None
+        ),
+        None,
+    )
+    if sba_analysis is not None:
         from aegis.scoring_v2.sba_eligibility import check_sba_eligibility
 
         try:
-            sba_eligibility = check_sba_eligibility(merchant, latest_analysis)
+            sba_eligibility = check_sba_eligibility(merchant, sba_analysis)
         except Exception:  # pragma: no cover — defensive; never gate dossier
             sba_eligibility = None
 
