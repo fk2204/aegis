@@ -53,11 +53,21 @@ from aegis.merchants.repository import (
     MerchantRepository,
 )
 from aegis.scoring.ofac import OFACClient
+from aegis.scoring_v2.mca_stack import aggregate_mca_stack
+from aegis.scoring_v2.offer import OfferRecommendation, compute_offer
 from aegis.storage import AnalysisRow, DocumentRepository, DocumentRow
 from aegis.web._templates import templates
 from aegis.web.routers.dashboard import _score_to_tier_letter
 
 router = APIRouter()
+
+# Holdback-capacity assumption used when sizing the kanban offer chip.
+# Matches the canonical pattern in ``aegis.web.routers.merchants`` (the
+# funder match grid feeds ``compute_offer`` with
+# ``monthly_revenue * 0.25`` as the operator-default monthly debt-service
+# budget). Kanban + dossier therefore size the same offer for the same
+# merchant.
+_KANBAN_HOLDBACK_CAPACITY_FRACTION: Final[Decimal] = Decimal("0.25")
 
 # Recent-outcome window for column 4 (2026-06-28). 90 days gives the
 # operator the broader read on the funded/outcome bucket — matches the
@@ -120,11 +130,20 @@ class _ReadyRow:
     merchant_label: str
     paper_grade: str | None  # "A".."F" or None when scorer can't run
     true_revenue: Decimal | None
-    # Cheap estimated advance derived from
-    # ``aegis.scoring.score._suggested_max_advance(monthly_revenue,
-    # paper_grade)``. ``None`` when paper_grade or monthly_revenue
-    # is missing — the kanban can't fabricate a sizing in that case.
+    # Legacy field — populated from ``offer.recommended_amount`` when
+    # a sized offer exists so the kanban + dossier surfaces agree.
+    # ``None`` when ``offer`` is None (sub-floor / no capacity / zero
+    # revenue / non-revenue product with missing operator-supplied
+    # kwargs). Retained because external consumers + existing template
+    # bindings reference ``estimated_advance`` directly.
     estimated_advance: Decimal | None
+    # Full sized offer from ``aegis.scoring_v2.offer.compute_offer``.
+    # Carries ``recommended_amount`` / ``max_amount`` / ``rationale``
+    # — the same shape the dossier's "Suggested Offer" chip renders.
+    # ``None`` when the offer math returned no offer; the template
+    # then renders a muted "Offer pending" placeholder so the
+    # operator sees the absence explicitly rather than a blank field.
+    offer: OfferRecommendation | None
     top_funder_match: str | None
     action_chip: _ActionChip | None
 
@@ -266,11 +285,6 @@ def _build_ready(
     accepted convention (matches the Today key-numbers banner and the
     deal-flow assumption that funder responses land inside 30 days).
     """
-    # Lazy import — keeps the pipeline column rebuild light and avoids
-    # pulling the scoring module's transitive imports into every
-    # request that touches the kanban polling endpoint.
-    from aegis.scoring.score import _suggested_max_advance
-
     proceed_docs = docs.list_documents(
         parse_status="proceed",
         limit=_DOCUMENT_SCAN_LIMIT,
@@ -287,7 +301,14 @@ def _build_ready(
     if not latest_by_merchant:
         return []
 
-    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in latest_by_merchant.values()])
+    latest_doc_ids = [d.id for d in latest_by_merchant.values()]
+    analyses_by_doc = docs.get_analyses_by_document_ids(latest_doc_ids)
+    # Batch one ``list_transactions_for_documents`` call instead of N
+    # per-merchant round-trips. ``aggregate_mca_stack`` + ``compute_offer``
+    # both consume the per-doc classified rows; this keeps the kanban
+    # column rebuild O(1) trips to the documents repo regardless of how
+    # many merchants are in the Ready bucket.
+    transactions_by_doc = docs.list_transactions_for_documents(latest_doc_ids)
 
     # Recent-submission exclusion: merchants submitted in the last
     # ``_READY_SUBMISSION_EXCLUSION_DAYS`` days drop out of this column
@@ -331,21 +352,41 @@ def _build_ready(
 
         true_revenue: Decimal | None = analysis.true_revenue if analysis else None
         action_chip = _action_chip_from_narrator(analysis.narrator_summary if analysis else None)
-        # Cheap estimated-advance proxy. ``monthly_revenue`` lives on
-        # the analysis (parser aggregate); the formula matches the
-        # legacy ``_suggested_max_advance`` used everywhere else in
-        # the scorer so the kanban + dossier agree. ``None`` when
-        # either input is missing — render as em-dash.
-        monthly_revenue = analysis.monthly_revenue if analysis else None
-        if paper_grade is not None and monthly_revenue is not None:
+        # Size the offer the same way the dossier + funder-match grid do
+        # (``aegis.web.routers.merchants`` canonical path 2026-06-24):
+        # feed ``compute_offer`` the merchant's monthly_revenue, a
+        # holdback-capacity assumption (25% of monthly_revenue — same
+        # operator default the dossier uses), and the ``MCAStackAggregation``
+        # rolled up from the latest doc's classified transactions so the
+        # capacity-cap + stack-overload-discount paths fire when relevant.
+        # The kanban + dossier now agree on offer sizing for the same
+        # merchant. ``None`` when revenue is missing, sub-floor, or the
+        # offer math returned no offer (sub-$5k advance / no capacity).
+        offer: OfferRecommendation | None = None
+        if analysis is not None and analysis.monthly_revenue > 0:
+            txns = transactions_by_doc.get(d.id, [])
+            mca_stack = aggregate_mca_stack(
+                transactions=txns,
+                monthly_revenue=analysis.monthly_revenue,
+                period_days=analysis.statement_days,
+            )
             try:
-                estimated_advance: Decimal | None = _suggested_max_advance(
-                    monthly_revenue, paper_grade
+                offer = compute_offer(
+                    true_revenue_monthly=analysis.monthly_revenue,
+                    holdback_capacity_monthly=(
+                        analysis.monthly_revenue * _KANBAN_HOLDBACK_CAPACITY_FRACTION
+                    ),
+                    mca_stack=mca_stack,
+                    product_type=merchant.product_type,
                 )
-            except (KeyError, ValueError):
-                estimated_advance = None
-        else:
-            estimated_advance = None
+            except ValueError:
+                # ``compute_offer`` raises ValueError for product paths
+                # that require operator-supplied kwargs (equipment cost,
+                # eligible collateral, etc.) the kanban can't fabricate.
+                # Render as "Offer pending" — the dossier surfaces the
+                # right inputs.
+                offer = None
+        estimated_advance: Decimal | None = offer.recommended_amount if offer is not None else None
 
         # ``top_funder_match`` is intentionally None at the column level —
         # running the full funder-match pass per merchant is too expensive
@@ -361,6 +402,7 @@ def _build_ready(
                 paper_grade=paper_grade,
                 true_revenue=true_revenue,
                 estimated_advance=estimated_advance,
+                offer=offer,
                 top_funder_match=top_funder_match,
                 action_chip=action_chip,
             )

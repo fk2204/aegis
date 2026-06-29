@@ -98,8 +98,29 @@
           </div>
           <div class="muted" style="font-size:11px;margin-top:2px">
             Revenue: {{ money(row.true_revenue) }}
-            · Est. advance: <span data-test-id="pipeline-est-advance">{{ money(row.estimated_advance) }}</span>
           </div>
+          {# Offer-sizing line — mirrors the dossier "Suggested Offer"
+             chip (``offer.recommended_amount`` – ``offer.max_amount`` +
+             ``offer.rationale``). When ``compute_offer`` returned None
+             (sub-floor / no capacity / missing product-kwargs for
+             non-revenue products) we render a muted "Offer pending"
+             placeholder so the operator sees the absence rather than
+             a blank field. #}
+          {% if row.offer %}
+            <div class="muted" style="font-size:11px">
+              Est. advance:
+              <span data-test-id="pipeline-est-advance">{{ money(row.offer.recommended_amount) }}</span>
+              –
+              <span data-test-id="pipeline-est-advance-max">{{ money(row.offer.max_amount) }}</span>
+            </div>
+            {% if row.offer.rationale %}
+              <div class="muted" style="font-size:10px;font-style:italic"
+                   data-test-id="pipeline-offer-rationale">{{ row.offer.rationale }}</div>
+            {% endif %}
+          {% else %}
+            <div class="muted" style="font-size:11px;color:var(--ink-3,#9a9a92)"
+                 data-test-id="pipeline-offer-pending">Offer pending</div>
+          {% endif %}
           <div class="muted" style="font-size:11px">
             Top match: {{ row.top_funder_match or "—" }}
           </div>
