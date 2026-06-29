@@ -48,6 +48,11 @@ dependencies = [
     # use threshold 0.88. Pure-C extension w/ pure-Python fallback,
     # no transitive deps, MIT licence.
     "jellyfish>=1.0.0",
+    # openpyxl: pure-Python .xlsx reader used by the A/R aging parser
+    # (parser/ar_aging/extract.py). MIT, ~zero transitive deps beyond
+    # et-xmlfile. Same class as the existing reportlab/pymupdf/pikepdf
+    # parsing deps.
+    "openpyxl>=3.1",
 ]
 
 [dependency-groups]
@@ -61,6 +66,7 @@ dev = [
     "types-redis",
     "types-PyYAML",
     "types-python-dateutil",
+    "types-openpyxl",
     "boto3-stubs[bedrock-runtime]",
     "pytest-cov>=5.0",
     # Operator tooling (scripts/apply_migrations.py, scripts/db_verify.py).
