@@ -1716,7 +1716,11 @@
   display: grid;
   grid-template-columns: 38% 38% 24%;
   gap: 16px;
-  align-items: start;
+  /* 2026-06-28 — stretch (was: start) so the attention queue + pipeline
+   * + quick-actions columns fill full height equally. Prior ``start``
+   * left vertical gaps when one column was taller than the others
+   * (operator-reported "screen looks half-empty"). */
+  align-items: stretch;
   padding: 0 24px;
 }
 
