@@ -37,14 +37,21 @@ default. Add ``--apply`` to persist.
 
 Usage::
 
-    .venv/bin/python scripts/ingest_training_corpus.py /path/to/folder
-    .venv/bin/python scripts/ingest_training_corpus.py /path/to/folder --apply
+    .venv/bin/python scripts/ingest_training_corpus.py --folder /path/to/folder
+    .venv/bin/python scripts/ingest_training_corpus.py --zip /path/to/archive.zip --apply
+
+Exactly one of ``--folder`` / ``--zip`` is required. ``--zip`` extracts
+the archive to a private temp directory and runs the same recursive
+walk against the extracted tree; the temp directory is removed on exit
+regardless of outcome. This is the path the operator uses for the
+``Commera Lead Files.zip`` Drive bundle — nested per-lead folders are
+walked recursively via ``Path.rglob``.
 
 Exit codes (mirror sibling corpus scripts):
 
 * ``0`` — every file walked + recorded cleanly.
 * ``1`` — runtime error (Supabase init failed, settings missing).
-* ``2`` — caller-side mistake (missing folder, etc.).
+* ``2`` — caller-side mistake (missing folder / zip, etc.).
 * ``3`` — at least one file failed to ingest (write or detection
   error per file). Other files still ingest.
 """
@@ -55,6 +62,9 @@ import argparse
 import hashlib
 import re
 import sys
+import tempfile
+import zipfile
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol, cast
@@ -209,6 +219,7 @@ class IngestSummary:
     files_skipped_dedup: int = 0
     files_errored: int = 0
     banks_seen: set[str] = field(default_factory=set)
+    bank_counts: dict[str, int] = field(default_factory=dict)
     hints_updated: int = 0
     fingerprints_added: int = 0
 
@@ -220,6 +231,15 @@ class IngestSummary:
             f"{self.fingerprints_added} fingerprints added, "
             f"{self.files_skipped_dedup} skipped (dedup)"
         )
+
+    def render_bank_breakdown(self) -> list[str]:
+        """One indented line per bank with its ingested-file count.
+        Banks are sorted by descending count, then alphabetically for
+        deterministic operator-facing output."""
+        if not self.bank_counts:
+            return []
+        items = sorted(self.bank_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return [f"    {name}: {count}" for name, count in items]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -798,7 +818,8 @@ def ingest_folder(
     summary = IngestSummary()
     results: list[IngestResult] = []
     pdfs = _find_pdf_files(folder)
-    for pdf_path in pdfs:
+    total = len(pdfs)
+    for index, pdf_path in enumerate(pdfs, start=1):
         summary.files_walked += 1
         result = ingest_one(
             pdf_path,
@@ -812,6 +833,9 @@ def ingest_folder(
             summary.files_ingested += 1
             if result.bank_name is not None:
                 summary.banks_seen.add(result.bank_name)
+                summary.bank_counts[result.bank_name] = (
+                    summary.bank_counts.get(result.bank_name, 0) + 1
+                )
             if result.hint_updated:
                 summary.hints_updated += 1
             if result.fingerprint_added:
@@ -820,6 +844,7 @@ def ingest_folder(
             summary.files_skipped_dedup += 1
         else:
             summary.files_errored += 1
+        print(render_progress_line(result, index=index, total=total), flush=True)
     return results, summary
 
 
@@ -831,6 +856,10 @@ def ingest_folder(
 def render_per_file_line(result: IngestResult) -> str:
     """One operator-readable line per file. No PII — only filename
     (path the operator chose), bank, page count, signal booleans.
+
+    Retained for callers that want the post-hoc full recap rather than
+    the streamed progress format. ``ingest_folder`` streams
+    ``render_progress_line`` per file instead.
     """
     name = Path(result.file_path).name
     if result.action == "dedup_skip":
@@ -849,21 +878,55 @@ def render_per_file_line(result: IngestResult) -> str:
     return f"  OK    {name}  bank={bank}  pages={result.page_count}  signals={sig_str}"
 
 
+def render_progress_line(result: IngestResult, *, index: int, total: int) -> str:
+    """Per-file streamed progress, format::
+
+        [N/total] {filename} — bank: {X} — clean/fraud
+
+    Mirrors the task spec for the ZIP-aware ingest path. ``dedup_skip``
+    and ``error`` rows render in the same shape with the action in the
+    trailing slot so the operator can scan a long run quickly.
+    """
+    name = Path(result.file_path).name
+    prefix = f"[{index}/{total}] {name}"
+    bank = result.bank_name or "unknown"
+    if result.action == "dedup_skip":
+        return f"{prefix} — bank: {bank} — skip (dedup)"
+    if result.action == "error":
+        return f"{prefix} — bank: {bank} — error: {result.detail}"
+    status = "fraud" if result.fraud_signals_fired else "clean"
+    return f"{prefix} — bank: {bank} — {status}"
+
+
 def render_summary(
     results: Iterable[IngestResult],
     summary: IngestSummary,
     *,
     apply: bool,
 ) -> str:
-    """Final banner. ``--dry-run`` prefix when no writes happened."""
-    lines: list[str] = []
-    for result in results:
-        lines.append(render_per_file_line(result))
+    """Final banner. ``DRY-RUN`` prefix when no writes happened.
+
+    ``ingest_folder`` streams a ``render_progress_line`` per file as it
+    walks; this banner is the trailing roll-up only — counters plus the
+    per-bank breakdown. ``results`` is accepted for backward-compat
+    with callers that want the per-file recap embedded (current
+    ``main`` doesn't); when callers omit it the function still works.
+    """
+    # ``results`` is currently unused in the banner — the per-file
+    # detail is streamed live. Keep the parameter so existing callers
+    # don't break, but drain the iterable defensively so callers
+    # passing a generator don't leave it half-consumed.
+    _ = list(results)
     mode = "APPLIED" if apply else "DRY-RUN"
+    lines: list[str] = []
     lines.append("")
     lines.append(f"[{mode}] {summary.render()}")
+    bank_lines = summary.render_bank_breakdown()
+    if bank_lines:
+        lines.append("  Banks detected:")
+        lines.extend(bank_lines)
     if summary.files_errored:
-        lines.append(f"  {summary.files_errored} file(s) errored — see ERR lines.")
+        lines.append(f"  {summary.files_errored} file(s) errored — see streamed lines above.")
     return "\n".join(lines)
 
 
@@ -875,14 +938,28 @@ def render_summary(
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Ingest a folder of operator-provided bank-statement PDFs "
-            "into the training corpus (build-plan §6.5)."
+            "Ingest a folder or ZIP archive of operator-provided "
+            "bank-statement PDFs into the training corpus "
+            "(build-plan §6.5)."
         )
     )
-    parser.add_argument(
-        "folder",
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--folder",
         type=Path,
+        default=None,
         help="Folder to walk recursively for *.pdf files.",
+    )
+    source.add_argument(
+        "--zip",
+        type=Path,
+        default=None,
+        dest="zip_path",
+        help=(
+            "ZIP archive to extract to a temp directory; the extracted "
+            "tree is walked recursively for *.pdf files and the temp "
+            "directory is removed on exit (success or failure)."
+        ),
     )
     parser.add_argument(
         "--apply",
@@ -895,12 +972,55 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_walk_root(
+    *,
+    folder: Path | None,
+    zip_path: Path | None,
+    stack: ExitStack,
+) -> Path | None:
+    """Translate the CLI's ``--folder`` / ``--zip`` selection into the
+    on-disk path the walker should crawl.
+
+    For ``--zip`` we open a ``tempfile.TemporaryDirectory`` via the
+    caller-provided ``ExitStack`` (so cleanup ties to the caller's
+    scope) and extract the archive's contents into it. The extracted
+    tree is the walk root. For ``--folder`` we return the path as-is.
+
+    Returns ``None`` on caller error (missing path, not-a-directory,
+    not-a-zip, broken zip). The caller prints the operator-facing
+    error and returns ``EXIT_CALLER_ERROR``; this helper stays free of
+    stdout / stderr so it remains test-friendly.
+    """
+    if folder is not None:
+        if not folder.exists() or not folder.is_dir():
+            print(
+                f"ERROR: folder not found or not a directory: {folder}",
+                file=sys.stderr,
+            )
+            return None
+        return folder
+
+    # argparse mutually_exclusive_group(required=True) guarantees one of the two flags.
+    assert zip_path is not None
+    if not zip_path.exists() or not zip_path.is_file():
+        print(f"ERROR: zip file not found: {zip_path}", file=sys.stderr)
+        return None
+    if not zipfile.is_zipfile(zip_path):
+        print(f"ERROR: not a valid zip archive: {zip_path}", file=sys.stderr)
+        return None
+    tmpdir = stack.enter_context(tempfile.TemporaryDirectory(prefix="aegis-corpus-zip-"))
+    extract_root = Path(tmpdir)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(extract_root)
+    except (zipfile.BadZipFile, OSError) as exc:
+        print(f"ERROR: failed to extract zip {zip_path}: {exc}", file=sys.stderr)
+        return None
+    return extract_root
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
-    folder: Path = args.folder
-    if not folder.exists() or not folder.is_dir():
-        print(f"ERROR: folder not found or not a directory: {folder}", file=sys.stderr)
-        return EXIT_CALLER_ERROR
 
     corpus_repo: CorpusDocumentsRepository
     bank_repo: BankLayoutRepository
@@ -922,14 +1042,23 @@ def main(argv: list[str] | None = None) -> int:
         bank_repo = InMemoryBankLayoutRepository()
         audit = InMemoryAuditLog()
 
-    results, summary = ingest_folder(
-        folder,
-        corpus_repo=corpus_repo,
-        bank_repo=bank_repo,
-        audit=audit,
-        apply=args.apply,
-    )
-    print(render_summary(results, summary, apply=args.apply))
+    with ExitStack() as stack:
+        walk_root = _resolve_walk_root(
+            folder=args.folder,
+            zip_path=args.zip_path,
+            stack=stack,
+        )
+        if walk_root is None:
+            return EXIT_CALLER_ERROR
+
+        results, summary = ingest_folder(
+            walk_root,
+            corpus_repo=corpus_repo,
+            bank_repo=bank_repo,
+            audit=audit,
+            apply=args.apply,
+        )
+        print(render_summary(results, summary, apply=args.apply))
 
     if summary.files_errored:
         return EXIT_ISSUES_FOUND

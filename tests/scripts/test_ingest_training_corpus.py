@@ -531,3 +531,235 @@ def test_dry_run_writes_nothing(
     assert corpus.rows == {}
     assert bank.list_all() == []
     assert audit.entries == []
+
+
+# ---------------------------------------------------------------------------
+# ZIP ingestion + recursive walk
+# ---------------------------------------------------------------------------
+
+
+def _make_zip(
+    zip_path: Path,
+    pdfs: dict[str, bytes],
+) -> Path:
+    """Build a zip archive whose member paths are ``pdfs`` keys (allow
+    nested folder structure like ``lead-1/chase.pdf``)."""
+    import zipfile as _zipfile
+
+    with _zipfile.ZipFile(zip_path, "w", compression=_zipfile.ZIP_DEFLATED) as zf:
+        for arcname, content in pdfs.items():
+            zf.writestr(arcname, content)
+    return zip_path
+
+
+def test_recursive_walk_finds_pdfs_in_nested_folders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A folder with nested per-lead subdirs (the shape of the
+    operator's Drive ZIP) must yield every PDF — ``rglob`` form."""
+    lead_a = tmp_path / "Lead A"
+    lead_b = tmp_path / "Lead B" / "statements"
+    lead_a.mkdir(parents=True)
+    lead_b.mkdir(parents=True)
+    _make_pdf_file(lead_a, "chase-jan.pdf", b"lead-a-jan")
+    _make_pdf_file(lead_a, "chase-feb.pdf", b"lead-a-feb")
+    _make_pdf_file(lead_b, "boa-jan.pdf", b"lead-b-jan")
+
+    _patch_detectors(
+        monkeypatch,
+        {
+            "chase-jan.pdf": _FakeForensicConfig(first_page_text="JPMorgan Chase"),
+            "chase-feb.pdf": _FakeForensicConfig(first_page_text="Chase business"),
+            "boa-jan.pdf": _FakeForensicConfig(first_page_text="Bank of America"),
+        },
+    )
+
+    pdfs = ingest._find_pdf_files(tmp_path)
+    assert len(pdfs) == 3
+    assert {p.name for p in pdfs} == {"chase-jan.pdf", "chase-feb.pdf", "boa-jan.pdf"}
+
+    corpus = ingest.InMemoryCorpusRepository()
+    bank = InMemoryBankLayoutRepository()
+    audit = InMemoryAuditLog()
+    _, summary = ingest.ingest_folder(
+        tmp_path,
+        corpus_repo=corpus,
+        bank_repo=bank,
+        audit=audit,
+        apply=True,
+    )
+    assert summary.files_ingested == 3
+    # Per-bank breakdown captured.
+    assert summary.bank_counts["JPMorgan Chase Bank, N.A."] == 2
+    assert summary.bank_counts["Bank of America, N.A."] == 1
+
+
+def test_zip_extraction_exercises_existing_folder_walk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """End-to-end ``--zip`` path: the script extracts the archive to a
+    tempdir, walks recursively, ingests via the in-memory repos
+    (dry-run), and the extracted tempdir is gone after main() returns.
+
+    The PDFs live under nested folders inside the archive — proves the
+    extracted tree is walked recursively, same as the ``--folder``
+    code path.
+    """
+    zip_path = tmp_path / "leads.zip"
+    _make_zip(
+        zip_path,
+        {
+            "Lead A/chase-jan.pdf": b"zip-chase-jan",
+            "Lead A/chase-feb.pdf": b"zip-chase-feb",
+            "Lead B/statements/boa-jan.pdf": b"zip-boa-jan",
+        },
+    )
+
+    _patch_detectors(
+        monkeypatch,
+        {
+            "chase-jan.pdf": _FakeForensicConfig(first_page_text="JPMorgan Chase"),
+            "chase-feb.pdf": _FakeForensicConfig(first_page_text="Chase business"),
+            "boa-jan.pdf": _FakeForensicConfig(first_page_text="Bank of America"),
+        },
+    )
+
+    # Spy on _find_pdf_files to confirm the walk root is a tempdir, not
+    # the zip path itself, and that the same recursive walker is reused.
+    observed_roots: list[Path] = []
+    real_find = ingest._find_pdf_files
+
+    def spy_find(root: Path) -> list[Path]:
+        observed_roots.append(root)
+        return real_find(root)
+
+    monkeypatch.setattr(ingest, "_find_pdf_files", spy_find)
+
+    exit_code = ingest.main(["--zip", str(zip_path)])
+    assert exit_code == ingest.EXIT_OK
+
+    # Exactly one walk root, and it was NOT the zip path nor the
+    # operator-supplied tmp_path — it was a private tempdir.
+    assert len(observed_roots) == 1
+    extracted_root = observed_roots[0]
+    assert extracted_root != zip_path
+    assert extracted_root != tmp_path
+    # The tempdir was cleaned up when main() returned.
+    assert not extracted_root.exists(), (
+        f"zip-extraction tempdir should be removed after main(); still exists: {extracted_root}"
+    )
+
+    # Streamed progress lines (3 files) plus the trailing banner.
+    out = capsys.readouterr().out
+    assert "[1/3]" in out
+    assert "[3/3]" in out
+    assert "Banks detected:" in out
+    assert "JPMorgan Chase Bank, N.A." in out
+    assert "Bank of America, N.A." in out
+
+
+def test_argparse_requires_one_of_folder_or_zip(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The mutually-exclusive group is required — neither flag → SystemExit."""
+    with pytest.raises(SystemExit):
+        ingest.main([])
+    err = capsys.readouterr().err
+    assert "--folder" in err
+    assert "--zip" in err
+
+
+def test_argparse_rejects_both_folder_and_zip(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Passing both --folder and --zip must error out."""
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    zip_path = tmp_path / "x.zip"
+    _make_zip(zip_path, {"a.pdf": b"x"})
+    with pytest.raises(SystemExit):
+        ingest.main(["--folder", str(folder), "--zip", str(zip_path)])
+    err = capsys.readouterr().err
+    assert "not allowed with argument" in err or "argument --zip" in err
+
+
+def test_zip_missing_file_returns_caller_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A --zip pointing at a nonexistent file → EXIT_CALLER_ERROR."""
+    missing = tmp_path / "nope.zip"
+    exit_code = ingest.main(["--zip", str(missing)])
+    assert exit_code == ingest.EXIT_CALLER_ERROR
+    assert "zip file not found" in capsys.readouterr().err
+
+
+def test_zip_not_a_zip_returns_caller_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A --zip pointing at a non-zip file → EXIT_CALLER_ERROR."""
+    fake = tmp_path / "not-a-zip.zip"
+    fake.write_bytes(b"this is not a zip archive")
+    exit_code = ingest.main(["--zip", str(fake)])
+    assert exit_code == ingest.EXIT_CALLER_ERROR
+    assert "not a valid zip archive" in capsys.readouterr().err
+
+
+def test_render_progress_line_format() -> None:
+    """The progress line follows ``[N/total] {file} — bank: X — clean/fraud``."""
+    ok_clean = ingest.IngestResult(
+        file_path="/x/chase.pdf",
+        file_hash="a" * 64,
+        bank_name="JPMorgan Chase Bank, N.A.",
+        page_count=5,
+        fraud_signals_fired=False,
+        has_font_inconsistency=False,
+        has_text_overlay=False,
+        has_creator_mismatch=False,
+        hint_updated=True,
+        fingerprint_added=True,
+        action="ingested",
+    )
+    line = ingest.render_progress_line(ok_clean, index=1, total=3)
+    assert line == "[1/3] chase.pdf — bank: JPMorgan Chase Bank, N.A. — clean"
+
+    fraud = ingest.IngestResult(
+        file_path="/x/td.pdf",
+        file_hash="b" * 64,
+        bank_name="TD Bank, N.A.",
+        page_count=4,
+        fraud_signals_fired=True,
+        has_font_inconsistency=False,
+        has_text_overlay=True,
+        has_creator_mismatch=False,
+        hint_updated=False,
+        fingerprint_added=False,
+        action="ingested",
+    )
+    assert (
+        ingest.render_progress_line(fraud, index=2, total=3)
+        == "[2/3] td.pdf — bank: TD Bank, N.A. — fraud"
+    )
+
+    skip = ingest.IngestResult(
+        file_path="/x/dup.pdf",
+        file_hash="c" * 64,
+        bank_name=None,
+        page_count=0,
+        fraud_signals_fired=False,
+        has_font_inconsistency=False,
+        has_text_overlay=False,
+        has_creator_mismatch=False,
+        hint_updated=False,
+        fingerprint_added=False,
+        action="dedup_skip",
+    )
+    assert (
+        ingest.render_progress_line(skip, index=3, total=3)
+        == "[3/3] dup.pdf — bank: unknown — skip (dedup)"
+    )
