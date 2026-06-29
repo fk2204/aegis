@@ -254,6 +254,23 @@
         <a class="btn{% if intake_docs_uploaded == 0 %} primary{% endif %}" href="/ui/upload">Upload statements</a>
         <a class="btn" href="/ui/merchants/{{ merchant.id }}/edit">Edit</a>
       </div>
+      {# Phase 2 / item 3.6 — product-aware document guidance. Renders
+         immediately below the upload button so the operator sees what
+         to upload for the specific Commera lending product on this
+         merchant (migration 080 ``product_type``). The .get() fallback
+         keeps legacy rows / typos / pre-080 merchants on a safe
+         baseline string rather than a missing render. Allow list +
+         labels are the canonical ones in ``aegis.product_types``. #}
+      <p class="doc-guidance" data-test-id="doc-guidance">
+        {% set doc_guidance = {
+          'revenue_based':  'Upload 3-6 months of business bank statements. Processor statements (Stripe/Square/Toast) optional but helpful.',
+          'business_loan':  'Upload 3-6 months bank statements + 2 years business tax returns (1120/1120-S/1065/Schedule C) + current P&L.',
+          'line_of_credit': 'Upload 3-6 months bank statements + 2 years business tax returns.',
+          'equipment':      'Upload 3-6 months bank statements + equipment quote or invoice with make/model/serial/price.',
+          'asset_based':    'Upload 3-6 months bank statements + A/R aging report (Excel or PDF) + accounts receivable list.',
+          'receivables':    'Upload 3-6 months bank statements + invoice copies + A/R aging report showing customer payment history.',
+        } %}{{ doc_guidance.get(merchant.product_type, 'Upload bank statements to begin.') }}
+      </p>
     </div>
   </div>
 {% endif %}
