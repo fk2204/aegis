@@ -785,6 +785,46 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='probe_review_verdicts'"
     ),
+    "093_tax_returns.sql": (
+        # 093 — tax_returns table for 1120 / 1120-S / 1065 / Schedule C
+        # extracted figures. Surfaced on the dossier as the Tax Return
+        # Summary section. Probe the table directly.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='tax_returns'"
+    ),
+    "094_ar_aging_reports.sql": (
+        # 094 — ar_aging_reports table for ABL / factoring product
+        # screens. Stores aging buckets + top-debtor concentration.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='ar_aging_reports'"
+    ),
+    "095_merchants_equipment_details.sql": (
+        # 095 — merchants.equipment_details JSONB column. Holds the
+        # most-recent equipment-invoice / quote extraction.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='merchants' AND column_name='equipment_details'"
+    ),
+    "096_funders_guidelines_data.sql": (
+        # 096 — funders.guidelines_data JSONB + guidelines_uploaded_at.
+        # Bedrock-extracted underwriting criteria from an uploaded
+        # guidelines PDF. Probe the JSONB column.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='funders' AND column_name='guidelines_data'"
+    ),
+    "097_corpus_documents.sql": (
+        # 097 — corpus_documents table for the training-corpus
+        # ingestion script. Deliberately isolated (no FK to live
+        # tables).
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='corpus_documents'"
+    ),
+    "098_override_outcome_links.sql": (
+        # 098 — override_outcome_links junction table. Connects an
+        # operator override to a recorded deal outcome for the
+        # flywheel summary at /ui/overrides/summary.
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='override_outcome_links'"
+    ),
 }
 
 
