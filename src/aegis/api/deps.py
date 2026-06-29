@@ -108,6 +108,11 @@ from aegis.pdf_store import (
     PdfStoreRepository,
     SupabasePdfStoreRepository,
 )
+from aegis.probe_review import (
+    InMemoryProbeReviewRepository,
+    ProbeReviewRepository,
+    SupabaseProbeReviewRepository,
+)
 from aegis.scoring.ofac import OFACClient
 from aegis.scoring_v2.shadow_disagreements import (
     InMemoryScoringDisagreementRepository,
@@ -440,6 +445,23 @@ def get_schema_migrations_reader() -> SchemaMigrationsReader:
 
 
 @lru_cache(maxsize=1)
+def get_probe_review_repository() -> ProbeReviewRepository:
+    """Process-wide ProbeReviewRepository (item 3.8 — migration 091).
+
+    Persists operator verdicts on shadow-probe disagreements. Powers
+    the ``/ui/admin/text-layer-probe-review`` operator validation UI:
+    every ``[SHADOW] text_layer_probe_v2_disagrees`` flag on a
+    document needs a human verdict before the probe can flip from
+    shadow to live.
+
+    Same memory / supabase toggle as the other repositories.
+    """
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryProbeReviewRepository()
+    return SupabaseProbeReviewRepository()
+
+
+@lru_cache(maxsize=1)
 def get_webhook_circuit() -> WebhookCircuit:
     """Process-wide Close webhook circuit breaker.
 
@@ -476,6 +498,7 @@ def reset_dependency_caches() -> None:
     get_deal_assignment_repository.cache_clear()
     get_notification_repository.cache_clear()
     get_schema_migrations_reader.cache_clear()
+    get_probe_review_repository.cache_clear()
     get_llm.cache_clear()
     get_llm_cost_repository.cache_clear()
     get_ofac_client.cache_clear()
@@ -503,6 +526,7 @@ __all__ = [
     "get_operator_repository",
     "get_override_repository",
     "get_pdf_store_repository",
+    "get_probe_review_repository",
     "get_processor_statement_repository",
     "get_renewal_attestation_repository",
     "get_repository",

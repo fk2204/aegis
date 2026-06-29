@@ -71,6 +71,7 @@ from aegis.web._templates import templates
 # APIRouter()`` (no prefix; the aggregator below carries ``/ui``) and is
 # wired in via ``include_router`` below.
 from aegis.web.routers import admin as _admin_routes
+from aegis.web.routers import admin_probe_review as _admin_probe_review_routes
 from aegis.web.routers import bank_coverage as _bank_coverage_routes
 from aegis.web.routers import bank_coverage_reparse as _bank_coverage_reparse_routes
 from aegis.web.routers import bank_layouts as _bank_layouts_routes
@@ -135,6 +136,7 @@ router = APIRouter(
 )
 
 router.include_router(_admin_routes.router)
+router.include_router(_admin_probe_review_routes.router)
 router.include_router(_bank_coverage_routes.router)
 router.include_router(_bank_coverage_reparse_routes.router)
 router.include_router(_bank_layouts_routes.router)

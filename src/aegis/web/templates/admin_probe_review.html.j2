@@ -1,0 +1,169 @@
+{% extends "base.html.j2" %}
+{% set active = 'Admin' %}
+{% block title %}Text-layer probe v2 review — AEGIS{% endblock %}
+
+{# Operator validation UI for the text_layer_probe_v2 shadow detector
+   (item 3.8 / docs/AEGIS_COMPLETE_BUILD_PLAN.md).
+
+   The page surfaces every document carrying a
+   ``[SHADOW] text_layer_probe_v2_disagrees`` flag the requesting
+   operator has not yet adjudicated. Each row carries the bank name,
+   page count, v1 and v2 routing decisions, and the original filename.
+   Two buttons per row let the operator say "v2 was right" or "v1 was
+   right" — both POST to the verdict endpoint via HTMX and remove the
+   row from the table.
+
+   When the verdict counts cross the corpus threshold
+   (v2_correct >= ``banner_v2_floor`` AND v1_correct <= ``banner_v1_ceil``)
+   the "ready to flip" banner renders with a single button that POSTs
+   to the flip-to-live stub — the stub returns 202 + instructions; the
+   actual probe flip is an out-of-band ops action.
+
+   Surface contract: route populates
+     * ``rows``                  list[DisagreementRow]
+     * ``counts``                dict {v2_correct, v1_correct}
+     * ``banner_ready``          bool
+     * ``banner_v2_floor`` / ``banner_v1_ceil``  int thresholds
+     * ``probe_name``            str (today: text_layer_probe_v2)
+#}
+
+{% block deck %}
+{% set title = "Text-layer probe v2 review" %}
+{% set subtitle = "· operator validation" %}
+{% set meta %}
+  {{ rows|length }} unreviewed disagreement{{ '' if rows|length == 1 else 's' }}
+{% endset %}
+{% set actions = [
+    {"label": "Audit log", "href": "/ui/admin/audit-log?action=probe_review"},
+    {"label": "Admin home", "href": "/ui/admin/health"},
+] %}
+{% include "_page_header.html.j2" %}
+{% endblock %}
+
+{% block body %}
+<section class="body cols-1">
+
+  <div>
+    <div class="empty" role="note" style="margin-bottom:1rem">
+      <strong>Shadow probe corpus validation — admin only.</strong>
+      <span class="copy">
+        Each row is a document where the stricter v2 text-layer probe
+        would have routed the parse differently than the live probe.
+        Live routing was unaffected — the [SHADOW] flag is logged so the
+        new probe can be adjudicated. Click a verdict to record your
+        call. After {{ banner_v2_floor }} <code>v2 correct</code> verdicts
+        (and ≤ {{ banner_v1_ceil }} <code>v1 correct</code>), the banner
+        unlocks and the probe can be flipped via the env-var change in
+        <code>/etc/aegis/aegis.env</code>.
+      </span>
+    </div>
+
+    {# Verdict counter strip — always shown, regardless of banner state.
+       The operator wants to see "how close are we" before the threshold
+       trips. The two pills are independent counters; the banner below
+       gates the flip button on the AND. #}
+    <div class="meta-row" data-test-id="probe-review-counts">
+      <span class="chip chip--positive">
+        v2 correct: <strong>{{ counts.v2_correct }}</strong>
+        / target {{ banner_v2_floor }}
+      </span>
+      <span class="chip chip--neutral">
+        v1 correct: <strong>{{ counts.v1_correct }}</strong>
+        / cap {{ banner_v1_ceil }}
+      </span>
+    </div>
+
+    {% if banner_ready %}
+      <div class="banner banner--ready" data-test-id="probe-review-flip-banner"
+           style="margin:1rem 0; padding:1rem; border:2px solid var(--accent, #0a8); border-radius:8px;">
+        <h3 style="margin:0 0 .5rem">Ready to flip — request operator confirmation</h3>
+        <p class="copy" style="margin:0 0 .75rem">
+          Verdict counts cross the corpus threshold. Click below to log
+          your intent to flip the probe to live. The flip itself is a
+          config change on the Hetzner box (env-var edit +
+          <code>systemctl restart aegis-web</code>); the button records
+          the request, it does not mutate the box.
+        </p>
+        <button type="button"
+                hx-post="/ui/admin/text-layer-probe-review/flip-to-live"
+                hx-target="#probe-review-flip-result"
+                hx-swap="innerHTML"
+                class="btn btn--primary"
+                data-test-id="probe-review-flip-button">
+          Request flip to live
+        </button>
+        <div id="probe-review-flip-result" style="margin-top:.75rem" role="status"></div>
+      </div>
+    {% endif %}
+
+    <header class="sect-head">
+      <h2>Unreviewed disagreements</h2>
+      <div class="rule"></div>
+      <div class="meta">n = {{ rows|length }} row{{ '' if rows|length == 1 else 's' }}</div>
+    </header>
+
+    {% if not rows %}
+      <div class="empty" data-test-id="probe-review-empty">
+        No unreviewed disagreements
+        <span class="copy">
+          Either every disagreement in the trailing scan window has
+          already been adjudicated by you, or the new probe agrees with
+          the live probe across the corpus. Re-check after the next
+          batch of parses lands.
+        </span>
+      </div>
+    {% else %}
+      <table class="queue" data-test-id="probe-review-table">
+        <thead>
+          <tr>
+            <th>Bank</th>
+            <th>Page count</th>
+            <th>v1 (live)</th>
+            <th>v2 (shadow)</th>
+            <th>PDF filename</th>
+            <th>Verdict</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr id="probe-row-{{ r.document_id }}"
+                data-test-id="probe-review-row"
+                data-document-id="{{ r.document_id }}">
+              <td>{{ r.bank_name }}</td>
+              <td class="mono-cell">
+                {% if r.page_count %}{{ r.page_count }}{% else %}—{% endif %}
+              </td>
+              <td>{{ r.v1_decision }}</td>
+              <td>{{ r.v2_decision }}</td>
+              <td class="mono-cell" title="{{ r.flag_detail }}">
+                {{ r.original_filename }}
+              </td>
+              <td>
+                <button type="button"
+                        hx-post="/ui/admin/text-layer-probe-review/{{ r.document_id }}/verdict"
+                        hx-vals='{"verdict": "v2_correct"}'
+                        hx-target="#probe-row-{{ r.document_id }}"
+                        hx-swap="outerHTML"
+                        class="btn btn--positive"
+                        data-test-id="probe-review-verdict-v2">
+                  v2 correct
+                </button>
+                <button type="button"
+                        hx-post="/ui/admin/text-layer-probe-review/{{ r.document_id }}/verdict"
+                        hx-vals='{"verdict": "v1_correct"}'
+                        hx-target="#probe-row-{{ r.document_id }}"
+                        hx-swap="outerHTML"
+                        class="btn btn--neutral"
+                        data-test-id="probe-review-verdict-v1">
+                  v1 correct
+                </button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+</section>
+{% endblock %}
