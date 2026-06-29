@@ -825,6 +825,14 @@ MIGRATION_PROBES: dict[str, str] = {
         "SELECT 1 FROM information_schema.tables "
         "WHERE table_schema='public' AND table_name='override_outcome_links'"
     ),
+    "099_merchants_sec1071_fields.sql": (
+        # 099 — §1071 demographic data collection columns on merchants
+        # (CFPB Subpart B §1002.107). Probe one of the new columns —
+        # all 7 land together so testing the timestamp column is
+        # representative.
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='merchants' AND column_name='sec1071_collected_at'"
+    ),
 }
 
 
