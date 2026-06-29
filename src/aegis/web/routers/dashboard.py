@@ -1294,6 +1294,74 @@ def _enrich_attention_card_with_tier(
     return replace(card, tier=tier)
 
 
+def _group_review_cards_by_merchant(
+    cards: list[ReviewQueueCard],
+) -> list[dict[str, Any]]:
+    """Collapse per-document cards into one card per merchant.
+
+    Operators reported the review queue showing N rows for the same
+    merchant (e.g. Rendezvous appeared 3 times when 3 of its statements
+    were in manual_review). Group by ``merchant_id`` and aggregate:
+    doc count, worst fraud score across the group, union of decline
+    flags, the freshest upload time, the up-to-3 docs to render as a
+    nested list, and the leftover ``+N more`` overflow.
+
+    Returns a list of dicts (NOT a new dataclass) so the template can
+    consume the same field names regardless of whether grouping is on.
+    """
+    from collections import OrderedDict
+
+    by_merchant: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    for card in cards:
+        # Use the document_id as a stable bucket key for docs without
+        # a merchant (rare; bearer-uploaded scans). One-card-per-doc
+        # behavior preserved for those.
+        key = card.merchant_id or f"_doc_{card.document_id}"
+        if key not in by_merchant:
+            by_merchant[key] = {
+                "merchant_id": card.merchant_id,
+                "merchant_label": card.merchant_label,
+                "merchant_state": card.merchant_state,
+                "merchant_naics": card.merchant_naics,
+                "requested_amount": card.requested_amount,
+                "tier": card.tier,
+                "merchant_status": card.merchant_status,
+                "docs": [],
+                "fraud_score": card.fraud_score,
+                "fraud_band": card.fraud_band,
+                "flags": card.flags,
+            }
+        bucket = by_merchant[key]
+        bucket["docs"].append(
+            {
+                "document_id": card.document_id,
+                "filename": card.filename,
+                "uploaded_at": card.uploaded_at,
+                "fraud_score": card.fraud_score,
+                "fraud_band": card.fraud_band,
+            }
+        )
+        # Worst fraud score across the merchant's docs in the queue.
+        if card.fraud_score is not None:
+            current = bucket["fraud_score"]
+            if current is None or card.fraud_score > current:
+                bucket["fraud_score"] = card.fraud_score
+                bucket["fraud_band"] = card.fraud_band
+
+    grouped: list[dict[str, Any]] = []
+    for bucket in by_merchant.values():
+        docs_list = bucket["docs"]
+        bucket["doc_count"] = len(docs_list)
+        bucket["docs_visible"] = docs_list[:3]
+        bucket["docs_more"] = max(0, len(docs_list) - 3)
+        # Freshest upload — keep the pre-formatted string as-is; the
+        # uploaded_at strings sort lexicographically because of the
+        # YYYY-MM-DD HH:MM shape.
+        bucket["latest_upload"] = max((d["uploaded_at"] for d in docs_list), default="")
+        grouped.append(bucket)
+    return grouped
+
+
 def _build_review_queue_cards(
     documents: list[DocumentRow],
     merchants_repo: MerchantRepository,
@@ -1413,11 +1481,18 @@ async def review_queue(
     for _d in review_docs:
         _d.all_flags = _review_flags.get(_d.id, [])
     cards = _build_review_queue_cards(review_docs, merchants, docs, ofac)
+    grouped_cards = _group_review_cards_by_merchant(cards)
     return templates.TemplateResponse(
         request,
         "review.html.j2",
         {
+            # Per-doc cards retained for any consumer still using the
+            # legacy shape (and for the at-cap banner count).
             "cards": cards,
+            # 2026-06-29 — grouped one-card-per-merchant view. Template
+            # iterates this list; each item carries doc_count + a
+            # 3-doc preview + the overflow "+N more" count.
+            "grouped_cards": grouped_cards,
             "category_labels": CATEGORY_LABELS,
             "queue_capacity": _REVIEW_QUEUE_DISPLAY_CAP,
         },

@@ -10,7 +10,7 @@
    string under Jinja autoescape. #}
 {% set title = "Review" %}
 {% set subtitle = "· manual queue" %}
-{% set meta %}{{ cards|length }} document{{ '' if cards|length == 1 else 's' }} &nbsp;·&nbsp; parse_status = manual_review{% if cards|length >= queue_capacity %} &nbsp;·&nbsp;<span style="color:var(--decline)">at display cap ({{ queue_capacity }}) — drain before reviewing further</span>{% endif %}{% endset %}
+{% set meta %}{{ grouped_cards|length }} merchant{{ '' if grouped_cards|length == 1 else 's' }} &nbsp;·&nbsp; {{ cards|length }} document{{ '' if cards|length == 1 else 's' }} &nbsp;·&nbsp; parse_status = manual_review{% if cards|length >= queue_capacity %} &nbsp;·&nbsp;<span style="color:var(--decline)">at display cap ({{ queue_capacity }}) — drain before reviewing further</span>{% endif %}{% endset %}
 {% set actions = [{"label": "+ Re-upload", "href": "/ui/upload", "variant": "primary"}] %}
 {% include "_page_header.html.j2" %}
 {% endblock %}
@@ -18,15 +18,22 @@
 {% block body %}
 <section class="body cols-1">
   <div>
-    {% if not cards %}
+    {% if not grouped_cards %}
       <div class="empty">Nothing needs review. All statements parsed cleanly.</div>
     {% else %}
-      <div class="attention-cards">
-        {% for c in cards %}
-          <article class="attention-card band-{{ c.fraud_band }}">
+      {# 2026-06-29 — review queue grouped by merchant. One card per
+         merchant carrying the doc count + 3-doc preview. Operator
+         clicks the merchant title to drill into the dossier; the doc
+         links drop into the per-document detail page. #}
+      <div class="attention-cards" data-test-id="review-grouped-cards">
+        {% for c in grouped_cards %}
+          <article class="attention-card band-{{ c.fraud_band }}" data-test-id="review-merchant-card">
             <header class="card-head">
               <div class="card-title">
                 {% if c.merchant_id %}<a href="/ui/merchants/{{ c.merchant_id }}">{{ c.merchant_label }}</a>{% else %}<span class="card-title-text">{{ c.merchant_label }}</span>{% endif %}
+                {% if c.doc_count > 1 %}
+                  <span class="doc-count-badge" data-test-id="review-doc-count-badge">{{ c.doc_count }} statements</span>
+                {% endif %}
                 <span class="card-sub">
                   {% if c.merchant_state %}{{ c.merchant_state }}{% endif %}{% if c.merchant_naics %} · {{ c.merchant_naics }}{% endif %}{% if c.requested_amount %} · Requested ${{ c.requested_amount }}{% endif %}
                 </span>
@@ -34,20 +41,12 @@
               <div class="card-meta">
                 <div class="card-score {% if c.fraud_band == 'decline' %}bad{% elif c.fraud_band == 'review' %}warn{% elif c.fraud_band == 'clear' %}calm{% endif %}">
                   {% if c.fraud_score is number %}{{ c.fraud_score }}<span class="of">/100</span>{% else %}—{% endif %}
-                  <span class="card-score-label">fraud</span>
+                  <span class="card-score-label">worst fraud</span>
                 </div>
-                {# Wave 2.8 — _tier_badge replaces the inline card-tier
-                   span. Same computed markup (.card-tier.tier-X with
-                   inner .card-tier-label) so card-meta styling is
-                   unchanged. #}
                 {% with tier = c.tier %}{% include "_tier_badge.html.j2" %}{% endwith %}
               </div>
             </header>
 
-            {# Decline-class signals row — ALWAYS present so workers see
-               at a glance whether the document carries a dealbreaker.
-               Empty state renders muted "(none)" — quiet confirmation
-               rather than missing data. #}
             <div class="card-decline-row {% if c.flags.decline_class %}is-active{% else %}is-empty{% endif %}">
               {% if c.flags.decline_class %}
                 <div class="card-section-head card-section-head-decline">Decline-class · {{ c.flags.decline_class|length }}</div>
@@ -59,8 +58,6 @@
               {% endif %}
             </div>
 
-            {# Category groups in fixed display order — only non-empty
-               categories render. #}
             {% for category_name, category_flags in c.flags.by_category.items() %}
               <div class="card-category">
                 <div class="card-section-head">{{ category_labels.get(category_name, category_name) }}</div>
@@ -70,19 +67,22 @@
               </div>
             {% endfor %}
 
-            {# Document footer — one row, action link drills into the
-               per-document detail page. Filename surfaced so the
-               operator can recognize the upload against their own
-               naming. #}
             <div class="card-docs-section">
-              <div class="card-section-head">Document</div>
+              <div class="card-section-head">Documents · {{ c.doc_count }}</div>
               <ul class="card-docs">
-                <li class="card-doc card-doc-review">
-                  <span class="doc-id">doc · {{ c.document_id[:8] }}</span>
-                  <span class="doc-filename">{{ c.filename }}</span>
-                  <span class="doc-uploaded">{{ c.uploaded_at }}</span>
-                  <a class="doc-review" href="/ui/documents/{{ c.document_id }}">open document ↗</a>
-                </li>
+                {% for doc in c.docs_visible %}
+                  <li class="card-doc card-doc-review">
+                    <span class="doc-id">doc · {{ doc.document_id[:8] }}</span>
+                    <span class="doc-filename">{{ doc.filename }}</span>
+                    <span class="doc-uploaded">{{ doc.uploaded_at }}</span>
+                    <a class="doc-review" href="/ui/documents/{{ doc.document_id }}">open document ↗</a>
+                  </li>
+                {% endfor %}
+                {% if c.docs_more > 0 %}
+                  <li class="card-doc card-doc-more">
+                    <span class="more-docs">+{{ c.docs_more }} more — open merchant dossier to see all</span>
+                  </li>
+                {% endif %}
               </ul>
             </div>
           </article>
