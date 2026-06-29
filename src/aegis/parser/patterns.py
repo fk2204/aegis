@@ -2596,6 +2596,76 @@ _INSOLVENT_PAYMENT_LOAD_RATIO: Final[Decimal] = Decimal("1.5")
 _REVENUE_DIVERGENCE_THRESHOLD: Final[Decimal] = Decimal("0.40")
 
 
+# ----------------------------------------------------------------------
+# TCPA litigant detector — instant decline.
+# ----------------------------------------------------------------------
+#
+# The TCPA (Telephone Consumer Protection Act, 47 USC §227) is the
+# vehicle serial plaintiffs use to manufacture lawsuits against MCA
+# brokers and funders for unsolicited phone / SMS contact. The known
+# litigants below have filed dozens of TCPA suits in federal court;
+# accepting a deal from one of them — even a clean one on paper — is
+# guaranteed to attract a TCPA filing the moment the broker dials.
+#
+# Detection is filename-style substring matching on the business and
+# owner names. Severity 100 because there is no underwriting analysis
+# that overrides this — the deal is operationally unfundable regardless
+# of cashflow, FICO, or TIB. Operators sometimes pre-flag the lead by
+# putting "TCPA LITIGATOR" verbatim in the business name; the
+# `litigator` keyword path catches that.
+
+_KNOWN_TCPA_LITIGANTS: Final[frozenset[str]] = frozenset(
+    {
+        "brandon callier",
+        "john w simons",
+        "mark w davis",
+    }
+)
+
+
+def detect_tcpa_litigant(
+    business_name: str | None,
+    owner_name: str | None,
+) -> Pattern | None:
+    """Return a Pattern when the merchant is a known TCPA serial plaintiff.
+
+    Two trigger conditions:
+
+    * ``business_name`` contains the literal token ``litigator`` (lower-
+      cased substring). Operators sometimes pre-flag the lead by
+      typing ``TCPA LITIGATOR`` into the business-name field.
+    * ``owner_name`` matches a known TCPA serial litigant (see
+      ``_KNOWN_TCPA_LITIGANTS``). Substring match on the lower-cased
+      owner string so variations like ``Brandon J. Callier`` /
+      ``Mr. Callier, Brandon`` still fire.
+
+    Severity 100 — instant decline; no underwriting context overrides.
+    Returns ``None`` when neither trigger fires OR both inputs are
+    missing.
+    """
+    b = (business_name or "").lower()
+    o = (owner_name or "").lower()
+    if "litigator" in b:
+        return Pattern(
+            code="tcpa_litigant_suspected",
+            severity=100,
+            detail=(
+                "Business name contains 'litigator' — likely TCPA serial "
+                "plaintiff. Immediate decline."
+            ),
+        )
+    for name in _KNOWN_TCPA_LITIGANTS:
+        if name in o:
+            return Pattern(
+                code="tcpa_litigant_known",
+                severity=100,
+                detail=(
+                    f"Owner matches known TCPA serial litigant: {owner_name}. Immediate decline."
+                ),
+            )
+    return None
+
+
 def detect_impossible_payment_load(
     merchant: MerchantRow,
     true_revenue_monthly: Decimal,
