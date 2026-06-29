@@ -2,7 +2,12 @@
 
 Everything queued. All 70 items across 12 sections. Phased for execution.
 
-**Status as of 2026-06-28:** Phase 1 in flight. Sections 2-12 queued.
+**Live as of 2026-06-29 evening.** 10-funder catalog (post-cleanup),
+migration 099 §1071 columns applied, dashboard parallelized (asyncio.gather
++ to_thread, ~5s warm), local-folder funder sync (`scripts/sync_funders_from_folder.py`),
+§1071 dossier collection panel shipping for loan / line-of-credit products.
+
+**Status as of 2026-06-28 (historical):** Phase 1 in flight. Sections 2-12 queued.
 
 ---
 
@@ -607,9 +612,22 @@ Let operator choose the best fit before submitting.
 - INT 4 override flywheel auto-link in outcome write path (`11de13f`)
 - INT 5 funder note CTA + draft/submit/discard routes (`4491eaf`)
 
+**Newly DONE 2026-06-29 evening:**
+- 1.x dashboard performance — `asyncio.gather` + `to_thread` rewrite
+  shipped (`710b9a4`). Sequential helper calls parallelized.
+- 11.5 §1071 dossier collection panel — Pydantic mirror of the migration-
+  099 columns + collapsible dossier section for `product_type` in
+  (`business_loan`, `line_of_credit`). HTMX POST to
+  `/ui/merchants/{id}/sec1071` writes the seven §1071 columns and
+  stamps `sec1071_collected_at`.
+- 3.x merchant-list last-activity display — server-rendered
+  "today" / "yesterday" / "Nd ago" string replaces the inline
+  template branching that collapsed to "1d" for same-week uploads.
+- 8.x local-folder funder sync — `scripts/sync_funders_from_folder.py`
+  + `deploy/aegis-funder-sync*` timer; ingest_funder runs daily over
+  a watched folder of criteria PDFs.
+
 **Open (still queued):**
-- 1.x dashboard < 2s warm — was 23s, now 5s warm. Remaining cost is
-  sequential helper calls; needs `asyncio.gather`+`to_thread` rewrite.
 - 5.1-5.3, 5.5-5.6 — funder reply ingestion / weekly forensic review /
   SBA referral workflow expansion.
 - 6.4 FL SOS bulk download — Sunbiz returns 403 Forbidden, blocked
@@ -624,8 +642,6 @@ Let operator choose the best fit before submitting.
 - 10.1, 10.3-10.5 standby server (documented `f1ba8dd`), DB backup
   restore drill, SSL auto-renewal verification.
 - 11.x compliance state audits (40 states remaining).
-- 11.4 §1071 dossier panel — migration 099 SQL shipped (`b88fab5`);
-  panel ships when operator approves.
 - 12.2-12.5 receivables financing, merchant portal, multi-product
   comparison.
 
