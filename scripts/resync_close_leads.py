@@ -72,7 +72,7 @@ from aegis.close.client import CloseClient, CloseError
 from aegis.close.description_extractor import (
     extract_from_description,
 )
-from aegis.close.field_map import _parse_close_lead_description
+from aegis.close.field_map import _parse_close_lead_description, financial_diff
 from aegis.config import get_settings
 from aegis.logger import get_logger
 from aegis.merchants.models import MerchantRow
@@ -283,7 +283,7 @@ def _resync_one_merchant(
     financial = _parse_close_lead_description(description_str)
 
     if financial:
-        diff = _financial_diff(merchant, financial)
+        diff = financial_diff(merchant, financial)
         if apply_writes and diff:
             updated = merchant.model_copy(update=diff)
             merchants_repo.upsert(updated)
@@ -408,45 +408,9 @@ def _resync_one_merchant(
 
 
 # ----------------------------------------------------------------------
-# FINANCIAL-block diff — only land changed columns to avoid noisy
-# upserts when the merchant row already matches the parser output.
+# FINANCIAL-block diff helper moved to ``aegis.close.field_map`` so the
+# webhook description-change handler can share the same field surface.
 # ----------------------------------------------------------------------
-
-
-# Field names the FINANCIAL-block parser populates. Mirrors the keys in
-# ``_FINANCIAL_LABEL_TO_FIELD`` over in ``aegis.close.field_map``.
-_FINANCIAL_FIELDS: Final[tuple[str, ...]] = (
-    "requested_amount",
-    "use_of_funds",
-    "monthly_revenue",
-    "avg_monthly_cc_sales",
-    "stated_monthly_deposits",
-    "stated_mca_positions",
-    "stated_current_lenders",
-    "stated_mca_balance",
-    "stated_daily_payment",
-    "stated_bank",
-)
-
-
-def _financial_diff(merchant: MerchantRow, parsed: dict[str, Any]) -> dict[str, Any]:
-    """Return only the FINANCIAL fields whose parsed value differs from
-    the merchant row's current value.
-
-    A field absent from ``parsed`` is left untouched (the parser only
-    surfaces fields that appeared in the description block). Empty
-    list for ``stated_current_lenders`` IS a write — it represents
-    "operator removed the lenders" — when the existing value is non-empty.
-    """
-    diff: dict[str, Any] = {}
-    for field in _FINANCIAL_FIELDS:
-        if field not in parsed:
-            continue
-        new_value = parsed[field]
-        current = getattr(merchant, field, None)
-        if new_value != current:
-            diff[field] = new_value
-    return diff
 
 
 # ----------------------------------------------------------------------

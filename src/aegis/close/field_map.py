@@ -824,6 +824,51 @@ def _parse_close_lead_description(description: str | None) -> dict[str, Any]:
     return out
 
 
+# Field names the FINANCIAL-block parser populates. Mirrors the keys in
+# ``_FINANCIAL_LABEL_TO_FIELD`` above. Used by ``financial_diff`` to
+# decide which ``MerchantRow`` columns are eligible for refresh from the
+# parser output — never touch anything outside this tuple. Shared by the
+# webhook description-change handler and ``scripts/resync_close_leads.py``
+# so the surface stays in lock-step across both call sites.
+FINANCIAL_FIELDS: Final[tuple[str, ...]] = (
+    "requested_amount",
+    "use_of_funds",
+    "monthly_revenue",
+    "avg_monthly_cc_sales",
+    "stated_monthly_deposits",
+    "stated_mca_positions",
+    "stated_current_lenders",
+    "stated_mca_balance",
+    "stated_daily_payment",
+    "stated_bank",
+)
+
+
+def financial_diff(merchant: Any, parsed: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN401 — duck-typed MerchantRow to avoid circular import
+    """Return only the FINANCIAL fields whose parsed value differs from
+    the merchant row's current value.
+
+    A field absent from ``parsed`` is left untouched (the parser only
+    surfaces fields that appeared in the description block). Empty
+    list for ``stated_current_lenders`` IS a write — it represents
+    "operator removed the lenders" — when the existing value is non-empty.
+
+    Shared between the webhook description-change handler and
+    ``scripts/resync_close_leads.py`` so the field surface stays in
+    lock-step. ``merchant`` is duck-typed (``getattr`` only) to avoid an
+    ``aegis.merchants.models`` import in this leaf-level module.
+    """
+    diff: dict[str, Any] = {}
+    for field in FINANCIAL_FIELDS:
+        if field not in parsed:
+            continue
+        new_value = parsed[field]
+        current = getattr(merchant, field, None)
+        if new_value != current:
+            diff[field] = new_value
+    return diff
+
+
 def extract_lead_description(close_lead_payload: dict[str, Any]) -> str | None:
     """Pull the Close Lead ``description`` field.
 
@@ -961,12 +1006,14 @@ __all__ = [
     "CLOSE_INDUSTRY_TO_NAICS",
     "CLOSE_OPPORTUNITY_FIELD_IDS",
     "FICO_RANGE_LOWER_BOUND",
+    "FINANCIAL_FIELDS",
     "NON_STATEMENT_FILENAME_TERMS",
     "FieldMapError",
     "_parse_close_lead_description",
     "extract_lead_description",
     "filename_is_non_statement",
     "filename_matches_statement_filter",
+    "financial_diff",
     "get_custom_field",
     "industry_to_naics",
     "industry_to_naics_safe",

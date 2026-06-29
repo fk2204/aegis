@@ -61,6 +61,7 @@ from aegis.close.client import CloseClient, CloseError
 from aegis.close.field_map import (
     FieldMapError,
     _parse_close_lead_description,
+    financial_diff,
     get_custom_field,
     industry_to_naics_safe,
     normalize_entity_type_safe,
@@ -285,6 +286,20 @@ async def _process_after_receipt(
     await _handle_lead_qualified_opp_open(
         event=event,
         settings=settings,
+        close_client=close_client,
+        merchants=merchants,
+        audit=audit,
+    )
+
+    # Phase 2 / item 7.1 — Lead description change auto-syncs
+    # ``merchants.stated_*`` from the structured FINANCIAL block. Sibling
+    # to ``_handle_lead_qualified_opp_open`` above (same lead.updated
+    # dispatch entry, different changed_field). Only refreshes EXISTING
+    # merchants — the status-change handler is what creates merchants
+    # the first time. Bedrock description extractor is NOT invoked
+    # inline; latency + cost belong on the resync cron path.
+    _handle_lead_description_updated(
+        event=event,
         close_client=close_client,
         merchants=merchants,
         audit=audit,
@@ -1305,6 +1320,212 @@ async def _handle_lead_qualified_opp_open(
             "fields_populated_count": fields_populated_count,
             "event_id": event.get("id"),
             "trigger_status_id": settings.close_qualified_opp_open_status_id,
+        },
+    )
+
+
+# ----------------------------------------------------------------------
+# Phase 2 / item 7.1 — Lead description change auto-syncs stated_* fields
+# from the structured FINANCIAL block. Sibling to
+# ``_handle_lead_qualified_opp_open`` above: same dispatch entry
+# (lead.updated event), different changed_field (``description`` vs
+# ``status_id``).
+# ----------------------------------------------------------------------
+
+
+def _is_lead_description_change(event: dict[str, Any]) -> bool:
+    """True iff this event is a Close ``lead.updated`` whose
+    ``changed_fields`` contains ``description``.
+
+    Other lead.updated traffic (display_name edits, status_id changes,
+    custom-field edits) returns False — the dedicated qualified-opp-open
+    handler and the existing lead.updated context refresh own those.
+    """
+    if event.get("action") != "updated" or event.get("object_type") != "lead":
+        return False
+    changed_fields = event.get("changed_fields") or []
+    return "description" in changed_fields
+
+
+def _handle_lead_description_updated(
+    *,
+    event: dict[str, Any],
+    close_client: CloseClient,
+    merchants: MerchantRepository,
+    audit: AuditLog,
+) -> None:
+    """Auto-sync ``merchants.stated_*`` when a Close Lead's
+    ``description`` field changes.
+
+    Trigger contract:
+      * Event is ``lead.updated`` with ``description`` in
+        ``changed_fields``.
+      * Anything else returns silently — non-matching events are owned
+        by the sibling status-change handler / Pre-UW trigger / activity
+        handlers.
+
+    Effects when triggered:
+      1. Look up the merchant by ``close_lead_id``. If no merchant
+         exists, write ``close.webhook.description_change_skipped``
+         (reason=merchant_not_found) and return. Merchant creation is
+         owned by ``_handle_lead_qualified_opp_open`` (status-change
+         handler) — this sibling only refreshes existing rows.
+      2. Fetch the Lead via ``CloseClient.get_lead`` and run
+         ``_parse_close_lead_description`` on the description body. If
+         the parser returns an empty dict (no FINANCIAL block, e.g. the
+         description is a DEAL block or free-form text), write
+         ``close.webhook.description_change_skipped``
+         (reason=no_financial_block) and return. The description-parse
+         staging path (Bedrock fallback) is deliberately NOT invoked
+         inline — latency + cost belong on the resync cron path
+         (``scripts/resync_close_leads.py``).
+      3. Diff the parsed payload against the live ``merchant.stated_*``
+         values via ``financial_diff``. If the diff is empty (operator
+         edited description but the FINANCIAL block didn't change), write
+         ``close.webhook.description_change_no_op`` and return.
+      4. Otherwise, ``model_copy(update=diff)`` the merchant and upsert.
+         Write ``close.webhook.stated_fields_auto_synced`` with the
+         changed key set + field_count.
+
+    HMAC + timestamp freshness validation already ran upstream in
+    ``_verify_signature``; this handler trusts the caller. Audit-log
+    writes propagate any error per the project's "audit writes are
+    mandatory" rule. A Close API ``get_lead`` failure surfaces as an
+    audit row (best-effort: a transient Close 5xx must NOT 5xx the
+    webhook because Close retries the whole webhook for 72h — the
+    sibling status handler already covers the merchant create path).
+    """
+    if not _is_lead_description_change(event):
+        return
+
+    lead_id_raw = event.get("object_id") or event.get("lead_id")
+    if not isinstance(lead_id_raw, str) or not lead_id_raw:
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.description_change_skipped",
+            details={
+                "reason": "missing_lead_id",
+                "event_id": event.get("id"),
+            },
+        )
+        return
+    lead_id: str = lead_id_raw
+
+    try:
+        merchant = merchants.find_by_close_lead_id(lead_id)
+    except Exception:
+        _log.warning(
+            "close_webhook.description_merchant_lookup_failed lead_id=%s",
+            lead_id,
+            exc_info=True,
+        )
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.description_change_skipped",
+            details={
+                "reason": "merchant_lookup_failed",
+                "close_lead_id": lead_id,
+                "event_id": event.get("id"),
+            },
+        )
+        return
+
+    if merchant is None:
+        # The status-change sibling (``_handle_lead_qualified_opp_open``)
+        # is the merchant-creation path. A description edit on a lead
+        # without a merchant yet is a no-op here; the next status
+        # transition will create the row and pick up the FINANCIAL block
+        # at create-time via ``_lead_to_merchant_fields``.
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.description_change_skipped",
+            details={
+                "reason": "merchant_not_found",
+                "close_lead_id": lead_id,
+                "event_id": event.get("id"),
+            },
+        )
+        return
+
+    # Fetch the Lead. Best-effort: a Close API failure here MUST NOT
+    # 5xx the webhook — Close will redeliver, and the merchant already
+    # exists so the no-op safety net is the next delivery's refresh.
+    try:
+        lead = close_client.get_lead(lead_id)
+    except CloseError as exc:
+        _log.warning(
+            "close_webhook.description_get_lead_failed lead_id=%s error=%s",
+            lead_id,
+            type(exc).__name__,
+        )
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.description_change_skipped",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "reason": "close_get_lead_failed",
+                "close_lead_id": lead_id,
+                "event_id": event.get("id"),
+                "error": type(exc).__name__,
+                "message": str(exc)[:200],
+            },
+        )
+        return
+
+    raw_description = lead.get("description")
+    description_str = raw_description if isinstance(raw_description, str) else None
+    parsed = _parse_close_lead_description(description_str)
+
+    if not parsed:
+        # No FINANCIAL block in the description. The Bedrock description
+        # extractor is deliberately not invoked inline — that lives on
+        # the resync cron path so webhook hot-path latency + cost stay
+        # decoupled.
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.description_change_skipped",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "reason": "no_financial_block",
+                "close_lead_id": lead_id,
+                "event_id": event.get("id"),
+            },
+        )
+        return
+
+    diff = financial_diff(merchant, parsed)
+    if not diff:
+        # FINANCIAL block parsed but every value already matches the
+        # merchant row — operator edited the description but didn't
+        # change a stated field. Audit so the operator can see the
+        # webhook fired without any merchant-side change.
+        audit.record(
+            actor="close_webhook",
+            action="close.webhook.description_change_no_op",
+            subject_type="merchant",
+            subject_id=merchant.id,
+            details={
+                "close_lead_id": lead_id,
+                "event_id": event.get("id"),
+            },
+        )
+        return
+
+    updated = merchant.model_copy(update=diff)
+    merchants.upsert(updated)
+    audit.record(
+        actor="close_webhook",
+        action="close.webhook.stated_fields_auto_synced",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={
+            "close_lead_id": lead_id,
+            "merchant_id": str(merchant.id),
+            "event_id": event.get("id"),
+            "changed_keys": sorted(diff.keys()),
+            "field_count": len(diff),
         },
     )
 
