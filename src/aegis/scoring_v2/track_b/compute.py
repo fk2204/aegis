@@ -172,6 +172,24 @@ def compute_risk_band(
     # ── deterministic signals ──────────────────────────────────────
     period_days = compute_period_days(transactions_by_doc)
     monthly_revenue = compute_monthly_revenue(agg.revenue_total, period_days)
+    # FIX 5 (2026-06-29): floor monthly_revenue at 0 when outflows exceed
+    # inflows. Sub-zero true revenue can't drive offer sizing OR cashflow
+    # banding (every downstream multiplier assumes >= 0). The merchant
+    # gets a net_revenue_negative reason so the dossier surfaces the
+    # underlying signal — the underwriter sees "more outflows than
+    # inflows" instead of a silent zero.
+    net_revenue_negative_reason: FactorReason | None = None
+    if monthly_revenue < Decimal("0"):
+        net_revenue_negative_reason = FactorReason(
+            factor="net_revenue_negative",
+            severity="elevated",
+            detail=(
+                f"Bank statement shows more outflows than inflows "
+                f"(${monthly_revenue:,.0f}/mo net). Merchant may be "
+                f"underwater on current obligations."
+            ),
+        )
+        monthly_revenue = Decimal("0")
     adb, lowest, neg_days = compute_running_balance_stats(transactions_by_doc)
     nsf = compute_nsf_count(transactions_by_doc)
     mca = compute_mca_position_count(transactions_by_doc)
@@ -196,6 +214,13 @@ def compute_risk_band(
     reasons: list[FactorReason] = []
     severities: list[SignalSeverity] = []
     insufficient: list[str] = []
+
+    # FIX 5: surface the negative-net-revenue reason if it fired above.
+    # Severity 'elevated' = surfaces on the dossier but does not gate
+    # the deal — the underwriter reads the signal and decides.
+    if net_revenue_negative_reason is not None:
+        severities.append("elevated")
+        reasons.append(net_revenue_negative_reason)
 
     # Revenue is always computable (zero when no revenue rows).
     rev_sev = severity_for_monthly_revenue(monthly_revenue)
