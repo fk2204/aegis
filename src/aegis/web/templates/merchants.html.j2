@@ -85,7 +85,7 @@
               <td class="merchant">
                 <a href="/ui/merchants/{{ r.id }}">{{ r.business_name }}</a>
                 <span class="sub">
-                  {{ r.id|string|truncate(8, True, '') }}{% if r.owner_name %} · {{ r.owner_name }}{% endif %}{% if r.industry_naics %} · {{ r.industry_naics }}{% endif %}
+                  {{ r.id|string|truncate(8, True, '') }}{% if r.owner_name %} · {{ r.owner_name }}{% endif %}{% if r.industry_naics %} · {{ r.naics_name or r.industry_naics }}{% endif %}
                 </span>
               </td>
               <td class="mono-cell">{{ r.state }}</td>

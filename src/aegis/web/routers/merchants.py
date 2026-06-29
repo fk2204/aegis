@@ -339,6 +339,11 @@ async def list_merchants(
                 # but the field is still useful below the name.
                 "owner_name": m.owner_name,
                 "industry_naics": m.industry_naics,
+                # Friendly NAICS label resolved through ``_naics_name``
+                # (same helper the dossier uses — commit b7d5137).
+                # Template prefers ``naics_name`` over the raw code so
+                # "999999" surfaces as "Unclassified" etc.
+                "naics_name": _naics_name(m.industry_naics),
             }
         )
 
