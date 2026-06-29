@@ -567,4 +567,86 @@ Let operator choose the best fit before submitting.
 
 ---
 
-**Last updated:** 2026-06-28
+## COMPLETION STATUS — 2026-06-29
+
+**Phase 1 (DONE):** migrations 089 + 090 applied, OpenAI removed, slim
+`list_documents` shipped, dashboard layout — `today-cols` stretch.
+
+**Phase 2 (DONE):**
+- 3.1 today-cols stretch (`e538589`)
+- 3.4 NAICS in merchant list (`4ef3111`)
+- 3.5 pipeline offer sizing (`0664860`)
+- 3.6 product-aware doc upload guidance (`fd56d6c`)
+- 3.8 text-layer probe v2 review UI (`8bfb977`) — 0 verdicts so far
+- 4.1-4.4 verification stack (OFAC / bankruptcy / SOS / UCC) — shipped pre-session
+- 5.4 forensic shadow detectors — corpus accumulating (0 signals / 0 v2 disagreements)
+- 7.1 Close webhook description auto-sync (`9d05637`)
+- 7.2 Close webhook auto-create on Qualified-Opp-Open (`0ae7ba2`)
+- 9.1 prominent Record Outcome button + modal (`750a8c3`)
+- 10.2 Redis queue depth monitor (`d257ded` + `35972cb`) + dashboard banner (`b88fab5`)
+- 10.6 journald 30-day retention (`bc40c50`)
+- 11.2 compliance window 180 days (`40b0b8f`)
+
+**Phase 3 (DONE this session):**
+- 6.1 tax return parser (`830b080`)
+- 6.2 A/R aging parser (`9555c5d`)
+- 6.3 equipment invoice parser (`a7213ce`)
+- 6.5 bank corpus ingestion pipeline (`4ae515b`)
+- 8.1 funder guidelines Bedrock extractor (`7345fed`) + upload route (`03f91a6`)
+- 8.2 funder catalog cleanup — DELETED 18 unauthorized funders 2026-06-29,
+  10 remaining (Big Think, Bizi Connect, Highland Hill, Logic Advance,
+  Shor, Splash, SwiftSource, TMRNOW, United Capital Source, Velocity)
+- 8.5 funder note generator (`27b8337` + `4491eaf`)
+- 9.2 override flywheel auto-link + summary (`fbd1454` + `11de13f`)
+- 12.1 SBA eligibility detector + dossier badge (`504db75` + `f26e93e`)
+
+**Phase 3 INTEGRATIONS (DONE this session):**
+- INT 1 workers.parse_document routing (`eafb979`)
+- INT 2 tax + A/R dossier sections (`b97b659`)
+- INT 3 funder guidelines upload route + button (`03f91a6`)
+- INT 4 override flywheel auto-link in outcome write path (`11de13f`)
+- INT 5 funder note CTA + draft/submit/discard routes (`4491eaf`)
+
+**Open (still queued):**
+- 1.x dashboard < 2s warm — was 23s, now 5s warm. Remaining cost is
+  sequential helper calls; needs `asyncio.gather`+`to_thread` rewrite.
+- 5.1-5.3, 5.5-5.6 — funder reply ingestion / weekly forensic review /
+  SBA referral workflow expansion.
+- 6.4 FL SOS bulk download — Sunbiz returns 403 Forbidden, blocked
+  upstream. Documented and parked.
+- 6.5 corpus ingestion auto-seed from existing proceed docs — needs
+  schema discovery (`analyses.pdf_metadata` doesn't exist; metadata
+  sits in `documents.metadata_flags` strings).
+- 7.3-7.5 Close task creation on compliance gates / outcome capture
+  on funder reply / etc.
+- 8.3 funder marketplace submission workflow.
+- 9.3-9.4 calibration engine, hint auto-improvement.
+- 10.1, 10.3-10.5 standby server (documented `f1ba8dd`), DB backup
+  restore drill, SSL auto-renewal verification.
+- 11.x compliance state audits (40 states remaining).
+- 11.4 §1071 dossier panel — migration 099 SQL shipped (`b88fab5`);
+  panel ships when operator approves.
+- 12.2-12.5 receivables financing, merchant portal, multi-product
+  comparison.
+
+**Held migrations (operator approval pending — already on `main` /
+CI auto-applies on deploy):**
+- 093 tax_returns
+- 094 ar_aging_reports
+- 095 merchants.equipment_details
+- 096 funders.guidelines_data
+- 097 corpus_documents
+- 098 override_outcome_links
+- 099 merchants §1071 fields (auto-included in `b88fab5`)
+
+**Operational additions this session:**
+- Google Drive funder sync (`2232907`) — daily 07:00 UTC timer; env
+  vars `GOOGLE_DRIVE_CREDENTIALS_JSON` + `GOOGLE_DRIVE_FUNDERS_FOLDER_ID`
+  must be set on the box before the timer is enabled.
+- Standby server failover procedure documented (`f1ba8dd`).
+- Funder catalog cleanup: 18 unauthorized funders deleted, 10
+  operator-approved remain.
+
+---
+
+**Last updated:** 2026-06-29
