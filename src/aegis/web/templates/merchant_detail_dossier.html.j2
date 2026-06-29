@@ -1281,6 +1281,80 @@
     </section>
     {% endif %}
 
+    {# Tax Return Summary — appears when at least one tax_returns row
+       exists for this merchant. Read-only; populated by the worker's
+       _route_non_bank_statement branch (migration 093). Hidden on
+       empty so merchants without tax-return uploads see no chrome. #}
+    {% if tax_returns %}
+    <section class="section" id="tax-returns" data-test-id="tax-returns-section">
+      <header>
+        <span class="n">§ 1b</span>
+        <h2>Tax returns</h2>
+        <span class="footnote">{{ tax_returns | length }} year{{ '' if tax_returns | length == 1 else 's' }} on file</span>
+      </header>
+      <div class="tax-return-list" style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+        {% for tr in tax_returns %}
+        <div class="tax-row" data-test-id="tax-row"
+             style="display:grid;grid-template-columns:60px 90px 1fr 1fr;gap:12px;padding:8px 12px;border:1px solid var(--rule,#d8d8d4);border-radius:4px;font-size:12px">
+          <span class="tax-year" style="font-weight:600">{{ tr.tax_year }}</span>
+          <span class="tax-form" style="font-family:monospace;text-transform:uppercase;color:var(--ink-2,#666)">{{ tr.form_type }}</span>
+          <span class="tax-revenue">{% if tr.gross_receipts %}Gross ${{ "{:,.0f}".format(tr.gross_receipts | float) }}{% else %}—{% endif %}</span>
+          <span class="tax-net">{% if tr.net_income is not none %}Net ${{ "{:,.0f}".format(tr.net_income | float) }}{% else %}—{% endif %}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    {# A/R Aging — appears when an ar_aging_reports row exists for
+       this merchant. Populated by the worker's _route_non_bank_statement
+       branch (migration 094). 90+ days and >40% concentration get a
+       red-tagged cell. #}
+    {% if ar_aging %}
+    <section class="section" id="ar-aging" data-test-id="ar-aging-section">
+      <header>
+        <span class="n">§ 1c</span>
+        <h2>A/R aging</h2>
+        <span class="footnote">total ${{ "{:,.0f}".format(ar_aging.total_outstanding | float) }} outstanding</span>
+      </header>
+      <div class="ar-aging-grid"
+           style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;font-size:12px">
+        <div class="ar-cell" style="padding:8px;border:1px solid var(--rule,#d8d8d4);border-radius:4px">
+          <div style="color:var(--ink-2,#666);font-size:11px">Current (0-30d)</div>
+          <div style="font-weight:600">${{ "{:,.0f}".format(ar_aging.current_amount | float) }}</div>
+        </div>
+        <div class="ar-cell" style="padding:8px;border:1px solid var(--rule,#d8d8d4);border-radius:4px">
+          <div style="color:var(--ink-2,#666);font-size:11px">31-60 days</div>
+          <div style="font-weight:600">${{ "{:,.0f}".format(ar_aging.days_30_60 | float) }}</div>
+        </div>
+        <div class="ar-cell" style="padding:8px;border:1px solid var(--rule,#d8d8d4);border-radius:4px">
+          <div style="color:var(--ink-2,#666);font-size:11px">61-90 days</div>
+          <div style="font-weight:600">${{ "{:,.0f}".format(ar_aging.days_60_90 | float) }}</div>
+        </div>
+        {% set d90 = (ar_aging.days_90_plus | float) %}
+        {% set total_amt = (ar_aging.total_outstanding | float) %}
+        {% set d90_pct = (d90 / total_amt * 100) if total_amt > 0 else 0 %}
+        <div class="ar-cell {% if d90_pct > 20 %}ar-cell-bad{% endif %}"
+             style="padding:8px;border:1px solid {% if d90_pct > 20 %}#c75252{% else %}var(--rule,#d8d8d4){% endif %};border-radius:4px;{% if d90_pct > 20 %}background:#fdf0f0{% endif %}">
+          <div style="color:var(--ink-2,#666);font-size:11px">90+ days</div>
+          <div style="font-weight:600">${{ "{:,.0f}".format(d90) }}</div>
+        </div>
+        {% if ar_aging.concentration_pct %}
+        {% set conc = (ar_aging.concentration_pct | float) %}
+        <div class="ar-cell {% if conc > 40 %}ar-cell-bad{% endif %}"
+             style="padding:8px;border:1px solid {% if conc > 40 %}#c75252{% else %}var(--rule,#d8d8d4){% endif %};border-radius:4px;{% if conc > 40 %}background:#fdf0f0{% endif %}">
+          <div style="color:var(--ink-2,#666);font-size:11px">Top debtor</div>
+          <div style="font-weight:600">{{ "%.1f"|format(conc) }}%</div>
+        </div>
+        {% endif %}
+        <div class="ar-cell" style="padding:8px;border:1px solid var(--rule,#d8d8d4);border-radius:4px">
+          <div style="color:var(--ink-2,#666);font-size:11px">Debtors</div>
+          <div style="font-weight:600">{{ ar_aging.debtor_count or 0 }}</div>
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
     {# ============== § 2 CASHFLOW EVIDENCE ============== #}
     {% if analysis %}
       <section id="evidence" class="section">

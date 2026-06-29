@@ -4835,6 +4835,39 @@ async def merchant_detail(
         except Exception:  # pragma: no cover — defensive; never gate dossier
             sba_eligibility = None
 
+    # Tax returns (migration 093) + A/R aging (migration 094) — surfaced
+    # on the dossier when a row exists for this merchant. The route
+    # never fails on these queries; an empty list/None just hides the
+    # dossier section.
+    tax_returns_for_merchant: list[dict[str, Any]] = []
+    ar_aging_for_merchant: dict[str, Any] | None = None
+    try:
+        from aegis.db import get_supabase
+
+        _sb = get_supabase()
+        tr_result = (
+            _sb.table("tax_returns")
+            .select("*")
+            .eq("merchant_id", str(merchant_id))
+            .order("tax_year", desc=True)
+            .limit(3)
+            .execute()
+        )
+        tax_returns_for_merchant = cast(list[dict[str, Any]], tr_result.data or [])
+        ar_result = (
+            _sb.table("ar_aging_reports")
+            .select("*")
+            .eq("merchant_id", str(merchant_id))
+            .order("extracted_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if ar_result.data:
+            ar_aging_for_merchant = cast(dict[str, Any], ar_result.data[0])
+    except Exception:  # pragma: no cover — never block dossier on side-doc fetch
+        tax_returns_for_merchant = []
+        ar_aging_for_merchant = None
+
     # Phase E — trade-licensing gate. Fires when the merchant's
     # industry_naics requires state licensure AND we have a verified
     # portal URL for that state+industry AND the operator hasn't yet
@@ -4896,6 +4929,8 @@ async def merchant_detail(
             "revenue_trends": revenue_trends,
             "merchant_monthly_trend": merchant_monthly_trend,
             "sba_eligibility": sba_eligibility,
+            "tax_returns": tax_returns_for_merchant,
+            "ar_aging": ar_aging_for_merchant,
             "funder_note_submissions": funder_note_submissions,
             "operator_notes": operator_notes,
             "operator_note_max_chars": MERCHANT_NOTE_MAX_CHARS,
