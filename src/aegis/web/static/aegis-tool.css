@@ -12,72 +12,114 @@
  * not leak into any future non-dossier surface.
  */
 
-/* ===================== TOPSTRIP DROPDOWNS =====================
- * Consolidated 2026-06-16 from 13 flat links to 6 grouped dropdowns.
- * CSS-only show/hide via `:focus-within` (keyboard accessible) plus
- * `:hover` (mouse) — no JS required. The base ".topstrip" chrome
- * (forest-green bar, mono uppercase typography) is defined in
- * aegis-dossier.css; this block layers the grouped-dropdown behavior
- * on top of it.
+/* ===================== TOPSTRIP — SETTINGS GEAR + BELL ===================
+ * 2026-06-29 — simplified from 6 grouped dropdowns to 4 flat main-nav
+ * links + a single ⚙ settings dropdown on the right. The legacy
+ * .nav-group / .nav-dropdown selectors below are retained in case any
+ * stale render path or external bookmark still serves the old markup;
+ * none of the current templates emit them.
  *
- * Layout: each .nav-group is a relative container holding the parent
- * <a> (always visible in the strip) plus a .nav-dropdown panel that
- * is hidden by default and absolutely-positioned beneath the parent
- * when revealed. The strip already uses display:flex with gap:22px,
- * so the .nav-group inlines naturally next to standalone <a>
- * children.
+ * Layout: .settings-dropdown wraps the gear button + the menu panel.
+ * The menu is hidden by default and shows on :hover (mouse) or
+ * :focus-within (keyboard tab into the button) — pure CSS, no JS.
+ * Positioned absolute against .settings-dropdown so the panel hangs
+ * under the gear without shifting the strip layout.
  */
-.dossier-page .topstrip .links .nav-group {
+.dossier-page .settings-dropdown {
   position: relative;
   display: inline-flex;
   align-items: center;
+  margin-left: 10px;
 }
-.dossier-page .topstrip .links .nav-group > a[aria-haspopup="true"]::after {
-  /* Small chevron hint so workers know the link is a group trigger.
-   * Pure CSS — no icon font. Subordinate to the label (lower
-   * opacity + smaller scale) so it reads as affordance, not content. */
-  content: "\25BE"; /* black down-pointing small triangle */
-  margin-left: 4px;
-  font-size: 9px;
-  opacity: 0.6;
-  vertical-align: 1px;
+.dossier-page .settings-trigger {
+  background: transparent;
+  border: 0;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: color .15s ease;
 }
-.dossier-page .topstrip .links .nav-dropdown {
+.dossier-page .settings-trigger:hover,
+.dossier-page .settings-trigger:focus {
+  color: #fff;
+  outline: none;
+}
+.dossier-page .settings-menu {
   position: absolute;
   top: 100%;
-  left: -10px;
-  min-width: 180px;
+  right: 0;
+  min-width: 200px;
   background: var(--ink);
   border: 1px solid color-mix(in oklch, var(--ink) 70%, var(--paper));
   border-top: 0;
   padding: 6px 0;
   display: none;
   flex-direction: column;
-  z-index: 50;
-  /* Slight downshift so the panel visually anchors to the strip's
-   * bottom edge without a gap that would break the hover bridge. */
-  margin-top: 0;
+  z-index: 60;
 }
-.dossier-page .topstrip .links .nav-group:hover > .nav-dropdown,
-.dossier-page .topstrip .links .nav-group:focus-within > .nav-dropdown {
+.dossier-page .settings-dropdown:hover > .settings-menu,
+.dossier-page .settings-dropdown:focus-within > .settings-menu {
   display: flex;
 }
-.dossier-page .topstrip .links .nav-dropdown a {
+.dossier-page .settings-menu a {
   padding: 8px 18px;
   white-space: nowrap;
   font-family: var(--mono);
   font-size: 10.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(255,255,255,0.78);
+  color: rgba(255, 255, 255, 0.78);
   border-bottom: 0;
   text-decoration: none;
 }
-.dossier-page .topstrip .links .nav-dropdown a:hover,
-.dossier-page .topstrip .links .nav-dropdown a:focus {
+.dossier-page .settings-menu a:hover,
+.dossier-page .settings-menu a:focus {
   color: #fff;
   background: color-mix(in oklch, var(--ink) 80%, var(--paper));
   outline: none;
+}
+
+/* --- Notification bell — .dossier-page-scoped reinforcement -----
+ * The base .bell-wrap / .bell-badge rules live in aegis-system.css
+ * (loaded first). The reinforcing rules below repeat the visibility
+ * contract under the .dossier-page scope with !important so that no
+ * subsequent generic rule can collapse the badge. The badge uses
+ * #dc3545 — an alert red that intentionally sits outside the AEGIS
+ * token palette because it signals "attention required", not
+ * editorial chrome. Border in --paper so the chip reads on the
+ * forest-green topstrip without melting into the icon.
+ *
+ * Class aliases (.notif-bell-wrap / .notif-badge) are accepted as
+ * forward-compat in case any template starts emitting the longer
+ * names; the current templates use .bell-wrap / .bell-badge.
+ */
+.dossier-page .bell-wrap,
+.dossier-page .notif-bell-wrap {
+  position: relative !important;
+  display: inline-flex !important;
+  align-items: center;
+}
+.dossier-page .bell-badge,
+.dossier-page .notif-badge {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 50%;
+  background: #dc3545; /* alert red — outside the token palette by design */
+  border: 1.5px solid var(--paper);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  pointer-events: none;
 }
 
 /* ===================== DECK (page title bar) ===================== */

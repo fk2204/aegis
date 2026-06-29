@@ -1,35 +1,32 @@
 {#
-  Shared compact topstrip — consolidated 2026-06-16 from 13 flat links
-  to 6 grouped dropdowns (Today / Deals / Funders / Portfolio / Upload
-  / Admin). CSS-only dropdowns via `:focus-within` (keyboard) +
-  `:hover` (mouse) — no JS, no HTMX dependency.
+  Shared compact topstrip — simplified 2026-06-29 from 6 grouped dropdowns
+  to 4 main items + a settings gear dropdown for admin surfaces.
+
+  Main nav (left): Today, Deals, Funders, Upload — the four surfaces an
+  underwriter touches per deal. Pipeline / Bank coverage / Calibration /
+  Overrides / Probe review move into a ⚙ dropdown on the right next to
+  the notification bell.
 
   Extracted from base.html.j2 in Wave 2.4 (2026-06-03) so the dossier
   (which intentionally does NOT extend base) can include the same nav
-  row instead of hand-maintaining its own copy. Before this partial
-  existed the dossier's inline topstrip had diverged from base —
-  missing the Intake link.
+  row instead of hand-maintaining its own copy.
 
   The active link is styled via `class="is-active"` (rule in
-  aegis-system.css); inactive links render unchanged. With the
-  grouped layout, the parent group gets the `is-active` class when
-  ANY child page is the current page (e.g. /ui/deals/review-queue
-  highlights the Deals group), since routes pass the group name as
-  `active`.
+  aegis-system.css); inactive links render unchanged. Routes pass an
+  ``active`` value as the IA group name (e.g. "Deals" highlights the
+  Deals link even from /ui/review).
 
   Inputs (all optional):
-    active — one of "Today" | "Deals" | "Funders" | "Portfolio"
-             | "Upload" | "Admin"; the matching group gets
-             `class="is-active"`. Pages that do not highlight any nav
-             (e.g. the dossier, the compliance obligations page)
-             simply omit `active` (or pass a value not in the list).
+    active — one of "Today" | "Deals" | "Funders" | "Upload" |
+             "Pipeline" | "Admin"; the matching main-nav or settings
+             item gets `class="is-active"`. Pages that do not highlight
+             any nav (e.g. the dossier) simply omit `active`.
 
-             Child→group mapping the route handlers and templates
-             use:
-               Merchants / Review / CloseQueue        → Deals
-               DisclosureEvents                       → Funders
-               Renewals / Triage                      → Portfolio
-               Intake / BankLayouts / Compliance      → Admin
+             Child→group mapping the route handlers still use; some
+             groups (Portfolio, Funders dropdown children) no longer
+             have a dedicated nav slot — that's intentional. The
+             routes are reachable from Today / deep links / the
+             settings menu; they don't need permanent nav real estate.
 
     now    — display string for the right-hand view-toggle span. Same
              default convention as base.html.j2 (falls back to '').
@@ -38,45 +35,9 @@
   <div class="links">
     {% set _active = active|default('') %}
     <a href="/ui/" {% if _active == 'Today' %}class="is-active"{% endif %}>Today</a>
-    <a href="/ui/pipeline" {% if _active == 'Pipeline' %}class="is-active"{% endif %} data-test-id="nav-pipeline">Pipeline</a>
-
-    <div class="nav-group">
-      <a href="/ui/deals" {% if _active == 'Deals' %}class="is-active"{% endif %} aria-haspopup="true">Deals</a>
-      <div class="nav-dropdown" role="menu">
-        <a href="/ui/merchants" role="menuitem">Merchants</a>
-        <a href="/ui/review" role="menuitem">Review queue</a>
-        <a href="/ui/close-queue" role="menuitem">Close queue</a>
-      </div>
-    </div>
-
-    <div class="nav-group">
-      <a href="/ui/funders" {% if _active == 'Funders' %}class="is-active"{% endif %} aria-haspopup="true">Funders</a>
-      <div class="nav-dropdown" role="menu">
-        <a href="/ui/disclosure-events" role="menuitem">Disclosure events</a>
-      </div>
-    </div>
-
-    <div class="nav-group">
-      <a href="/ui/portfolio" {% if _active == 'Portfolio' %}class="is-active"{% endif %} aria-haspopup="true">Portfolio</a>
-      <div class="nav-dropdown" role="menu">
-        <a href="/ui/renewals" role="menuitem">Renewals</a>
-        <a href="/ui/triage" role="menuitem">Triage</a>
-      </div>
-    </div>
-
+    <a href="/ui/merchants" {% if _active == 'Deals' %}class="is-active"{% endif %}>Deals</a>
+    <a href="/ui/funders" {% if _active == 'Funders' %}class="is-active"{% endif %}>Funders</a>
     <a href="/ui/upload" {% if _active == 'Upload' %}class="is-active"{% endif %}>Upload</a>
-
-    <div class="nav-group">
-      <a href="/ui/admin/health" {% if _active == 'Admin' %}class="is-active"{% endif %} aria-haspopup="true">Admin</a>
-      <div class="nav-dropdown" role="menu">
-        <a href="/ui/intake" role="menuitem">Intake</a>
-        <a href="/ui/admin/health" role="menuitem">Admin</a>
-        <a href="/ui/bank-layouts" role="menuitem">Bank layouts</a>
-        <a href="/ui/bank-coverage" role="menuitem">Bank coverage</a>
-        <a href="/ui/compliance" role="menuitem">Compliance</a>
-        <a href="/ui/admin/text-layer-probe-review" role="menuitem">Text-layer probe review</a>
-      </div>
-    </div>
   </div>
   <div class="view-toggle">
     {# Operator identity + role chip. Populated by the /ui router-level
@@ -86,6 +47,20 @@
     {% set _op = request.state.operator if request and request.state and request.state.operator is defined else None %}
     {% if _op %}
       {% include "_notifications_bell.html.j2" %}
+      <div class="settings-dropdown">
+        <button type="button"
+                class="settings-trigger"
+                aria-haspopup="true"
+                aria-label="Settings"
+                title="Settings">⚙</button>
+        <div class="settings-menu" role="menu">
+          <a href="/ui/pipeline" role="menuitem" data-test-id="settings-pipeline">Pipeline view</a>
+          <a href="/ui/bank-coverage" role="menuitem" data-test-id="settings-bank-coverage">Bank coverage</a>
+          <a href="/ui/calibration" role="menuitem" data-test-id="settings-calibration">Calibration</a>
+          <a href="/ui/overrides/summary" role="menuitem" data-test-id="settings-overrides">Overrides</a>
+          <a href="/ui/admin/text-layer-probe-review" role="menuitem" data-test-id="settings-probe-review">Probe review</a>
+        </div>
+      </div>
       <span class="op-chip op-chip--{{ _op.role }}" title="{{ _op.email }}">
         {{ _op.display_name }} · <strong>{{ _op.role }}</strong>
       </span>

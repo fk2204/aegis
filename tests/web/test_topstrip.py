@@ -6,9 +6,10 @@ strip "for free" — the regression we're protecting against here is the
 opposite: a nav link gets dropped, or a new page's ``active`` token
 breaks the highlight contract.
 
-The U13 Portfolio link is the explicit assertion. Other links sit in
-the same template and would benefit from coverage too — keep this file
-tight and add as needed.
+Updated 2026-06-29 for the 4-main + settings-gear consolidation. Main
+nav is now Today / Deals / Funders / Upload. Pipeline / Bank coverage /
+Calibration / Overrides / Probe review live in the ⚙ settings dropdown
+on the right.
 """
 
 from __future__ import annotations
@@ -31,56 +32,55 @@ def client() -> Iterator[TestClient]:
     reset_dependency_caches()
 
 
-def test_topstrip_includes_portfolio_link(client: TestClient) -> None:
-    """The portfolio nav link is present on the dashboard root page.
+def test_topstrip_main_nav_four_items(client: TestClient) -> None:
+    """The simplified main nav exposes Today / Deals / Funders / Upload.
 
-    Render any page that extends ``base.html.j2`` and assert the
-    rendered HTML contains ``href="/ui/portfolio"``. Using the deals
-    page (``/ui/deals``) so we don't depend on the portfolio route
-    being reachable — the contract under test is the partial.
+    Render any page that extends ``base.html.j2`` and assert each
+    href + label is present. Uses the deals page so we don't depend on
+    Today's data deps.
     """
     resp = client.get("/ui/deals")
     assert resp.status_code == 200, resp.text
     body = resp.text
-    assert 'href="/ui/portfolio"' in body
-    assert ">Portfolio</a>" in body
+    assert 'href="/ui/"' in body
+    assert ">Today</a>" in body
+    assert 'href="/ui/merchants"' in body
+    assert ">Deals</a>" in body
+    assert 'href="/ui/funders"' in body
+    assert ">Funders</a>" in body
+    assert 'href="/ui/upload"' in body
+    assert ">Upload</a>" in body
 
 
-def test_topstrip_portfolio_is_active_on_portfolio_page(client: TestClient) -> None:
-    """``active='Portfolio'`` highlights the Portfolio group via the
-    ``is-active`` class. Regression-prevent against the route handler
-    forgetting to pass ``active`` into the template context.
-
-    Updated 2026-06-16 for the 6-group consolidation: Portfolio is now
-    a dropdown parent (.nav-group) carrying child links Renewals +
-    Triage. The parent <a> still gets ``is-active`` on the portfolio
-    page, but it now also carries ``aria-haspopup="true"`` so the
-    exact-byte assertion is the full opening tag. The Renewals /
-    Triage child pages also highlight the Portfolio group (their
-    routes pass ``active='Portfolio'``); covered by the dedicated
-    child-highlight assertion below.
-    """
-    resp = client.get("/ui/portfolio")
+def test_topstrip_settings_gear_dropdown_present(client: TestClient) -> None:
+    """The ⚙ settings dropdown carries the admin surfaces."""
+    resp = client.get("/ui/deals")
     assert resp.status_code == 200, resp.text
     body = resp.text
-    # Parent group <a> carries class="is-active" — the dropdown chevron
-    # (::after pseudo) hangs off ``aria-haspopup="true"``.
-    assert '<a href="/ui/portfolio" class="is-active" aria-haspopup="true">Portfolio</a>' in body
+    assert 'class="settings-dropdown"' in body
+    assert 'data-test-id="settings-pipeline"' in body
+    assert 'href="/ui/pipeline"' in body
+    assert 'data-test-id="settings-bank-coverage"' in body
+    assert 'href="/ui/bank-coverage"' in body
+    assert 'data-test-id="settings-calibration"' in body
+    assert 'href="/ui/calibration"' in body
+    assert 'data-test-id="settings-overrides"' in body
+    assert 'href="/ui/overrides/summary"' in body
+    assert 'data-test-id="settings-probe-review"' in body
+    assert 'href="/ui/admin/text-layer-probe-review"' in body
 
 
-def test_topstrip_portfolio_group_is_active_on_child_pages(
+def test_topstrip_notification_bell_renders_with_operator(
     client: TestClient,
 ) -> None:
-    """The Portfolio group highlights when a CHILD page (Renewals,
-    Triage) is the current page. This is the load-bearing UX
-    contract of the consolidation — a worker on /ui/triage should
-    still see "Portfolio" lit so they know where in the IA they are.
+    """The notification bell renders inside the topstrip when an
+    operator is resolved. The badge mount carries the HTMX trigger that
+    fetches the unread count; the badge itself is populated on the
+    polled response (covered by test_notifications_route.py).
     """
-    # Triage is the cheapest child to render (no DB writes, in-memory
-    # fixtures via reset_dependency_caches). Renewals + Triage both
-    # pass ``active='Portfolio'`` from their route handlers; either
-    # would satisfy this contract.
-    resp = client.get("/ui/triage")
+    resp = client.get("/ui/deals")
     assert resp.status_code == 200, resp.text
     body = resp.text
-    assert '<a href="/ui/portfolio" class="is-active" aria-haspopup="true">Portfolio</a>' in body
+    assert 'data-test-id="bell-wrap"' in body
+    assert 'id="bell-badge-mount"' in body
+    assert "/ui/notifications/unread-count" in body

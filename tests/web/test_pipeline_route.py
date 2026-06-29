@@ -177,10 +177,10 @@ def test_pipeline_index_has_nav_link(env) -> None:  # type: ignore[no-untyped-de
     client, *_ = env
     resp = client.get("/ui/pipeline")
     assert resp.status_code == 200
-    # Topstrip Pipeline entry — present on every /ui page; rendering
-    # /ui/pipeline asserts both the link existence AND its is-active
-    # class on the current page.
-    assert 'data-test-id="nav-pipeline"' in resp.text
+    # Topstrip Pipeline entry — Pipeline moved into the ⚙ settings
+    # dropdown 2026-06-29; the link still renders on every /ui page,
+    # just inside the settings menu instead of the main nav row.
+    assert 'data-test-id="settings-pipeline"' in resp.text
     assert 'href="/ui/pipeline"' in resp.text
 
 

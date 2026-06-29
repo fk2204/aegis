@@ -414,12 +414,17 @@ def test_dashboard_review_queue_lists_manual_review_doc(
 
 
 def test_dashboard_nav_links_visible(client: TestClient) -> None:
-    """Phase 7A added Deals + Review + Funders to the nav."""
+    """Main-nav simplification 2026-06-29: Today / Deals / Funders /
+    Upload only. The Deals link points at ``/ui/merchants`` (the
+    underwriter's list of in-flight merchants); ``/ui/review`` moved
+    out of the nav row but the route still exists. ``/ui/funders``
+    stays as a top-level item.
+    """
     resp = client.get("/ui/")
     assert resp.status_code == 200
-    assert 'href="/ui/deals"' in resp.text
-    assert 'href="/ui/review"' in resp.text
+    assert 'href="/ui/merchants"' in resp.text
     assert 'href="/ui/funders"' in resp.text
+    assert 'href="/ui/upload"' in resp.text
 
 
 def test_merchant_new_form_renders(client: TestClient) -> None:
