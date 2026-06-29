@@ -25,6 +25,52 @@ Cloudflare Tunnel (cloudflared)
 
 ---
 
+## Standby server — manual failover
+
+**Primary:** `5.161.51.105` (Hetzner ASH, CPX21)
+**Standby:** *NOT YET PROVISIONED*
+
+The primary is a single Hetzner CPX21 in Ashburn with no failover. The
+June 2026 IP-block incident proved this is a real risk; standby
+provisioning is the documented fix.
+
+### To provision a standby (one-time setup)
+
+1. Create a Hetzner CPX21 in Helsinki (HEL datacenter) — ~€8/month
+   matches the primary's spec.
+2. Bootstrap with the same install procedure as the primary
+   (`deploy/install.sh`).
+3. Authorize the CI deploy key on the standby's `/root/.ssh/authorized_keys`.
+4. Add the standby IP to this file under "Standby" above + commit.
+5. Configure daily snapshot sync via the Hetzner snapshot API (see
+   note below — currently manual).
+
+### Failover procedure (if primary goes down)
+
+1. Update Cloudflare DNS: `aegis.commerafunding.com` → standby IP.
+2. SSH to standby via direct IP:
+   `ssh -i ~/.ssh/aegis_ci_deploy root@<standby-ip>`
+3. Pull latest + restart:
+   `cd /opt/aegis && git pull --ff-only && systemctl restart aegis-web aegis-worker`
+4. Verify external reachability:
+   `curl https://aegis.commerafunding.com/healthz`
+
+### Daily snapshot sync
+
+Not yet automated. Manual snapshot through the Hetzner Cloud console
+every Monday morning is the interim cadence — see the cred-rotation
+log below for the last manual sync timestamp.
+
+### Why we haven't done this yet
+
+The deploy posture is stable enough (auto-deploy on `main`, CI
+migrations, journald cap, queue depth monitor) that the marginal
+risk of the IP-block recurring is lower than the time-to-build cost.
+Document published 2026-06-29 so the failover plan exists on paper
+when the operator chooses to schedule the standby spin-up.
+
+---
+
 ## Daily operations
 
 ### Tail web logs
