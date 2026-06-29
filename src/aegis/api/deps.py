@@ -21,6 +21,11 @@ from aegis.bank_layouts import (
     SupabaseBankLayoutRepository,
 )
 from aegis.close.client import CloseClient
+from aegis.compliance.override_outcome_links import (
+    InMemoryOverrideOutcomeLinkRepository,
+    OverrideOutcomeLinkRepository,
+    SupabaseOverrideOutcomeLinkRepository,
+)
 from aegis.compliance.overrides import (
     InMemoryOverrideRepository,
     OverrideRepository,
@@ -160,6 +165,16 @@ def get_merchant_repository() -> MerchantRepository:
     if get_settings().aegis_storage_backend == "memory":
         return InMemoryMerchantRepository()
     return SupabaseMerchantRepository()
+
+
+@lru_cache(maxsize=1)
+def get_override_outcome_link_repository() -> OverrideOutcomeLinkRepository:
+    """Process-wide OverrideOutcomeLinkRepository — junction store that
+    links operator overrides to recorded deal outcomes for the flywheel
+    summary."""
+    if get_settings().aegis_storage_backend == "memory":
+        return InMemoryOverrideOutcomeLinkRepository()
+    return SupabaseOverrideOutcomeLinkRepository()
 
 
 @lru_cache(maxsize=1)
