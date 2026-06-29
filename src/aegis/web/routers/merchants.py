@@ -3728,6 +3728,129 @@ def _parse_funder_ids(values: list[str]) -> list[UUID]:
 _SHADOW_FLAG_PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^\[(?:SHADOW|WARN)\]\s*")
 
 
+# How many trailing months to surface on the per-merchant trend strip.
+# Six months gives the underwriter the same window as the dashboard's
+# portfolio-wide strip without crowding the verdict header on tablet.
+_MERCHANT_MONTHLY_TREND_BUCKETS: Final[int] = 6
+
+# Below-this delta-vs-prior-month reads as "flat", not "up/down". 2 %
+# matches the dashboard strip so the two surfaces apply the same noise
+# floor; a $50 wobble on a $50,000 month doesn't render as a downward
+# arrow.
+_MERCHANT_MONTHLY_TREND_FLAT_THRESHOLD_PCT: Final[Decimal] = Decimal("0.02")
+
+
+def _build_merchant_monthly_trend(
+    *,
+    all_docs: list[DocumentRow],
+    analyses_by_doc: dict[UUID, AnalysisRow],
+) -> list[dict[str, Any]]:
+    """Per-merchant trailing 6-month deposits / ADB / NSF trend strip.
+
+    Walks the merchant's ``proceed`` documents newest-first and unions
+    their ``analysis.monthly_breakdown`` rows. When two statements
+    overlap on a given calendar month (e.g. a renewal merchant's two
+    most-recent statements both cover March), we keep the entry from
+    the freshest document — ``all_docs`` is already sorted by
+    ``uploaded_at DESC`` upstream so the first writer wins on each
+    ``YYYY-MM`` key.
+
+    Returns the most-recent ``_MERCHANT_MONTHLY_TREND_BUCKETS`` months
+    in calendar ASC order (oldest → newest) so the trend arrow on each
+    cell compares against the prior month's deposits. First cell
+    carries ``trend == ""`` (no comparator). Empty list when no
+    ``proceed`` doc on the merchant has a populated breakdown — the
+    template hides the strip in that case.
+
+    Each row carries ``deposits_source_ids: list[str]`` (the document
+    whose monthly_breakdown contributed) so the aggregate-with-source-
+    ids invariant (CLAUDE.md "Auditability") holds for this derived
+    view.
+
+    ``deposits`` is the per-month gross deposit total carried by
+    ``monthly_breakdown.deposits`` (parser/aggregate.py). Per-month
+    "true revenue" (deposits net of transfers + MCA paybacks) requires
+    the classifier to bucket transfers per month — not in this
+    sprint's scope; mirrors the dashboard strip's honest-label rule
+    (``_compute_monthly_comparison``).
+    """
+    from decimal import InvalidOperation
+
+    proceed_docs = [d for d in all_docs if d.parse_status == "proceed"]
+    if not proceed_docs:
+        return []
+
+    # Freshest-wins dedup. ``all_docs`` is newest-first; the first doc
+    # to contribute a row for a given month wins, later overlaps drop.
+    by_month: dict[str, dict[str, Any]] = {}
+    for doc in proceed_docs:
+        analysis = analyses_by_doc.get(doc.id)
+        if analysis is None:
+            continue
+        for row in analysis.monthly_breakdown or []:
+            month = row.get("month")
+            if not month or month in by_month:
+                continue
+            try:
+                deposits = Decimal(row.get("deposits") or "0")
+                avg_balance = Decimal(row.get("avg_balance") or "0")
+                nsf_count = int(row.get("nsf_count") or "0")
+            except (InvalidOperation, ValueError):
+                continue
+            by_month[month] = {
+                "month": month,
+                "deposits": deposits,
+                "adb": avg_balance,
+                "nsf_count": nsf_count,
+                "deposits_source_ids": [str(doc.id)],
+            }
+
+    if not by_month:
+        return []
+
+    # Take the most-recent N populated months, then render ASC so the
+    # trend arrow on each cell compares against its predecessor.
+    months_desc = sorted(by_month.keys(), reverse=True)[:_MERCHANT_MONTHLY_TREND_BUCKETS]
+    months_asc = list(reversed(months_desc))
+
+    out: list[dict[str, Any]] = []
+    prev_deposits: Decimal | None = None
+    for cell_month in months_asc:
+        cell = by_month[cell_month]
+        cell_deposits: Decimal = cell["deposits"]
+        trend: str
+        if prev_deposits is None or prev_deposits == 0:
+            trend = ""
+        else:
+            delta = cell_deposits - prev_deposits
+            threshold = prev_deposits.copy_abs() * _MERCHANT_MONTHLY_TREND_FLAT_THRESHOLD_PCT
+            if delta.copy_abs() <= threshold:
+                trend = "flat"
+            elif delta > 0:
+                trend = "up"
+            else:
+                trend = "down"
+        try:
+            year, month_num = cell_month.split("-")
+            label = datetime(int(year), int(month_num), 1, tzinfo=UTC).strftime("%b %Y")
+        except (ValueError, IndexError):
+            label = cell_month
+        out.append(
+            {
+                "month": cell_month,
+                "label": label,
+                "deposits": cell_deposits,
+                "deposits_source_ids": cell["deposits_source_ids"],
+                "adb": cell["adb"],
+                "nsf_count": cell["nsf_count"],
+                "trend": trend,
+            }
+        )
+        prev_deposits = cell_deposits
+
+    return out
+
+
 def _build_background_checks_context(merchant: MerchantRow) -> dict[str, Any]:
     """Project the merchant row's UCC + web-presence fields onto the
     shape the Background-checks dossier section consumes.
@@ -4673,6 +4796,21 @@ async def merchant_detail(
     # template renders an empty-state + Run-now button in that branch).
     background_checks_context = _build_background_checks_context(merchant)
 
+    # BUG-18 Phase 2 — trailing 6-month deposits / ADB / NSF strip
+    # under the verdict header. Derived from the merchant's proceed
+    # documents' ``analyses.monthly_breakdown``; empty list when no
+    # proceed doc carries a populated breakdown (template hides the
+    # strip). De-dupes overlapping months (renewal merchants ship
+    # statements that overlap on the boundary month) by keeping the
+    # entry from the freshest document — ``all_docs`` is already
+    # sorted newest-first. Not cached: the data is derived from
+    # already-fetched analyses; cost is dict scans + 6 Decimal
+    # comparisons.
+    merchant_monthly_trend = _build_merchant_monthly_trend(
+        all_docs=all_docs,
+        analyses_by_doc=analyses_by_doc,
+    )
+
     # Phase E — trade-licensing gate. Fires when the merchant's
     # industry_naics requires state licensure AND we have a verified
     # portal URL for that state+industry AND the operator hasn't yet
@@ -4732,6 +4870,7 @@ async def merchant_detail(
             "shadow_signals": shadow_signals,
             "merchant_shadow_signals": merchant_shadow_signals,
             "revenue_trends": revenue_trends,
+            "merchant_monthly_trend": merchant_monthly_trend,
             "funder_note_submissions": funder_note_submissions,
             "operator_notes": operator_notes,
             "operator_note_max_chars": MERCHANT_NOTE_MAX_CHARS,

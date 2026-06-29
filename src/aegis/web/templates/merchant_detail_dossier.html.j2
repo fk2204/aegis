@@ -1204,6 +1204,43 @@
       {% endif %}
     </section>
 
+    {# BUG-18 Phase 2 — trailing 6-month deposits/ADB/NSF strip for
+       THIS merchant, layered directly under § 1 Verdict. Hidden when
+       no proceed document carries a populated monthly_breakdown (the
+       route returns an empty list). Label reads "Gross deposits" —
+       NOT "true revenue" — because monthly_breakdown.deposits is the
+       per-month gross deposit total; per-month true-revenue split
+       requires a parser-side change (mirrors the dashboard strip's
+       honest-label rule). Cell layout + CSS reuse the dashboard's
+       .monthly-strip / .month-cell classes (aegis-tool.css
+       ".dossier-page .monthly-strip"); only the data-test-id
+       namespacing diverges so the dossier strip is independently
+       assertable from the dashboard strip. #}
+    {% if merchant_monthly_trend %}
+    <section class="monthly-strip" data-test-id="dossier-monthly-strip">
+      {% for month in merchant_monthly_trend %}
+      <div class="month-cell" data-test-id="dossier-monthly-cell-{{ loop.index }}" data-trend="{{ month.trend }}" data-month="{{ month.month }}">
+        <div class="month-label">{{ month.label }}</div>
+        <div class="month-revenue">
+          {{ month.deposits | whole_money }}
+          {% if month.trend == 'up' %}
+            <span class="month-trend month-trend--up" data-test-id="dossier-monthly-trend-up" title="Up vs. prior month">↑</span>
+          {% elif month.trend == 'down' %}
+            <span class="month-trend month-trend--down" data-test-id="dossier-monthly-trend-down" title="Down vs. prior month">↓</span>
+          {% elif month.trend == 'flat' %}
+            <span class="month-trend month-trend--flat" data-test-id="dossier-monthly-trend-flat" title="Flat vs. prior month (within 2%)">→</span>
+          {% else %}
+            <span class="month-trend month-trend--none" aria-hidden="true"></span>
+          {% endif %}
+        </div>
+        <div class="month-revenue-label">Gross deposits</div>
+        <div class="month-nsf {{ 'bad' if month.nsf_count > 0 else '' }}">{{ month.nsf_count }} NSF</div>
+        <div class="month-adb">{{ month.adb | whole_money }} ADB</div>
+      </div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
     {# ============== § 2 CASHFLOW EVIDENCE ============== #}
     {% if analysis %}
       <section id="evidence" class="section">
