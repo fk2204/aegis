@@ -27,6 +27,12 @@ from aegis.business_intel.bankruptcy_checker import (
     BankruptcyResult,
     check_bankruptcy,
 )
+from aegis.close.client import CloseClient
+from aegis.close.compliance_tasks import (
+    BankruptcyGateDetails,
+    ComplianceGateType,
+    create_compliance_gate_task,
+)
 from aegis.logger import get_logger
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import MerchantNotFoundError, MerchantRepository
@@ -54,6 +60,7 @@ async def refresh_bankruptcy_for_merchant(
     merchants_repo: MerchantRepository,
     audit: AuditLog,
     checker: _CheckerLike = check_bankruptcy,
+    close_client: CloseClient | None = None,
 ) -> BankruptcyResult:
     """Always run a fresh bankruptcy check and persist it.
 
@@ -110,8 +117,47 @@ async def refresh_bankruptcy_for_merchant(
                 "case_count": len(result.cases),
             },
         )
+        # Build-plan 7.3: auto-file a Close task on the operator's
+        # lead. Wrapped so a Close outage cannot mask the gate
+        # decision itself.
+        if close_client is not None:
+            court_id = _first_case_court_id(result.cases)
+            try:
+                create_compliance_gate_task(
+                    merchant=updated,
+                    gate_type=ComplianceGateType.BANKRUPTCY_BLOCK,
+                    details=BankruptcyGateDetails(
+                        chapter=result.chapter,
+                        case_count=len(result.cases),
+                        court=court_id,
+                    ),
+                    client=close_client,
+                    audit=audit,
+                )
+            except Exception:  # defense-in-depth around the gate
+                _log.warning(
+                    "bankruptcy.compliance_task_unexpected_error merchant_id=%s",
+                    merchant.id,
+                    exc_info=True,
+                )
 
     return result
+
+
+def _first_case_court_id(cases: list[dict[str, object]]) -> str | None:
+    """Return the ``court_id`` of the first case, or None.
+
+    CourtListener case dicts carry ``court_id`` as the short court
+    identifier (e.g. ``"flsb"`` for the Southern District of Florida
+    Bankruptcy Court). Defensive on shape — a missing key or non-string
+    value returns None and the task text drops the court clause.
+    """
+    if not cases:
+        return None
+    court = cases[0].get("court_id")
+    if isinstance(court, str) and court.strip():
+        return court.strip()
+    return None
 
 
 async def ensure_bankruptcy_check(
@@ -120,6 +166,7 @@ async def ensure_bankruptcy_check(
     merchants_repo: MerchantRepository,
     audit: AuditLog,
     checker: _CheckerLike = check_bankruptcy,
+    close_client: CloseClient | None = None,
 ) -> MerchantRow:
     """TTL-bounded version: run a check when none was recorded in the
     last 30 days.
@@ -140,6 +187,7 @@ async def ensure_bankruptcy_check(
             merchants_repo=merchants_repo,
             audit=audit,
             checker=checker,
+            close_client=close_client,
         )
     except MerchantNotFoundError:
         _log.warning(

@@ -40,10 +40,23 @@ URL" — a wrong portal link is worse than no gate.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from aegis.audit import AuditLog
+from aegis.close.compliance_tasks import (
+    ComplianceGateType,
+    LicenseGateDetails,
+    create_compliance_gate_task,
+    has_open_gate_task,
+)
+from aegis.logger import get_logger
+
+if TYPE_CHECKING:
+    from aegis.close.client import CloseClient
+    from aegis.merchants.models import MerchantRow
+
+_log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # NAICS → licensed-industry key
@@ -418,12 +431,70 @@ def record_license_verification(
     )
 
 
+def create_license_gate_task_if_needed(
+    *,
+    merchant: MerchantRow,
+    gate: LicenseGateContext,
+    client: CloseClient,
+    audit: AuditLog,
+) -> str | None:
+    """Build-plan 7.3 wrapper — file a Close task when the gate fires.
+
+    Idempotent: returns immediately if a prior
+    ``close.task.compliance_gate_created`` row for the licensing gate
+    already exists on the merchant. The dossier render path calls this
+    on every refresh; the audit-log check keeps Close-side noise
+    bounded.
+
+    No-op when ``gate.required`` is False — the dossier never showed
+    the banner so we have nothing to action. Same for missing
+    ``portal_url`` / ``state_name`` / ``industry_label`` which would
+    leave the task text incomplete.
+
+    Returns the created Close task id, or None when skipped / on Close
+    API failure (the audit row carries the failure detail).
+    """
+    if not gate.required:
+        return None
+    if not gate.portal_url or not gate.industry_label:
+        return None
+    state_upper = (merchant.state or "").upper()
+    if not state_upper:
+        return None
+    if has_open_gate_task(
+        audit=audit,
+        merchant_id=merchant.id,
+        gate_type=ComplianceGateType.LICENSE_REQUIRED,
+    ):
+        return None
+    try:
+        return create_compliance_gate_task(
+            merchant=merchant,
+            gate_type=ComplianceGateType.LICENSE_REQUIRED,
+            details=LicenseGateDetails(
+                state=state_upper,
+                license_type=gate.industry_label,
+                portal_url=gate.portal_url,
+            ),
+            client=client,
+            audit=audit,
+        )
+    except Exception:  # defense-in-depth around the gate
+        _log.warning(
+            "license_gate.compliance_task_unexpected_error merchant_id=%s",
+            merchant.id,
+            exc_info=True,
+        )
+        return None
+
+
 __all__ = [
     "LICENSED_INDUSTRIES_BY_NAICS",
     "LICENSE_INDUSTRY_LABELS",
     "LICENSE_PORTALS",
     "STATE_NAMES",
     "LicenseGateContext",
+    "create_license_gate_task_if_needed",
     "evaluate_license_gate",
     "record_license_verification",
 ]

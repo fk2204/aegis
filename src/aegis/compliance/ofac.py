@@ -31,6 +31,12 @@ from uuid import UUID
 import jellyfish
 
 from aegis.audit import AuditLog
+from aegis.close.client import CloseClient
+from aegis.close.compliance_tasks import (
+    ComplianceGateType,
+    OFACGateDetails,
+    create_compliance_gate_task,
+)
 from aegis.logger import get_logger
 from aegis.merchants.models import MerchantRow
 from aegis.merchants.repository import MerchantNotFoundError, MerchantRepository
@@ -253,6 +259,7 @@ def refresh_ofac_for_merchant(
     merchants_repo: MerchantRepository,
     audit: AuditLog,
     cache_path: Path = DEFAULT_CACHE_PATH,
+    close_client: CloseClient | None = None,
 ) -> OFACResult:
     """Always run a fresh screening, persist the four ofac_* columns,
     write one ``compliance.ofac_screened`` audit row, and (if the result
@@ -314,7 +321,49 @@ def refresh_ofac_for_merchant(
                 "error": result.error,
             },
         )
+        # Build-plan 7.3: auto-file a Close task for the operator.
+        # Wrapped — a Close outage MUST NOT block the gate decision.
+        # ``match_detail`` is a tuple of human-readable lines like
+        # ``"sdn:9999 :: BLOCKED ENTITY HOLDINGS LLC (jw=0.97 ts=0.94)"``;
+        # the SDN name after the " :: " is the public-record entry we
+        # surface in the task text.
+        if close_client is not None and result.match_detail:
+            sdn_name = _first_match_sdn_name(result.match_detail[0])
+            try:
+                create_compliance_gate_task(
+                    merchant=updated,
+                    gate_type=ComplianceGateType.OFAC_BLOCK,
+                    details=OFACGateDetails(sdn_name=sdn_name),
+                    client=close_client,
+                    audit=audit,
+                )
+            except Exception:  # defense-in-depth around the gate
+                _log.warning(
+                    "ofac.compliance_task_unexpected_error merchant_id=%s",
+                    merchant.id,
+                    exc_info=True,
+                )
     return result
+
+
+def _first_match_sdn_name(match_line: str) -> str:
+    """Pull the SDN entry name from a match_detail line.
+
+    ``match_detail`` lines look like
+    ``"sdn:9999 :: BLOCKED ENTITY HOLDINGS LLC (jw=0.97 ts=0.94)"``;
+    the name is everything between ``" :: "`` and the trailing
+    ``"(jw=...)"``. Defensive on shape — a malformed line falls back
+    to the full string so the task text always carries something.
+    """
+    after_sep = match_line.split(" :: ", 1)
+    if len(after_sep) != 2:
+        return match_line.strip() or "(unknown)"
+    tail = after_sep[1]
+    # Drop the trailing " (jw=X.XX ts=X.XX)" scoring annotation.
+    paren_idx = tail.rfind(" (jw=")
+    if paren_idx > 0:
+        tail = tail[:paren_idx]
+    return tail.strip() or "(unknown)"
 
 
 def ensure_ofac_check(
@@ -323,6 +372,7 @@ def ensure_ofac_check(
     merchants_repo: MerchantRepository,
     audit: AuditLog,
     cache_path: Path = DEFAULT_CACHE_PATH,
+    close_client: CloseClient | None = None,
 ) -> MerchantRow:
     """Lazy version: screen only when ``ofac_checked_at`` is None.
 
@@ -338,6 +388,7 @@ def ensure_ofac_check(
             merchants_repo=merchants_repo,
             audit=audit,
             cache_path=cache_path,
+            close_client=close_client,
         )
     except MerchantNotFoundError:
         _log.warning(

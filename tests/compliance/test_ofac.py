@@ -421,3 +421,102 @@ def test_fuzzy_match_table(
         cache_path=cache_path,
     )
     assert (result.is_clear is False) == should_match
+
+
+# ---------------------------------------------------------------------------
+# refresh_ofac_for_merchant + Close-task auto-creation (build-plan 7.3)
+# ---------------------------------------------------------------------------
+
+
+class _FakeCloseClientForOFAC:
+    """Minimal Close client stub for the OFAC → Close-task integration.
+
+    Mirrors the shape consumed by ``compliance_tasks.create_compliance_gate_task``:
+    ``get_lead`` returns ``assigned_to`` on the response dict;
+    ``create_task`` records the call and returns a Close-shaped task
+    body. No raises — these tests exercise the success path on the
+    refresh integration. Failure-path coverage lives in
+    ``tests/close/test_compliance_tasks.py``.
+    """
+
+    def __init__(self) -> None:
+        self.create_task_calls: list[dict[str, Any]] = []
+
+    def get_lead(self, lead_id: str) -> dict[str, Any]:
+        return {"id": lead_id, "assigned_to": "user_xyz"}
+
+    def create_task(
+        self,
+        lead_id: str,
+        text: str,
+        due_date: Any = None,  # datetime.date in production
+        assigned_to: str | None = None,
+    ) -> dict[str, Any]:
+        self.create_task_calls.append(
+            {
+                "lead_id": lead_id,
+                "text": text,
+                "due_date": due_date,
+                "assigned_to": assigned_to,
+            }
+        )
+        return {"id": "task_from_ofac", "lead_id": lead_id, "text": text}
+
+
+def test_refresh_blocked_with_close_client_creates_task(tmp_path: Path) -> None:
+    """End-to-end — an OFAC block on a merchant with a close_lead_id
+    triggers a Close task via the optional ``close_client`` kwarg."""
+    cache_path = _write_cache(
+        tmp_path,
+        entries=[_sdn_entry(uid="sdn:42", name="SANCTIONED FAKE LLC")],
+    )
+    repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+    merchant = _merchant(business_name="Sanctioned Fake LLC")
+    merchant = merchant.model_copy(update={"close_lead_id": "lead_xyz"})
+    repo.upsert(merchant)
+    fake_close = _FakeCloseClientForOFAC()
+
+    refresh_ofac_for_merchant(
+        merchant.id,
+        merchants_repo=repo,
+        audit=audit,
+        cache_path=cache_path,
+        close_client=fake_close,  # type: ignore[arg-type]
+    )
+
+    # Task POSTed exactly once with the block details.
+    assert len(fake_close.create_task_calls) == 1
+    call = fake_close.create_task_calls[0]
+    assert call["lead_id"] == "lead_xyz"
+    assert "OFAC block on Sanctioned Fake LLC" in call["text"]
+    assert call["assigned_to"] == "user_xyz"
+
+    # Audit row pinned for the gate-created task.
+    created_rows = [e for e in audit.entries if e["action"] == "close.task.compliance_gate_created"]
+    assert len(created_rows) == 1
+    assert created_rows[0]["details"]["gate_type"] == "ofac_block"
+
+
+def test_refresh_blocked_without_close_client_does_not_create_task(tmp_path: Path) -> None:
+    """Backwards compatibility — callers that don't pass ``close_client``
+    keep the original audit shape (no task rows added)."""
+    cache_path = _write_cache(
+        tmp_path,
+        entries=[_sdn_entry(uid="sdn:42", name="SANCTIONED FAKE LLC")],
+    )
+    repo = InMemoryMerchantRepository()
+    audit = InMemoryAuditLog()
+    merchant = _merchant(business_name="Sanctioned Fake LLC")
+    merchant = merchant.model_copy(update={"close_lead_id": "lead_xyz"})
+    repo.upsert(merchant)
+
+    refresh_ofac_for_merchant(
+        merchant.id,
+        merchants_repo=repo,
+        audit=audit,
+        cache_path=cache_path,
+    )
+    actions = [e["action"] for e in audit.entries]
+    assert "compliance.ofac_block" in actions
+    assert "close.task.compliance_gate_created" not in actions
