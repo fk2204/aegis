@@ -3458,7 +3458,64 @@ async def record_deal_outcome(
     try:
         from aegis.db import get_supabase as _get_supabase
 
-        _get_supabase().table("deal_outcomes").insert(row).execute()
+        _sb_outcome = _get_supabase()
+        outcome_insert = _sb_outcome.table("deal_outcomes").insert(row).execute()
+        # Auto-link any existing overrides for this merchant to the new
+        # outcome row (migration 098 — override flywheel). UNIQUE on
+        # (override_id, outcome_id) absorbs idempotent re-runs. Failures
+        # here MUST NOT roll back the outcome insert; the outcome row is
+        # operator-visible source of truth, the link is a derived
+        # flywheel artifact.
+        _new_outcome_id: str | None = None
+        if outcome_insert.data:
+            _first_row = cast(dict[str, Any], outcome_insert.data[0])
+            _new_outcome_id = cast(str | None, _first_row.get("id"))
+        if _new_outcome_id is not None:
+            try:
+                _overrides_resp = (
+                    _sb_outcome.table("overrides")
+                    .select("id")
+                    .eq("merchant_id", str(merchant.id))
+                    .execute()
+                )
+                _links_added = 0
+                for _ov_raw in _overrides_resp.data or []:
+                    _ov = cast(dict[str, Any], _ov_raw)
+                    _ov_id = _ov.get("id")
+                    if not _ov_id:
+                        continue
+                    try:
+                        _sb_outcome.table("override_outcome_links").insert(
+                            {"override_id": _ov_id, "outcome_id": _new_outcome_id}
+                        ).execute()
+                        _links_added += 1
+                    except Exception:  # noqa: S112 — UNIQUE collision expected
+                        continue
+                if _links_added:
+                    audit.record(
+                        actor="dashboard",
+                        actor_email=actor_email,
+                        action="override.outcome_linked",
+                        subject_type="merchant",
+                        subject_id=merchant.id,
+                        details={
+                            "outcome_id": _new_outcome_id,
+                            "links_added": _links_added,
+                        },
+                    )
+            except Exception as _link_exc:
+                audit.record(
+                    actor="dashboard",
+                    actor_email=actor_email,
+                    action="override.outcome_link_failed",
+                    subject_type="merchant",
+                    subject_id=merchant.id,
+                    details={
+                        "outcome_id": _new_outcome_id,
+                        "error": type(_link_exc).__name__,
+                        "message": str(_link_exc)[:200],
+                    },
+                )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -13,6 +13,35 @@
 
 {% block body %}
 <section class="body">
+
+  {# Override flywheel stats — INT 4 / migration 098. Counts overrides
+     that have at least one linked deal_outcomes row, with the funded
+     and declined percentages of THAT linked subset. Empty-state when
+     no outcomes have been linked yet (day-zero post-migration). #}
+  {% if flywheel %}
+  <div class="flywheel-stats" data-test-id="flywheel-summary"
+       style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px;font-size:13px">
+    <div class="stat-cell" style="padding:10px 12px;border:1px solid var(--rule,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+      <div style="font-size:11px;color:var(--ink-2,#666);text-transform:uppercase;letter-spacing:0.06em">Total overrides</div>
+      <div style="font-size:18px;font-weight:600;margin-top:2px">{{ flywheel.total }}</div>
+    </div>
+    <div class="stat-cell" data-test-id="flywheel-linked"
+         style="padding:10px 12px;border:1px solid var(--rule,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+      <div style="font-size:11px;color:var(--ink-2,#666);text-transform:uppercase;letter-spacing:0.06em">With outcomes</div>
+      <div style="font-size:18px;font-weight:600;margin-top:2px">{{ flywheel.with_outcomes }}</div>
+    </div>
+    <div class="stat-cell" data-test-id="override-accuracy"
+         style="padding:10px 12px;border:1px solid var(--rule,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+      <div style="font-size:11px;color:var(--ink-2,#666);text-transform:uppercase;letter-spacing:0.06em">Funded after override</div>
+      <div style="font-size:18px;font-weight:600;margin-top:2px;{% if flywheel.funded_pct > 50 %}color:#2d7a2d{% endif %}">{{ flywheel.funded_pct }}%</div>
+    </div>
+    <div class="stat-cell" style="padding:10px 12px;border:1px solid var(--rule,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+      <div style="font-size:11px;color:var(--ink-2,#666);text-transform:uppercase;letter-spacing:0.06em">Declined after override</div>
+      <div style="font-size:18px;font-weight:600;margin-top:2px;{% if flywheel.declined_pct > 50 %}color:#c75252{% endif %}">{{ flywheel.declined_pct }}%</div>
+    </div>
+  </div>
+  {% endif %}
+
   {% if summary_rows %}
   <table class="data" data-test-id="overrides-summary">
     <thead>

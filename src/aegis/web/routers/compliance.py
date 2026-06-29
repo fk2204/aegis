@@ -10,7 +10,7 @@ Routes:
 
 from __future__ import annotations
 
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
@@ -268,6 +268,47 @@ async def overrides_summary(
     """
     rows = override_repo.list_for_summary()
     summary = build_reason_code_summary(rows)
+
+    # Flywheel stats (migration 098 — INT 4). Counts overrides that
+    # have at least one link to a recorded deal_outcomes row, broken
+    # down by the linked outcome's funder_decision. Best-effort: a
+    # missing override_outcome_links table (pre-migration) silently
+    # collapses to zeros, so the route never breaks during the deploy
+    # window between migration apply and template ship.
+    flywheel = {
+        "total": sum(r.total for r in summary),
+        "with_outcomes": 0,
+        "funded_pct": 0.0,
+        "declined_pct": 0.0,
+    }
+    try:
+        from aegis.db import get_supabase
+
+        _sb = get_supabase()
+        _links = (
+            _sb.table("override_outcome_links")
+            .select("outcome_id,deal_outcomes(funder_decision)")
+            .execute()
+        )
+        _link_data = cast(list[dict[str, Any]], _links.data or [])
+        flywheel["with_outcomes"] = len(_link_data)
+        if _link_data:
+            _funded = 0
+            _declined = 0
+            for _r in _link_data:
+                _outcome_obj = _r.get("deal_outcomes")
+                if not isinstance(_outcome_obj, dict):
+                    continue
+                _fd = _outcome_obj.get("funder_decision")
+                if _fd == "approved":
+                    _funded += 1
+                elif _fd == "declined":
+                    _declined += 1
+            flywheel["funded_pct"] = round(_funded / len(_link_data) * 100, 1)
+            flywheel["declined_pct"] = round(_declined / len(_link_data) * 100, 1)
+    except Exception:  # pragma: no cover — defensive  # noqa: S110
+        pass
+
     return cast(
         "HTMLResponse",
         templates.TemplateResponse(
@@ -278,6 +319,7 @@ async def overrides_summary(
                 "summary_rows": summary,
                 "outcome_columns": list(OUTCOME_COLUMNS),
                 "total_overrides": sum(r.total for r in summary),
+                "flywheel": flywheel,
             },
         ),
     )
