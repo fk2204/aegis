@@ -55,6 +55,7 @@ from aegis.api.deps import (
     get_decision_snapshot,
     get_funder_note_submission_repository,
     get_funder_repository,
+    get_llm,
     get_merchant_repository,
     get_merchant_shadow_signal_repository,
     get_ofac_client,
@@ -86,6 +87,7 @@ from aegis.funders.repository import (
     FunderNotFoundError,
     FunderRepository,
 )
+from aegis.llm import LLMClient
 from aegis.merchants.models import MERCHANT_NOTE_MAX_CHARS, MerchantRow
 from aegis.merchants.repository import (
     MerchantConflictError,
@@ -5732,6 +5734,232 @@ def _txs_to_rows(txs: list[ClassifiedTransaction]) -> list[dict[str, Any]]:
         }
         for t in sorted(txs, key=lambda t: (t.posted_date, t.source_page, t.source_line))
     ]
+
+
+# ============================================================
+# Funder note generator endpoints (INT 5 / build plan § 8.5)
+# ============================================================
+
+
+@router.post("/merchants/{merchant_id}/funder-note/draft", response_class=HTMLResponse)
+async def funder_note_draft(
+    request: Request,
+    merchant_id: UUID,
+    funder_id: Annotated[UUID, Form()],
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+    funders_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    llm: Annotated[LLMClient, Depends(get_llm)],
+) -> HTMLResponse:
+    """HTMX endpoint — Bedrock-drafts a funder submission note from the
+    dossier context. Returns the editable draft partial; never persists
+    on its own (operator must click Submit on the partial).
+    """
+    from aegis.funders.note_generator import (
+        FunderNoteGenerationError,
+        generate_funder_note,
+    )
+    from aegis.scoring_v2.mca_stack import aggregate_mca_stack
+    from aegis.scoring_v2.offer import compute_offer
+
+    try:
+        merchant = merchants.get(merchant_id)
+        funder = funders_repo.get(funder_id)
+    except (MerchantNotFoundError, FunderNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    all_docs = docs.list_documents(merchant_id=merchant_id, limit=50)
+    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in all_docs])
+    proceed_pair = next(
+        (
+            (d, analyses_by_doc.get(d.id))
+            for d in all_docs
+            if d.parse_status == "proceed" and analyses_by_doc.get(d.id) is not None
+        ),
+        None,
+    )
+    if proceed_pair is None or proceed_pair[1] is None:
+        audit.record(
+            actor="dashboard",
+            action="funder.note_draft_failed",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={"funder_id": str(funder_id), "reason": "no_proceed_analysis"},
+        )
+        return HTMLResponse(
+            "<div class='funder-note-error' style='color:#c75252;font-size:12px;padding:8px 12px'>"
+            "Cannot draft note: no clean-parse analysis on file for this merchant."
+            "</div>"
+        )
+    analysis = proceed_pair[1]
+    if analysis.monthly_revenue is None:
+        return HTMLResponse(
+            "<div class='funder-note-error' style='color:#c75252;font-size:12px;padding:8px 12px'>"
+            "Cannot draft note: analysis has no monthly_revenue."
+            "</div>"
+        )
+    try:
+        empty_stack = aggregate_mca_stack(
+            transactions=[],
+            monthly_revenue=analysis.monthly_revenue,
+            period_days=30,
+        )
+        offer = compute_offer(
+            true_revenue_monthly=analysis.monthly_revenue,
+            holdback_capacity_monthly=analysis.monthly_revenue * Decimal("0.25"),
+            mca_stack=empty_stack,
+            product_type=merchant.product_type,
+        )
+    except ValueError:
+        offer = None
+    if offer is None:
+        return HTMLResponse(
+            "<div class='funder-note-error' style='color:#c75252;font-size:12px;padding:8px 12px'>"
+            "Cannot draft note: compute_offer returned None (sub-floor or product mismatch)."
+            "</div>"
+        )
+
+    try:
+        note_text = generate_funder_note(
+            merchant=merchant,
+            analysis=analysis,
+            offer=offer,
+            funder=funder,
+            llm_client=cast("Any", llm),
+            stated_mca_balance=merchant.stated_mca_balance,
+            lender_list=", ".join(merchant.stated_current_lenders or []) or None,
+        )
+    except FunderNoteGenerationError as exc:
+        audit.record(
+            actor="dashboard",
+            action="funder.note_draft_failed",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={
+                "funder_id": str(funder_id),
+                "error": type(exc).__name__,
+                "message": str(exc)[:200],
+            },
+        )
+        return HTMLResponse(
+            f"<div class='funder-note-error' style='color:#c75252;font-size:12px;padding:8px 12px'>"
+            f"Draft generation failed: {str(exc)[:200]}"
+            f"</div>"
+        )
+
+    audit.record(
+        actor="dashboard",
+        action="funder.note_drafted",
+        subject_type="merchant",
+        subject_id=merchant_id,
+        details={"funder_id": str(funder_id), "note_chars": len(note_text)},
+    )
+    return cast(
+        "HTMLResponse",
+        templates.TemplateResponse(
+            request,
+            "_funder_note_draft.html.j2",
+            {
+                "note_text": note_text,
+                "merchant_id": merchant_id,
+                "funder_id": funder_id,
+                "funder_name": funder.name,
+            },
+        ),
+    )
+
+
+@router.post("/merchants/{merchant_id}/funder-note/submit", response_class=HTMLResponse)
+async def funder_note_submit(
+    request: Request,
+    merchant_id: UUID,
+    funder_id: Annotated[UUID, Form()],
+    note_text: Annotated[str, Form()],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+) -> HTMLResponse:
+    """HTMX endpoint — persist an operator-edited funder note draft.
+
+    Writes to ``funder_note_submissions``. Returns a small confirmation
+    fragment that replaces the draft host on success.
+    """
+    note_stripped = note_text.strip()
+    if not note_stripped:
+        return HTMLResponse(
+            "<div class='funder-note-error' style='color:#c75252;font-size:12px;padding:8px 12px'>"
+            "Cannot submit an empty note."
+            "</div>"
+        )
+
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    from aegis.db import get_supabase
+
+    submission_row = {
+        "merchant_id": str(merchant_id),
+        "funder_id": str(funder_id),
+        "note_text": note_stripped,
+        "submitted_at": _dt.now(UTC).isoformat(),
+    }
+    try:
+        get_supabase().table("funder_note_submissions").insert(submission_row).execute()
+    except Exception as exc:
+        audit.record(
+            actor="dashboard",
+            action="funder.note_submit_failed",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={
+                "funder_id": str(funder_id),
+                "error": type(exc).__name__,
+                "message": str(exc)[:200],
+            },
+        )
+        return HTMLResponse(
+            f"<div class='funder-note-error' style='color:#c75252;font-size:12px;padding:8px 12px'>"
+            f"Submit failed: {type(exc).__name__}"
+            f"</div>"
+        )
+
+    audit.record(
+        actor="dashboard",
+        action="funder.note_submitted",
+        subject_type="merchant",
+        subject_id=merchant_id,
+        details={"funder_id": str(funder_id), "note_chars": len(note_stripped)},
+    )
+    return HTMLResponse(
+        "<div class='funder-note-confirmation' "
+        "style='color:#2d7a2d;font-size:12px;padding:8px 12px;"
+        "border:1px solid #c7e6c7;background:#f0f8f0;border-radius:4px'>"
+        "Note submitted. funder_note_submissions row recorded."
+        "</div>"
+    )
+
+
+@router.post("/merchants/{merchant_id}/funder-note/discard", response_class=HTMLResponse)
+async def funder_note_discard(
+    request: Request,
+    merchant_id: UUID,
+    funder_id: Annotated[UUID, Form()],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+) -> HTMLResponse:
+    """HTMX endpoint — discard a draft (no DB write, audit row only)."""
+    audit.record(
+        actor="dashboard",
+        action="funder.note_discarded",
+        subject_type="merchant",
+        subject_id=merchant_id,
+        details={"funder_id": str(funder_id)},
+    )
+    return HTMLResponse(
+        "<div class='funder-note-discarded' "
+        "style='color:var(--ink-2,#666);font-size:12px;padding:8px 12px;"
+        "border:1px dashed var(--rule,#d8d8d4);border-radius:4px'>"
+        "Draft discarded."
+        "</div>"
+    )
 
 
 __all__ = [

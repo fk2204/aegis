@@ -2246,6 +2246,41 @@
       <div id="deal-outcome-modal-host"></div>
       {% endif %}
 
+      {# Funder note generator CTA — appears only when an offer
+         recommendation exists AND the merchant has matched funders.
+         Operator picks a funder, clicks Generate, edits in-place, then
+         Submit to write a funder_note_submissions row. Extraction
+         assists; the operator always confirms (CLAUDE.md
+         extraction-assists-not-replaces). #}
+      {% if offer and matched_funders %}
+      <div class="funder-note-cta" data-test-id="funder-note-draft-cta"
+           style="margin:14px 0;padding:12px 14px;border:1px solid var(--rule,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+        <h3 style="margin:0 0 8px;font-size:13px;font-weight:600">Generate funder submission note</h3>
+        <div class="funder-note-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px">
+          <select id="funder-note-funder-select" name="funder_id"
+                  style="padding:6px 8px;border:1px solid var(--rule,#d8d8d4);border-radius:4px;font-size:12px">
+            {% for match in matched_funders[:8] %}
+              <option value="{{ match.funder.id }}">{{ match.funder.name }}</option>
+            {% endfor %}
+          </select>
+          <button type="button"
+                  class="btn small"
+                  data-test-id="funder-note-draft-btn"
+                  hx-post="/ui/merchants/{{ merchant.id }}/funder-note/draft"
+                  hx-include="#funder-note-funder-select"
+                  hx-target="#funder-note-draft-host"
+                  hx-swap="innerHTML"
+                  hx-indicator="#funder-note-spinner"
+                  style="padding:6px 12px;border:1px solid var(--ink-1);border-radius:4px;background:#2d7a2d;color:white;font-size:11px;text-transform:uppercase;letter-spacing:0.08em;cursor:pointer">
+            Generate Note
+          </button>
+          <span id="funder-note-spinner" class="htmx-indicator"
+                style="font-size:11px;color:var(--ink-2,#666)">Generating…</span>
+        </div>
+        <div id="funder-note-draft-host" style="margin-top:10px"></div>
+      </div>
+      {% endif %}
+
       <div class="disposition">
         <div class="copy">
           {% if score_result and score_result.recommendation == 'approve' %}
