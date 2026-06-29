@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Final, cast
 from uuid import UUID
 
@@ -69,6 +70,72 @@ from aegis.web._flag_labels import humanize_audit_action
 from aegis.web._templates import templates
 
 _log = get_logger(__name__)
+
+
+# 2026-06-29 dashboard refresh — operator-facing labels for the right-rail
+# recent-activity rows. Keeps raw audit action strings out of the
+# operator's view; `humanize_audit_action` already covers the special
+# ``deal.submit_to_funders`` case (with funder names), and the fallback
+# below replaces dots and underscores so any unknown code still
+# renders as readable English.
+ACTIVITY_LABELS: Final[dict[str, str]] = {
+    "deal.submit_to_funders": "submitted to funders",
+    "deal.funded": "deal funded",
+    "deal.declined": "deal declined",
+    "decision.recorded": "scored deal",
+    "override.recorded": "override recorded",
+    "document.uploaded": "uploaded statement",
+    "document.parsed": "parsed statement",
+    "document.parse_failed": "parse failed",
+    "document.original_viewed": "viewed original PDF",
+    "merchant.created": "created merchant",
+    "merchant.updated": "updated merchant",
+    "merchant.deleted": "deleted merchant",
+    "funder.created": "added funder",
+    "funder.updated": "updated funder",
+    "funder_reply.recorded": "funder reply recorded",
+    "funder_note.submitted": "submitted funder note",
+    "compliance.deadline_approaching": "compliance deadline",
+    "shadow_signal.weekly_summary": "shadow signal summary",
+    "shadow_signal.weekly_summary_complete": "shadow review complete",
+}
+
+
+def _format_activity_label(action: str, details: dict[str, Any] | None) -> str:
+    """Translate an audit action into operator-readable text.
+
+    Order of precedence:
+      1. ``humanize_audit_action`` handles the ``deal.submit_to_funders``
+         special case (funder-name interpolation).
+      2. ``ACTIVITY_LABELS`` table for known codes.
+      3. Fallback: replace dots with arrows and underscores with spaces
+         so an unknown code still renders as readable English.
+    """
+    humanized = humanize_audit_action(action, details)
+    if humanized != action:
+        return humanized
+    if action in ACTIVITY_LABELS:
+        return ACTIVITY_LABELS[action]
+    return action.replace(".", " > ").replace("_", " ")
+
+
+def _format_requested_amount(amount: Decimal | None) -> str:
+    """Round a requested amount to the nearest $1,000 for card display.
+
+    Empty / None / zero collapses to an empty string so the template can
+    suppress the line cleanly. Above-threshold values render as
+    ``$XX,000`` — the dashboard card is a scan-level surface, the
+    dossier carries the exact figure.
+    """
+    if amount is None:
+        return ""
+    try:
+        rounded = (amount / Decimal("1000")).quantize(Decimal("1")) * Decimal("1000")
+    except (InvalidOperation, ValueError):
+        return ""
+    if rounded <= 0:
+        return ""
+    return f"${int(rounded):,}"
 
 
 def _safe_or_default(value: Any, default: Any, label: str) -> Any:  # noqa: ANN401
@@ -236,6 +303,10 @@ async def index(
                 r.get("action") or "—",
                 r.get("details") if isinstance(r.get("details"), dict) else None,
             ),
+            "display_label": _format_activity_label(
+                r.get("action") or "—",
+                r.get("details") if isinstance(r.get("details"), dict) else None,
+            ),
             "subject_type": r.get("subject_type") or "",
             "subject_id": r.get("subject_id") or "",
             "time_short": _format_activity_time(r.get("created_at")),
@@ -275,7 +346,6 @@ async def index(
         stale_triple,
         today_pipeline,
         key_numbers,
-        monthly_comparison,
     ) = await asyncio.gather(
         asyncio.to_thread(
             _build_attention_groups,
@@ -309,12 +379,6 @@ async def index(
             now=now_utc,
             all_recent_docs=all_recent_docs,
         ),
-        asyncio.to_thread(
-            _compute_monthly_comparison,
-            docs=docs,
-            now=now_utc,
-            all_recent_docs=all_recent_docs,
-        ),
         return_exceptions=True,
     )
 
@@ -322,12 +386,40 @@ async def index(
     stale_triple = _safe_or_default(stale_triple, (0, [], []), "stale_deals")
     today_pipeline = _safe_or_default(today_pipeline, {}, "today_pipeline")
     key_numbers = _safe_or_default(key_numbers, {}, "key_numbers")
-    monthly_comparison = _safe_or_default(monthly_comparison, [], "monthly_comparison")
     (
         stale_deals_count,
         stale_deals_source_merchant_ids,
         stale_attention_cards,
     ) = stale_triple
+
+    # 2026-06-29 dashboard refresh — Fix D: per-card display extras
+    # (NAICS friendly label + amount rounded to $1k). The frozen
+    # ``AttentionCard`` stays the canonical shape that tests assert
+    # against; the template now consumes a parallel list of dicts that
+    # mirror the card fields plus ``naics_display`` + ``requested_display``.
+    # Lazy import — keeps the merchants router off the import path for
+    # tests that don't touch the dashboard surface.
+    from aegis.web.routers.merchants import _naics_name
+
+    attention_view = [
+        {
+            "merchant_id": card.merchant_id,
+            "merchant_label": card.merchant_label,
+            "merchant_state": card.merchant_state,
+            "merchant_naics": card.merchant_naics,
+            "naics_display": _naics_name(card.merchant_naics) or (card.merchant_naics or ""),
+            "requested_amount": card.requested_amount,
+            "requested_display": _format_requested_amount(card.requested_amount),
+            "worst_fraud_score": card.worst_fraud_score,
+            "fraud_band": card.fraud_band,
+            "tier": card.tier,
+            "doc_count": card.doc_count,
+            "documents": card.documents,
+            "flags": card.flags,
+            "merchant_status": card.merchant_status,
+        }
+        for card in attention
+    ]
 
     # Quick-action buttons are static — declared here so the template
     # iterates a list rather than hardcoding three blocks. Labels are
@@ -363,7 +455,7 @@ async def index(
             "pending_count": pending,
             "error_count": error,
             "funnel_rows": funnel_rows,
-            "attention": attention,
+            "attention": attention_view,
             "category_labels": CATEGORY_LABELS,
             "recent_activity": recent_activity,
             # NEW — Today three-column dashboard context.
@@ -382,9 +474,10 @@ async def index(
             "today_pipeline": today_pipeline,
             "today_recent_activity": today_recent_activity,
             "quick_actions": quick_actions,
-            # 2026-06-28 refresh — key numbers banner + 3-month strip.
+            # 2026-06-28 refresh — key numbers banner. Monthly-strip
+            # context retired 2026-06-29 (Fix A) — replaced by the
+            # week-summary-line in the template.
             "key_numbers": key_numbers,
-            "monthly_comparison": monthly_comparison,
             "queue_alert": queue_alert,
             "queue_depth": queue_depth,
             "queue_threshold": queue_threshold,
@@ -907,12 +1000,12 @@ def _build_today_recent_activity(
     """
     out: list[dict[str, Any]] = []
     for r in rows[:limit]:
+        details = r.get("details") if isinstance(r.get("details"), dict) else None
+        action_str = r.get("action") or "—"
         out.append(
             {
-                "action": humanize_audit_action(
-                    r.get("action") or "—",
-                    r.get("details") if isinstance(r.get("details"), dict) else None,
-                ),
+                "action": humanize_audit_action(action_str, details),
+                "display_label": _format_activity_label(action_str, details),
                 "time_short": _format_activity_time(r.get("created_at")),
             }
         )

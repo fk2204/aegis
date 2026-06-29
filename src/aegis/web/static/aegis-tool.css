@@ -1859,6 +1859,65 @@
   }
 }
 
+/* 2026-06-29 dashboard refresh — Fix A: compact one-line summary
+ * that replaced the aggregate monthly strip. Three actionable counts
+ * the operator scans on page load. Plain text, no border / no card
+ * background — explicit visual de-emphasis vs. the bordered
+ * key-numbers banner above, so the headline read stays the banner. */
+.dossier-page .week-summary-line {
+  padding: 8px 24px 16px;
+  font: 13px/1.5 var(--sans, "Inter", system-ui);
+  color: var(--ink-3);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+.dossier-page .week-summary-line .week-summary-item strong {
+  font-family: var(--mono, "JetBrains Mono", monospace);
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.dossier-page .week-summary-line .week-summary-sep {
+  color: var(--ink-3);
+  opacity: 0.6;
+}
+
+/* 2026-06-29 dashboard refresh — Fix E: compact quick-action buttons.
+ * Was 14px font + 14px vertical padding => ~46px tall. New: 13px font +
+ * 9px vertical padding => ~36px tall. Tightens the right column so
+ * three buttons stack with the same vertical footprint as one of the
+ * attention sections, matching the visual rhythm of the rest of the
+ * dashboard. */
+.dossier-page .quick-actions .action-btn,
+.dossier-page .quick-actions a,
+.dossier-page .quick-actions button,
+.dossier-page .qa-buttons .qa-btn {
+  font-size: 13px;
+  padding: 9px 16px;
+  line-height: 1.2;
+}
+
+/* 2026-06-29 dashboard refresh — Fix G: tighten the overall dashboard
+ * layout so the eye doesn't hop over big empty bands. Lower vertical
+ * margins on the key-numbers banner and the stats strip
+ * (template class ``.strip`` — Fix G's spec called it ``.stats-row``
+ * but the template renders ``.strip``), and shrink the gap between
+ * the today columns so the three sections read as one compact desk. */
+.dossier-page .key-numbers-banner {
+  margin-bottom: 12px;
+}
+.dossier-page .strip {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+}
+.dossier-page .today-cols,
+.today-cols {
+  gap: 14px;
+  margin-top: 12px;
+}
+
 /* 2026-06-28 — plain-English parse-status badges for the merchant
  * list. Replaces the raw enum chip ("proceed", "manual_review", etc.)
  * with color-coded pills so a non-engineer reading /ui/merchants

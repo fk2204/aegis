@@ -146,12 +146,12 @@ def test_index_renders_live_kpis(
     assert "Merchants" in resp.text
     assert "In pipeline" in resp.text
     assert "Cleared" in resp.text
-    # Funnel rows now live (have non-zero counts somewhere). After the
-    # 2026-06-16 three-column Today redesign the legacy "Pipeline funnel"
-    # heading text moved below the fold; assert on the stable test-id
-    # exposed by the new pipeline column instead — that's the durable
-    # contract a test should bind to.
-    assert 'data-test-id="today-pipeline-funnel"' in resp.text
+    # Pipeline column wrapper is present regardless of whether deals
+    # have been scored today. After the 2026-06-29 dashboard refresh
+    # (Fix F) the inner funnel widget hides under an empty-state when
+    # no decisions exist for today; binding to the column wrapper keeps
+    # this assertion stable across both branches.
+    assert 'data-test-id="today-pipeline"' in resp.text
 
 
 def test_index_manual_review_doc_surfaces_in_attention_panel(

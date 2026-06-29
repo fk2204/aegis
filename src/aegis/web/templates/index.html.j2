@@ -74,42 +74,28 @@
 {% endblock %}
 
 {% block body %}
-{# 2026-06-28 — trailing 6-month gross-deposits comparison strip.
-   Aggregated from analyses.monthly_breakdown across the last
-   ~200 documents (see _compute_monthly_comparison). Hidden when no
-   recent doc carries a populated breakdown (sparse-data degrade).
-
-   Label says "Gross deposits" — NOT "true revenue" — because
-   monthly_breakdown.deposits is the unfiltered deposit total. A
-   per-month true-revenue split (deposits net of transfers + MCA
-   paybacks) requires parser-side changes (see TODO in
-   _compute_monthly_comparison) and is not available yet.
-
-   Trend arrow is set by the route from the prior-month delta vs. a 2%
-   noise floor: "up" / "down" / "flat" / "" (first month, no comparator).
+{# 2026-06-29 dashboard refresh — Fix A: the trailing-6-month gross-
+   deposits strip was removed. It summed deposits across all merchants
+   in the portfolio, which is operationally meaningless for an ISO
+   broker that doesn't carry the receivables. Replaced with the compact
+   one-liner below — three actionable counts the operator scans on
+   page load. The `_compute_monthly_comparison` helper + its tests
+   stay on disk (out of scope) but their result is no longer rendered.
 #}
-{% if monthly_comparison %}
-<section class="monthly-strip" data-test-id="dashboard-monthly-strip">
-  {% for month in monthly_comparison %}
-  <div class="month-cell" data-test-id="monthly-cell-{{ loop.index }}" data-trend="{{ month.trend }}">
-    <div class="month-label">{{ month.label }}</div>
-    <div class="month-revenue">
-      ${{ '{:,.0f}'.format(month.deposits) }}
-      {% if month.trend == 'up' %}
-        <span class="month-trend month-trend--up" data-test-id="monthly-trend-up" title="Up vs. prior month">↑</span>
-      {% elif month.trend == 'down' %}
-        <span class="month-trend month-trend--down" data-test-id="monthly-trend-down" title="Down vs. prior month">↓</span>
-      {% elif month.trend == 'flat' %}
-        <span class="month-trend month-trend--flat" data-test-id="monthly-trend-flat" title="Flat vs. prior month (within 2%)">→</span>
-      {% else %}
-        <span class="month-trend month-trend--none" aria-hidden="true"></span>
-      {% endif %}
-    </div>
-    <div class="month-revenue-label">Gross deposits</div>
-    <div class="month-nsf {{ 'bad' if month.nsf_count > 0 else '' }}">{{ month.nsf_count }} NSF</div>
-    <div class="month-adb">${{ '{:,.0f}'.format(month.adb) }} ADB</div>
-  </div>
-  {% endfor %}
+{% if key_numbers %}
+<section class="week-summary-line" data-test-id="dashboard-week-summary">
+  <span class="week-summary-item">
+    <strong>{{ key_numbers.pending_parse }}</strong> awaiting parse
+  </span>
+  <span class="week-summary-sep">·</span>
+  <span class="week-summary-item">
+    <strong>{{ key_numbers.ready_to_submit }}</strong> ready to submit
+  </span>
+  <span class="week-summary-sep">·</span>
+  <span class="week-summary-item">
+    avg revenue (7d)
+    <strong>{% if key_numbers.avg_revenue_this_week is not none %}${{ '{:,.0f}'.format(key_numbers.avg_revenue_this_week) }}{% else %}—{% endif %}</strong>
+  </span>
 </section>
 {% endif %}
 
@@ -160,7 +146,13 @@
                 <div class="card-title">
                   {% if g.merchant_id %}<a href="/ui/merchants/{{ g.merchant_id }}">{{ g.merchant_label }}</a>{% else %}<span class="card-title-text">{{ g.merchant_label }}</span>{% endif %}
                   <span class="card-sub">
-                    {% if g.merchant_state %}{{ g.merchant_state }}{% endif %}{% if g.merchant_naics %} · {{ g.merchant_naics }}{% endif %}{% if g.requested_amount %} · Requested ${{ g.requested_amount }}{% endif %}
+                    {# 2026-06-29 dashboard refresh — Fix D: NAICS code
+                       resolved to its friendly label and requested
+                       amount rounded to the nearest $1k for scan-level
+                       readability. The raw values are still on the
+                       card (``merchant_naics`` + ``requested_amount``)
+                       for any downstream consumer. #}
+                    {% if g.merchant_state %}{{ g.merchant_state }}{% endif %}{% if g.naics_display %} · {{ g.naics_display }}{% endif %}{% if g.requested_display %} · Requested {{ g.requested_display }}{% endif %}
                   </span>
                 </div>
                 <div class="card-meta">
@@ -319,47 +311,49 @@
       <div class="meta">since 00:00 UTC</div>
     </header>
 
-    <div class="today-scored" data-test-id="today-pipeline-scored">
-      <div class="today-scored-n">{{ today_pipeline.deals_scored }}</div>
-      <div class="today-scored-label">deal{{ '' if today_pipeline.deals_scored == 1 else 's' }} scored today</div>
-    </div>
+    {# 2026-06-29 dashboard refresh — Fix F: when no deals have been
+       scored yet today, surface a single empty-state message instead of
+       three zeroed widgets. The key on _compute_today_pipeline's return
+       is ``deals_scored`` (NOT ``scored``); ``today_pipeline`` is ``{}``
+       only when the helper raised inside ``asyncio.gather``. #}
+    {% if not today_pipeline or today_pipeline.deals_scored == 0 %}
+      <div class="empty" data-test-id="today-pipeline-empty">
+        Nothing scored yet today<span class="copy">As you upload statements + score deals, today's tiers and funnel land here.</span>
+      </div>
+    {% else %}
+      <div class="today-scored" data-test-id="today-pipeline-scored">
+        <div class="today-scored-n">{{ today_pipeline.deals_scored }}</div>
+        <div class="today-scored-label">deal{{ '' if today_pipeline.deals_scored == 1 else 's' }} scored today</div>
+      </div>
 
-    <div class="tier-pills" data-test-id="today-pipeline-tiers">
-      {% for letter in ['A','B','C','D','F'] %}
-        <div class="tier-pill tier-pill-{{ letter }}" data-test-id="today-tier-{{ letter|lower }}">
-          <span class="tier-pill-letter">{{ letter }}</span>
-          <span class="tier-pill-count">{{ today_pipeline.tiers.get(letter, 0) }}</span>
-        </div>
-      {% endfor %}
-    </div>
-
-    <div class="today-funnel" data-test-id="today-pipeline-funnel">
-      <h3 class="attn-section-head">Today's funnel</h3>
-      <ol class="funnel-stages">
-        {% for stage in today_pipeline.funnel_stages %}
-          <li class="funnel-stage" data-test-id="today-funnel-{{ stage.label|lower }}">
-            <span class="funnel-stage-count">{{ stage.count }}</span>
-            <span class="funnel-stage-label">{{ stage.label }}</span>
-          </li>
-        {% endfor %}
-      </ol>
-    </div>
-
-    {# Legacy lifetime funnel — kept below the fold of the new today
-       view so the existing parse-status bars stay reachable. Width
-       proportions retained from _build_funnel_rows. #}
-    <div class="today-legacy-funnel">
-      <h3 class="attn-section-head">Lifetime pipeline</h3>
-      <div class="funnel">
-        {% for row in funnel_rows %}
-          <div class="row">
-            <span>{{ row.label }}</span>
-            <div class="bar"><div class="fill {{ row.cls }}" style="width:{{ row.width }}%"></div></div>
-            <span class="n">{{ row.count }}</span>
+      <div class="tier-pills" data-test-id="today-pipeline-tiers">
+        {% for letter in ['A','B','C','D','F'] %}
+          <div class="tier-pill tier-pill-{{ letter }}" data-test-id="today-tier-{{ letter|lower }}">
+            <span class="tier-pill-letter">{{ letter }}</span>
+            <span class="tier-pill-count">{{ today_pipeline.tiers.get(letter, 0) }}</span>
           </div>
         {% endfor %}
       </div>
-    </div>
+
+      <div class="today-funnel" data-test-id="today-pipeline-funnel">
+        <h3 class="attn-section-head">Today's funnel</h3>
+        <ol class="funnel-stages">
+          {% for stage in today_pipeline.funnel_stages %}
+            <li class="funnel-stage" data-test-id="today-funnel-{{ stage.label|lower }}">
+              <span class="funnel-stage-count">{{ stage.count }}</span>
+              <span class="funnel-stage-label">{{ stage.label }}</span>
+            </li>
+          {% endfor %}
+        </ol>
+      </div>
+    {% endif %}
+
+    {# 2026-06-29 dashboard refresh — Fix B: lifetime pipeline funnel
+       removed. The aggregate-since-launch funnel competed with the
+       Today-scoped funnel above it for the same operator attention,
+       and the lifetime numbers weren't actionable. The
+       ``_build_funnel_rows`` helper still computes the data in the
+       route (cheap), but it's no longer rendered. #}
   </div>
 
   {# ── RIGHT 25% · Quick actions + recent activity ─────────────── #}
@@ -388,7 +382,10 @@
         {% for r in today_recent_activity %}
           <li class="today-activity-row">
             <span class="today-activity-time">{{ r.time_short }}</span>
-            <span class="today-activity-action">{{ r.action }}</span>
+            {# 2026-06-29 — Fix C: operator-readable display_label
+               (built via _format_activity_label) replaces the raw
+               humanize_audit_action output for the right-rail view. #}
+            <span class="today-activity-action">{{ r.display_label }}</span>
           </li>
         {% endfor %}
       {% endif %}
@@ -417,7 +414,10 @@
           <div class="event">
             <div class="t">{{ r.time_short }}</div>
             <div class="txt">
-              <strong>{{ r.actor }}</strong> {{ r.action }}{% if r.subject_type %}<span class="mono-inline">· {{ r.subject_type }}{% if r.subject_id %}/{{ r.subject_id[:8] }}{% endif %}</span>{% endif %}
+              {# 2026-06-29 — Fix C: ``display_label`` is the
+                 operator-translated event string. ``action`` is
+                 retained on the dict for downstream replay / debug. #}
+              <strong>{{ r.actor }}</strong> {{ r.display_label }}{% if r.subject_type %}<span class="mono-inline">· {{ r.subject_type }}{% if r.subject_id %}/{{ r.subject_id[:8] }}{% endif %}</span>{% endif %}
             </div>
           </div>
         {% endfor %}
