@@ -1224,65 +1224,143 @@ those audit rows as a CourtListener outage, not an AEGIS bug.
 
 ---
 
-## Google Drive funder sync (07:00 UTC daily timer)
+## Funder Guidelines Sync (local folder → AEGIS)
 
-`aegis-funder-sync.timer` walks the operator's Google Drive funders
-folder once a day, extracts every funder's most-recent guidelines PDF
-via Bedrock, and writes the structured criteria to
-`funders.guidelines_data`. Driven by
-`scripts/sync_funders_from_folder.py --apply` (see the script's
-docstring for behavior + exit codes).
+`scripts/sync_funders_from_folder.py` walks a local folder on the
+operator's Windows workstation, extracts each funder's most-recent
+criteria file via Bedrock, and writes the structured fields to
+`funders.guidelines_data` plus the live FunderRow columns (the local
+folder is the operator's own machine, so the live-column writes are
+the explicit operator-approved exception to "extraction assists,
+never replaces judgment" — see the script docstring).
 
-### One-time install on the box
+The script runs **from the operator's Windows box**, not from the
+Hetzner server. The previous Google Drive timer + systemd units have
+been retired — the operator's funders folder lives on Windows
+OneDrive, not in Google Drive.
 
-```
-ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 \
-  "cp /opt/aegis/deploy/aegis-funder-sync.{service,timer} /etc/systemd/system/ \
-   && systemctl daemon-reload \
-   && systemctl enable aegis-funder-sync.timer"
-```
+### Folder layout
 
-**Do NOT `--now` until the env vars below are set** — the script
-exits 1 (config error) when either is missing and a failing timer just
-fills the journal. Once env is wired, run
-`systemctl start aegis-funder-sync.timer` to arm it (the daily
-07:00 UTC cron does the actual work).
-
-### Required env vars in `/etc/aegis/aegis.env`
+Default folder (override via `--folder PATH` or env
+`FUNDERS_FOLDER_PATH`):
 
 ```
-GOOGLE_DRIVE_CREDENTIALS_JSON=<service-account JSON, single-line OR an absolute path to a JSON file on the box>
-GOOGLE_DRIVE_FUNDERS_FOLDER_ID=<folder ID from the Drive URL — the path component after /folders/>
+C:\Users\fkozi\OneDrive\Radna površina\COMMERA FUNDING\Funders
 ```
 
-The service account needs `drive.readonly` on the funders folder
-(share the folder with the service-account email — no need to grant
-domain-wide delegation). AEGIS never writes back to Drive.
-
-### Operator confirmation discipline
-
-The script writes the extracted JSONB to `funders.guidelines_data`
-without operator review (the Bedrock output is reviewed structurally
-by the sanitiser in `aegis.funders.guidelines_extract`). It does NOT
-auto-write to the live FunderRow criteria columns. Promotion of
-individual fields (`min_monthly_revenue` / `min_credit_score` / etc.)
-into FunderRow stays operator-explicit — same rule as the merchant-
-side `stated_extracted_pending` staging pattern.
-
-### Tail logs
+Each immediate subfolder is one funder. The newest supported file
+inside the subfolder is the canonical guideline document:
 
 ```
-journalctl -u aegis-funder-sync -n 100 --no-pager
+Funders\
+  Highland Hill Capital\
+    guidelines.pdf
+  Logic Advance\
+    underwriting_matrix.docx
+  New Funder\               ← never-seen subfolder name → auto-INSERT
+    criteria.png
 ```
 
-The output lines use a stable shape (`+ Name: added` / `↑ Name:
-updated` / `= Name: up to date` / `- Name: no PDF` / `! Name: error`)
-so operators can `grep '!'` to triage failures.
+Supported extensions: `.pdf .docx .xlsx .jpg .jpeg .png .txt`. Legacy
+`.doc` and `.xls` are rejected with a clear error — convert to the
+modern format. Sub-subfolders are ignored (immediate children only).
 
-### Verify
+### Run instructions
+
+From the repo root on the operator's workstation:
 
 ```
-systemctl list-timers | grep funder
-journalctl -u aegis-funder-sync --since "1 day ago" -n 50
+# Dry-run — classify each subfolder; no DB writes.
+uv run python scripts/sync_funders_from_folder.py
+
+# Apply mode — write to Supabase.
+uv run python scripts/sync_funders_from_folder.py --apply
+
+# Override the folder path (one-off):
+uv run python scripts/sync_funders_from_folder.py --folder "D:\Funders" --apply
 ```
+
+Output bucket counts are written to stderr:
+
+```
+# RESULT mode=APPLY
+  added: 1
+  updated: 2
+  skipped_up_to_date: 18
+  skipped_no_file: 0
+  errors: 0
+```
+
+Per-line shape (so operators can `grep '!'` for failures):
+
+* `+ Name: added (file=X.pdf)` — never-seen subfolder, new funder row
+* `↑ Name: updated (hash=abc123…, file=X.pdf)` — hash changed
+* `= Name: up to date (hash unchanged)` — SHA-256 matches stored
+* `- Name: no supported file in folder` — empty / unsupported types
+* `! Name: ErrorType: message` — Bedrock / docx / persist failure
+
+### Adding a new funder
+
+1. Create a new subfolder under the Funders root using the funder's
+   business name (case is preserved on INSERT; matching against
+   existing rows is case-insensitive).
+2. Drop the funder's criteria file (PDF, DOCX, XLSX, image, or TXT)
+   inside the subfolder.
+3. Run `scripts/sync_funders_from_folder.py --apply`.
+4. The script INSERTs a new row in `funders` with `operator_status =
+   'active'` and writes one `audit_log` row
+   `funder.auto_added_from_folder` for traceability.
+5. Open the funder detail page in AEGIS to confirm the extracted
+   live columns look right. Anything the operator wants to override
+   stays editable via the funder edit UI.
+
+### Updating an existing funder's guidelines
+
+1. Drop the refreshed criteria file in the funder's subfolder
+   (overwrite or add — the newest mtime wins).
+2. Run `scripts/sync_funders_from_folder.py --apply`.
+3. The script detects the SHA-256 mismatch against
+   `funders.guidelines_data._file_hash` and UPDATEs the JSONB blob +
+   live columns. The funder row's `id` is preserved (`UPDATE` keyed
+   on the matched name).
+4. If the operator manually tweaked any live column after the prior
+   sync, the new sync will overwrite that column from the fresh
+   extraction. The structured JSONB remains the source of truth for
+   review; live-column writes are the convenience pre-fill.
+
+### Windows Task Scheduler setup (optional automation)
+
+The script is designed to be run interactively, but a daily / weekly
+run can be wired through Windows Task Scheduler:
+
+1. Open Task Scheduler → Create Task.
+2. **General tab**: Name `AEGIS Funder Sync`. "Run whether user is
+   logged on or not" — checked. "Run with highest privileges" —
+   unchecked (no elevation needed).
+3. **Triggers tab**: New → Daily, e.g. 07:00 local. Tick "Stop the
+   task if it runs longer than 30 minutes" as a safety.
+4. **Actions tab**: New → Start a program.
+   * Program/script: `cmd.exe`
+   * Add arguments: `/c "cd /d C:\Users\fkozi\aegis && uv run python scripts/sync_funders_from_folder.py --apply >> C:\Users\fkozi\aegis\logs\funder-sync.log 2>&1"`
+   * (Create `C:\Users\fkozi\aegis\logs\` once before the first run.)
+5. **Conditions tab**: Untick "Start the task only if the computer
+   is on AC power" if the workstation is a laptop that should run on
+   battery.
+6. **Settings tab**: Tick "If the task fails, restart every: 30
+   minutes / 3 times". Untick "Stop the task if it runs longer than
+   3 days" — the safety limit is on the trigger.
+
+Verify with: `schtasks /Query /TN "AEGIS Funder Sync" /V /FO LIST`.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `CONFIG ERROR: funders folder not found` (exit 1) | OneDrive path unmounted or moved | Reconnect OneDrive, or pass `--folder PATH` |
+| `CONFIG ERROR: supabase init failed` (exit 1) | `.env` missing `SUPABASE_URL` / service key | Confirm `.env` at repo root has the values |
+| `! Name: GuidelinesExtractionError` (exit 3) | Bedrock returned truncated / malformed JSON | Re-run; if persistent, shrink / split the source file |
+| `! Name: legacy .doc binary format not supported` | Operator dropped a `.doc` | Re-save as `.docx` or print to PDF |
+| `! Name: persist_*` (exit 3) | Supabase write failed | Check `audit_log` for the partial state; rerun |
+| Every subfolder reports `up to date` after fresh edits | File was edited in place but with no byte change (e.g. metadata-only Excel save) | Add a trivial real change, or force re-extraction by clearing `funders.guidelines_data._file_hash` for that row |
+| Task Scheduler run succeeds but no rows updated | Script ran in dry-run because `--apply` was omitted from the action | Edit the scheduled task; verify the `Add arguments` field contains `--apply` |
 
