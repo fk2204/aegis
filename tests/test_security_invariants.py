@@ -73,11 +73,6 @@ _ALLOWED_OUTBOUND_HOSTS: dict[str, str] = {
     "docs.stripe.com": "docref — Stripe balance-txn format (csv_stripe.py)",
     "support.stripe.com": "docref — Stripe balance-txn format (test docstrings)",
     "docs.anthropic.com": "docref — Anthropic tool-use envelope shape (llm.py invoke_tool_json)",
-    "googleapis.com": (
-        "endpoint — Google Drive v3 API (integrations/google_drive.py + "
-        "scripts/sync_funders_from_folder.py daily funder-guidelines sync)"
-    ),
-    "google.com": "endpoint — Google OAuth2 token exchange for the Drive service account",
     # --- state regulation citations (data, not callers) ---------------------
     "leginfo.legislature.ca.gov": "citation — CA statute reference (compliance/states.py)",
     "law.cornell.edu": "citation — Cornell LII statute references",

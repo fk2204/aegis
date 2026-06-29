@@ -53,12 +53,12 @@ dependencies = [
     # et-xmlfile. Same class as the existing reportlab/pymupdf/pikepdf
     # parsing deps.
     "openpyxl>=3.1",
-    # Google Drive integration — funder guidelines PDF sync
-    # (integrations/google_drive.py + scripts/sync_funders_from_folder.py).
-    # Read-only ``drive.readonly`` scope; service account auth. AEGIS
-    # never writes back to Drive.
-    "google-api-python-client>=2.0",
-    "google-auth>=2.0",
+    # mammoth: pure-Python .docx -> plain text / markdown converter.
+    # Used by scripts/sync_funders_from_folder.py to feed Word-document
+    # funder guideline sheets to Bedrock as text. BSD-2-Clause, minimal
+    # transitive deps (cobble, lxml). PDF / image branches still go
+    # through the canonical aegis.funders.guidelines_extract pipeline.
+    "mammoth>=1.6",
 ]
 
 [dependency-groups]
@@ -96,6 +96,14 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["fitz", "pymupdf", "weasyprint"]
+ignore_missing_imports = true
+
+# mammoth ships no type stubs and no py.typed marker (BSD-2; upstream
+# has not declared types since 1.0). Used by
+# scripts/sync_funders_from_folder.py to convert .docx -> plain text
+# for Bedrock; treated as untyped at the import boundary.
+[[tool.mypy.overrides]]
+module = ["mammoth"]
 ignore_missing_imports = true
 
 # pymupdf ships partial stubs: classes like Document and its methods are

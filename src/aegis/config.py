@@ -187,6 +187,17 @@ class Settings(BaseSettings):
     # configured or unmounted, so prod ticks become free no-ops.
     aegis_funder_monitor_path: str | None = None
 
+    # Local-folder funder guidelines sync (scripts/sync_funders_from_folder.py).
+    # The operator's funder guidelines live under their personal OneDrive
+    # path on the Windows workstation. Each immediate subfolder is one
+    # funder; the newest supported file (PDF / DOCX / DOC / XLSX / XLS /
+    # JPG / JPEG / PNG / TXT) is the canonical guideline document. The
+    # script SHA-256s the file and skips when the hash matches
+    # ``funders.guidelines_data._file_hash``. ``--folder`` on the script
+    # overrides this default; the env var ``FUNDERS_FOLDER_PATH`` is the
+    # ops-side override knob.
+    funders_folder_path: str = r"C:\Users\fkozi\OneDrive\Radna površina\COMMERA FUNDING\Funders"
+
     # Tampering composition rule mode. The rule itself
     # (``aegis.parser.tampering.evaluate_tampering``) always runs and
     # always writes an audit row when it fires:
