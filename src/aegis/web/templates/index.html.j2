@@ -41,36 +41,11 @@
 </section>
 {% endif %}
 
-<section class="strip">
-  <div class="cell">
-    <div class="k">Merchants</div>
-    <div class="v">{{ merchant_total }}</div>
-  </div>
-  <div class="cell">
-    <div class="k">In pipeline</div>
-    <div class="v">{{ in_pipeline }}</div>
-  </div>
-  <div class="cell">
-    <div class="k">Cleared</div>
-    <div class="v {{ 'calm' if proceed_count > 0 else '' }}">{{ proceed_count }}</div>
-  </div>
-  <div class="cell">
-    <div class="k">Review</div>
-    <div class="v {{ 'warn' if review_count > 0 else '' }}">{{ review_count }}</div>
-  </div>
-  <div class="cell">
-    <div class="k">Manual review</div>
-    <div class="v {{ 'bad' if manual_review_count > 0 else '' }}">{{ manual_review_count }}</div>
-  </div>
-  <div class="cell">
-    <div class="k">Pending</div>
-    <div class="v">{{ pending_count }}</div>
-  </div>
-  <div class="cell">
-    <div class="k">Errors</div>
-    <div class="v {{ 'bad' if error_count > 0 else '' }}">{{ error_count }}</div>
-  </div>
-</section>
+{# 2026-06-29 — FIX 1: removed the duplicate stats strip. It rendered
+   the same numbers as the key-numbers banner above (Merchants / In
+   pipeline / Cleared / Review / Manual review / Pending / Errors all
+   come from the same parse_status histogram). Single source of truth
+   is now the key-numbers banner. #}
 {% endblock %}
 
 {% block body %}
@@ -82,22 +57,11 @@
    page load. The `_compute_monthly_comparison` helper + its tests
    stay on disk (out of scope) but their result is no longer rendered.
 #}
-{% if key_numbers %}
-<section class="week-summary-line" data-test-id="dashboard-week-summary">
-  <span class="week-summary-item">
-    <strong>{{ key_numbers.pending_parse }}</strong> awaiting parse
-  </span>
-  <span class="week-summary-sep">·</span>
-  <span class="week-summary-item">
-    <strong>{{ key_numbers.ready_to_submit }}</strong> ready to submit
-  </span>
-  <span class="week-summary-sep">·</span>
-  <span class="week-summary-item">
-    avg revenue (7d)
-    <strong>{% if key_numbers.avg_revenue_this_week is not none %}${{ '{:,.0f}'.format(key_numbers.avg_revenue_this_week) }}{% else %}—{% endif %}</strong>
-  </span>
-</section>
-{% endif %}
+{# 2026-06-29 — FIX 1: removed the week-summary-line. The same three
+   counts (pending parse / ready to submit / avg revenue 7d) already
+   render in the key-numbers banner up top — the second copy here was
+   the third repetition of the same data on the same page. Banner is
+   the single source of truth. #}
 
 {# Today three-column layout (2026-06-16) — attention queue / pipeline
    today / quick-actions + recent activity. Mobile (<768px) stacks the

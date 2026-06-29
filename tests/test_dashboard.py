@@ -142,10 +142,13 @@ def test_index_renders_live_kpis(
     # No placeholder text from the v2-redesign era.
     assert "data hookup TBD" not in resp.text
     assert "preview · audit_log hookup TBD" not in resp.text
-    # KPI labels for the live counts are present.
-    assert "Merchants" in resp.text
-    assert "In pipeline" in resp.text
-    assert "Cleared" in resp.text
+    # KPI labels — bind to the key-numbers banner (the single source
+    # of truth after FIX 1 removed the duplicate stats strip on
+    # 2026-06-29). The banner carries "Active deals" / "Pending parse"
+    # / "Ready to submit" / "Submitted (7d)" / "Avg revenue (7d)".
+    assert "Active deals" in resp.text
+    assert "Pending parse" in resp.text
+    assert "Ready to submit" in resp.text
     # Pipeline column wrapper is present regardless of whether deals
     # have been scored today. After the 2026-06-29 dashboard refresh
     # (Fix F) the inner funnel widget hides under an empty-state when
