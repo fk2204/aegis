@@ -20,7 +20,7 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from arq import cron
@@ -2982,6 +2982,71 @@ async def run_shadow_review_cron(ctx: dict[str, Any]) -> dict[str, int]:
     }
 
 
+async def requeue_stuck_documents_cron(ctx: dict[str, Any]) -> dict[str, int]:
+    """arq cron — re-queue documents stuck in ``pending`` for >2h.
+
+    Documents land in ``pending`` immediately after upload, then the
+    worker picks them up + transitions to ``proceed`` / ``manual_review``
+    / ``error``. A doc still sitting in ``pending`` after 2 hours
+    indicates the original arq job was dropped (worker crash + restart
+    before the job ack, Redis flush, AOF rewrite stall, etc). The
+    nightly fire could miss day-long backlogs — this cron runs every
+    30 minutes to keep the upload→parse latency tight.
+
+    Idempotent: re-enqueueing the same document_id results in a fresh
+    parse_document job; the worker writes a new attempt over the
+    existing row. The doc stays in ``pending`` until the new job
+    transitions it.
+    """
+    from datetime import UTC, timedelta
+    from datetime import datetime as _dt
+
+    from aegis.db import get_supabase
+
+    sb = get_supabase()
+    cutoff = (_dt.now(UTC) - timedelta(hours=2)).isoformat()
+
+    stuck = (
+        sb.table("documents")
+        .select("id,merchant_id,original_filename,uploaded_at")
+        .eq("parse_status", "pending")
+        .lt("uploaded_at", cutoff)
+        .execute()
+    )
+    rows = stuck.data or []
+    if not rows:
+        return {"stuck": 0, "requeued": 0}
+
+    redis = ctx.get("redis")
+    if redis is None:
+        _log.warning("requeue_stuck_documents.no_redis_in_ctx — skipping")
+        return {"stuck": len(rows), "requeued": 0}
+
+    requeued = 0
+    for doc_raw in rows:
+        doc = cast("dict[str, Any]", doc_raw)
+        doc_id = doc.get("id")
+        pdf_path = doc.get("original_filename") or ""
+        if not doc_id:
+            continue
+        try:
+            await redis.enqueue_job("parse_document", str(doc_id), str(pdf_path))
+            requeued += 1
+            _log.info(
+                "requeue_stuck_documents.enqueued document_id=%s filename=%s",
+                doc_id,
+                pdf_path,
+            )
+        except Exception as exc:
+            _log.warning(
+                "requeue_stuck_documents.enqueue_failed document_id=%s error=%s",
+                doc_id,
+                exc,
+            )
+    _log.warning("requeue_stuck_documents.summary stuck=%d requeued=%d", len(rows), requeued)
+    return {"stuck": len(rows), "requeued": requeued}
+
+
 async def run_background_checks(
     ctx: dict[str, Any],
     merchant_id_str: str,
@@ -3254,6 +3319,17 @@ class WorkerSettings:
             weekday="wed",
             hour=6,
             minute=0,
+            run_at_startup=False,
+        ),
+        # Every 30 minutes — re-queue documents stuck in ``pending``
+        # for >2h. The original arq job was lost (worker crash before
+        # ack, Redis AOF rewrite stall, etc); without this cron a
+        # stuck doc sits in ``pending`` forever and the operator
+        # thinks AEGIS is broken. See ``requeue_stuck_documents_cron``
+        # for the policy.
+        cron(
+            requeue_stuck_documents_cron,
+            minute={0, 30},
             run_at_startup=False,
         ),
     )
