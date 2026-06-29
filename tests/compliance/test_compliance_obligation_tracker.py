@@ -35,6 +35,7 @@ from aegis.audit import InMemoryAuditLog
 from aegis.compliance import obligations as obligations_mod
 from aegis.compliance.obligations import (
     REMINDER_THRESHOLD_DAYS,
+    TODAY_CARD_HORIZON_DAYS,
     InMemoryComplianceObligationRepository,
     ObligationNotFoundError,
     build_compliance_attention_section,
@@ -398,6 +399,44 @@ def test_reminder_thresholds_are_60_30_14() -> None:
     """The operator's spec: 60 / 30 / 14 days before next_due_date.
     Catches accidental tuple edits."""
     assert REMINDER_THRESHOLD_DAYS == (60, 30, 14)
+
+
+def test_today_card_horizon_is_180_days() -> None:
+    """Today-dashboard attention window is 180 days.
+
+    Widened from 90 → 180 on 2026-06-28 so the TX OCCC 2026-12-31
+    filing (~186 days lead time) surfaces on the Today card with
+    operator runway before the 60-day reminder cron fires. Reminder
+    cron thresholds remain 60/30/14 — that contract is locked
+    separately in ``test_reminder_thresholds_are_60_30_14``.
+    """
+    assert TODAY_CARD_HORIZON_DAYS == 180
+
+
+def test_build_compliance_attention_section_surfaces_180_day_obligations() -> None:
+    """A TX OCCC-style filing ~150 days out must surface on the Today
+    card. Pre-widen this row sat outside the 90-day window and the
+    operator lost lead time."""
+    today = date.today()
+    repo = InMemoryComplianceObligationRepository(
+        rows=[
+            _seed_row(
+                state_code="TX",
+                authority="TX OCCC",
+                next_due_date=today + timedelta(days=150),
+            ),
+        ]
+    )
+
+    count, _source_ids, cards = build_compliance_attention_section(repo)
+
+    assert count == 1
+    assert len(cards) == 1
+    assert cards[0].state_code == "TX"
+    # UTC/local date boundary can shift this by one day; the contract
+    # is "surfaces inside the widened 180-day window", not exact day
+    # arithmetic.
+    assert 148 <= cards[0].days_remaining <= 150
 
 
 # ===========================================================================
