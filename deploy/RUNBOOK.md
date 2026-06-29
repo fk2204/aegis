@@ -192,6 +192,70 @@ latest .txt bundle); the build then picks up FL on the next run.
 
 ---
 
+## Journald retention policy
+
+`journalctl` logs grow unbounded by default. The box is a 75 GB Hetzner
+CPX21; unbounded journal churn pressures disk and crowds out the parser's
+on-disk PDF working set. A drop-in at
+`/etc/systemd/journald.conf.d/retention.conf` caps both age and size.
+
+The file is mirrored in the repo at `deploy/journald-retention.conf` so
+the on-box config is reproducible and trackable. **When changing one,
+change both** — the box file is not pulled automatically by the deploy
+script; this is OS configuration, not application code.
+
+### Settings
+
+| Setting | Value | Why |
+|---|---|---|
+| `MaxRetentionSec` | `30day` | 30 days is plenty for incident response; older logs are noise we already paid for and rarely revisit. |
+| `MaxFileSec` | `1week` | One-week file rotation makes retention deletes granular — when the 30-day cap kicks in, the oldest week drops cleanly instead of straddling boundaries. |
+| `SystemMaxUse` | `500M` | Hard cap independent of age. 500 MB is comfortable on a 75 GB box, prevents a chatty service (cloudflared during an incident, worker during a backlog) from filling the disk. |
+
+### Where the file lives
+
+```
+/etc/systemd/journald.conf.d/retention.conf
+```
+
+DO NOT edit `/etc/systemd/journald.conf` itself — keep our policy in the
+drop-in directory so package upgrades to `systemd` don't clobber it and
+so the diff against stock is obvious.
+
+### How to adjust
+
+```bash
+ssh root@5.161.51.105
+$EDITOR /etc/systemd/journald.conf.d/retention.conf
+systemctl restart systemd-journald
+journalctl --disk-usage
+```
+
+Then update `deploy/journald-retention.conf` in the repo to match and
+commit the change.
+
+### How to verify
+
+```bash
+journalctl --disk-usage
+```
+
+Expected output is a single line like
+`Archived and active journals take up XXX.XM in the file system.` — the
+number should stay at or below 500 M during steady state. Right after a
+restart of `systemd-journald` the number reflects the new cap immediately;
+old logs above the cap are vacuumed within seconds.
+
+To confirm the unit is healthy after a restart:
+
+```bash
+systemctl status systemd-journald
+```
+
+Expected: `active (running)` in the `Active:` line.
+
+---
+
 ## Deployment
 
 Standard path (from operator's laptop, repo root):
