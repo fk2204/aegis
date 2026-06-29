@@ -273,8 +273,20 @@ async def list_merchants(
         # the sort key collapses ``None`` to +inf so "Awaiting upload"
         # rows land at the bottom of the default sort.
         days_since_activity: int | None = None
+        last_activity_display: str = "—"
         if latest_doc is not None:
             days_since_activity = max(0, (now_utc - latest_doc.uploaded_at).days)
+            # Human-readable label rendered in the list. Computed server
+            # side so the template never has to handle the "today" /
+            # "yesterday" / "N days ago" branching inline. The template
+            # falls back to ``days_since_activity`` raw value only if
+            # the display is somehow missing (older code paths).
+            if days_since_activity == 0:
+                last_activity_display = "today"
+            elif days_since_activity == 1:
+                last_activity_display = "yesterday"
+            else:
+                last_activity_display = f"{days_since_activity}d ago"
 
         # Paper grade — cheap operator-honest proxy from the latest
         # document's fraud_band. Cannot run score_deal per merchant in
@@ -330,6 +342,7 @@ async def list_merchants(
                 "paper_grade": paper_grade,
                 "parse_status": latest_doc.parse_status if latest_doc else "no_upload",
                 "days_since_activity": days_since_activity,
+                "last_activity_display": last_activity_display,
                 "assignee_label": assignee_label or "—",
                 # Preserve the existing status-chip inputs for the
                 # template's PROVISIONAL / NEEDS NAMING markers.
