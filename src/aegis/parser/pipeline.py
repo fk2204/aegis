@@ -574,6 +574,38 @@ def run_pipeline(
             )
             used_ocr_fallback = True
 
+        # C1 (2026-06-29) — Vision auto-retry on zero-transaction extracts.
+        # Text-layer extraction can SUCCEED (no ExtractionError) but
+        # return zero transactions when the bank's PDF embeds a sparse
+        # or weirdly-laid-out text layer. The validation gate then
+        # fails ("sum of deposits != printed total" because 0 vs $N)
+        # and the doc lands in manual_review. Audit on 2026-06-29
+        # showed 73 of 111 manual_review docs hit this case.
+        #
+        # Re-attempt via vision (same Bedrock call, different
+        # rendering). NOT a relaxation of the validation gate — vision
+        # has to extract a non-empty set AND those rows have to
+        # reconcile, same firewall as before. If vision also returns
+        # zero, the manual_review verdict still fires below.
+        if (
+            extraction is not None
+            and not extraction.statement.transactions
+            and not used_ocr_fallback
+            and metadata.page_count <= MAX_OCR_PAGES
+        ):
+            _log.info(
+                "parser.pipeline.vision_retry_zero_transactions file=%s pages=%d",
+                getattr(pdf_path, "name", str(pdf_path)),
+                metadata.page_count,
+            )
+            extraction = extract_statement_via_vision(
+                pdf_bytes, llm, prompt_suffix=extraction_prompt_suffix
+            )
+            used_ocr_fallback = True
+            # Mark the metadata so the dossier can show "Vision retry
+            # fired" — same surface the existing ocr_fallback_used
+            # flag uses (see [META] ocr_fallback_used emission below).
+
     validation = validate_extraction(
         extraction.statement,
         truncated=extraction.truncated,

@@ -1760,7 +1760,12 @@
    * so the prior selector silently no-op'd and the operator-reported
    * vertical-gap regression persisted on the dashboard. */
   display: grid;
-  grid-template-columns: 38% 38% 24%;
+  /* 2026-06-29 — 50/30/20. Attention queue dominates (left 50%) because
+   * that's the operator's primary worklist. Pipeline today gets 30% in
+   * the middle. Quick actions + recent activity collapse to 20% on the
+   * right. Was 38/38/24 — too even, pushed the attention queue under
+   * the fold on 1280-wide screens. */
+  grid-template-columns: 50% 30% 20%;
   gap: 16px;
   /* 2026-06-28 — stretch (was: start) so the attention queue + pipeline
    * + quick-actions columns fill full height equally. Prior ``start``
