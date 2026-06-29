@@ -120,15 +120,10 @@
                 <span class="badge {{ _entry[1] }}">{{ _entry[0] }}</span>
               </td>
               <td class="mono-cell" style="text-align:right" data-test-id="merchants-list-last-activity">
-                {% if r.days_since_activity is none %}
-                  —
-                {% elif r.days_since_activity == 0 %}
-                  today
-                {% elif r.days_since_activity == 1 %}
-                  1d
-                {% else %}
-                  {{ r.days_since_activity }}d
-                {% endif %}
+                {# Server-computed ``last_activity_display`` renders the
+                   "today" / "yesterday" / "Nd ago" branching; falls back
+                   to em-dash when no document is on file. #}
+                {{ r.last_activity_display or "—" }}
               </td>
               <td data-test-id="merchants-list-assignee">
                 {% if r.assignee_label and r.assignee_label != '—' %}

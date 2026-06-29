@@ -473,6 +473,30 @@ class MerchantRepository(Protocol):
         CLAUDE.md PII rule. Returns the rowcount.
         """
 
+    # Migration 099 — §1071 small-business demographic collection ---------
+
+    def set_sec1071(
+        self,
+        merchant_id: UUID,
+        *,
+        principal_ethnicity: str | None,
+        principal_race: str | None,
+        principal_sex: str | None,
+        gross_annual_revenue: Decimal | None,
+        num_workers_range: str | None,
+        census_tract: str | None,
+        collected_at: datetime,
+    ) -> int:
+        """Persist the seven §1071 demographic columns atomically.
+
+        IO-only — the calling route writes the
+        ``merchant.sec1071_collected`` audit row with the populated-
+        field count only. Bodies of the protected demographic fields
+        are NEVER passed through ``audit_log`` per CLAUDE.md PII rule
+        — the audit row carries scalar counts only. Returns the
+        rowcount; ``0`` when the merchant is unknown or soft-deleted.
+        """
+
 
 class InMemoryMerchantRepository:
     """Dict-backed merchant store. Tests + offline."""
@@ -713,6 +737,38 @@ class InMemoryMerchantRepository:
                 "close_notes_summary": notes_summary,
                 "close_lead_description": lead_description,
                 "close_call_transcripts": call_transcripts,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._by_id[merchant_id] = updated
+        return 1
+
+    # Migration 099 — §1071 small-business demographic collection ---------
+
+    def set_sec1071(
+        self,
+        merchant_id: UUID,
+        *,
+        principal_ethnicity: str | None,
+        principal_race: str | None,
+        principal_sex: str | None,
+        gross_annual_revenue: Decimal | None,
+        num_workers_range: str | None,
+        census_tract: str | None,
+        collected_at: datetime,
+    ) -> int:
+        existing = self._by_id.get(merchant_id)
+        if existing is None or existing.deleted_at is not None:
+            return 0
+        updated = existing.model_copy(
+            update={
+                "sec1071_principal_ethnicity": principal_ethnicity,
+                "sec1071_principal_race": principal_race,
+                "sec1071_principal_sex": principal_sex,
+                "sec1071_gross_annual_revenue": gross_annual_revenue,
+                "sec1071_num_workers_range": num_workers_range,
+                "sec1071_census_tract": census_tract,
+                "sec1071_collected_at": collected_at,
                 "updated_at": datetime.now(UTC),
             }
         )
@@ -1029,6 +1085,46 @@ class SupabaseMerchantRepository:
         )
         return len(result.data or [])
 
+    # Migration 099 — §1071 small-business demographic collection ---------
+
+    def set_sec1071(
+        self,
+        merchant_id: UUID,
+        *,
+        principal_ethnicity: str | None,
+        principal_race: str | None,
+        principal_sex: str | None,
+        gross_annual_revenue: Decimal | None,
+        num_workers_range: str | None,
+        census_tract: str | None,
+        collected_at: datetime,
+    ) -> int:
+        # One atomic UPDATE — every §1071 column ships in the same
+        # SET clause so a partial save can never leave the seven
+        # columns half-populated. Money column ships as ``str`` to
+        # preserve Decimal precision through the postgrest JSON layer.
+        result = (
+            get_supabase()
+            .table("merchants")
+            .update(
+                {
+                    "sec1071_principal_ethnicity": principal_ethnicity,
+                    "sec1071_principal_race": principal_race,
+                    "sec1071_principal_sex": principal_sex,
+                    "sec1071_gross_annual_revenue": (
+                        str(gross_annual_revenue) if gross_annual_revenue is not None else None
+                    ),
+                    "sec1071_num_workers_range": num_workers_range,
+                    "sec1071_census_tract": census_tract,
+                    "sec1071_collected_at": collected_at.isoformat(),
+                }
+            )
+            .eq("id", str(merchant_id))
+            .is_("deleted_at", "null")
+            .execute()
+        )
+        return len(result.data or [])
+
 
 def _row_to_merchant_note(row: dict[str, Any]) -> MerchantNoteRow:
     """Map a ``merchant_notes`` table row to ``MerchantNoteRow``.
@@ -1197,6 +1293,21 @@ def _row_to_merchant(row: dict[str, Any]) -> MerchantRow:
         # dossier confirm route promotes individual fields into the
         # ``stated_*`` columns.
         stated_extracted_pending=row.get("stated_extracted_pending"),
+        # Migration 099 — §1071 small-business demographic collection.
+        # All fields default to ``None`` so pre-099 reads (replica,
+        # restored backup) hydrate safely; the dossier panel treats
+        # ``sec1071_collected_at IS None`` as "panel never opened".
+        sec1071_principal_ethnicity=_none_if_empty(row.get("sec1071_principal_ethnicity")),
+        sec1071_principal_race=_none_if_empty(row.get("sec1071_principal_race")),
+        sec1071_principal_sex=_none_if_empty(row.get("sec1071_principal_sex")),
+        sec1071_gross_annual_revenue=(
+            _Decimal(str(row["sec1071_gross_annual_revenue"]))
+            if row.get("sec1071_gross_annual_revenue") is not None
+            else None
+        ),
+        sec1071_num_workers_range=_none_if_empty(row.get("sec1071_num_workers_range")),
+        sec1071_census_tract=_none_if_empty(row.get("sec1071_census_tract")),
+        sec1071_collected_at=_parse_dt(row.get("sec1071_collected_at")),
         # Migration 085 — Secretary of State entity check.
         sos_checked_at=_parse_dt(row.get("sos_checked_at")),
         sos_status=_none_if_empty(row.get("sos_status")),
@@ -1346,6 +1457,23 @@ def _merchant_to_payload(m: MerchantRow) -> dict[str, Any]:
         # serialises through json.dumps so the Decimal-safe-string shape
         # used by the extractor must already be in place at write time.
         "stated_extracted_pending": m.stated_extracted_pending,
+        # Migration 099 — §1071 small-business demographic collection.
+        # Decimal money column round-trips through ``str(...)`` so the
+        # postgrest JSON serialiser preserves precision; the timestamp
+        # column ``.isoformat()``s to satisfy the stdlib-json route.
+        "sec1071_principal_ethnicity": m.sec1071_principal_ethnicity,
+        "sec1071_principal_race": m.sec1071_principal_race,
+        "sec1071_principal_sex": m.sec1071_principal_sex,
+        "sec1071_gross_annual_revenue": (
+            str(m.sec1071_gross_annual_revenue)
+            if m.sec1071_gross_annual_revenue is not None
+            else None
+        ),
+        "sec1071_num_workers_range": m.sec1071_num_workers_range,
+        "sec1071_census_tract": m.sec1071_census_tract,
+        "sec1071_collected_at": (
+            m.sec1071_collected_at.isoformat() if m.sec1071_collected_at else None
+        ),
         # Migration 085 — SOS entity check.
         "sos_checked_at": m.sos_checked_at.isoformat() if m.sos_checked_at else None,
         "sos_status": m.sos_status,

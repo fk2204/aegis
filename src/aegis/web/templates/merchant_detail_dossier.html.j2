@@ -470,6 +470,7 @@
       <a href="#routing"><span class="n">§ 4</span> Funder routing</a>
       {% if documents %}<a href="#statements"><span class="n">§ 4½</span> Statements ledger</a>{% endif %}
       {% if merchant.monthly_revenue or merchant.stated_daily_payment or merchant.stated_mca_positions or merchant.stated_current_lenders or merchant.stated_bank or merchant.use_of_funds or merchant.stated_mca_balance or merchant.stated_monthly_deposits or merchant.avg_monthly_cc_sales %}<a href="#application-data"><span class="n">§ 4⅔</span> Application data</a>{% endif %}
+      {% if merchant.product_type in ('business_loan', 'line_of_credit') %}<a href="#sec1071"><span class="n">§ 4⅘</span> §1071 data</a>{% endif %}
       <a href="#profile"><span class="n">§ 4¾</span> Merchant profile</a>
       <a href="#disposition"><span class="n">§ 5</span> Disposition</a>
       {% if funder_note_submissions %}<a href="#submissions"><span class="n">§ 5½</span> Funder submissions</a>{% endif %}
@@ -2165,6 +2166,103 @@
         </tbody>
       </table>
       </div>
+    </section>
+    {% endif %}
+
+    {# ============== § 4⅘ §1071 DEMOGRAPHIC COLLECTION ==============
+       Migration 099 — CFPB Reg B Subpart B §1002.107 small-business
+       lending data collection. Visible ONLY for product_type in
+       ('business_loan', 'line_of_credit'); the other product types
+       are CFPB-excluded from §1071 collection. AEGIS is a broker,
+       NOT a lender — funders own the regulator-facing reporting; the
+       panel surfaces the fields so the funder submission packet is
+       complete. Each field is nullable; "prefer not to say" /
+       blank-left-by-merchant maps to the empty-string form value
+       which the route collapses to NULL on persistence. #}
+    {% if merchant.product_type in ('business_loan', 'line_of_credit') %}
+    <section id="sec1071" class="section" data-test-id="sec1071-section" style="border-left:3px solid var(--rule, #d8d8d4);padding-left:14px">
+      <header>
+        <span class="n">§ 4⅘</span>
+        <h2>§1071 demographic data <em>· small-business lending collection</em></h2>
+        <span class="footnote">
+          {% if merchant.sec1071_collected_at %}
+            captured {{ merchant.sec1071_collected_at.strftime('%Y-%m-%d') }}
+          {% else %}
+            not yet captured · CFPB Reg B §1002.107
+          {% endif %}
+        </span>
+      </header>
+      <form method="post"
+            action="/ui/merchants/{{ merchant.id }}/sec1071"
+            hx-post="/ui/merchants/{{ merchant.id }}/sec1071"
+            hx-swap="none"
+            data-test-id="sec1071-form"
+            style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;font-size:12px">
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--ink-2,#666);font-size:11px">Principal ethnicity</span>
+          <select name="principal_ethnicity" data-test-id="sec1071-principal_ethnicity">
+            <option value=""{% if not merchant.sec1071_principal_ethnicity %} selected{% endif %}>—</option>
+            <option value="hispanic_or_latino"{% if merchant.sec1071_principal_ethnicity == 'hispanic_or_latino' %} selected{% endif %}>Hispanic or Latino</option>
+            <option value="not_hispanic_or_latino"{% if merchant.sec1071_principal_ethnicity == 'not_hispanic_or_latino' %} selected{% endif %}>Not Hispanic or Latino</option>
+            <option value="prefer_not_to_say"{% if merchant.sec1071_principal_ethnicity == 'prefer_not_to_say' %} selected{% endif %}>Prefer not to say</option>
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--ink-2,#666);font-size:11px">Principal race</span>
+          <select name="principal_race" data-test-id="sec1071-principal_race">
+            <option value=""{% if not merchant.sec1071_principal_race %} selected{% endif %}>—</option>
+            <option value="american_indian_or_alaska_native"{% if merchant.sec1071_principal_race == 'american_indian_or_alaska_native' %} selected{% endif %}>American Indian or Alaska Native</option>
+            <option value="asian"{% if merchant.sec1071_principal_race == 'asian' %} selected{% endif %}>Asian</option>
+            <option value="black_or_african_american"{% if merchant.sec1071_principal_race == 'black_or_african_american' %} selected{% endif %}>Black or African American</option>
+            <option value="native_hawaiian_or_pacific_islander"{% if merchant.sec1071_principal_race == 'native_hawaiian_or_pacific_islander' %} selected{% endif %}>Native Hawaiian or Pacific Islander</option>
+            <option value="white"{% if merchant.sec1071_principal_race == 'white' %} selected{% endif %}>White</option>
+            <option value="prefer_not_to_say"{% if merchant.sec1071_principal_race == 'prefer_not_to_say' %} selected{% endif %}>Prefer not to say</option>
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--ink-2,#666);font-size:11px">Principal sex</span>
+          <select name="principal_sex" data-test-id="sec1071-principal_sex">
+            <option value=""{% if not merchant.sec1071_principal_sex %} selected{% endif %}>—</option>
+            <option value="female"{% if merchant.sec1071_principal_sex == 'female' %} selected{% endif %}>Female</option>
+            <option value="male"{% if merchant.sec1071_principal_sex == 'male' %} selected{% endif %}>Male</option>
+            <option value="non_binary"{% if merchant.sec1071_principal_sex == 'non_binary' %} selected{% endif %}>Non-binary</option>
+            <option value="prefer_not_to_say"{% if merchant.sec1071_principal_sex == 'prefer_not_to_say' %} selected{% endif %}>Prefer not to say</option>
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--ink-2,#666);font-size:11px">Gross annual revenue (USD)</span>
+          <input type="text" name="gross_annual_revenue" data-test-id="sec1071-gross_annual_revenue"
+                 placeholder="e.g. 1,500,000"
+                 value="{% if merchant.sec1071_gross_annual_revenue is not none %}{{ '{:.0f}'.format(merchant.sec1071_gross_annual_revenue) }}{% endif %}">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--ink-2,#666);font-size:11px">Number of workers</span>
+          <select name="num_workers_range" data-test-id="sec1071-num_workers_range">
+            <option value=""{% if not merchant.sec1071_num_workers_range %} selected{% endif %}>—</option>
+            <option value="1"{% if merchant.sec1071_num_workers_range == '1' %} selected{% endif %}>1</option>
+            <option value="2_to_4"{% if merchant.sec1071_num_workers_range == '2_to_4' %} selected{% endif %}>2-4</option>
+            <option value="5_to_9"{% if merchant.sec1071_num_workers_range == '5_to_9' %} selected{% endif %}>5-9</option>
+            <option value="10_to_19"{% if merchant.sec1071_num_workers_range == '10_to_19' %} selected{% endif %}>10-19</option>
+            <option value="20_to_49"{% if merchant.sec1071_num_workers_range == '20_to_49' %} selected{% endif %}>20-49</option>
+            <option value="50_to_99"{% if merchant.sec1071_num_workers_range == '50_to_99' %} selected{% endif %}>50-99</option>
+            <option value="100_to_499"{% if merchant.sec1071_num_workers_range == '100_to_499' %} selected{% endif %}>100-499</option>
+            <option value="500_plus"{% if merchant.sec1071_num_workers_range == '500_plus' %} selected{% endif %}>500+</option>
+            <option value="prefer_not_to_say"{% if merchant.sec1071_num_workers_range == 'prefer_not_to_say' %} selected{% endif %}>Prefer not to say</option>
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--ink-2,#666);font-size:11px">Census tract (11-digit FIPS)</span>
+          <input type="text" name="census_tract" data-test-id="sec1071-census_tract"
+                 placeholder="e.g. 06037930401"
+                 pattern="\d{11}"
+                 value="{{ merchant.sec1071_census_tract or '' }}">
+        </label>
+        <div style="grid-column:1 / -1;display:flex;justify-content:flex-end;gap:8px;margin-top:6px">
+          <button type="submit" class="btn" data-test-id="sec1071-save">
+            {% if merchant.sec1071_collected_at %}Update §1071 data{% else %}Save §1071 data{% endif %}
+          </button>
+        </div>
+      </form>
     </section>
     {% endif %}
 

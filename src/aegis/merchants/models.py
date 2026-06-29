@@ -294,6 +294,29 @@ class MerchantRow(_StrictModel):
     ucc_verified_at: datetime | None = None
 
     # ------------------------------------------------------------------
+    # Migration 099 — §1071 small-business demographic collection.
+    # CFPB Reg B Subpart B §1002.107 small-business lending data
+    # collection. AEGIS is a broker, NOT a lender — funders own the
+    # §1071 reporting obligation — but the dossier collection panel
+    # surfaces the fields for product_type in ('business_loan',
+    # 'line_of_credit') so the operator-curated capture is on file when
+    # the funder underwriter asks for it. All fields nullable; "prefer
+    # not to say" maps to the empty-string form value which the route
+    # collapses to NULL on persistence. ``sec1071_collected_at IS NULL``
+    # is the "panel never opened" signal that drives the dossier prompt.
+    # MCA / revenue-based / equipment / ABL / factoring product types
+    # skip the panel entirely — CFPB rule excludes MCAs and the other
+    # non-credit products from §1071 collection.
+    # ------------------------------------------------------------------
+    sec1071_principal_ethnicity: str | None = None
+    sec1071_principal_race: str | None = None
+    sec1071_principal_sex: str | None = None
+    sec1071_gross_annual_revenue: Money | None = None
+    sec1071_num_workers_range: str | None = None
+    sec1071_census_tract: str | None = None
+    sec1071_collected_at: datetime | None = None
+
+    # ------------------------------------------------------------------
     # Secretary of State entity check (migration 085, Phase C). Populated
     # by ``aegis.business_intel.sos_checker.SOSChecker`` — local SQLite
     # cache first, Bedrock fallback for uncovered states. 30-day TTL via
