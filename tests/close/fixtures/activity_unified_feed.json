@@ -1,0 +1,68 @@
+{
+  "data": [
+    {
+      "_type": "Call",
+      "id": "acti_sanitized_CaLL01aBcd",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "user_id": "user_test",
+      "user_name": "Sanitized Agent",
+      "date_created": "2026-06-25T17:30:00.000000+00:00",
+      "activity_at": "2026-06-25T17:30:00.000000+00:00",
+      "duration": 442,
+      "direction": "outbound",
+      "disposition": "answered",
+      "note": "Confirmed merchant has 2 active MCAs. Sending statements EOD Friday."
+    },
+    {
+      "_type": "Note",
+      "id": "acti_sanitized_NoTe01aBcD",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "user_id": "user_test",
+      "user_name": "Sanitized Agent",
+      "date_created": "2026-06-24T19:12:08.512000+00:00",
+      "activity_at": "2026-06-24T19:12:08.512000+00:00",
+      "note": "Broker confirmed merchant has 2 active MCA positions paying down. Cap stack target = $25k advance, 1.30 factor, 6mo term.",
+      "attachments": []
+    },
+    {
+      "_type": "Email",
+      "id": "acti_sanitized_EmAiL01wxyz",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "user_id": "user_test",
+      "user_name": "Sanitized Agent",
+      "date_created": "2026-06-23T14:08:11.000000+00:00",
+      "activity_at": "2026-06-23T14:08:11.000000+00:00",
+      "direction": "outbound",
+      "subject": "Stips request — Sanitized Test Merchant",
+      "body_text": "Hi,\n\nPlease send the last 4 months of bank statements and a copy of the voided check.\n\nThanks"
+    },
+    {
+      "_type": "LeadStatusChange",
+      "id": "acti_sanitized_StAtUs01pqrs",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "user_id": "user_test",
+      "user_name": "Sanitized Agent",
+      "date_created": "2026-06-22T09:00:00.000000+00:00",
+      "activity_at": "2026-06-22T09:00:00.000000+00:00",
+      "new_status_label": "Underwriting",
+      "old_status_label": "New Lead"
+    },
+    {
+      "_type": "Note",
+      "id": "acti_sanitized_NoTe02wXyZ",
+      "organization_id": "orga_test",
+      "lead_id": "lead_test",
+      "user_id": "user_test",
+      "user_name": "Sanitized Agent",
+      "date_created": "2026-06-21T15:03:22.116000+00:00",
+      "activity_at": "2026-06-21T15:03:22.116000+00:00",
+      "note": "Operator note: prior decline from REDACTED_FUNDER for low TIB. Reconsidering now.",
+      "attachments": []
+    }
+  ],
+  "has_more": false
+}

@@ -632,6 +632,44 @@ class CloseClient:
             items.append(CloseCall.model_validate(raw))
         return items
 
+    def get_lead_activities(self, lead_id: str) -> list[dict[str, Any]]:
+        """GET /api/v1/activity/?lead_id=...&_limit=50 — unified feed.
+
+        Returns the raw activity dicts (Notes, Calls, Emails, SMS, lead
+        status changes, custom activities) Close persists for a Lead.
+        Used by :func:`aegis.close.lead_intelligence.get_lead_intelligence`
+        to build the dossier's Close-activity feed. Returns at most 50
+        rows — the dossier slices to 20 after sorting DESC by date, so
+        50 leaves headroom for status-change rows that get filtered out.
+
+        No Pydantic typing here on purpose: the consumer only needs a
+        handful of keys per row (``_type``, ``date_created``, ``note``,
+        ``subject``, etc.), and the activity schema varies across
+        ``_type`` values. Filtering + shaping is the
+        ``lead_intelligence`` module's job; this method is the transport
+        boundary only.
+
+        Same auth + retry semantics as :meth:`request` — 401 fails
+        fast, 429 sleeps then retries within the tenacity budget,
+        5xx retries, other 4xx propagates.
+        """
+        page = self.request(
+            "GET",
+            "/api/v1/activity/",
+            params={"lead_id": lead_id, "_limit": 50, "_skip": 0},
+        )
+        raw_items = page.get("data", [])
+        if not isinstance(raw_items, list):
+            raise CloseError(
+                f"close /api/v1/activity/ returned non-list data: {type(raw_items).__name__}"
+            )
+        items: list[dict[str, Any]] = []
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                raise CloseError(f"close /api/v1/activity/ entry non-object: {type(raw).__name__}")
+            items.append(raw)
+        return items
+
     def list_lead_attachments(self, lead_id: str) -> list[CloseAttachment]:
         """Enumerate PDF attachments across all Note + Email activities
         for the lead.

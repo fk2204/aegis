@@ -470,6 +470,7 @@
       <a href="#routing"><span class="n">§ 4</span> Funder routing</a>
       {% if documents %}<a href="#statements"><span class="n">§ 4½</span> Statements ledger</a>{% endif %}
       {% if merchant.monthly_revenue or merchant.stated_daily_payment or merchant.stated_mca_positions or merchant.stated_current_lenders or merchant.stated_bank or merchant.use_of_funds or merchant.stated_mca_balance or merchant.stated_monthly_deposits or merchant.avg_monthly_cc_sales %}<a href="#application-data"><span class="n">§ 4⅔</span> Application data</a>{% endif %}
+      {% if close_intel and (close_intel.activities or close_intel.agent_notes or close_intel.document_folder_url or close_intel.disqualified_reason) %}<a href="#close-activity"><span class="n">§ 4¾¾</span> Close activity</a>{% endif %}
       {% if merchant.product_type in ('business_loan', 'line_of_credit') %}<a href="#sec1071"><span class="n">§ 4⅘</span> §1071 data</a>{% endif %}
       <a href="#profile"><span class="n">§ 4¾</span> Merchant profile</a>
       <a href="#disposition"><span class="n">§ 5</span> Disposition</a>
@@ -2166,6 +2167,73 @@
         </tbody>
       </table>
       </div>
+    </section>
+    {% endif %}
+
+    {# ============== § 4¾¾ CLOSE ACTIVITY ==============
+       Read-only mirror of the operator-visible context in Close: lead
+       status, broker description, document folder URL (Zoho WorkDrive /
+       Google Drive), agent notes, and the recent activity feed.
+       Backed by ``close_intel`` (CloseLeadIntelligence) — None when the
+       merchant has no close_lead_id OR when the Close API failed at
+       render time. Section is hidden entirely when there's nothing
+       to show (no activities AND no agent_notes). #}
+    {% if close_intel and (close_intel.activities or close_intel.agent_notes or close_intel.document_folder_url or close_intel.disqualified_reason) %}
+    <section id="close-activity" class="section" data-test-id="close-activity-section" style="border-left:3px solid var(--rule, #d8d8d4);padding-left:14px">
+      <header>
+        <span class="n">§ 4¾¾</span>
+        <h2>Close activity <em>· broker context</em></h2>
+        <span class="footnote">live from Close · cached 15 min</span>
+      </header>
+
+      {% if close_intel.disqualified_reason %}
+      <p class="close-disqualified" data-test-id="close-disqualified" style="margin:8px 0;padding:8px 10px;background:rgba(190,60,60,0.06);border:1px solid rgba(190,60,60,0.25);border-radius:4px;font-size:12px;color:var(--ink, #233)">
+        <strong>Disqualified in Close:</strong> {{ close_intel.disqualified_reason }}
+      </p>
+      {% endif %}
+
+      {% if close_intel.document_folder_url %}
+      <p class="close-doc-folder" data-test-id="close-doc-folder">
+        <a href="{{ close_intel.document_folder_url }}" target="_blank" rel="noopener noreferrer">Document folder ↗</a>
+        <span class="hint">linked from broker description</span>
+      </p>
+      {% endif %}
+
+      {% if close_intel.agent_notes %}
+      <div class="close-notes" data-test-id="close-agent-notes">
+        <h3 style="font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-2, #666);margin:12px 0 6px">Agent notes</h3>
+        {% for note in close_intel.agent_notes %}
+        <div class="close-note-card" data-test-id="close-agent-note">{{ note }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if close_intel.activities %}
+      <div class="close-activity-log" data-test-id="close-activity-log">
+        <h3 style="font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-2, #666);margin:12px 0 6px">
+          Recent activity
+          {% if close_intel.call_count %}<span class="hint">· {{ close_intel.call_count }} call{% if close_intel.call_count != 1 %}s{% endif %} total</span>{% endif %}
+          {% if close_intel.last_contact %}<span class="hint">· last contact {{ close_intel.last_contact[:10] }}</span>{% endif %}
+        </h3>
+        <ul class="activity-feed">
+          {% for activity in close_intel.activities %}
+          <li class="activity-row" data-test-id="close-activity-row" data-activity-type="{{ activity.type }}">
+            <span class="act-icon">
+              {%- if activity.type == 'call' -%}📞
+              {%- elif activity.type == 'email' -%}✉
+              {%- elif activity.type == 'note' -%}🗒
+              {%- elif activity.type == 'status_change' -%}⇄
+              {%- elif activity.type == 'sms' -%}💬
+              {%- else -%}·{%- endif -%}
+            </span>
+            <span class="act-date">{{ activity.date[:10] }}</span>
+            <span class="act-user">{{ activity.user_name or '—' }}</span>
+            <span class="act-summary">{{ activity.summary }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
     </section>
     {% endif %}
 

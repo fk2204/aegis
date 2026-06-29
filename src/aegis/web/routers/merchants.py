@@ -73,6 +73,10 @@ from aegis.business_intel.license_checker import (
 )
 from aegis.close.client import CloseClient, CloseError
 from aegis.close.funder_note import RenewalContext, format_funder_note
+from aegis.close.lead_intelligence import (
+    CloseLeadIntelligence,
+    get_lead_intelligence,
+)
 from aegis.close.orchestration import enqueue_close_orchestration
 from aegis.compliance.snapshot import (
     DecisionSnapshot,
@@ -4560,6 +4564,7 @@ async def merchant_detail(
     ],
     assignments: Annotated[DealAssignmentRepository, Depends(get_deal_assignment_repository)],
     operators: Annotated[OperatorRepository, Depends(get_operator_repository)],
+    close_client: Annotated[CloseClient, Depends(get_close_client)],
 ) -> HTMLResponse:
     try:
         merchant = merchants.get(merchant_id)
@@ -5170,6 +5175,32 @@ async def merchant_detail(
         audit=audit,
     )
 
+    # Close lead intelligence (call notes, agent notes, document folder
+    # URL, recent activity feed). Cached for 15 minutes inside the
+    # ``lead_intelligence`` module so repeated dossier renders within
+    # the cache window don't re-hit Close. CloseClient is sync, so we
+    # wrap in ``asyncio.to_thread`` per the wider AEGIS pattern.
+    # Any Close failure → ``close_intel = None``; the dossier section
+    # is gated on truthy ``close_intel`` so a degraded fetch renders
+    # nothing rather than half-empty chrome.
+    close_intel: CloseLeadIntelligence | None = None
+    if merchant.close_lead_id:
+        import asyncio
+
+        from aegis.logger import get_logger as _get_logger
+
+        _intel_log = _get_logger(__name__)
+        try:
+            close_intel = await asyncio.to_thread(
+                get_lead_intelligence,
+                close_client,
+                merchant.close_lead_id,
+                audit=audit,
+            )
+        except Exception:
+            _intel_log.warning("dossier.close_intel_failed", exc_info=True)
+            close_intel = None
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -5260,6 +5291,12 @@ async def merchant_detail(
             # disables per-funder submit buttons. ``LicenseGateContext``
             # carries ``industry_label``, ``portal_url``, ``state_name``.
             "license_gate": license_gate,
+            # Close lead intelligence — call notes / agent notes / document
+            # folder URL / recent activity. ``None`` when the merchant
+            # has no close_lead_id or when the Close API call failed
+            # (defensive degradation); the dossier section is hidden
+            # entirely in either case.
+            "close_intel": close_intel,
         },
     )
 
