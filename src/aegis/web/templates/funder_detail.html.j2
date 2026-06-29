@@ -62,6 +62,49 @@
       </div>
     {% endif %}
 
+    {# Guidelines PDF upload + summary card (migration 096 — INT 3).
+       Hidden when neither uploaded data exists nor the operator has
+       opened the form; the disclosure-style button keeps the page
+       quiet until needed. Extraction NEVER auto-promotes to the live
+       FunderRow criteria — operator confirms field-by-field via a
+       separate flow. #}
+    <details class="guidelines-card" data-test-id="funder-guidelines-card"
+             style="margin:12px 0;padding:10px 14px;border:1px solid var(--rule,#d8d8d4);border-radius:4px;background:var(--ink-bg,#fafaf7)">
+      <summary style="cursor:pointer;font-size:13px;font-weight:500">
+        Funder guidelines PDF
+        {% if funder.guidelines_data %}
+          <span class="chip pos" style="margin-left:8px">loaded</span>
+          {% if funder.guidelines_uploaded_at %}
+            <span style="margin-left:4px;color:var(--ink-2,#666);font-size:11px;font-weight:400">
+              uploaded {{ funder.guidelines_uploaded_at }}
+            </span>
+          {% endif %}
+        {% else %}
+          <span style="margin-left:8px;color:var(--ink-3,#9a9a92);font-size:11px;font-weight:400">
+            not uploaded
+          </span>
+        {% endif %}
+      </summary>
+      <form action="/ui/funders/{{ funder.id }}/guidelines" method="post"
+            enctype="multipart/form-data"
+            style="margin-top:10px;display:flex;gap:8px;align-items:center;font-size:12px">
+        <input type="file" name="file" accept="application/pdf,.pdf" required>
+        <button type="submit" class="btn small"
+                style="padding:6px 12px;border:1px solid var(--rule,#d8d8d4);border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.08em;cursor:pointer">
+          Upload Guidelines PDF
+        </button>
+      </form>
+      {% if funder.guidelines_data %}
+        <div class="guidelines-summary" style="margin-top:10px;font-size:12px;color:var(--ink-2,#666)">
+          {% set g = funder.guidelines_data %}
+          {% if g.min_monthly_revenue %}min revenue ${{ "{:,.0f}".format(g.min_monthly_revenue|float) }} · {% endif %}
+          {% if g.min_fico %}min FICO {{ g.min_fico }} · {% endif %}
+          {% if g.min_tib_months %}min TIB {{ g.min_tib_months }} mo · {% endif %}
+          {% if g.max_positions is not none %}max positions {{ g.max_positions }}{% endif %}
+        </div>
+      {% endif %}
+    </details>
+
     {# === Top row: contact card (left) + baseline card (right) === #}
     <div class="funder-top-row">
 

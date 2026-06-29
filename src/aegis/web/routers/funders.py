@@ -767,6 +767,89 @@ async def funder_detail(
     )
 
 
+@router.post("/funders/{funder_id}/guidelines", response_class=HTMLResponse)
+async def upload_funder_guidelines(
+    request: Request,
+    funder_id: UUID,
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    file: Annotated[UploadFile, File()],
+) -> Response:
+    """Upload a guidelines PDF for a funder.
+
+    Reads the PDF bytes, runs Bedrock-driven extraction
+    (``aegis.funders.guidelines_extract``), and writes the structured
+    underwriting criteria to ``funders.guidelines_data`` (migration
+    096) alongside an ``guidelines_uploaded_at`` timestamp. The
+    extracted JSONB is a STAGING blob — it never auto-overwrites the
+    operator-curated FunderRow criteria. Promotion of individual
+    fields into the live FunderRow columns is a separate operator UI
+    flow.
+
+    Audit on every code path: ``funder.guidelines_uploaded`` /
+    ``funder.guidelines_extraction_failed`` / ``funder.guidelines_too_large``.
+    Returns 303 to the funder detail page with a flash flag.
+    """
+    from datetime import UTC
+    from datetime import datetime as _datetime
+
+    from aegis.api.deps import get_llm
+    from aegis.db import get_supabase
+    from aegis.funders.guidelines_extract import (
+        GuidelinesExtractionError,
+        extract_guidelines_from_pdf,
+    )
+
+    # File size check BEFORE reading into memory.
+    if file.size is not None and file.size > 25 * 1024 * 1024:
+        audit.record(
+            actor="operator",
+            action="funder.guidelines_too_large",
+            subject_type="funder",
+            subject_id=funder_id,
+            details={"size": file.size, "filename": file.filename or "unknown"},
+        )
+        raise HTTPException(status_code=413, detail="PDF too large (max 25 MB)")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="empty file upload")
+
+    try:
+        extracted = extract_guidelines_from_pdf(content, get_llm())
+    except GuidelinesExtractionError as exc:
+        audit.record(
+            actor="operator",
+            action="funder.guidelines_extraction_failed",
+            subject_type="funder",
+            subject_id=funder_id,
+            details={"error": str(exc)[:300], "filename": file.filename or "unknown"},
+        )
+        return RedirectResponse(
+            f"/ui/funders/{funder_id}?guidelines_error={str(exc)[:120]}",
+            status_code=303,
+        )
+
+    payload = extracted.model_dump(mode="json")
+    get_supabase().table("funders").update(
+        {
+            "guidelines_data": payload,
+            "guidelines_uploaded_at": _datetime.now(UTC).isoformat(),
+        }
+    ).eq("id", str(funder_id)).execute()
+
+    audit.record(
+        actor="operator",
+        action="funder.guidelines_uploaded",
+        subject_type="funder",
+        subject_id=funder_id,
+        details={
+            "filename": file.filename or "unknown",
+            "fields_populated": sum(1 for v in payload.values() if v not in (None, [], "", {})),
+        },
+    )
+    return RedirectResponse(f"/ui/funders/{funder_id}?guidelines_uploaded=1", status_code=303)
+
+
 @router.get("/funders/{funder_id}/performance", response_class=HTMLResponse)
 async def funder_performance(
     request: Request,
