@@ -2580,6 +2580,224 @@ async def merchant_set_deal_context(
     )
 
 
+# ---------------------------------------------------------------------------
+# Migration 099 — §1071 small-business demographic collection.
+# CFPB Reg B Subpart B §1002.107. Surfaced as a dossier collection panel
+# for product_type in (business_loan, line_of_credit) only — MCA and the
+# other product types are excluded from §1071 collection per the CFPB
+# rule. Funder partners own the regulator-facing reporting obligation
+# (CLAUDE.md mission statement); AEGIS captures the fields so the
+# funder submission packet is complete.
+# ---------------------------------------------------------------------------
+
+
+# Allowed enum-ish values per CFPB Appendix B pick-list. Free-text on
+# the DB column, but the route whitelist rejects values outside this set
+# so a malformed submission can't land arbitrary strings on a
+# regulator-facing field. ``""`` (empty string) maps to "prefer not to
+# say" — the CFPB-allowed non-disclosure value — which the route
+# collapses to NULL on persistence.
+_SEC1071_ALLOWED_ETHNICITY: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "hispanic_or_latino",
+        "not_hispanic_or_latino",
+        "prefer_not_to_say",
+    }
+)
+_SEC1071_ALLOWED_RACE: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "american_indian_or_alaska_native",
+        "asian",
+        "black_or_african_american",
+        "native_hawaiian_or_pacific_islander",
+        "white",
+        "prefer_not_to_say",
+    }
+)
+_SEC1071_ALLOWED_SEX: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "female",
+        "male",
+        "non_binary",
+        "prefer_not_to_say",
+    }
+)
+_SEC1071_ALLOWED_WORKERS_RANGE: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "1",
+        "2_to_4",
+        "5_to_9",
+        "10_to_19",
+        "20_to_49",
+        "50_to_99",
+        "100_to_499",
+        "500_plus",
+        "prefer_not_to_say",
+    }
+)
+# 11-digit FIPS census tract code: state(2) + county(3) + tract(6).
+_SEC1071_CENSUS_TRACT_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{11}$")
+
+
+def _sec1071_string_or_none(raw: str, allowed: frozenset[str], *, field: str) -> str | None:
+    """Whitelist + collapse-to-none helper for the §1071 enum-ish fields.
+
+    Empty string maps to ``None`` (CFPB "prefer not to say" maps to a
+    discrete value, but the merchant may also have left the field
+    blank — both collapse identically at storage). A value outside the
+    whitelist raises 400 with the offending field name so the operator
+    sees which checkbox the form sent an unexpected token from.
+    """
+    trimmed = raw.strip().lower()
+    if trimmed not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"sec1071: invalid value for {field}",
+        )
+    return trimmed or None
+
+
+@router.post("/merchants/{merchant_id}/sec1071", response_model=None)
+async def merchant_set_sec1071(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    principal_ethnicity: Annotated[str, Form()] = "",
+    principal_race: Annotated[str, Form()] = "",
+    principal_sex: Annotated[str, Form()] = "",
+    gross_annual_revenue: Annotated[str, Form()] = "",
+    num_workers_range: Annotated[str, Form()] = "",
+    census_tract: Annotated[str, Form()] = "",
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> RedirectResponse:
+    """Capture the §1071 demographic collection panel.
+
+    Migration 099 — CFPB Reg B Subpart B §1002.107 small-business
+    lending data collection. Visible on the dossier ONLY for
+    ``product_type in ('business_loan', 'line_of_credit')``; the
+    other product types are CFPB-excluded.
+
+    All fields nullable. Empty-string form value maps to NULL (no
+    answer captured). Enum-ish fields validated against the CFPB
+    Appendix B pick-list so a stale tab can't write arbitrary
+    strings. Money input parsed as Decimal per CLAUDE.md money rule
+    (``str()`` form value → strip commas / dollar signs → Decimal).
+    Census tract validated as the 11-digit FIPS pattern; anything
+    else (including blank) collapses to ``None``.
+
+    Audit (per CLAUDE.md auditability rule): one
+    ``merchant.sec1071_collected`` row per successful save. ``details``
+    carries scalar counts only (populated_field_count + which fields
+    are populated by name) — NEVER the protected-class values
+    themselves, per CLAUDE.md PII rule.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    # CFPB rule excludes non-credit product types from §1071. Reject
+    # the save if a stale tab submitted from a merchant whose
+    # product_type is no longer eligible.
+    if merchant.product_type not in ("business_loan", "line_of_credit"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "sec1071: collection panel is for business_loan or "
+                "line_of_credit product types only"
+            ),
+        )
+
+    # ---- Validate + normalize the six payload columns --------------
+    ethnicity = _sec1071_string_or_none(
+        principal_ethnicity, _SEC1071_ALLOWED_ETHNICITY, field="principal_ethnicity"
+    )
+    race = _sec1071_string_or_none(principal_race, _SEC1071_ALLOWED_RACE, field="principal_race")
+    sex = _sec1071_string_or_none(principal_sex, _SEC1071_ALLOWED_SEX, field="principal_sex")
+    workers_range = _sec1071_string_or_none(
+        num_workers_range, _SEC1071_ALLOWED_WORKERS_RANGE, field="num_workers_range"
+    )
+
+    revenue: Decimal | None = None
+    revenue_raw = gross_annual_revenue.strip()
+    if revenue_raw:
+        # Strip commas / dollar sign / whitespace so "$ 1,500,000" parses.
+        cleaned = revenue_raw.replace("$", "").replace(",", "").strip()
+        try:
+            revenue = Decimal(cleaned)
+        except (ValueError, ArithmeticError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="sec1071: gross_annual_revenue must be a number",
+            ) from exc
+        if revenue < Decimal("0"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="sec1071: gross_annual_revenue must be non-negative",
+            )
+
+    tract: str | None = None
+    tract_raw = census_tract.strip()
+    if tract_raw:
+        if not _SEC1071_CENSUS_TRACT_PATTERN.match(tract_raw):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="sec1071: census_tract must be 11 digits (FIPS)",
+            )
+        tract = tract_raw
+
+    now = datetime.now(UTC)
+    merchants.set_sec1071(
+        merchant.id,
+        principal_ethnicity=ethnicity,
+        principal_race=race,
+        principal_sex=sex,
+        gross_annual_revenue=revenue,
+        num_workers_range=workers_range,
+        census_tract=tract,
+        collected_at=now,
+    )
+
+    # Audit row carries scalar counts only — never the protected-class
+    # values themselves. The "fields_populated" list is field NAMES,
+    # not values, so the audit trail records the operator's coverage
+    # without leaking demographic data.
+    populated_fields: list[str] = []
+    if ethnicity is not None:
+        populated_fields.append("principal_ethnicity")
+    if race is not None:
+        populated_fields.append("principal_race")
+    if sex is not None:
+        populated_fields.append("principal_sex")
+    if revenue is not None:
+        populated_fields.append("gross_annual_revenue")
+    if workers_range is not None:
+        populated_fields.append("num_workers_range")
+    if tract is not None:
+        populated_fields.append("census_tract")
+
+    audit.record(
+        actor="operator",
+        actor_email=actor_email,
+        action="merchant.sec1071_collected",
+        subject_type="merchant",
+        subject_id=merchant.id,
+        details={
+            "populated_field_count": len(populated_fields),
+            "fields_populated": populated_fields,
+        },
+    )
+
+    return RedirectResponse(
+        url=f"/ui/merchants/{merchant.id}#sec1071",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @router.post("/merchants/{merchant_id}/close-context/refresh", response_model=None)
 async def merchant_refresh_close_context(
     merchant_id: UUID,
