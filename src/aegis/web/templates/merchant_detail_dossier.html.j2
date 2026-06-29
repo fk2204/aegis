@@ -2233,7 +2233,7 @@
           <span style="color:var(--ink-2,#666);font-size:11px">Gross annual revenue (USD)</span>
           <input type="text" name="gross_annual_revenue" data-test-id="sec1071-gross_annual_revenue"
                  placeholder="e.g. 1,500,000"
-                 value="{% if merchant.sec1071_gross_annual_revenue is not none %}{{ '{:.0f}'.format(merchant.sec1071_gross_annual_revenue) }}{% endif %}">
+                 value="{% if merchant.sec1071_gross_annual_revenue %}{{ '{:.0f}'.format(merchant.sec1071_gross_annual_revenue) }}{% endif %}">
         </label>
         <label style="display:flex;flex-direction:column;gap:4px">
           <span style="color:var(--ink-2,#666);font-size:11px">Number of workers</span>
