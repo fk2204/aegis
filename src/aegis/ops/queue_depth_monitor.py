@@ -82,6 +82,23 @@ def _resolve_threshold() -> int:
     return value
 
 
+async def get_queue_depth_for_ui() -> tuple[int | None, int]:
+    """Return ``(depth, threshold)`` for the dashboard alert banner.
+
+    Returns ``(None, threshold)`` when Redis is unreachable so the
+    template renders no banner (defensive — a Redis outage shouldn't
+    take the dashboard down with it). The threshold is the live value
+    from ``_resolve_threshold`` so an operator env-var change is
+    picked up on the next request without restarting the web service.
+    """
+    threshold = _resolve_threshold()
+    try:
+        depth = await _measure_queue_depth()
+    except Exception:
+        return None, threshold
+    return depth, threshold
+
+
 async def _measure_queue_depth() -> int:
     """Connect to Redis, ``LLEN`` the arq pending queue, close the pool.
 

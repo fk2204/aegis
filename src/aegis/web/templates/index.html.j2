@@ -118,6 +118,19 @@
    three columns in the order operators care about most: attention
    first, pipeline second, quick actions third. See aegis-tool.css
    "/* TODAY DASHBOARD */" at file end. #}
+{# Worker-queue depth banner — surfaces when arq pending depth
+   exceeds AEGIS_QUEUE_DEPTH_ALERT_THRESHOLD (default 20). Mirrors
+   the cron's audit-log alert so operators see backed-up workers on
+   the dashboard without grepping journald. Hidden when Redis is
+   unreachable (queue_depth=None → queue_alert=False). #}
+{% if queue_alert %}
+<div class="system-alert"
+     data-test-id="queue-depth-alert"
+     style="padding:10px 16px;margin:8px 24px 0;background:#fdf0f0;border:1px solid #c75252;border-radius:4px;font-size:13px;color:#3a1414">
+  <strong>Worker queue backed up</strong> — {{ queue_depth }} jobs waiting (threshold {{ queue_threshold }}). New uploads are queued but not yet parsing.
+</div>
+{% endif %}
+
 <section class="body today-cols">
 
   {# ── LEFT 40% · Attention queue ────────────────────────────────── #}

@@ -239,6 +239,17 @@ async def index(
         all_recent_docs=all_recent_docs,
     )
 
+    # Worker queue depth banner (build plan §10.2 / TASK 6E). Polled
+    # inline so the banner shows live state — the cron writes the
+    # audit-log alert at the threshold, but the dashboard surfaces the
+    # depth on every render so the operator sees backed-up workers
+    # without grepping journald. Redis outage → (None, threshold) →
+    # banner hidden (defensive).
+    from aegis.ops.queue_depth_monitor import get_queue_depth_for_ui
+
+    queue_depth, queue_threshold = await get_queue_depth_for_ui()
+    queue_alert = queue_depth is not None and queue_depth > queue_threshold
+
     # Quick-action buttons are static — declared here so the template
     # iterates a list rather than hardcoding three blocks. Labels are
     # operator-facing; URLs go to existing routes (no new routes added).
@@ -295,6 +306,9 @@ async def index(
             # 2026-06-28 refresh — key numbers banner + 3-month strip.
             "key_numbers": key_numbers,
             "monthly_comparison": monthly_comparison,
+            "queue_alert": queue_alert,
+            "queue_depth": queue_depth,
+            "queue_threshold": queue_threshold,
         },
     )
 
