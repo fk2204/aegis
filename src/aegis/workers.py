@@ -105,7 +105,7 @@ from aegis.pdf_store import (
     PdfStoreWriteError,
 )
 from aegis.scoring_v2.narrator_job import generate_narrator_summary
-from aegis.storage import DocumentNotFoundError, DocumentRepository
+from aegis.storage import DocumentNotFoundError, DocumentRepository, DocumentRow
 
 _log = get_logger(__name__)
 
@@ -202,6 +202,29 @@ async def parse_document(
         merchants_repo=merchants_repo,
         merchant_id=doc_pre_parse.merchant_id,
     )
+
+    # ===================================================================
+    # Non-bank-statement routing (tax returns / A/R aging / equipment
+    # invoices). Filename + first-page text are the cheap pre-router.
+    # Tax / equipment go through Bedrock vision; A/R aging picks the
+    # cheapest deterministic path (xlsx → openpyxl, csv → stdlib, pdf
+    # → Bedrock). On success the document is marked ``proceed`` and the
+    # extracted row lands in its dedicated table; on extractor failure
+    # the document is marked ``error`` with the exception surfaced via
+    # audit.
+    # ===================================================================
+    routed = await _route_non_bank_statement(
+        document_id=document_id,
+        pdf_path=pdf_path,
+        doc=doc_pre_parse,
+        llm=llm,
+        repository=repository,
+        merchants_repo=merchants_repo,
+        audit=audit,
+    )
+    if routed is not None:
+        _safe_unlink(pdf_path)
+        return routed
 
     # Brand detection — Stripe / Square statements take a different
     # pipeline than bank statements. ``ambiguous`` fails closed; the
@@ -1240,6 +1263,236 @@ def _load_merchant_context(
     if ctx.is_empty():
         return None
     return ctx
+
+
+async def _route_non_bank_statement(
+    *,
+    document_id: UUID,
+    pdf_path: str,
+    doc: DocumentRow,
+    llm: LLMClient,
+    repository: DocumentRepository,
+    merchants_repo: MerchantRepository,
+    audit: AuditLog,
+) -> dict[str, Any] | None:
+    """Detect tax-return / A/R aging / equipment documents and route
+    them to their dedicated extractors. Returns the worker payload on a
+    routed extraction; returns None when the document looks like a bank
+    statement and the caller should fall through to the bank pipeline.
+    """
+    from pathlib import Path as _Path
+
+    from aegis.parser.ar_aging.extract import (
+        detect_ar_aging_filename,
+        extract_ar_aging_csv,
+        extract_ar_aging_excel,
+        extract_ar_aging_pdf,
+    )
+    from aegis.parser.equipment.extract import (
+        detect_equipment_document,
+        extract_equipment_details,
+    )
+    from aegis.parser.tax_return.extract import (
+        detect_tax_form_type,
+        extract_tax_return,
+    )
+    from aegis.parser.tax_return.repository import (
+        SupabaseTaxReturnRepository,
+        TaxReturnRow,
+    )
+
+    filename = doc.original_filename or ""
+
+    # Tax return — Bedrock vision. Filename or first-page text triggers.
+    # Reuse the parser's helper so the extraction path matches what
+    # auto-hints / page-router consume; one source of pymupdf truth.
+    from aegis.parser.pipeline import _extract_first_page_text
+
+    first_page_text = await asyncio.to_thread(_extract_first_page_text, pdf_path)
+
+    form_type = detect_tax_form_type(filename, first_page_text)
+    if form_type is not None and doc.merchant_id is not None:
+        try:
+            result = await asyncio.to_thread(
+                extract_tax_return,
+                pdf_path,
+                form_type=form_type,
+                llm_client=llm,  # type: ignore[arg-type]
+            )
+            if result is not None:
+                row = TaxReturnRow(
+                    merchant_id=doc.merchant_id,
+                    document_id=document_id,
+                    form_type=form_type,
+                    tax_year=result.tax_year,
+                    gross_receipts=result.gross_receipts,
+                    net_income=result.net_income,
+                    total_assets=result.total_assets,
+                    total_liabilities=result.total_liabilities,
+                    officer_compensation=result.officer_compensation,
+                    raw_extraction=result.model_dump(mode="json"),
+                )
+                SupabaseTaxReturnRepository().upsert(row)
+            if hasattr(repository, "set_parse_status"):
+                repository.set_parse_status(document_id, "proceed")
+            audit.record(
+                actor="worker",
+                action="parser.tax_return_extracted",
+                subject_type="document",
+                subject_id=document_id,
+                details={"form_type": form_type, "tax_year": result.tax_year if result else None},
+            )
+            return {
+                "document_id": str(document_id),
+                "parse_status": "proceed",
+                "route": "tax_return",
+            }
+        except Exception as exc:
+            _log.exception("worker.tax_return.extract_failed document_id=%s", document_id)
+            audit.record(
+                actor="worker",
+                action="parser.tax_return_failed",
+                subject_type="document",
+                subject_id=document_id,
+                details={
+                    "form_type": form_type,
+                    "error": type(exc).__name__,
+                    "message": str(exc)[:200],
+                },
+            )
+            if hasattr(repository, "set_parse_status"):
+                repository.set_parse_status(document_id, "error")
+            return {
+                "document_id": str(document_id),
+                "parse_status": "error",
+                "route": "tax_return",
+            }
+
+    # A/R aging — deterministic for xlsx/csv, Bedrock for pdf.
+    if detect_ar_aging_filename(filename) and doc.merchant_id is not None:
+        try:
+            ext = _Path(pdf_path).suffix.lower()
+            if ext == ".xlsx":
+                ar = await asyncio.to_thread(extract_ar_aging_excel, pdf_path)
+            elif ext == ".csv":
+                ar = await asyncio.to_thread(extract_ar_aging_csv, pdf_path)
+            else:
+                ar = await asyncio.to_thread(
+                    extract_ar_aging_pdf,
+                    pdf_path,
+                    llm_client=llm,  # type: ignore[arg-type]
+                )
+            from aegis.db import get_supabase
+
+            get_supabase().table("ar_aging_reports").insert(
+                {
+                    "merchant_id": str(doc.merchant_id),
+                    "document_id": str(document_id),
+                    "total_outstanding": str(ar.total_outstanding),
+                    "current_amount": str(ar.current_amount),
+                    "days_30_60": str(ar.days_30_60),
+                    "days_60_90": str(ar.days_60_90),
+                    "days_90_plus": str(ar.days_90_plus),
+                    "debtor_count": ar.debtor_count,
+                    "concentration_pct": str(ar.concentration_pct),
+                    "top_debtors": ar.top_debtors,
+                }
+            ).execute()
+            if hasattr(repository, "set_parse_status"):
+                repository.set_parse_status(document_id, "proceed")
+            audit.record(
+                actor="worker",
+                action="parser.ar_aging_extracted",
+                subject_type="document",
+                subject_id=document_id,
+                details={
+                    "total_outstanding": str(ar.total_outstanding),
+                    "debtor_count": ar.debtor_count,
+                },
+            )
+            return {
+                "document_id": str(document_id),
+                "parse_status": "proceed",
+                "route": "ar_aging",
+            }
+        except Exception as exc:
+            _log.exception("worker.ar_aging.extract_failed document_id=%s", document_id)
+            audit.record(
+                actor="worker",
+                action="parser.ar_aging_failed",
+                subject_type="document",
+                subject_id=document_id,
+                details={"error": type(exc).__name__, "message": str(exc)[:200]},
+            )
+            if hasattr(repository, "set_parse_status"):
+                repository.set_parse_status(document_id, "error")
+            return {
+                "document_id": str(document_id),
+                "parse_status": "error",
+                "route": "ar_aging",
+            }
+
+    # Equipment invoice / quote — Bedrock vision. Stores onto
+    # merchants.equipment_details JSONB (migration 095) — no separate
+    # table, one row per merchant tracks the latest extraction.
+    if detect_equipment_document(filename) and doc.merchant_id is not None:
+        try:
+            eq = await asyncio.to_thread(
+                extract_equipment_details,
+                pdf_path,
+                llm_client=llm,  # type: ignore[arg-type]
+            )
+            if eq is not None:
+                from aegis.db import get_supabase
+
+                get_supabase().table("merchants").update(
+                    {
+                        "equipment_details": {
+                            "description": eq.description,
+                            "make": eq.make,
+                            "model": eq.model,
+                            "year": eq.year,
+                            "condition": eq.condition,
+                            "serial_number": eq.serial_number,
+                            "vin": eq.vin,
+                            "vendor_name": eq.vendor_name,
+                            "total_cost": str(eq.total_cost) if eq.total_cost else None,
+                        }
+                    }
+                ).eq("id", str(doc.merchant_id)).execute()
+            if hasattr(repository, "set_parse_status"):
+                repository.set_parse_status(document_id, "proceed")
+            audit.record(
+                actor="worker",
+                action="parser.equipment_extracted",
+                subject_type="document",
+                subject_id=document_id,
+                details={"make": eq.make if eq else None, "model": eq.model if eq else None},
+            )
+            return {
+                "document_id": str(document_id),
+                "parse_status": "proceed",
+                "route": "equipment",
+            }
+        except Exception as exc:
+            _log.exception("worker.equipment.extract_failed document_id=%s", document_id)
+            audit.record(
+                actor="worker",
+                action="parser.equipment_failed",
+                subject_type="document",
+                subject_id=document_id,
+                details={"error": type(exc).__name__, "message": str(exc)[:200]},
+            )
+            if hasattr(repository, "set_parse_status"):
+                repository.set_parse_status(document_id, "error")
+            return {
+                "document_id": str(document_id),
+                "parse_status": "error",
+                "route": "equipment",
+            }
+
+    # Not a non-bank-statement doc — caller falls through to bank pipeline.
+    return None
 
 
 def _run_pipeline_with_merchant_context(
