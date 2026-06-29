@@ -66,11 +66,13 @@ from aegis.config import get_settings
 from aegis.llm import LLMClient
 from aegis.logger import get_logger
 from aegis.parser.aggregate import aggregate
+from aegis.parser.ar_aging.extract import detect_ar_aging_filename as detect_ar_aging_document
 from aegis.parser.classify import (
     avg_classification_confidence,
     classify_transactions,
     per_category_confidence,
 )
+from aegis.parser.equipment.extract import detect_equipment_document
 from aegis.parser.extract import (
     ExtractionError,
     ExtractionPass1Result,
@@ -98,6 +100,7 @@ from aegis.parser.processor.stripe_router import (
     processor_type_for_document as determine_processor_type,
 )
 from aegis.parser.tampering import TamperingEvaluation, evaluate_tampering
+from aegis.parser.tax_return.extract import detect_tax_form_type
 from aegis.parser.validate import validate_extraction
 
 _log = get_logger(__name__)
@@ -1372,6 +1375,9 @@ __all__ = [
     "TRACK_A_PRESCREEN_THRESHOLD",
     "MerchantContext",
     "PipelineResult",
+    "detect_ar_aging_document",
+    "detect_equipment_document",
+    "detect_tax_form_type",
     "determine_processor_type",
     "run_pipeline",
 ]
