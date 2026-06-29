@@ -488,3 +488,87 @@ def test_070_writes_audit_row_for_backfill_event() -> None:
     )
     assert "decisions.backfilled" in sql
     assert "migration_070" in sql
+
+
+# --- 091 overrides.reason_code CHECK constraint sync ------------------------
+
+
+def _parse_reason_code_values_from_migration_091() -> set[str]:
+    """Extract the CHECK constraint's value list from migration 091.
+
+    Parses the ``reason_code IN ('a', 'b', ...)`` block in
+    ``091_overrides_reason_code_license_verified_manually.sql``. Returns
+    the value set so the drift-guard test can compare against the Python
+    ``ReasonCode`` Literal.
+    """
+    sql = _read("091_overrides_reason_code_license_verified_manually.sql")
+    # Find the ADD CONSTRAINT block that carries the IN (...) list.
+    add_block = re.search(
+        r"ADD\s+CONSTRAINT\s+overrides_reason_code_check\s+CHECK\s*\(\s*"
+        r"reason_code\s+IN\s*\((.*?)\)\s*\)",
+        sql,
+        re.IGNORECASE | re.DOTALL,
+    )
+    assert add_block is not None, (
+        "migration 091 must declare ADD CONSTRAINT overrides_reason_code_check "
+        "with a reason_code IN (...) value list"
+    )
+    return set(re.findall(r"'([^']+)'", add_block.group(1)))
+
+
+def test_091_drops_old_check_constraint_idempotently() -> None:
+    """091 must DROP IF EXISTS the auto-named CHECK from migration 017
+    before ADDing the widened version. Without the drop, the re-apply
+    path raises a duplicate-constraint error.
+    """
+    sql = _read("091_overrides_reason_code_license_verified_manually.sql")
+    assert re.search(
+        r"DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+overrides_reason_code_check",
+        sql,
+        re.IGNORECASE,
+    )
+
+
+def test_091_targets_the_overrides_table_not_dossier_overrides() -> None:
+    """The canonical table is ``overrides`` (created in 017, extended in
+    072). The build plan refers to ``dossier_overrides`` but no such
+    table exists — both the legacy and dossier write paths share
+    ``overrides``. Pin the table name so a future rename can't drift
+    silently.
+    """
+    sql = _read("091_overrides_reason_code_license_verified_manually.sql")
+    assert re.search(r"ALTER\s+TABLE\s+overrides\b", sql, re.IGNORECASE)
+    assert not re.search(r"ALTER\s+TABLE\s+dossier_overrides\b", sql, re.IGNORECASE)
+
+
+def test_091_includes_license_verified_manually() -> None:
+    """The whole point of migration 091."""
+    values = _parse_reason_code_values_from_migration_091()
+    assert "license_verified_manually" in values
+
+
+def test_091_value_list_matches_python_reason_code_literal_exactly() -> None:
+    """Drift guard — the migration's CHECK constraint values MUST match
+    the Python ``ReasonCode`` Literal in ``src/aegis/compliance/overrides.py``
+    one-for-one. If you add a value to the Literal, ship the matching
+    migration in the same commit. This test fails CI otherwise.
+    """
+    from typing import get_args
+
+    from aegis.compliance.overrides import ReasonCode
+
+    python_values = set(get_args(ReasonCode))
+    sql_values = _parse_reason_code_values_from_migration_091()
+
+    only_in_python = python_values - sql_values
+    only_in_sql = sql_values - python_values
+    assert not only_in_python, (
+        f"ReasonCode Literal values missing from migration 091 CHECK: "
+        f"{sorted(only_in_python)}. Ship a paired migration that widens "
+        f"the constraint."
+    )
+    assert not only_in_sql, (
+        f"Migration 091 CHECK lists values not present in the Python "
+        f"ReasonCode Literal: {sorted(only_in_sql)}. Either add them to "
+        f"the Literal or remove them from the migration."
+    )

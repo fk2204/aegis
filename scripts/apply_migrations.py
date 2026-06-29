@@ -764,6 +764,17 @@ MIGRATION_PROBES: dict[str, str] = {
     "090_documents_indexes.sql": (
         "SELECT 1 FROM pg_indexes WHERE indexname='idx_documents_merchant_uploaded'"
     ),
+    "091_overrides_reason_code_license_verified_manually.sql": (
+        # 091 widens the overrides.reason_code CHECK constraint to include
+        # 'license_verified_manually' so the value already present in the
+        # Python ReasonCode Literal can land in the DB. Probe the constraint
+        # definition directly via pg_get_constraintdef so the bootstrap
+        # detects "constraint exists AND lists the new value" — checking
+        # only existence would falsely match the pre-091 constraint.
+        "SELECT 1 FROM pg_constraint "
+        "WHERE conname='overrides_reason_code_check' "
+        "AND pg_get_constraintdef(oid) LIKE '%license_verified_manually%'"
+    ),
 }
 
 
