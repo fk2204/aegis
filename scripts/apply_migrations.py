@@ -868,6 +868,15 @@ MIGRATION_PROBES: dict[str, str] = {
         "AND table_name='transactions' "
         "AND column_name='counterparty_overridden'"
     ),
+    "103_calibration_snapshots.sql": (
+        # 103 — calibration_snapshots table for weekly accuracy
+        # measurements. Probe table existence directly (the table
+        # is brand-new and has no pre-existing form to confuse the
+        # bootstrap).
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' "
+        "AND table_name='calibration_snapshots'"
+    ),
 }
 
 

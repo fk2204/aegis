@@ -3346,6 +3346,36 @@ async def daily_funder_sync(ctx: dict[str, Any]) -> None:
         _log.error("funder_sync_failed: %s", result.stderr[-300:])
 
 
+async def weekly_calibration_cron(ctx: dict[str, Any]) -> None:
+    """Monday 04:00 UTC — compute weekly calibration snapshot.
+
+    Reads accumulated ``funder_replies`` + ``analyses`` and writes
+    one ``calibration_snapshots`` row when outcome count clears
+    ``MIN_OUTCOMES`` (20). Below the floor the snapshot is logged
+    and skipped — small samples produce misleading rates.
+
+    Failure mode: any exception is logged and swallowed; calibration
+    is a metric pass, never a deal-blocking gate. The next week's
+    cron firing will retry against the accumulated outcomes.
+    """
+    del ctx
+    try:
+        from aegis.scoring_v2.calibration import compute_and_store
+
+        result = compute_and_store()
+        if result is None:
+            _log.info("calibration.skipped reason=insufficient_data")
+            return
+        _log.info(
+            "calibration.complete outcomes=%d fpr=%.3f tpr=%.3f",
+            result.outcome_count,
+            result.fraud_false_positive_rate,
+            result.fraud_true_positive_rate,
+        )
+    except Exception as exc:
+        _log.exception("calibration.failed exc=%s", exc)
+
+
 async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
     """Manual training-corpus ingestion entrypoint (NOT scheduled).
 
@@ -3511,6 +3541,17 @@ class WorkerSettings:
         # Corpus). The function stays defined so a future operator can
         # re-enable cron registration without re-implementing the body.
         cron(daily_funder_sync, hour=7, minute=0, run_at_startup=False),
+        # Monday 04:00 UTC — weekly calibration snapshot. Reads
+        # accumulated funder_replies + analyses, computes accuracy
+        # rates, writes one ``calibration_snapshots`` row. Skips
+        # silently when outcome count is below MIN_OUTCOMES (20).
+        cron(
+            weekly_calibration_cron,
+            weekday=0,
+            hour=4,
+            minute=0,
+            run_at_startup=False,
+        ),
     )
     on_startup = _on_startup
     on_shutdown = _on_shutdown
