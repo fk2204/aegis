@@ -6,17 +6,30 @@ configured via ``settings.funders_folder_path``)::
     Funders/                          ← --folder / FUNDERS_FOLDER_PATH
       Highland Hill Capital/
         guidelines.pdf
+        rate_card.xlsx
+        screenshot.png
       Logic Advance/
         underwriting_matrix.docx
       New Funder/                     ← auto-detected → INSERT
         criteria.png
 
-Per immediate subfolder the script picks the newest supported file
-(``.pdf .docx .doc .xlsx .xls .jpg .jpeg .png .txt``) by mtime, hashes
-it with SHA-256, and runs Bedrock extraction unless the hash matches
-``funders.guidelines_data._file_hash`` from a prior run (idempotent —
-re-running the script with an unchanged folder is a no-op modulo the
-audit row).
+Per immediate subfolder the script processes **every** supported file
+(``.pdf .docx .doc .xlsx .xls .jpg .jpeg .png .txt``), extracts each
+through the canonical sanitiser + confidence-floor path, and merges the
+per-file results into one extraction (first non-None wins for scalars,
+dedup-union for list fields). A SHA-256 of every supported file's
+bytes (deterministic name-sorted order) is stored at
+``funders.guidelines_data._file_hash``; re-running with an unchanged
+folder is a no-op. ANY file added, removed, or modified re-triggers
+extraction for that funder.
+
+Merge priority for first-non-None wins: PDFs are processed first, then
+text-extracted formats (DOCX/XLSX/TXT), then images. Within each tier,
+largest file first. Rationale: PDFs are the most-authoritative funder
+guidelines source; the operator's screenshots are last-resort
+supplements. The merge log is persisted at
+``guidelines_data._files = [{name, action, …}]`` so the operator can
+audit which file contributed which fields.
 
 Bedrock routing per file type:
 
@@ -30,6 +43,11 @@ Bedrock routing per file type:
   ``BedrockClient.classify_batch_json`` using the same prompt the
   canonical extractor uses. The same sanitiser is applied AEGIS-side
   before persistence so the confidence floor still holds.
+
+Images above ``_IMAGE_MAX_BYTES`` (5 MB — Bedrock vision per-image
+limit) are skipped with a logged WARN; the merge proceeds on the
+remaining files. PDF + DOCX + XLSX + TXT use the canonical extractor's
+own 25 MB ceiling.
 
 Operator-confirmation discipline — CLAUDE.md "Extraction & automation
 assists, never replaces judgment" — normally bans auto-writes to the
@@ -92,6 +110,34 @@ _DOCX_EXTS: frozenset[str] = frozenset({".docx", ".doc"})
 _XLSX_EXTS: frozenset[str] = frozenset({".xlsx", ".xls"})
 _TXT_EXTS: frozenset[str] = frozenset({".txt"})
 
+# Extension priority for the multi-file merge: PDFs (most-authoritative
+# guidelines source) first, then text-extracted office formats, then
+# images (often partial screenshots). Lower number = higher priority;
+# first-non-None merge means PDFs win on field collisions.
+_EXTENSION_PRIORITY: dict[str, int] = {
+    ".pdf": 0,
+    ".docx": 1,
+    ".doc": 1,
+    ".xlsx": 1,
+    ".xls": 1,
+    ".txt": 1,
+    ".png": 2,
+    ".jpg": 2,
+    ".jpeg": 2,
+}
+
+# Bedrock vision accepts up to 5 MB per image (model card). PDFs go
+# through the document content block which has its own 25 MB ceiling
+# enforced inside ``extract_guidelines_from_pdf``.
+_IMAGE_MAX_BYTES: int = 5 * 1024 * 1024
+
+# Pydantic field names that take dedup-union semantics during merge.
+# Anything not in this set takes first-non-None (priority order from
+# ``_get_all_supported_files``). ``notes`` is treated specially —
+# first-non-empty wins (empty string is the model default and means
+# "no notes from this file").
+_MERGE_LIST_FIELDS: frozenset[str] = frozenset({"excluded_industries", "excluded_states"})
+
 
 def _load_dotenv() -> None:
     """Load ``.env`` from the repo root without overwriting existing env.
@@ -148,19 +194,81 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _pick_latest_supported_file(folder: Path) -> Path | None:
-    """Return the newest supported file in ``folder`` (immediate children
-    only — sub-subfolders are ignored), or ``None`` when the folder has
-    no supported file. Newness is defined by mtime, matching how the
-    operator typically saves a fresh criteria sheet.
+def _get_all_supported_files(folder: Path) -> list[Path]:
+    """Return every supported file in ``folder``, in merge-priority order.
+
+    Immediate children only — sub-subfolders are ignored. Files are
+    sorted by extension priority first (PDF > text-extracted >
+    images), then by size descending within each tier so the heaviest
+    PDF (most likely to be the canonical guidelines doc) gets the
+    first-non-None slot. Word lock files (``~$…``) and hidden files
+    (``.…``) are excluded.
     """
-    candidates = [
-        p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in _SUPPORTED_EXTS
-    ]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0]
+    files: list[Path] = []
+    for entry in folder.iterdir():
+        if not entry.is_file():
+            continue
+        if entry.name.startswith("~$") or entry.name.startswith("."):
+            continue
+        if entry.suffix.lower() in _SUPPORTED_EXTS:
+            files.append(entry)
+    files.sort(
+        key=lambda p: (
+            _EXTENSION_PRIORITY.get(p.suffix.lower(), 99),
+            -p.stat().st_size,
+        )
+    )
+    return files
+
+
+def _folder_hash(folder: Path) -> str:
+    """SHA-256 over every supported file in ``folder``.
+
+    Deterministic — files are visited in name-sorted order (not the
+    merge-priority order from ``_get_all_supported_files`` — name-sort
+    is stable across file-system iteration quirks). Each file's name
+    is mixed in alongside its bytes so a rename also bumps the hash.
+
+    Changes when ANY file in the folder changes, so the
+    ``stored_hash == folder_hash`` short-circuit re-triggers extraction
+    whenever the operator adds, removes, renames, or modifies any
+    contributing file.
+    """
+    digest = hashlib.sha256()
+    files = sorted(_get_all_supported_files(folder), key=lambda p: p.name.lower())
+    for f in files:
+        digest.update(f.name.encode("utf-8"))
+        with f.open("rb") as fh:
+            for chunk in iter(lambda fh=fh: fh.read(64 * 1024), b""):  # type: ignore[misc]
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _format_file_size(size_bytes: int) -> str:
+    """Human-readable size for dry-run output (96K, 2.9M, 1.1G)."""
+    if size_bytes < 1024:
+        return f"{size_bytes}B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.0f}K"
+    if size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f}M"
+    return f"{size_bytes / (1024 * 1024 * 1024):.1f}G"
+
+
+def _content_label_for(path: Path) -> str:
+    """Short label for dry-run output ("PDF", "DOCX", "XLSX", "TXT", "PNG", "JPG")."""
+    ext = path.suffix.lower()
+    if ext in _PDF_EXTS:
+        return "PDF"
+    if ext in _DOCX_EXTS:
+        return ext.lstrip(".").upper()
+    if ext in _XLSX_EXTS:
+        return ext.lstrip(".").upper()
+    if ext in _TXT_EXTS:
+        return "TXT"
+    if ext in _IMAGE_EXTS:
+        return ext.lstrip(".").upper()
+    return ext.lstrip(".") or "?"
 
 
 def _xlsx_to_text(path: Path) -> str:
@@ -338,6 +446,66 @@ def _extract_for_file(
     raise GuidelinesExtractionError(f"unsupported file extension: {ext}")
 
 
+def _merge_extractions(
+    extractions: list[Any],
+) -> Any | None:  # noqa: ANN401 — FunderGuidelinesExtraction | None
+    """Merge per-file extractions into one ``FunderGuidelinesExtraction``.
+
+    Merge semantics:
+
+    * **Scalar fields** (``min_revenue, min_fico, min_tib_months,
+      max_positions, stacking_policy, max_advance_amount``) — first
+      non-None wins. ``model_dump(exclude_none=True)`` skips None
+      entries; presence in the dict means non-None.
+    * **List fields** (``excluded_industries, excluded_states``) —
+      dedup-union across all extractions, preserving each item's first
+      occurrence (case-sensitive on the surface, mirroring the
+      operator-facing presentation).
+    * **``notes``** — first non-empty string wins. The Pydantic default
+      is the empty string (always present in ``model_dump`` output),
+      so empty is treated as "absent" rather than a real value.
+
+    Returns ``None`` when the input list is empty OR the merged dict
+    fails ``FunderGuidelinesExtraction.model_validate`` (defensive —
+    each input was already validated when produced, but a bug in the
+    merge could in theory produce an out-of-range field).
+    """
+    from aegis.funders.guidelines_extract import FunderGuidelinesExtraction
+
+    if not extractions:
+        return None
+
+    merged: dict[str, Any] = {}
+
+    for extraction in extractions:
+        data = extraction.model_dump(exclude_none=True)
+        for field, value in data.items():
+            if field in _MERGE_LIST_FIELDS:
+                existing = merged.get(field, [])
+                existing_keys = {str(x) for x in existing}
+                new_items = [x for x in value if str(x) not in existing_keys]
+                if new_items:
+                    merged[field] = existing + new_items
+                elif field not in merged:
+                    # Preserve the empty list so the model_dump round
+                    # trip retains the field shape.
+                    merged[field] = existing
+            elif field == "notes":
+                if not merged.get(field) and value:
+                    merged[field] = value
+            elif field not in merged:
+                merged[field] = value
+
+    try:
+        return FunderGuidelinesExtraction.model_validate(merged)
+    except Exception as exc:
+        print(
+            f"  ! merge_extractions: validation failed on merged payload: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
 def _stacking_to_bool(stacking_policy: str | None) -> bool | None:
     """Map the FunderGuidelinesExtraction stacking_policy Literal to the
     live FunderRow.accepts_stacking bool. ``case_by_case`` is left as
@@ -480,63 +648,147 @@ def _sync(
 
     for sub in subfolders:
         name = _resolve_funder_name(sub.name)
-        latest = _pick_latest_supported_file(sub)
-        if latest is None:
-            print(f"  - {name}: no supported file in folder", file=sys.stderr)
+        files = _get_all_supported_files(sub)
+        if not files:
+            print(f"  - {name}: no supported files in folder", file=sys.stderr)
             results["skipped_no_file"].append(name)
             continue
 
-        file_hash = _sha256_file(latest)
+        folder_hash = _folder_hash(sub)
         existing = existing_by_name.get(_normalise_subfolder_name(name))
         stored_hash = None
         if existing:
             stored_hash = (existing.get("guidelines_data") or {}).get("_file_hash")
-        if existing and stored_hash == file_hash:
-            print(f"  = {name}: up to date (hash unchanged)", file=sys.stderr)
+        if existing and stored_hash == folder_hash:
+            print(
+                f"  = {name}: up to date (hash unchanged, {len(files)} files)",
+                file=sys.stderr,
+            )
             results["skipped_up_to_date"].append(name)
             continue
 
         action_verb = "UPDATE" if existing else "INSERT"
+
+        # ── Dry-run: show per-file plan + would-merge summary ──────
         if not apply_writes:
+            print(f"  [{action_verb} dry-run] {name}:", file=sys.stderr)
+            eligible = 0
+            skipped = 0
+            for f in files:
+                size_label = _format_file_size(f.stat().st_size)
+                type_label = _content_label_for(f)
+                if f.suffix.lower() in _IMAGE_EXTS and f.stat().st_size > _IMAGE_MAX_BYTES:
+                    print(
+                        f"    {f.name} ({size_label}, {type_label}) → SKIPPED: "
+                        "exceeds 5MB Bedrock vision limit",
+                        file=sys.stderr,
+                    )
+                    skipped += 1
+                else:
+                    print(
+                        f"    {f.name} ({size_label}, {type_label}) → would extract",
+                        file=sys.stderr,
+                    )
+                    eligible += 1
             print(
-                f"  [{action_verb} dry-run] {name}: would extract {latest.name}",
+                f"    would merge {eligible} files, {skipped} skipped",
                 file=sys.stderr,
             )
             results["updated" if existing else "added"].append(name)
             continue
 
-        try:
-            extraction = _extract_for_file(latest, llm)
-        except GuidelinesExtractionError as exc:
-            print(f"  ! {name}: {type(exc).__name__}: {exc}", file=sys.stderr)
-            results["errors"].append(f"{name}: {type(exc).__name__}")
-            continue
-        except Exception as exc:
-            print(
-                f"  ! {name}: unexpected error {type(exc).__name__}: {exc}",
-                file=sys.stderr,
+        # ── Apply path: extract each file, collect, merge ──────────
+        extractions: list[Any] = []
+        files_log: list[dict[str, Any]] = []
+        for f in files:
+            size_label = _format_file_size(f.stat().st_size)
+            type_label = _content_label_for(f)
+            if f.suffix.lower() in _IMAGE_EXTS and f.stat().st_size > _IMAGE_MAX_BYTES:
+                print(
+                    f"    skip {f.name} ({size_label}, {type_label}): "
+                    "exceeds 5MB Bedrock vision limit",
+                    file=sys.stderr,
+                )
+                files_log.append(
+                    {
+                        "name": f.name,
+                        "ext": f.suffix.lower(),
+                        "action": "skipped",
+                        "reason": "image_exceeds_5mb_bedrock_limit",
+                    }
+                )
+                continue
+            try:
+                ext_result = _extract_for_file(f, llm)
+            except GuidelinesExtractionError as exc:
+                print(
+                    f"    err {f.name}: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                files_log.append(
+                    {
+                        "name": f.name,
+                        "ext": f.suffix.lower(),
+                        "action": "error",
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
+            except Exception as exc:
+                print(
+                    f"    err {f.name}: unexpected {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                traceback.print_exc(file=sys.stderr)
+                files_log.append(
+                    {
+                        "name": f.name,
+                        "ext": f.suffix.lower(),
+                        "action": "error",
+                        "reason": f"unexpected_{type(exc).__name__}",
+                    }
+                )
+                continue
+            extractions.append(ext_result)
+            files_log.append(
+                {
+                    "name": f.name,
+                    "ext": f.suffix.lower(),
+                    "action": "extracted",
+                    "fields_populated": ext_result.fields_populated_count,
+                }
             )
-            traceback.print_exc(file=sys.stderr)
-            results["errors"].append(f"{name}: {type(exc).__name__}")
+
+        if not extractions:
+            print(f"  ! {name}: all files failed extraction", file=sys.stderr)
+            results["errors"].append(f"{name}: all_files_failed")
             continue
 
-        payload = extraction.model_dump(mode="json")
-        payload["_file_hash"] = file_hash
-        payload["_file_name"] = latest.name
+        merged = _merge_extractions(extractions)
+        if merged is None:
+            print(f"  ! {name}: merged extraction validation failed", file=sys.stderr)
+            results["errors"].append(f"{name}: merge_validation_failed")
+            continue
+
+        payload = merged.model_dump(mode="json")
+        payload["_file_hash"] = folder_hash
         payload["_folder_name"] = name
+        payload["_files"] = files_log
 
         write_row: dict[str, Any] = {
             "guidelines_data": payload,
             "guidelines_uploaded_at": datetime.now(UTC).isoformat(),
         }
-        write_row.update(_build_live_column_writes(extraction))
+        write_row.update(_build_live_column_writes(merged))
 
         try:
             if existing:
                 sb.table("funders").update(cast(Any, write_row)).eq("id", existing["id"]).execute()
                 results["updated"].append(name)
                 print(
-                    f"  ↑ {name}: updated (hash={file_hash[:12]}…, file={latest.name})",
+                    f"  ↑ {name}: updated "
+                    f"(hash={folder_hash[:12]}…, "
+                    f"{len(extractions)}/{len(files)} files merged)",
                     file=sys.stderr,
                 )
             else:
@@ -557,14 +809,17 @@ def _sync(
                             "subject_type": "funder",
                             "details": {
                                 "name": name,
-                                "file": latest.name,
+                                "files": [entry["name"] for entry in files_log],
                                 "folder": str(sub),
                             },
                         },
                     )
                 ).execute()
                 results["added"].append(name)
-                print(f"  + {name}: added (file={latest.name})", file=sys.stderr)
+                print(
+                    f"  + {name}: added ({len(extractions)}/{len(files)} files merged)",
+                    file=sys.stderr,
+                )
         except Exception as exc:
             print(f"  ! {name}: persist failed: {exc}", file=sys.stderr)
             results["errors"].append(f"{name}: persist_{type(exc).__name__}")
