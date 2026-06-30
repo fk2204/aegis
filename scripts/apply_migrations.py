@@ -856,6 +856,18 @@ MIGRATION_PROBES: dict[str, str] = {
         "AND tablename='notifications' "
         "AND policyname='deny_all_anon'"
     ),
+    "102_counterparty_classification_persistence.sql": (
+        # 102 — persist counterparty classification on transactions.
+        # Probe the ``counterparty_overridden`` column directly: it's
+        # the only one with a NOT NULL DEFAULT, so its presence in
+        # information_schema with the right default reliably
+        # distinguishes a post-102 schema from a pre-102 one (mirrors
+        # the 099 column-presence probe pattern).
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' "
+        "AND table_name='transactions' "
+        "AND column_name='counterparty_overridden'"
+    ),
 }
 
 
