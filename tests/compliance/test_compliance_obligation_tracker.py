@@ -401,16 +401,22 @@ def test_reminder_thresholds_are_60_30_14() -> None:
     assert REMINDER_THRESHOLD_DAYS == (60, 30, 14)
 
 
-def test_today_card_horizon_is_180_days() -> None:
-    """Today-dashboard attention window is 180 days.
+def test_today_card_horizon_is_200_days() -> None:
+    """Today-dashboard attention window is 200 days.
 
-    Widened from 90 → 180 on 2026-06-28 so the TX OCCC 2026-12-31
-    filing (~186 days lead time) surfaces on the Today card with
-    operator runway before the 60-day reminder cron fires. Reminder
-    cron thresholds remain 60/30/14 — that contract is locked
+    Widened in two passes:
+    * 90 → 180 (2026-06-28) so the TX OCCC 2026-12-31 filing (~186 days
+      lead time) surfaces on the Today card with operator runway before
+      the 60-day reminder cron fires.
+    * 180 → 200 (2026-06-30) — 180 was 4 days too short the next time
+      we measured (TX HB 700 = 184 days from 2026-06-30), so the card
+      silently went empty. 200 gives a buffer against the boundary
+      problem ticking around midyear turn-overs.
+
+    Reminder cron thresholds remain 60/30/14 — that contract is locked
     separately in ``test_reminder_thresholds_are_60_30_14``.
     """
-    assert TODAY_CARD_HORIZON_DAYS == 180
+    assert TODAY_CARD_HORIZON_DAYS == 200
 
 
 def test_build_compliance_attention_section_surfaces_180_day_obligations() -> None:
