@@ -396,6 +396,40 @@ def _normalise_subfolder_name(name: str) -> str:
     return name.strip().lower()
 
 
+# Folder-name → canonical funder-name aliases (2026-06-30).
+#
+# Filip's local OneDrive folders use casual short names (LAG, TMR, UCS,
+# VCG, "Highland capital", "Swiftsource") while the AEGIS catalog
+# carries the canonical names (Logic Advance, TMRNOW, United Capital
+# Source, etc.). Without this map a re-sync creates duplicate funder
+# rows because the case-insensitive name match misses.
+#
+# Add new entries here whenever a SCP'd folder name diverges from the
+# canonical ``funders.name`` row. Keys are lower-case + stripped (same
+# shape as ``_normalise_subfolder_name``); values are the canonical
+# name verbatim as it should appear in the ``funders`` table.
+_FOLDER_NAME_ALIASES: dict[str, str] = {
+    "highland capital": "Highland Hill Capital",
+    "swiftsource": "SwiftSource Funding",
+    "tmr": "TMRNOW",
+    "ucs": "United Capital Source",
+    "vcg": "Velocity Capital Group",
+    "lag": "Logic Advance",
+}
+
+
+def _resolve_funder_name(folder_name: str) -> str:
+    """Map a local folder name to its canonical funder name when an
+    alias exists; otherwise return the original (stripped) name.
+
+    Applied at the top of the per-subfolder loop so the lookup AND the
+    new-row insert both see the canonical name. Prevents the duplicate-
+    row pattern from the 2026-06-30 sync.
+    """
+    key = folder_name.strip().lower()
+    return _FOLDER_NAME_ALIASES.get(key, folder_name.strip())
+
+
 def _sync(
     *,
     folder_path: Path,
@@ -445,7 +479,7 @@ def _sync(
     }
 
     for sub in subfolders:
-        name = sub.name.strip()
+        name = _resolve_funder_name(sub.name)
         latest = _pick_latest_supported_file(sub)
         if latest is None:
             print(f"  - {name}: no supported file in folder", file=sys.stderr)
