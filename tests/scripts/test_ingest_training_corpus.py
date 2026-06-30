@@ -492,10 +492,84 @@ def test_script_module_does_not_call_live_repos(
         ("Third Coast Bank monthly statement", "Third Coast Bank, SSB"),
         ("Some unknown regional bank", None),
         ("", None),
+        # 2026-06-30 second-pass additions — verified against real
+        # NULL-bank cohort samples from the training corpus.
+        (
+            "000000812355516 ... JPMorgan Chase Bank, N",
+            "JPMorgan Chase Bank, N.A.",
+        ),
+        ("Discover Bank Statement Period 5/1/26", "Discover Bank"),
+        ("Ally Bank checking account", "Ally Bank"),
+        ("SouthState Bank business account", "SouthState Bank"),
+        ("BankUnited statement", "BankUnited, N.A."),
+        ("First Citizens Bank statement", "First Citizens Bank"),
+        ("Santander Bank, N.A. monthly", "Santander Bank, N.A."),
+        ("Webster Bank, N.A. account summary", "Webster Bank, N.A."),
+        ("Comerica Bank business checking", "Comerica Bank"),
+        ("Citizens Bank statement", "Citizens Bank, N.A."),
+        ("Navy Federal Credit Union member", "Navy Federal Credit Union"),
+        ("Axos Bank checking account", "Axos Bank"),
     ],
 )
 def test_detect_bank_name(text: str, expected: str | None) -> None:
     assert ingest.detect_bank_name(text) == expected
+
+
+# ---------------------------------------------------------------------------
+# Application-form filter (skip non-statement PDFs)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Real "USE_THIS_APP.pdf" first-page text from Filip's corpus.
+        (
+            "Company Information Legal Company Name: AF&F Carpentry LLC "
+            "Website: Industry: Carpentry Incorporation State: ME Tax ID: "
+            "33-4598538 Legal Entity: LLC Corp Sole Prop. Business Address: "
+            "51 Ferry St Ste 2"
+        ),
+        # Blank-form template variant — same dompdf shape, no merchant data.
+        (
+            "Company Information Legal Company Name: Website: Industry: "
+            "Incorporation State: Tax ID: Legal Entity: LLC Corp Sole Prop. "
+            "Business Address: City: State: Zip: Business Start Date: "
+            "Business Telephone#: "
+        ),
+        # Marker order shuffled — still trips the >=2 threshold.
+        ("MERCHANT APPLICATION Tax ID: 12-3456789 Legal Entity: LLC Business Address: 123 Main St"),
+    ],
+)
+def test_is_application_form_detects_app_pdfs(text: str) -> None:
+    assert ingest._is_application_form(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Real BoA statement excerpt — bank statements DON'T trip
+        # the heuristic.
+        (
+            "Bank of America, N.A. Statement Period: 03/01/2026 to "
+            "03/31/2026 Account Number: XX-XXXX-1234 Beginning Balance"
+        ),
+        # Truist statement excerpt with a single legal-context line —
+        # one marker is below the threshold.
+        (
+            "TRUIST BANK Statement Period: April 2026 Account XXXXXX8865 "
+            "Tax ID: see enclosed disclosure"
+        ),
+        # Empty / very short text — no markers, no match.
+        ("",),
+        ("Bank statement",),
+    ],
+)
+def test_is_application_form_does_not_trip_on_statements(text: tuple[str, ...] | str) -> None:
+    # Allow single-string args from parametrize.
+    if isinstance(text, tuple):
+        text = text[0]
+    assert ingest._is_application_form(text) is False
 
 
 # ---------------------------------------------------------------------------
@@ -675,9 +749,7 @@ def test_argparse_no_flags_falls_back_to_auto_detect(
     Stub the auto-detect to return the "nothing found" tuple so the test
     doesn't depend on the host's actual filesystem state.
     """
-    monkeypatch.setattr(
-        ingest, "find_corpus_source", lambda _settings: ("none", None, None)
-    )
+    monkeypatch.setattr(ingest, "find_corpus_source", lambda _settings: ("none", None, None))
     rc = ingest.main([])
     assert rc != 0
     err = capsys.readouterr().err

@@ -161,7 +161,67 @@ _BANK_NAME_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
         re.compile(r"\bAmerica\s+First\s+Federal\s+Credit\s+Union\b", re.IGNORECASE),
         "America First Federal Credit Union",
     ),
+    # 2026-06-30 second pass — additional patterns surfaced by the
+    # NULL-bank cohort audit on the same corpus. Each entry was verified
+    # by reading the actual first-page text from a sample doc. The
+    # "JPMorgan Chase Bank, N" tail (with no preceding "Chase" earlier
+    # in the page) is the canonical Chase footer when the header is
+    # image-only — adding a punctuated-form regex catches it.
+    (re.compile(r"\bJPMorgan\s+Chase\s+Bank,\s*N", re.IGNORECASE), "JPMorgan Chase Bank, N.A."),
+    (re.compile(r"\bDiscover\s+Bank\b", re.IGNORECASE), "Discover Bank"),
+    (re.compile(r"\bAlly\s+Bank\b", re.IGNORECASE), "Ally Bank"),
+    (re.compile(r"\bSouthState\s+Bank\b", re.IGNORECASE), "SouthState Bank"),
+    (re.compile(r"\bBankUnited\b", re.IGNORECASE), "BankUnited, N.A."),
+    (re.compile(r"\bFirst\s+Citizens\s+Bank\b", re.IGNORECASE), "First Citizens Bank"),
+    (re.compile(r"\bSantander\s+Bank\b", re.IGNORECASE), "Santander Bank, N.A."),
+    (re.compile(r"\bWebster\s+Bank\b", re.IGNORECASE), "Webster Bank, N.A."),
+    (re.compile(r"\bComerica\s+Bank\b", re.IGNORECASE), "Comerica Bank"),
+    (re.compile(r"\bCitizens\s+Bank\b", re.IGNORECASE), "Citizens Bank, N.A."),
+    (
+        re.compile(r"\bNavy\s+Federal\s+Credit\s+Union\b", re.IGNORECASE),
+        "Navy Federal Credit Union",
+    ),
+    (re.compile(r"\bAxos\s+Bank\b", re.IGNORECASE), "Axos Bank"),
 )
+
+
+# Application-form marker text. Merchant application PDFs (typically
+# dompdf-rendered "USE_THIS_APP.pdf" files Filip's lead-intake pipeline
+# bundles alongside bank statements) consistently begin with these
+# field labels. The corpus diagnostic on 2026-06-30 found 22 of 50
+# NULL-bank samples were such application PDFs; they were polluting
+# the bank corpus and dragging the detection rate from a real "we
+# can't identify this bank" cohort to "we ingested a non-statement."
+#
+# Heuristic: if the first-page text contains TWO OR MORE of these
+# distinctive application-form field labels in the first 400
+# characters, skip ingestion entirely. The conservative two-match
+# threshold avoids false-positives on legitimate bank statements that
+# happen to mention "Tax ID:" once in fine print.
+_APPLICATION_FORM_MARKERS: Final[tuple[str, ...]] = (
+    "Legal Company Name:",
+    "Legal Entity:",
+    "Business Address:",
+    "Business Start Date:",
+    "Business Telephone#:",
+    "Tax ID:",
+    "Incorporation State:",
+)
+
+
+def _is_application_form(first_page_text: str) -> bool:
+    """Return True when the first-page text looks like a merchant
+    application form rather than a bank statement.
+
+    Counts how many ``_APPLICATION_FORM_MARKERS`` appear in the first
+    400 characters and returns True at >= 2 matches. The threshold is
+    conservative on purpose — a bank statement that happens to mention
+    a single field label in fine print still ingests; only PDFs
+    structured around the application's field-label grid trip the skip.
+    """
+    head = first_page_text[:400]
+    matches = sum(1 for marker in _APPLICATION_FORM_MARKERS if marker in head)
+    return matches >= 2
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -201,6 +261,12 @@ class IngestResult:
                          hint / fingerprint updated.
       * ``"dedup_skip"`` — file_hash already present in
                             corpus_documents; nothing written.
+      * ``"non_statement_skip"`` — first-page text matches the
+                            application-form heuristic
+                            (``_is_application_form``); the file is a
+                            merchant application, NOT a bank statement,
+                            and would only pollute the corpus. Nothing
+                            written.
       * ``"error"`` — detection or write raised; the file did NOT
                        contribute a row. Other files still process.
     """
@@ -215,7 +281,7 @@ class IngestResult:
     has_creator_mismatch: bool
     hint_updated: bool
     fingerprint_added: bool
-    action: str  # "ingested" | "dedup_skip" | "error"
+    action: str  # "ingested" | "dedup_skip" | "non_statement_skip" | "error"
     detail: str = ""
 
     @property
@@ -686,8 +752,31 @@ def ingest_one(
             detail="file_hash already in corpus_documents",
         )
 
-    forensic = run_forensic_pass(pdf_path)
+    # Application-form filter (2026-06-30) — merchant application PDFs
+    # (e.g. ``*USE_THIS_APP.pdf`` produced by the lead-intake dompdf
+    # pipeline) are bundled alongside real bank statements in Filip's
+    # training corpus zip. They're NOT bank statements; ingesting them
+    # pollutes the bank-name detection denominator. The first-page text
+    # heuristic catches them BEFORE the forensic pass / corpus write so
+    # we don't spend Bedrock / I/O budget on them either.
     first_page = _read_first_page_text(pdf_path)
+    if _is_application_form(first_page):
+        return IngestResult(
+            file_path=str(pdf_path),
+            file_hash=file_hash,
+            bank_name=None,
+            page_count=0,
+            fraud_signals_fired=False,
+            has_font_inconsistency=False,
+            has_text_overlay=False,
+            has_creator_mismatch=False,
+            hint_updated=False,
+            fingerprint_added=False,
+            action="non_statement_skip",
+            detail="first-page text matches merchant application form markers",
+        )
+
+    forensic = run_forensic_pass(pdf_path)
     bank_name = detect_bank_name(first_page)
 
     if not apply:
