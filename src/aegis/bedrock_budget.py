@@ -28,6 +28,8 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 
+from postgrest.types import CountMethod
+
 from aegis.db import get_supabase
 from aegis.logger import get_logger
 
@@ -79,7 +81,7 @@ def check_bedrock_budget(feature: str) -> bool:
     try:
         result = (
             sb.table("audit_log")
-            .select("id", count="exact")
+            .select("id", count=CountMethod.exact)
             .eq("action", "bedrock.usage")
             .gte("created_at", today_start.isoformat())
             .execute()
