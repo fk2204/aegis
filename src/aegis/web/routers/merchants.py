@@ -5059,11 +5059,8 @@ async def merchant_detail(
         analyses_by_doc=analyses_by_doc,
         industry_tier=industry_risk_tier(merchant.industry_choice),
         merchant=merchant,
-        # Migration 102 — best-effort persist counterparty
-        # classifications on dossier render so future scoring passes
-        # can read the persisted values and the operator review
-        # surface has a stable target.
-        persist_to_db=True,
+        # persist_to_db defaults True (2026-06-30) — every scoring run
+        # writes the migration-102 columns back.
     )
 
     # Funder-note submission history (newest-first). Dossier renders a
@@ -5778,8 +5775,9 @@ def _build_pdf_dossier_context(
 
     # Unified A+B+C view — drives the industry-tier chip on the PDF.
     # Same source as the on-screen dossier (``build_unified_tracks_view``).
-    # PDF export path — skip the migration-102 persistence (the on-screen
-    # dossier route covers it; the PDF render is the dossier's twin).
+    # PDF export path — opt out of the migration-102 persistence (the
+    # on-screen dossier route covers it; the PDF render is the dossier's
+    # twin and would otherwise double-write).
     from aegis.scoring_v2.dossier_panel import build_unified_tracks_view
 
     unified_tracks = build_unified_tracks_view(
@@ -5788,6 +5786,7 @@ def _build_pdf_dossier_context(
         analyses_by_doc=analyses_by_doc,
         industry_tier=industry_risk_tier(merchant.industry_choice),
         merchant=merchant,
+        persist_to_db=False,
     )
 
     # Top 3 funder matches. Only computed when a finalized merchant has a

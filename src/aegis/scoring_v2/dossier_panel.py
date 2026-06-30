@@ -186,7 +186,7 @@ def build_unified_tracks_view(
     analyses_by_doc: dict[UUID, Any] | None = None,
     industry_tier: IndustryTier | None = None,
     merchant: MerchantRow | None = None,
-    persist_to_db: bool = False,
+    persist_to_db: bool = True,
 ) -> UnifiedTracksView:
     """Assemble the A+B+C view for a merchant dossier.
 
