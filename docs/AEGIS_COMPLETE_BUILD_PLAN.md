@@ -11,6 +11,21 @@ migration 099 §1071 columns applied, dashboard parallelized (asyncio.gather
 
 ---
 
+## Automation hard rule
+
+Everything that runs as part of routine operations must be fully automated. No manual operator steps for routine work, ever. If the operator has to open a terminal or run an `ssh ...` for a routine flow — it is not done. Push each commit automatically when CI is green. Stop only for migrations (where the operator's approval is the policy gate). The litmus test: **"will this work while Filip sleeps?"** If no, the work isn't shipped — finish the automation first.
+
+This rule supersedes any prior section in this document that implies a manual operator step.
+
+Concrete examples of "fully automated" in AEGIS context:
+- **Funder definitions:** pulled by an arq cron from the OneDrive folder, not by `uv run python scripts/sync_funders_from_folder.py` on the laptop.
+- **Training corpus refresh:** an arq cron pulls the zip / folder from OneDrive on a weekly cadence.
+- **OFAC list refresh:** a systemd timer (`aegis-ofac-update.timer`) runs daily.
+- **Deploy:** GitHub Actions auto-deploy on push to `main` is the primary path; manual `make deploy TARGET=prod` is the rollback / hotfix fallback only.
+- **Background checks, narrator summaries:** enqueued automatically on parse completion (or via a backfill cron for legacy docs).
+
+---
+
 ## SECTION 1 — IN FLIGHT (finish before anything new)
 
 ### 1.1 — Migration 089: documents indexes (approved, waiting apply)
