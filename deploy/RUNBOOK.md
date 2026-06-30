@@ -877,6 +877,27 @@ If those all work but the queue is full, the worker process is wedged.
 
 ---
 
+## OneDrive rclone setup (one-time)
+
+The funder definitions folder + the training-corpus PDFs both live in the operator's OneDrive under `Radna površina/ajmo` and `Radna površina/Commera Lead Files.zip`. The prod box mounts that tree at `/mnt/onedrive` via `rclone` + FUSE so the workers can read them like local files. Two arq crons keep AEGIS in sync:
+
+- `daily_funder_sync` — 07:00 UTC daily, runs `scripts/sync_funders_from_folder.py --apply`.
+- `weekly_corpus_ingestion` — Mon 03:00 UTC, runs `scripts/ingest_training_corpus.py` with auto-detected source (zip → folder → local fallback).
+
+One-time setup, run from the operator's workstation:
+
+```
+ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 "bash /opt/aegis/scripts/setup_rclone_onedrive.sh"
+ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 "rclone config"   # follow the script's printed prompts
+ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 "bash /opt/aegis/scripts/setup_rclone_mount.sh"
+```
+
+The `rclone config` step is interactive — pick `n` (new remote), name it `onedrive`, pick Microsoft OneDrive, leave client_id/secret blank, accept defaults, run the auto-config (opens a browser URL on the operator's laptop for MS login), pick OneDrive Personal, accept defaults, `q` to quit.
+
+After that the systemd unit `rclone-onedrive.service` keeps the mount alive across reboots; the cron jobs run on the worker schedule above. Config knobs (override via `/etc/aegis/aegis.env` if the mount path ever changes): `FUNDERS_FOLDER_PATH`, `ONEDRIVE_CORPUS_ZIP`, `ONEDRIVE_CORPUS_FOLDER`, `LOCAL_CORPUS_FOLDER`.
+
+---
+
 ## System dependencies (gotchas)
 
 - **WeasyPrint** needs Pango/GObject/Cairo/HarfBuzz native libs:
