@@ -224,6 +224,7 @@ async def index(
     (
         parse_counts,
         merchant_total,
+        merchant_active,
         recent_activity_rows,
         attention_docs,
         all_recent_docs,
@@ -235,6 +236,7 @@ async def index(
     ) = await asyncio.gather(
         asyncio.to_thread(docs.count_by_parse_status),
         asyncio.to_thread(merchants_repo.count_total),
+        asyncio.to_thread(merchants_repo.count_active),
         asyncio.to_thread(audit.list_recent, limit=10),
         asyncio.to_thread(docs.list_documents_slim, parse_status="manual_review", limit=40),
         asyncio.to_thread(docs.list_documents, limit=500),
@@ -264,6 +266,7 @@ async def index(
     # just renders empty.
     parse_counts = _safe_or_default(parse_counts, {}, "parse_counts")
     merchant_total = _safe_or_default(merchant_total, 0, "merchant_total")
+    merchant_active = _safe_or_default(merchant_active, 0, "merchant_active")
     pending_registrations_typed: list[PendingObligation] = _safe_or_default(
         pending_registrations, [], "pending_registrations"
     )
@@ -377,6 +380,7 @@ async def index(
         asyncio.to_thread(
             _compute_key_numbers,
             merchant_total=merchant_total,
+            merchant_active=merchant_active,
             pending_count=pending,
             proceed_count=proceed,
             funder_note_subs=funder_note_subs,
@@ -769,6 +773,7 @@ _KEY_NUMBERS_READY_WINDOW_DAYS: Final[int] = 30
 def _compute_key_numbers(
     *,
     merchant_total: int,
+    merchant_active: int,
     pending_count: int,
     proceed_count: int,
     funder_note_subs: FunderNoteSubmissionRepository,
@@ -779,27 +784,51 @@ def _compute_key_numbers(
 ) -> dict[str, Any]:
     """Top-of-dashboard key-numbers banner.
 
-    Cheap reads only — three counts come in already-computed from the
-    route; ``submitted_this_week`` is a single ``list_in_window`` call
-    on the submissions repo; ``avg_revenue_this_week`` averages
+    Cheap reads only — counts come in already-computed from the route;
+    ``submitted_this_week`` is a single ``list_in_window`` call on the
+    submissions repo; ``avg_revenue_this_week`` averages
     ``analyses.true_revenue`` across documents parsed in the last 7
     days (bounded by ``_KEY_NUMBERS_REVENUE_WINDOW_DAYS``).
 
-    "Active deals" = ``merchants_repo.list_all()`` length. The repo's
-    ``list_all`` already excludes soft-deleted rows (migration 065).
-    AEGIS does not carry a ``status='disqualified'`` enum today; the
-    closest equivalent — soft-delete — is already filtered. Future
-    "disqualified" status (when wired) lands here.
+    "Active deals" reads ``merchants_repo.count_active`` (excludes
+    soft-deleted AND ``status='disqualified'``). The audit
+    2026-06-30 confirmed migration 100 added the ``disqualified``
+    enum value but the prior code path used ``count_total`` which only
+    filtered soft-delete — so disqualified merchants leaked into
+    "Active Deals". ``merchant_total`` (intake denominator) keeps
+    counting disqualified rows since they DID enter the funnel.
 
-    "Ready to submit" = merchants with a ``proceed`` document AND no
-    funder_note_submission in the last ``_KEY_NUMBERS_READY_WINDOW_DAYS``
-    days. Matches the Pipeline column-2 / kanban "Ready to Review"
-    definition so the two surfaces agree (a merchant that's already
-    been submitted to a funder is NOT "ready to submit again").
-    OFAC clearance is NOT gated here — ``ofac_is_clear=False`` already
-    suppresses the funder grid at the dossier, so the merchant can't be
-    submitted from there; counting them in this banner inflates the
-    headline number without adding actionable work.
+    "Avg Revenue (7d)" filters to:
+      * ``parse_status='proceed'`` documents only (manual_review /
+        error rows often have $0 or NEGATIVE ``true_revenue`` from
+        the counterparty-unknown bucket; including them collapses the
+        headline metric);
+      * ``true_revenue > 0`` (zeros are the unclassified case from the
+        2026-06-30 Turnbull audit — pre-FIX-2 those produced 6 of
+        32 sample analyses at $0 plus 6 NEGATIVE values down to
+        -$30,000, dragging the average from ~$79K down to ~$62K);
+      * merchants not in ``status='disqualified'`` (an active-funnel
+        revenue metric shouldn't include rows the operator already
+        declined).
+
+    "Ready to submit" filters to merchants where ALL of:
+      * has at least one ``parse_status='proceed'`` document, AND
+      * has not been submitted to a funder in
+        ``_KEY_NUMBERS_READY_WINDOW_DAYS`` days, AND
+      * merchant ``status`` is NOT ``'disqualified'``, AND
+      * merchant ``ofac_is_clear`` is True (NOT False, NOT None) —
+        the dossier funder grid already suppresses non-clear
+        merchants, so counting them in the banner inflates the
+        headline without adding actionable work.
+
+    Track A verdict consultation (fail → exclude) is intentionally NOT
+    wired here yet: the verdict is computed at scoring time and is not
+    persisted to the analysis row, so reading it would require running
+    a per-merchant scoring call inside this hot path. The proxy in
+    use today — "merchant has at least one ``proceed`` doc" — already
+    enforces the per-doc parser-time prescreen (parser/pipeline.py
+    ``_decide`` ladder); migration-102 counterparty persistence opens
+    the door to a cheaper Track-A read pass in a later commit.
     """
     from decimal import Decimal
 
@@ -808,10 +837,6 @@ def _compute_key_numbers(
     submitted_this_week = len(submissions)
 
     # --- Ready-to-submit refinement ----------------------------------
-    # proceed-status docs joined to "no funder submission in the
-    # trailing 30 days" — the dossier-honest definition. Filters the
-    # shared ``all_recent_docs`` window in Python rather than running a
-    # second ``list_documents(parse_status="proceed")`` round-trip.
     ready_window_start = now - timedelta(days=_KEY_NUMBERS_READY_WINDOW_DAYS)
     recent_submissions = funder_note_subs.list_in_window(from_dt=ready_window_start, to_dt=now)
     recently_submitted_merchant_ids = {s.merchant_id for s in recent_submissions}
@@ -819,45 +844,82 @@ def _compute_key_numbers(
         all_recent_docs = docs.list_documents(limit=500)
     proceed_docs = [d for d in all_recent_docs if d.parse_status == "proceed"]
     proceed_merchant_ids = {d.merchant_id for d in proceed_docs if d.merchant_id is not None}
-    ready_to_submit_count = len(proceed_merchant_ids - recently_submitted_merchant_ids)
+
+    # Pull the candidate merchants once — used by ready-to-submit filter
+    # AND by the avg-revenue disqualified filter. ``get_many_by_ids``
+    # automatically excludes soft-deleted; we filter ``disqualified`` and
+    # OFAC clearance below in Python.
+    candidate_merchant_ids = list(proceed_merchant_ids)
+    merchants_by_id = merchants_repo.get_many_by_ids(candidate_merchant_ids)
+    blocked_merchant_ids = {
+        mid
+        for mid, m in merchants_by_id.items()
+        if m.status == "disqualified" or m.ofac_is_clear is not True
+    }
+    ready_merchant_ids = (
+        proceed_merchant_ids - recently_submitted_merchant_ids - blocked_merchant_ids
+    )
+    ready_to_submit_count = len(ready_merchant_ids)
 
     # --- Active-deals ------------------------------------------------
-    # ``merchant_total`` comes in from ``count_total`` which already
-    # excludes soft-deleted rows. Keep the same value here so the
-    # legacy stats strip and the key-numbers banner agree.
-    active_deals = merchant_total
-    _ = merchants_repo  # held in signature for future status filtering
+    # Reads ``count_active`` (status filter wired 2026-06-30).
+    active_deals = merchant_active
 
-    # --- Avg revenue (7d) — re-uses shared docs window ---------------
+    # --- Avg revenue (7d) — proceed only, > 0, not disqualified ------
+    # The ``proceed`` filter is the load-bearing exclusion: a
+    # manual_review doc whose counterparty classifier returned all-unknown
+    # will have ``true_revenue=0`` (or negative if outflows > inflows).
+    # Including those in the average understated the metric by ~22%
+    # in the 2026-06-30 audit sample.
     week_docs = [
-        d for d in all_recent_docs if d.parsed_at is not None and d.parsed_at >= window_start
+        d
+        for d in all_recent_docs
+        if d.parsed_at is not None and d.parsed_at >= window_start and d.parse_status == "proceed"
     ]
-    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in week_docs])
-    revenues = [a.true_revenue for a in analyses_by_doc.values() if a.true_revenue is not None]
+    # Resolve the per-doc merchant rows so we can drop docs whose
+    # merchant is now disqualified — the doc's parse outcome may have
+    # been ``proceed`` at upload time, but if the operator has since
+    # disqualified the merchant the revenue shouldn't drive the
+    # active-funnel headline number.
+    revenue_merchant_ids = {d.merchant_id for d in week_docs if d.merchant_id is not None}
+    revenue_merchants_by_id = merchants_repo.get_many_by_ids(
+        list(revenue_merchant_ids - set(merchants_by_id))
+    )
+    revenue_merchants_by_id.update(merchants_by_id)
+    disqualified_for_revenue = {
+        mid for mid, m in revenue_merchants_by_id.items() if m.status == "disqualified"
+    }
+    revenue_eligible_docs = [
+        d
+        for d in week_docs
+        if d.merchant_id is None or d.merchant_id not in disqualified_for_revenue
+    ]
+    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in revenue_eligible_docs])
+    revenues = [
+        a.true_revenue
+        for a in analyses_by_doc.values()
+        if a.true_revenue is not None and a.true_revenue > Decimal("0")
+    ]
     if revenues:
         avg_revenue = sum(revenues, Decimal("0")) / Decimal(len(revenues))
     else:
         avg_revenue = None
 
-    # Source IDs for the auditability rule: every aggregate ships with
-    # the list of contributing IDs so the dossier drill-down contract
-    # holds. ``avg_revenue`` is keyed by document, the rest by merchant.
+    # Source IDs for the auditability rule.
     return {
         "active_deals": active_deals,
         "pending_parse": pending_count,
-        # Kept for callers that still read the unfiltered field (no
-        # current callers, but a templates-side regression should not
-        # rename to a brittle key).
+        # Kept for callers that still read the unfiltered field.
         "ready_to_submit_proceed_count": proceed_count,
         "ready_to_submit": ready_to_submit_count,
-        "ready_to_submit_source_merchant_ids": sorted(
-            str(mid) for mid in (proceed_merchant_ids - recently_submitted_merchant_ids)
-        ),
+        "ready_to_submit_source_merchant_ids": sorted(str(mid) for mid in ready_merchant_ids),
         "submitted_this_week": submitted_this_week,
         "submitted_this_week_source_submission_ids": [str(s.id) for s in submissions],
         "avg_revenue_this_week": avg_revenue,
         "avg_revenue_this_week_source_document_ids": [
-            str(doc_id) for doc_id, a in analyses_by_doc.items() if a.true_revenue is not None
+            str(doc_id)
+            for doc_id, a in analyses_by_doc.items()
+            if a.true_revenue is not None and a.true_revenue > Decimal("0")
         ],
     }
 

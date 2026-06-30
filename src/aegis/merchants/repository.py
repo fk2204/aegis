@@ -354,6 +354,16 @@ class MerchantRepository(Protocol):
     def list_all(self, *, state: str | None = None) -> list[MerchantRow]: ...
     def get_many_by_ids(self, merchant_ids: list[UUID]) -> dict[UUID, MerchantRow]: ...
     def count_total(self) -> int: ...
+    def count_active(self) -> int:
+        """Count merchants in active underwriting (excludes
+        ``deleted_at`` AND ``status='disqualified'``).
+
+        Distinct from ``count_total`` which only filters soft-delete.
+        Dashboard "Active Deals" reads this; the funnel ``intake_count``
+        still reads ``count_total`` (every non-deleted merchant counts
+        as "intake," even if subsequently disqualified)."""
+        ...
+
     def upsert(self, merchant: MerchantRow) -> MerchantRow: ...
     def delete(self, merchant_id: UUID) -> None: ...
 
@@ -574,6 +584,11 @@ class InMemoryMerchantRepository:
 
     def count_total(self) -> int:
         return sum(1 for m in self._by_id.values() if m.deleted_at is None)
+
+    def count_active(self) -> int:
+        return sum(
+            1 for m in self._by_id.values() if m.deleted_at is None and m.status != "disqualified"
+        )
 
     def upsert(self, merchant: MerchantRow) -> MerchantRow:
         # Enforce uniqueness on close_lead_id (DB partial-UNIQUE index
@@ -895,6 +910,29 @@ class SupabaseMerchantRepository:
                 .table("merchants")
                 .select("id")
                 .is_("deleted_at", "null")
+                .limit(10000)
+                .execute()
+            )
+        except Exception:
+            return 0
+        return len(result.data or [])
+
+    def count_active(self) -> int:
+        """Active = non-soft-deleted AND status != 'disqualified'.
+
+        Audit 2026-06-30 found `count_total` (the legacy "Active Deals"
+        source) included `status='disqualified'` rows because the
+        soft-delete filter doesn't intersect the disqualified status.
+        Migration 100 added 'disqualified' to the merchants.status
+        CHECK constraint; this method honors it.
+        """
+        try:
+            result = (
+                get_supabase()
+                .table("merchants")
+                .select("id")
+                .is_("deleted_at", "null")
+                .neq("status", "disqualified")
                 .limit(10000)
                 .execute()
             )

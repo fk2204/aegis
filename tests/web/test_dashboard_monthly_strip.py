@@ -187,6 +187,7 @@ def test_key_numbers_ready_excludes_recently_submitted() -> None:
 
     result = _compute_key_numbers(
         merchant_total=2,
+        merchant_active=2,
         pending_count=0,
         proceed_count=2,
         funder_note_subs=subs,
@@ -207,6 +208,7 @@ def test_key_numbers_carries_source_ids_for_all_aggregates() -> None:
     subs = InMemoryFunderNoteSubmissionRepository()
     result = _compute_key_numbers(
         merchant_total=0,
+        merchant_active=0,
         pending_count=0,
         proceed_count=0,
         funder_note_subs=subs,
