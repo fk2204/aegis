@@ -346,62 +346,74 @@
 
 {# ============== Bedrock narrator summary (migration 075) ============== #}
 {# Plain-English senior-underwriter handoff. Sits at the very top of the
-   dossier so the operator reads the verbal summary first, then drills
-   into the raw numbers as needed. Rendered from cached
-   ``analyses.narrator_summary`` JSON; absent rows (legacy deals + first
-   visit on a new deal) render the Fix-1 prompt card so the underwriter
-   sees an actionable button instead of silence. The HTMX swap targets
-   ``.narrator-prompt`` so the response replaces the card in place. #}
-{% if narrator_summary is none and analysis and document %}
-  <div class="narrator-prompt"
-       data-test-id="narrator-prompt"
-       data-narrator-prompt>
-    <p><strong>No deal summary yet.</strong></p>
-    <button hx-post="/ui/merchants/{{ merchant.id }}/documents/{{ document.id }}/narrator/refresh"
-            hx-target=".narrator-prompt"
-            hx-swap="outerHTML"
-            type="submit"
-            data-test-id="narrator-prompt-generate">Generate deal summary</button>
-  </div>
-{% endif %}
-{% if narrator_summary %}
-  <section class="narrator-summary"
-           data-test-id="narrator-summary"
-           data-action="{{ narrator_summary.recommended_action.action }}">
-    <div class="narrator-deal-summary" data-test-id="narrator-deal-summary">
-      {{ narrator_summary.deal_summary }}
-    </div>
-    {% if narrator_summary.flag_explanations %}
-      <ul class="narrator-flags" data-test-id="narrator-flags">
-        {% for flag in narrator_summary.flag_explanations %}
-          <li class="narrator-flag-item narrator-flag-{{ flag.severity }}"
-              data-flag-code="{{ flag.flag_code }}"
-              data-severity="{{ flag.severity }}">
-            {{ flag.explanation }}
-          </li>
-        {% endfor %}
-      </ul>
-    {% endif %}
-    <div class="narrator-action narrator-action--{{ narrator_summary.recommended_action.action }}"
-         data-test-id="narrator-action">
-      <strong>{{ narrator_summary.recommended_action.next_step }}</strong>
-      {% if narrator_summary.recommended_action.top_funder_match %}
-        <div class="narrator-action-funder">
-          Top match: {{ narrator_summary.recommended_action.top_funder_match }}{% if narrator_summary.recommended_action.estimated_terms %} — {{ narrator_summary.recommended_action.estimated_terms }}{% endif %}
-        </div>
+   dossier as a FULL-WIDTH banner above the two-column body so the
+   operator reads the verbal summary first, then drills into the raw
+   numbers below. Rendered from cached ``analyses.narrator_summary``
+   JSON; absent rows (legacy deals + first visit on a new deal) render
+   the Fix-1 "Generate deal summary" prompt instead of silence. The
+   wrapping ``<section id="narrator-banner">`` is the HTMX swap target
+   so the generate / refresh actions replace the whole banner in place.
+   2026-06-30 — restructured into a single banner element so the inner
+   prompt / summary / refresh-form variants all share one outer mount. #}
+<section id="narrator-banner"
+         class="narrator-banner"
+         data-test-id="narrator-banner"
+         style="margin:14px 24px 0;padding:0;background:transparent">
+  {% if narrator_summary %}
+    <div class="narrator-summary"
+         data-test-id="narrator-summary"
+         data-action="{{ narrator_summary.recommended_action.action }}">
+      <div class="narrator-deal-summary" data-test-id="narrator-deal-summary">
+        {{ narrator_summary.deal_summary }}
+      </div>
+      {% if narrator_summary.flag_explanations %}
+        <ul class="narrator-flags" data-test-id="narrator-flags">
+          {% for flag in narrator_summary.flag_explanations %}
+            <li class="narrator-flag-item narrator-flag-{{ flag.severity }}"
+                data-flag-code="{{ flag.flag_code }}"
+                data-severity="{{ flag.severity }}">
+              {{ flag.explanation }}
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      <div class="narrator-action narrator-action--{{ narrator_summary.recommended_action.action }}"
+           data-test-id="narrator-action">
+        <strong>{{ narrator_summary.recommended_action.next_step }}</strong>
+        {% if narrator_summary.recommended_action.top_funder_match %}
+          <div class="narrator-action-funder">
+            Top match: {{ narrator_summary.recommended_action.top_funder_match }}{% if narrator_summary.recommended_action.estimated_terms %} — {{ narrator_summary.recommended_action.estimated_terms }}{% endif %}
+          </div>
+        {% endif %}
+      </div>
+      {% if document %}
+        <form method="post"
+              action="/ui/merchants/{{ merchant.id }}/documents/{{ document.id }}/narrator/refresh"
+              class="narrator-refresh-form">
+          <button type="submit"
+                  class="narrator-refresh-button"
+                  data-test-id="narrator-refresh-button">
+            Refresh summary
+          </button>
+        </form>
       {% endif %}
     </div>
-    <form method="post"
-          action="/ui/merchants/{{ merchant.id }}/documents/{{ document.id }}/narrator/refresh"
-          class="narrator-refresh-form">
-      <button type="submit"
-              class="narrator-refresh-button"
-              data-test-id="narrator-refresh-button">
-        Refresh summary
-      </button>
-    </form>
-  </section>
-{% endif %}
+  {% elif analysis and document %}
+    <div class="narrator-prompt"
+         data-test-id="narrator-prompt"
+         data-narrator-prompt
+         style="margin:0">
+      <p><strong>No deal summary yet.</strong></p>
+      <form method="post"
+            action="/ui/merchants/{{ merchant.id }}/documents/{{ document.id }}/narrator/refresh"
+            class="narrator-generate-form"
+            style="margin:0">
+        <button type="submit"
+                data-test-id="narrator-prompt-generate">Generate deal summary</button>
+      </form>
+    </div>
+  {% endif %}
+</section>
 
 {# ============== Plain-English deal summary card (2026-06-18) ============== #}
 {# Sits ABOVE the sheet so it's the first thing the team reads, before
@@ -464,15 +476,22 @@
   {# ============ left rail: nav, compliance, statements ============ #}
   <aside class="rail">
     <nav class="toc">
+      {# 2026-06-30 — TOC reflects the post-restructure right-column
+         order: Profile / Application data / Background checks /
+         Funder routing / Statements / Close activity / §1071 /
+         Operator notes. Left-column analytical sections (Verdict /
+         Cashflow / Findings) lead. Section ids preserved verbatim;
+         numbering left as the existing fractional scheme so deep links
+         in older Close notes still resolve. #}
       <a href="#verdict"><span class="n">§ 1</span> Verdict</a>
       {% if analysis %}<a href="#evidence"><span class="n">§ 2</span> Cashflow evidence</a>{% endif %}
       {% if pattern_cards or stacking or (soft_signals and not soft_signals.is_empty) %}<a href="#findings"><span class="n">§ 3</span> Pattern findings</a>{% endif %}
+      <a href="#profile"><span class="n">§ 4¾</span> Merchant profile</a>
+      {% if merchant.monthly_revenue or merchant.stated_daily_payment or merchant.stated_mca_positions or merchant.stated_current_lenders or merchant.stated_bank or merchant.use_of_funds or merchant.stated_mca_balance or merchant.stated_monthly_deposits or merchant.avg_monthly_cc_sales %}<a href="#application-data"><span class="n">§ 4⅔</span> Application data</a>{% endif %}
       <a href="#routing"><span class="n">§ 4</span> Funder routing</a>
       {% if documents %}<a href="#statements"><span class="n">§ 4½</span> Statements ledger</a>{% endif %}
-      {% if merchant.monthly_revenue or merchant.stated_daily_payment or merchant.stated_mca_positions or merchant.stated_current_lenders or merchant.stated_bank or merchant.use_of_funds or merchant.stated_mca_balance or merchant.stated_monthly_deposits or merchant.avg_monthly_cc_sales %}<a href="#application-data"><span class="n">§ 4⅔</span> Application data</a>{% endif %}
       {% if close_intel and (close_intel.activities or close_intel.agent_notes or close_intel.document_folder_url or close_intel.disqualified_reason) %}<a href="#close-activity"><span class="n">§ 4¾¾</span> Close activity</a>{% endif %}
       {% if merchant.product_type in ('business_loan', 'line_of_credit') %}<a href="#sec1071"><span class="n">§ 4⅘</span> §1071 data</a>{% endif %}
-      <a href="#profile"><span class="n">§ 4¾</span> Merchant profile</a>
       <a href="#disposition"><span class="n">§ 5</span> Disposition</a>
       {% if funder_note_submissions %}<a href="#submissions"><span class="n">§ 5½</span> Funder submissions</a>{% endif %}
       <a href="#operator-notes"><span class="n">§ 6</span> Operator notes</a>
@@ -1723,15 +1742,87 @@
     </div>{# /.dossier-col-left — Verdict + Cashflow + Findings #}
     <div class="dossier-col-right">
 
-    {# Background-checks section (§ 3¾) sits between Track C (pattern
-       findings + concentration) and § 4 (funder matching) so the
-       underwriter sees the soft-signal layer (UCC filings / previous
-       defaults / web presence / OFAC) BEFORE picking funders. Markup
-       lives in ``_background_checks_section.html.j2`` so the two HTMX
-       refresh routes can re-render the section in place without
-       duplicating the inline block. Replaces the A1 visible-stub
-       placeholder (``dossier-background-checks-stub``); the live
-       section now exposes ``data-test-id="dossier-background-checks"``. #}
+    {# ============== § 4¾ MERCHANT PROFILE ============== #}
+    {# 2026-06-30 — promoted to the top of the right column. The
+       underwriter's first lookup is "who is this merchant?", so the
+       basic-profile ledger leads the lookup-table layer. #}
+    <section id="profile" class="section">
+      <header>
+        <span class="n">§ 4¾</span>
+        <h2>Merchant <em>· profile</em></h2>
+        <span class="footnote">all fields · <a href="/ui/merchants/{{ merchant.id }}/edit" style="border-bottom:0">edit ↗</a></span>
+      </header>
+      {# R4.8 (2026-06-09): table-scroll wrapper for the merchant-profile
+         key/value ledger. Two columns fit on most phones but the 200px
+         label column can force overflow on narrow widths. #}
+      <div class="table-scroll">
+      <table class="audit-ledger">
+        <tbody>
+          <tr><td class="when" style="width:200px">Business name</td><td class="details" style="font-family:var(--serif);font-size:15px;font-weight:500">{{ merchant.business_name }}{% if merchant.dba %} <em style="color:var(--ink-3)">· DBA {{ merchant.dba }}</em>{% endif %}</td></tr>
+          <tr><td class="when">Owner</td><td class="details">{{ merchant.owner_name }}</td></tr>
+          <tr><td class="when">State</td><td class="details"><span class="mono">{{ merchant.state }}</span></td></tr>
+          <tr><td class="when">Entity type</td><td class="details">{{ merchant.entity_type or '—' }}</td></tr>
+          <tr><td class="when">EIN</td><td class="details"><span class="mono">{% if merchant.ein %}{{ merchant.ein[:3] }}-XX-XXXX{% else %}—{% endif %}</span> <span style="font-size:10px;color:var(--ink-3);font-family:var(--mono)">· masked</span></td></tr>
+          <tr><td class="when">Industry</td><td class="details">{{ (naics_name if naics_name is defined else None) or merchant.industry_naics or '—' }}{% if merchant.industry_naics %} <span class="mono" style="color:var(--ink-3);font-size:11px">· NAICS {{ merchant.industry_naics }}</span>{% endif %}{% if merchant.industry_risk_tier %} · {{ merchant.industry_risk_tier }}{% endif %}</td></tr>
+          <tr><td class="when">FICO</td><td class="details"><span class="mono">{{ merchant.credit_score or '—' }}</span></td></tr>
+          <tr><td class="when">Time in business</td><td class="details">{% if merchant.time_in_business_months %}<span class="mono">{{ merchant.time_in_business_months }}</span> months{% else %}—{% endif %}</td></tr>
+          <tr><td class="when">Contact</td><td class="details">{% if merchant.email %}<span class="mono">{{ merchant.email }}</span>{% else %}—{% endif %}{% if merchant.phone %} · <span class="mono">{{ merchant.phone }}</span>{% endif %}</td></tr>
+          <tr><td class="when">Requested advance</td><td class="details">{% if merchant.requested_amount %}<span class="mono">${{ "{:,.0f}".format(merchant.requested_amount) }}</span>{% else %}—{% endif %}</td></tr>
+          <tr><td class="when">Requested factor</td><td class="details">{% if merchant.requested_factor %}<span class="mono">×{{ merchant.requested_factor }}</span>{% else %}—{% endif %}</td></tr>
+          <tr><td class="when">Requested term</td><td class="details">{% if merchant.requested_term_days %}<span class="mono">{{ merchant.requested_term_days }}</span> days{% else %}—{% endif %}</td></tr>
+          <tr><td class="when">Source / broker</td><td class="details">{{ merchant.broker_source or '—' }}</td></tr>
+          <tr><td class="when">Intake date</td><td class="details"><span class="mono">{{ merchant.intake_date or '—' }}</span></td></tr>
+          <tr><td class="when">Renewal</td><td class="details">{% if merchant.is_renewal %}<span class="pill warn">renewal</span>{% else %}<span style="color:var(--ink-3)">no</span>{% endif %}</td></tr>
+          <tr><td class="when">Close lead</td><td class="details"><span class="mono">{{ merchant.close_lead_id or '—' }}</span></td></tr>
+          <tr><td class="when">Created</td><td class="details"><span class="mono" style="font-size:11px">{% if merchant.created_at %}{{ merchant.created_at.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}—{% endif %}</span></td></tr>
+          <tr><td class="when">Updated</td><td class="details"><span class="mono" style="font-size:11px">{% if merchant.updated_at %}{{ merchant.updated_at.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}—{% endif %}</span></td></tr>
+          <tr><td class="when">Merchant ID</td><td class="details"><span class="mono" style="font-size:10.5px">{{ merchant.id }}</span></td></tr>
+        </tbody>
+      </table>
+      </div>
+    </section>
+
+    {# ============== § 4⅔ APPLICATION DATA FROM CLOSE ==============
+       What the MERCHANT told us at intake (Close FINANCIAL block,
+       parsed from the Lead description by migration 087). Distinct
+       from § 2 (AEGIS-measured cashflow) — the contrast between the
+       two is exactly what the impossible-payment-load + stated-vs-
+       measured-revenue-divergence detectors evaluate.
+       Visual contrast: amber border-left so the operator can see at a
+       glance that this band is unverified-merchant-assertion data,
+       not AEGIS-measured. #}
+    {% set has_application_data = merchant.monthly_revenue or merchant.stated_daily_payment or merchant.stated_mca_positions or merchant.stated_current_lenders or merchant.stated_bank or merchant.use_of_funds or merchant.stated_mca_balance or merchant.stated_monthly_deposits or merchant.avg_monthly_cc_sales or merchant.requested_amount %}
+    {% if has_application_data %}
+    <section id="application-data" class="section" style="border-left:3px solid var(--amber, #c99317);padding-left:14px">
+      <header>
+        <span class="n">§ 4⅔</span>
+        <h2>Application data <em>· what the merchant told us</em></h2>
+        <span class="footnote">parsed from Close · unverified merchant assertions</span>
+      </header>
+      <div class="table-scroll">
+      <table class="audit-ledger">
+        <tbody>
+          {% if merchant.requested_amount %}<tr><td class="when" style="width:200px">Requested advance</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.requested_amount) }}</span></td></tr>{% endif %}
+          {% if merchant.use_of_funds %}<tr><td class="when">Use of funds</td><td class="details">{{ merchant.use_of_funds }}</td></tr>{% endif %}
+          {% if merchant.monthly_revenue %}<tr><td class="when">Stated monthly revenue</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.monthly_revenue) }}</span> <span style="color:var(--ink-3);font-size:11px">/ month (merchant-reported)</span></td></tr>{% endif %}
+          {% if merchant.avg_monthly_cc_sales %}<tr><td class="when">Avg monthly CC sales</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.avg_monthly_cc_sales) }}</span></td></tr>{% endif %}
+          {% if merchant.stated_monthly_deposits is not none %}<tr><td class="when">Monthly deposit count</td><td class="details"><span class="mono">{{ merchant.stated_monthly_deposits }}</span> deposits/month</td></tr>{% endif %}
+          {% if merchant.stated_mca_positions is not none %}<tr><td class="when">Existing MCA positions</td><td class="details"><span class="mono">{{ merchant.stated_mca_positions }}</span>{% if merchant.stated_current_lenders %} · {{ merchant.stated_current_lenders | join(', ') }}{% endif %}</td></tr>{% elif merchant.stated_current_lenders %}<tr><td class="when">Current lenders</td><td class="details">{{ merchant.stated_current_lenders | join(', ') }}</td></tr>{% endif %}
+          {% if merchant.stated_mca_balance %}<tr><td class="when">Existing MCA balance</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.stated_mca_balance) }}</span></td></tr>{% endif %}
+          {% if merchant.stated_daily_payment %}<tr><td class="when">Daily/weekly payment</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.stated_daily_payment) }}</span></td></tr>{% endif %}
+          {% if merchant.stated_bank %}<tr><td class="when">Bank</td><td class="details">{{ merchant.stated_bank }}</td></tr>{% endif %}
+        </tbody>
+      </table>
+      </div>
+    </section>
+    {% endif %}
+
+    {# Background-checks section (§ 3¾) — the soft-signal layer (UCC
+       filings / previous defaults / web presence / OFAC) the underwriter
+       references after the merchant identity. Markup lives in
+       ``_background_checks_section.html.j2`` so the two HTMX refresh
+       routes can re-render the section in place without duplicating the
+       inline block. Exposes ``data-test-id="dossier-background-checks"``. #}
     {% include "_background_checks_section.html.j2" %}
 
     {# Migration 083 — OFAC SDN hard gate. Red banner replaces the
@@ -2135,41 +2226,6 @@
     </section>
     {% endif %}
 
-    {# ============== § 4⅔ APPLICATION DATA FROM CLOSE ==============
-       What the MERCHANT told us at intake (Close FINANCIAL block,
-       parsed from the Lead description by migration 087). Distinct
-       from § 2 (AEGIS-measured cashflow) — the contrast between the
-       two is exactly what the impossible-payment-load + stated-vs-
-       measured-revenue-divergence detectors evaluate.
-       Visual contrast: amber border-left so the operator can see at a
-       glance that this band is unverified-merchant-assertion data,
-       not AEGIS-measured. #}
-    {% set has_application_data = merchant.monthly_revenue or merchant.stated_daily_payment or merchant.stated_mca_positions or merchant.stated_current_lenders or merchant.stated_bank or merchant.use_of_funds or merchant.stated_mca_balance or merchant.stated_monthly_deposits or merchant.avg_monthly_cc_sales or merchant.requested_amount %}
-    {% if has_application_data %}
-    <section id="application-data" class="section" style="border-left:3px solid var(--amber, #c99317);padding-left:14px">
-      <header>
-        <span class="n">§ 4⅔</span>
-        <h2>Application data <em>· what the merchant told us</em></h2>
-        <span class="footnote">parsed from Close · unverified merchant assertions</span>
-      </header>
-      <div class="table-scroll">
-      <table class="audit-ledger">
-        <tbody>
-          {% if merchant.requested_amount %}<tr><td class="when" style="width:200px">Requested advance</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.requested_amount) }}</span></td></tr>{% endif %}
-          {% if merchant.use_of_funds %}<tr><td class="when">Use of funds</td><td class="details">{{ merchant.use_of_funds }}</td></tr>{% endif %}
-          {% if merchant.monthly_revenue %}<tr><td class="when">Stated monthly revenue</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.monthly_revenue) }}</span> <span style="color:var(--ink-3);font-size:11px">/ month (merchant-reported)</span></td></tr>{% endif %}
-          {% if merchant.avg_monthly_cc_sales %}<tr><td class="when">Avg monthly CC sales</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.avg_monthly_cc_sales) }}</span></td></tr>{% endif %}
-          {% if merchant.stated_monthly_deposits is not none %}<tr><td class="when">Monthly deposit count</td><td class="details"><span class="mono">{{ merchant.stated_monthly_deposits }}</span> deposits/month</td></tr>{% endif %}
-          {% if merchant.stated_mca_positions is not none %}<tr><td class="when">Existing MCA positions</td><td class="details"><span class="mono">{{ merchant.stated_mca_positions }}</span>{% if merchant.stated_current_lenders %} · {{ merchant.stated_current_lenders | join(', ') }}{% endif %}</td></tr>{% elif merchant.stated_current_lenders %}<tr><td class="when">Current lenders</td><td class="details">{{ merchant.stated_current_lenders | join(', ') }}</td></tr>{% endif %}
-          {% if merchant.stated_mca_balance %}<tr><td class="when">Existing MCA balance</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.stated_mca_balance) }}</span></td></tr>{% endif %}
-          {% if merchant.stated_daily_payment %}<tr><td class="when">Daily/weekly payment</td><td class="details"><span class="mono">${{ "{:,.0f}".format(merchant.stated_daily_payment) }}</span></td></tr>{% endif %}
-          {% if merchant.stated_bank %}<tr><td class="when">Bank</td><td class="details">{{ merchant.stated_bank }}</td></tr>{% endif %}
-        </tbody>
-      </table>
-      </div>
-    </section>
-    {% endif %}
-
     {# ============== § 4¾¾ CLOSE ACTIVITY ==============
        Read-only mirror of the operator-visible context in Close: lead
        status, broker description, document folder URL (Zoho WorkDrive /
@@ -2334,44 +2390,26 @@
     </section>
     {% endif %}
 
-    {# ============== § 4¾ MERCHANT PROFILE ============== #}
-    <section id="profile" class="section">
-      <header>
-        <span class="n">§ 4¾</span>
-        <h2>Merchant <em>· profile</em></h2>
-        <span class="footnote">all fields · <a href="/ui/merchants/{{ merchant.id }}/edit" style="border-bottom:0">edit ↗</a></span>
-      </header>
-      {# R4.8 (2026-06-09): table-scroll wrapper for the merchant-profile
-         key/value ledger. Two columns fit on most phones but the 200px
-         label column can force overflow on narrow widths. #}
-      <div class="table-scroll">
-      <table class="audit-ledger">
-        <tbody>
-          <tr><td class="when" style="width:200px">Business name</td><td class="details" style="font-family:var(--serif);font-size:15px;font-weight:500">{{ merchant.business_name }}{% if merchant.dba %} <em style="color:var(--ink-3)">· DBA {{ merchant.dba }}</em>{% endif %}</td></tr>
-          <tr><td class="when">Owner</td><td class="details">{{ merchant.owner_name }}</td></tr>
-          <tr><td class="when">State</td><td class="details"><span class="mono">{{ merchant.state }}</span></td></tr>
-          <tr><td class="when">Entity type</td><td class="details">{{ merchant.entity_type or '—' }}</td></tr>
-          <tr><td class="when">EIN</td><td class="details"><span class="mono">{% if merchant.ein %}{{ merchant.ein[:3] }}-XX-XXXX{% else %}—{% endif %}</span> <span style="font-size:10px;color:var(--ink-3);font-family:var(--mono)">· masked</span></td></tr>
-          <tr><td class="when">Industry</td><td class="details">{{ (naics_name if naics_name is defined else None) or merchant.industry_naics or '—' }}{% if merchant.industry_naics %} <span class="mono" style="color:var(--ink-3);font-size:11px">· NAICS {{ merchant.industry_naics }}</span>{% endif %}{% if merchant.industry_risk_tier %} · {{ merchant.industry_risk_tier }}{% endif %}</td></tr>
-          <tr><td class="when">FICO</td><td class="details"><span class="mono">{{ merchant.credit_score or '—' }}</span></td></tr>
-          <tr><td class="when">Time in business</td><td class="details">{% if merchant.time_in_business_months %}<span class="mono">{{ merchant.time_in_business_months }}</span> months{% else %}—{% endif %}</td></tr>
-          <tr><td class="when">Contact</td><td class="details">{% if merchant.email %}<span class="mono">{{ merchant.email }}</span>{% else %}—{% endif %}{% if merchant.phone %} · <span class="mono">{{ merchant.phone }}</span>{% endif %}</td></tr>
-          <tr><td class="when">Requested advance</td><td class="details">{% if merchant.requested_amount %}<span class="mono">${{ "{:,.0f}".format(merchant.requested_amount) }}</span>{% else %}—{% endif %}</td></tr>
-          <tr><td class="when">Requested factor</td><td class="details">{% if merchant.requested_factor %}<span class="mono">×{{ merchant.requested_factor }}</span>{% else %}—{% endif %}</td></tr>
-          <tr><td class="when">Requested term</td><td class="details">{% if merchant.requested_term_days %}<span class="mono">{{ merchant.requested_term_days }}</span> days{% else %}—{% endif %}</td></tr>
-          <tr><td class="when">Source / broker</td><td class="details">{{ merchant.broker_source or '—' }}</td></tr>
-          <tr><td class="when">Intake date</td><td class="details"><span class="mono">{{ merchant.intake_date or '—' }}</span></td></tr>
-          <tr><td class="when">Renewal</td><td class="details">{% if merchant.is_renewal %}<span class="pill warn">renewal</span>{% else %}<span style="color:var(--ink-3)">no</span>{% endif %}</td></tr>
-          <tr><td class="when">Close lead</td><td class="details"><span class="mono">{{ merchant.close_lead_id or '—' }}</span></td></tr>
-          <tr><td class="when">Created</td><td class="details"><span class="mono" style="font-size:11px">{% if merchant.created_at %}{{ merchant.created_at.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}—{% endif %}</span></td></tr>
-          <tr><td class="when">Updated</td><td class="details"><span class="mono" style="font-size:11px">{% if merchant.updated_at %}{{ merchant.updated_at.strftime('%Y-%m-%d %H:%M UTC') }}{% else %}—{% endif %}</span></td></tr>
-          <tr><td class="when">Merchant ID</td><td class="details"><span class="mono" style="font-size:10.5px">{{ merchant.id }}</span></td></tr>
-        </tbody>
-      </table>
+    {# ============== § 6 OPERATOR NOTES (lazy-load) ==============
+       2026-06-30 — moved from end-of-main into the right column so the
+       operator notes sit at the bottom of the lookup-table layer per
+       the dossier section spec. Lazy-loaded so the dashboard's
+       list_notes() query doesn't run on every dossier render — only
+       when the operator scrolls the notes panel into view. The full
+       panel (editor + cards list) comes back from
+       GET /ui/merchants/{id}/operator-notes. #}
+    <section id="operator-notes" class="section">
+      <div hx-get="/ui/merchants/{{ merchant.id }}/operator-notes"
+           hx-trigger="revealed once"
+           hx-swap="outerHTML"
+           data-test-id="dossier-operator-notes-lazy">
+        <em style="color:var(--ink-3);font-size:11px;padding:14px 24px;display:block">
+          Loading operator notes...
+        </em>
       </div>
     </section>
 
-    </div>{# /.dossier-col-right — Background + Funder + Ledger + Profile #}
+    </div>{# /.dossier-col-right — Profile + Application + Background + Funder + Ledger + Close + §1071 + Operator notes #}
     </div>{# /.dossier-main-grid — main 60/40 split #}
 
     {# ============== § 5 DISPOSITION ============== #}
@@ -2539,23 +2577,6 @@
         </details>
       </section>
     {% endif %}
-
-    {# ============== § 6 OPERATOR NOTES (lazy-load) ==============
-       2026-06-28 — was a server-side include via _merchant_notes_block.
-       Now lazy-loaded so the dashboard's list_notes() query doesn't run
-       on every dossier render — only when the operator scrolls the
-       notes panel into view. The full panel (editor + cards list)
-       comes back from GET /ui/merchants/{id}/operator-notes. #}
-    <section id="operator-notes" class="section">
-      <div hx-get="/ui/merchants/{{ merchant.id }}/operator-notes"
-           hx-trigger="revealed once"
-           hx-swap="outerHTML"
-           data-test-id="dossier-operator-notes-lazy">
-        <em style="color:var(--ink-3);font-size:11px;padding:14px 24px;display:block">
-          Loading operator notes...
-        </em>
-      </div>
-    </section>
 
   </main>
 </div>
