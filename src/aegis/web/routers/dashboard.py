@@ -427,6 +427,16 @@ async def index(
             "documents": card.documents,
             "flags": card.flags,
             "merchant_status": card.merchant_status,
+            # 2026-06-30 FIX 4 wiring: the template references
+            # ``g.severity_tier`` + ``g.severity_headline``, which on a
+            # dict become key lookups. AttentionCard exposes both as
+            # @property; copy the values here so the Today template
+            # renders the modifier class + verdict line. The audit
+            # verification caught this — the rendered HTML showed
+            # ``attention-card--`` with an EMPTY suffix because the
+            # dict lookup silently returned an empty string.
+            "severity_tier": card.severity_tier,
+            "severity_headline": card.severity_headline,
         }
         for card in attention
     ]
