@@ -892,9 +892,33 @@ ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 "rclone config"   # follow the s
 ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 "bash /opt/aegis/scripts/setup_rclone_mount.sh"
 ```
 
-The `rclone config` step is interactive — pick `n` (new remote), name it `onedrive`, pick Microsoft OneDrive, leave client_id/secret blank, accept defaults, run the auto-config (opens a browser URL on the operator's laptop for MS login), pick OneDrive Personal, accept defaults, `q` to quit.
+The `rclone config` step is interactive. **DO NOT pick auto-config (`y`) when running it over SSH** — it tries to open `http://127.0.0.1:53682/` on the prod box, which your Windows browser can't reach across an SSH session ("site can't be reached"). Two working paths below.
 
-After that the systemd unit `rclone-onedrive.service` keeps the mount alive across reboots; the cron jobs run on the worker schedule above. Config knobs (override via `/etc/aegis/aegis.env` if the mount path ever changes): `FUNDERS_FOLDER_PATH`, `ONEDRIVE_CORPUS_ZIP`, `ONEDRIVE_CORPUS_FOLDER`, `LOCAL_CORPUS_FOLDER`.
+### Path A — interactive `rclone authorize` on Windows
+
+1. In the SSH session: `rclone config` → `n` (new remote) → name `onedrive` → type `onedrive` → blank client_id/secret → `n` advanced → **`n` for auto config** (this is the key step).
+2. rclone prints a command like `rclone authorize "onedrive"`. Leave the SSH session open and waiting.
+3. Open a separate PowerShell window on your Windows laptop. If rclone isn't installed locally: `winget install Rclone.Rclone`.
+4. Run the **exact** `rclone authorize "onedrive"` command. A browser opens on your laptop. Log in with the Microsoft account. rclone prints a long config token (JSON-looking blob). Copy the entire token.
+5. Paste the token into the SSH session when rclone prompts `config_token>`.
+6. Confirm OneDrive Personal (`1`), `y` to confirm, `q` to quit.
+
+### Path B — configure entirely on Windows, copy the config file (often easier)
+
+The OAuth round-trip works first-time on Windows because the browser and the localhost callback live on the same machine.
+
+1. `winget install Rclone.Rclone` if not installed.
+2. PowerShell: `rclone config` → same prompts as above, but answer **`y` for auto config** this time (works locally).
+3. The default browser opens, log in, OneDrive Personal, `y`, `q`.
+4. The config file now lives at `$env:APPDATA\rclone\rclone.conf` (typically `C:\Users\<you>\AppData\Roaming\rclone\rclone.conf`).
+5. Copy it to the prod box. From PowerShell:
+   ```
+   scp -i $HOME\.ssh\aegis_ci_deploy $env:APPDATA\rclone\rclone.conf root@5.161.51.105:/root/.config/rclone/rclone.conf
+   ```
+   (rclone reads from `~/.config/rclone/rclone.conf` by default; the root path is fine because the systemd unit gets `RCLONE_CONFIG=/root/.config/rclone/rclone.conf` baked in by `setup_rclone_mount.sh`.)
+6. SSH in and run `bash /opt/aegis/scripts/setup_rclone_mount.sh`.
+
+After either path, the systemd unit `rclone-onedrive.service` keeps the mount alive across reboots; the cron jobs run on the schedule above. Config knobs (override via `/etc/aegis/aegis.env` if the mount path ever changes): `FUNDERS_FOLDER_PATH`, `ONEDRIVE_CORPUS_ZIP`, `ONEDRIVE_CORPUS_FOLDER`, `LOCAL_CORPUS_FOLDER`.
 
 ---
 
