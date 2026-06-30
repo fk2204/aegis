@@ -86,7 +86,7 @@ def check_bedrock_budget(feature: str) -> bool:
             .gte("created_at", today_start.isoformat())
             .execute()
         )
-    except Exception as exc:  # noqa: BLE001 — best-effort budget check
+    except Exception as exc:
         _log.warning(
             "bedrock_budget.count_query_failed feature=%s err=%s",
             feature,
