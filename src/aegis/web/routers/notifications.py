@@ -67,8 +67,8 @@ async def dropdown(
     operator: Annotated[Operator, Depends(current_operator)],
     notifications: Annotated[NotificationRepository, Depends(get_notification_repository)],
 ) -> HTMLResponse:
-    """Return the full dropdown body (notifications list + actions)."""
-    rows = notifications.list_for_operator(operator.id, only_unread=False, limit=20)
+    """Return the full dropdown body — last 10 unread notifications."""
+    rows = notifications.list_for_operator(operator.id, only_unread=True, limit=10)
     return templates.TemplateResponse(
         request,
         "_notifications_dropdown.html.j2",

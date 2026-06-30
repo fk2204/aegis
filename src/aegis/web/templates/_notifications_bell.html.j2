@@ -1,16 +1,23 @@
 {# Bell partial — included in _topstrip.html.j2.
 
-   Context: none required at include time (this template loads its
-   contents via HTMX once the page is rendered, so the topstrip itself
-   doesn't need to do a notification-repo lookup).
+   Context: none required at include time. The dropdown body is
+   lazy-loaded via HTMX on every click so the list reflects the
+   current unread state rather than a stale snapshot from page load.
+
+   Click toggles `.is-open` on `.bell-wrap`; CSS shows the dropdown
+   while that class is present. A document-level listener closes the
+   dropdown on outside clicks. The listener is bound exactly once even
+   if the partial is re-rendered (HTMX swap of the topstrip would
+   otherwise stack handlers).
 #}
 <div class="bell-wrap" data-test-id="bell-wrap">
   <button class="bell-icon"
           type="button"
           hx-get="/ui/notifications/dropdown"
           hx-target=".bell-dropdown"
-          hx-trigger="click once, every 60s from:body"
+          hx-trigger="click"
           hx-swap="innerHTML"
+          hx-on::after-request="this.closest('.bell-wrap').classList.add('is-open')"
           title="Notifications"
           aria-label="Notifications">
     🔔
@@ -26,3 +33,17 @@
     {# Lazy-loaded on click. #}
   </div>
 </div>
+<script>
+  (function () {
+    if (window.__aegis_notif_bell_bound) { return; }
+    window.__aegis_notif_bell_bound = true;
+    document.addEventListener("click", function (event) {
+      var target = event.target;
+      if (!(target instanceof Element)) { return; }
+      if (target.closest(".bell-wrap")) { return; }
+      document.querySelectorAll(".bell-wrap.is-open").forEach(function (el) {
+        el.classList.remove("is-open");
+      });
+    });
+  })();
+</script>

@@ -801,7 +801,7 @@
   z-index: 80;
   display: none;
 }
-.bell-wrap:hover .bell-dropdown,
+.bell-wrap.is-open .bell-dropdown,
 .bell-wrap:focus-within .bell-dropdown {
   display: block;
 }
