@@ -3246,7 +3246,34 @@ async def reparse_bank_manual_review(
 # Shell out to the existing operator scripts so this module doesn't
 # duplicate their auth/extraction paths. Subprocess argv is static; no
 # shell=True; no user-controlled values reach the command line.
+#
+# Both crons gate on a free-disk safety check. rclone's VFS cache lives
+# on the local FS and the corpus ingestion can pull a multi-GB zip out
+# of the mounted OneDrive — if the box is already low on disk neither
+# task is safe to start.
 # ─────────────────────────────────────────────────────────────────────
+
+
+def _check_disk_space(*, min_free_gb: float, path: str = "/") -> bool:
+    """Return True when ``path`` has at least ``min_free_gb`` free.
+
+    Logs ``disk_space_low`` at error level + returns False otherwise so
+    the caller can audit + skip without raising. Kept synchronous because
+    ``shutil.disk_usage`` is a single stat() call.
+    """
+    import shutil
+
+    free_bytes = shutil.disk_usage(path).free
+    free_gb = free_bytes / (1024**3)
+    if free_gb < min_free_gb:
+        _log.error(
+            "disk_space_low path=%s free_gb=%.2f required_gb=%.2f",
+            path,
+            free_gb,
+            min_free_gb,
+        )
+        return False
+    return True
 
 
 async def daily_funder_sync(ctx: dict[str, Any]) -> None:
@@ -3256,11 +3283,18 @@ async def daily_funder_sync(ctx: dict[str, Any]) -> None:
     script reads ``settings.funders_folder_path`` (mounted OneDrive path
     on the prod box) and idempotently syncs each per-funder subfolder.
     Audit rows + structured stderr land in the worker log.
+
+    Skipped (with an error-level audit) when free disk on ``/`` falls
+    below 2 GB — funder folders are small (a handful of PDFs each), but
+    rclone's VFS cache can still pull a transient burst onto disk.
     """
     import os
     import subprocess
 
     del ctx
+    if not _check_disk_space(min_free_gb=2.0):
+        _log.error("funder_sync_skipped: insufficient disk space")
+        return
     # Static literal argv (no shell=True, no user-controlled values).
     result = subprocess.run(
         ["/opt/aegis/.venv/bin/python", "scripts/sync_funders_from_folder.py", "--apply"],
@@ -3281,6 +3315,11 @@ async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
 
     Source preference: zip > onedrive folder > local fallback folder.
     Logs the chosen source line before invoking the script.
+
+    Skipped (with an error-level audit) when free disk on ``/`` falls
+    below 5 GB — the corpus zip is multi-GB and the script also
+    extracts it to a tmp dir before walking, so the worst-case
+    on-disk footprint is roughly 2× the zip size.
     """
     import os
     import subprocess
@@ -3289,6 +3328,9 @@ async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
     from aegis.config import get_settings
 
     del ctx
+    if not _check_disk_space(min_free_gb=5.0):
+        _log.error("corpus_ingestion_skipped: insufficient disk space")
+        return
     settings = get_settings()
     zip_path = Path(settings.onedrive_corpus_zip)
     folder_path = Path(settings.onedrive_corpus_folder)

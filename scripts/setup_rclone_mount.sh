@@ -36,8 +36,13 @@ Type=simple
 User=aegis
 Environment=RCLONE_CONFIG=/home/aegis/.config/rclone/rclone.conf
 ExecStart=/usr/bin/rclone mount onedrive: /mnt/onedrive \
-  --vfs-cache-mode full --vfs-cache-max-size 10G --vfs-cache-max-age 24h \
-  --allow-other --log-level INFO --log-file /var/log/aegis/rclone-onedrive.log
+  --vfs-cache-mode minimal \
+  --vfs-cache-max-size 500M \
+  --vfs-cache-max-age 1h \
+  --dir-cache-time 24h \
+  --allow-other \
+  --log-level INFO \
+  --log-file /var/log/aegis/rclone-onedrive.log
 ExecStop=/bin/fusermount3 -u /mnt/onedrive
 Restart=on-failure
 RestartSec=30
