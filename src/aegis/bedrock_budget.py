@@ -76,9 +76,15 @@ def check_bedrock_budget(feature: str) -> bool:
         # Operator disabled the guard explicitly. Allow every call;
         # don't audit (no decision was made).
         return True
-    sb = get_supabase()
+    if os.environ.get("AEGIS_STORAGE_BACKEND", "").lower() == "memory":
+        # In-memory storage mode — used by CI, the test client, and
+        # local dev. Supabase REST isn't reachable; the guard would
+        # always fail open on the except branch anyway. Short-circuit
+        # so the test surface stays deterministic.
+        return True
     today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     try:
+        sb = get_supabase()
         result = (
             sb.table("audit_log")
             .select("id", count=CountMethod.exact)

@@ -96,16 +96,15 @@
                          data-test-id="track-a-plain-english"
                          data-branch="{{ v.branch }}">{{ _branch_plain }}</div>
                   {% endif %}
-                  {# Forensic plain-English lines. Render only on
-                     non-clean verdicts so the boilerplate descriptions
-                     (font-paste-over / overlay / creator-mismatch)
-                     never appear next to a CLEAN chip even if the
-                     evidence tuple inadvertently carries an entry. The
-                     model spec promises empty ``evidence`` for clean,
-                     but the verdict-chip is the visible source of
-                     truth — gate on it. #}
-                  {% if v.verdict != 'clean' and v.evidence %}
-                    {% set _forensic_evidence = v.evidence | selectattr('signal', 'in', _TRACK_A_SIGNAL_PLAIN.keys() | list) | list %}
+                  {% if v.evidence %}
+                    {# Forensic plain-English lines. Filter the evidence
+                       list down to the three forensic signal codes the
+                       map above translates. Render only when ≥1 hits
+                       AND the verdict is non-clean — the model spec
+                       promises empty evidence for clean, but the
+                       verdict chip is the visible source of truth so
+                       gate on it defensively. #}
+                    {% set _forensic_evidence = (v.evidence | selectattr('signal', 'in', _TRACK_A_SIGNAL_PLAIN.keys() | list) | list) if v.verdict != 'clean' else [] %}
                     {% if _forensic_evidence %}
                       <ul class="track-a-plain"
                           data-test-id="track-a-plain-english-forensic"
