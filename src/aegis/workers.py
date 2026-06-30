@@ -3345,6 +3345,94 @@ async def daily_funder_sync(ctx: dict[str, Any]) -> None:
     if result.returncode != 0:
         _log.error("funder_sync_failed: %s", result.stderr[-300:])
 
+    # D1 (2026-06-30) — alert on funders active for 30+ days but
+    # still missing live underwriting criteria. Likely cause is a
+    # funder folder that contains only signed agreements / blank
+    # application forms (no real guidelines doc). We can't auto-
+    # remediate but we CAN surface the gap so the operator drops a
+    # guidelines PDF into the folder.
+    try:
+        _alert_long_standing_empty_funders()
+    except Exception as exc:
+        _log.warning("funder_sync.long_standing_empty_alert_failed exc=%s", exc)
+
+
+def _alert_long_standing_empty_funders() -> None:
+    """Write audit rows for active funders missing criteria 30+ days.
+
+    De-duplicates against the trailing 7-day audit window so the
+    operator's inbox doesn't grow by N rows per day for the same
+    funder. The audit-log surface is used (not the operator-scoped
+    ``notifications`` table) because the cron has no operator
+    identity to address; the dashboard's recent-activity panel
+    surfaces audit rows directly.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from aegis.audit import SupabaseAuditLog
+    from aegis.db import get_supabase
+
+    sb = get_supabase()
+    cutoff_30d = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    cutoff_7d = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+
+    candidates_resp = (
+        sb.table("funders")
+        .select("id,name,created_at,min_monthly_revenue,min_credit_score,max_positions")
+        .is_("min_monthly_revenue", "null")
+        .is_("min_credit_score", "null")
+        .is_("max_positions", "null")
+        .lte("created_at", cutoff_30d)
+        .execute()
+    )
+    candidates: list[dict[str, Any]] = [
+        r for r in (candidates_resp.data or []) if isinstance(r, dict)
+    ]
+    if not candidates:
+        return
+
+    audit_repo = SupabaseAuditLog()
+    for f in candidates:
+        funder_id = f.get("id")
+        if funder_id is None:
+            continue
+        # De-dup: skip if we already warned about this funder in the
+        # last 7 days. Cheap one-shot SELECT per candidate.
+        existing = (
+            sb.table("audit_log")
+            .select("id")
+            .eq("action", "funder.missing_guidelines_long_standing")
+            .eq("subject_type", "funder")
+            .eq("subject_id", str(funder_id))
+            .gte("created_at", cutoff_7d)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            continue
+        try:
+            audit_repo.record(
+                actor="system:funder_sync",
+                action="funder.missing_guidelines_long_standing",
+                subject_type="funder",
+                subject_id=UUID(str(funder_id)),
+                details={
+                    "name": f.get("name"),
+                    "created_at": f.get("created_at"),
+                    "message": (
+                        f"{f.get('name')!r} has been active for 30+ days "
+                        "with no underwriting criteria. Drop a guidelines "
+                        f"PDF into /var/lib/aegis/funders/{f.get('name')}/."
+                    ),
+                },
+            )
+        except Exception as exc:
+            _log.warning(
+                "funder_sync.missing_guidelines_audit_failed funder=%s exc=%s",
+                f.get("name"),
+                exc,
+            )
+
 
 async def weekly_calibration_cron(ctx: dict[str, Any]) -> None:
     """Monday 04:00 UTC — compute weekly calibration snapshot.
