@@ -661,15 +661,27 @@ def test_zip_extraction_exercises_existing_folder_walk(
     assert "Bank of America, N.A." in out
 
 
-def test_argparse_requires_one_of_folder_or_zip(
+def test_argparse_no_flags_falls_back_to_auto_detect(
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The mutually-exclusive group is required — neither flag → SystemExit."""
-    with pytest.raises(SystemExit):
-        ingest.main([])
+    """Neither --folder nor --zip → auto-detect via settings.
+
+    With T1 (rclone OneDrive automation), the mutually-exclusive group
+    is no longer ``required=True``. When neither flag is given, the
+    script calls ``find_corpus_source(settings)`` and exits with
+    ``EXIT_CALLER_ERROR`` only when nothing is found.
+
+    Stub the auto-detect to return the "nothing found" tuple so the test
+    doesn't depend on the host's actual filesystem state.
+    """
+    monkeypatch.setattr(
+        ingest, "find_corpus_source", lambda _settings: ("none", None, None)
+    )
+    rc = ingest.main([])
+    assert rc != 0
     err = capsys.readouterr().err
-    assert "--folder" in err
-    assert "--zip" in err
+    assert "auto-detect found no corpus" in err
 
 
 def test_argparse_rejects_both_folder_and_zip(

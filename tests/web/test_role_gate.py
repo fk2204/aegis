@@ -269,8 +269,10 @@ def test_topstrip_renders_role_chip_for_admin(
     resp = client.get("/ui/", headers=_as("admin@aegis.test"))
     assert resp.status_code == 200
     body = resp.text
+    # Display name now lives in the avatar tooltip (`title` attr) rather
+    # than as visible text. The role-suffix class is still the role hook.
     assert "Admin Operator" in body
-    assert "op-chip--admin" in body
+    assert "op-avatar--admin" in body
 
 
 def test_topstrip_renders_role_chip_for_viewer(
@@ -281,4 +283,4 @@ def test_topstrip_renders_role_chip_for_viewer(
     assert resp.status_code == 200
     body = resp.text
     assert "Viewer Operator" in body
-    assert "op-chip--viewer" in body
+    assert "op-avatar--viewer" in body
