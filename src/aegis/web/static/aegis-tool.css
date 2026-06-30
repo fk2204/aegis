@@ -2063,6 +2063,24 @@
   color: var(--ink-3);
   text-align: right;
 }
+/* Pending registrations subsection — surfaces compliance obligations
+   with no `next_due_date` yet (state registration not initiated) so
+   they don't silently disappear from the dashboard between cron ticks. */
+.dossier-page .compliance-pending {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--rule, #d8d8d4);
+}
+.dossier-page .attn-subsection-head {
+  font: 600 11px/1.3 var(--mono, "JetBrains Mono", monospace);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 6px 0;
+}
+.dossier-page .attn-list--muted .attn-card {
+  opacity: 0.78;
+}
 .dossier-page .empty-mini {
   padding: 8px 0;
   font: 12px/1.4 var(--sans, "Inter", system-ui);

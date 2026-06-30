@@ -276,6 +276,26 @@ class UpcomingObligation:
     urgency: UrgencyBucket
 
 
+@dataclass(frozen=True)
+class PendingObligation:
+    """One row surfaced by ``list_pending`` — registrations the operator
+    hasn't initiated yet, so they have no ``next_due_date``.
+
+    The Today card renders these in a secondary list below the
+    upcoming-deadlines section so they stay visible even though they
+    don't carry a hard deadline. Compared to ``UpcomingObligation``
+    this has no ``days_remaining`` / ``urgency`` because there's
+    nothing to count down to until the operator initiates the
+    registration (which sets ``next_due_date``).
+    """
+
+    id: UUID
+    state_code: str
+    authority: str
+    description: str
+    status: ObligationStatus
+
+
 class ComplianceObligationRepository(Protocol):
     """Backend-agnostic tracker that the Today card + weekly cron call.
 
@@ -289,6 +309,8 @@ class ComplianceObligationRepository(Protocol):
     def list_upcoming(
         self, days: int, *, today: date | None = None
     ) -> list[UpcomingObligation]: ...
+
+    def list_pending(self) -> list[PendingObligation]: ...
 
     def mark_status(
         self,
@@ -319,6 +341,9 @@ class InMemoryComplianceObligationRepository:
     ) -> list[UpcomingObligation]:
         today = today or datetime.now(UTC).date()
         return _build_upcoming(self.rows, days=days, today=today)
+
+    def list_pending(self) -> list[PendingObligation]:
+        return _build_pending(self.rows)
 
     def mark_status(
         self,
@@ -374,6 +399,22 @@ class SupabaseComplianceObligationRepository:
             return []
         rows = cast(list[dict[str, Any]], result.data or [])
         return _build_upcoming(rows, days=days, today=today)
+
+    def list_pending(self) -> list[PendingObligation]:
+        try:
+            result = (
+                get_supabase()
+                .table("compliance_obligations")
+                .select("id,state_code,authority,description,status")
+                .is_("next_due_date", "null")
+                .order("state_code", desc=False)
+                .execute()
+            )
+        except Exception:
+            _log.warning("compliance.list_pending_failed")
+            return []
+        rows = cast(list[dict[str, Any]], result.data or [])
+        return _build_pending(rows)
 
     def mark_status(
         self,
@@ -488,6 +529,49 @@ def _build_upcoming(
         )
     # Earliest deadline first — surfaces the most-urgent item at top.
     out.sort(key=lambda u: (u.next_due_date, u.state_code))
+    return out
+
+
+def _build_pending(rows: list[dict[str, Any]]) -> list[PendingObligation]:
+    """Pure shaping helper for ``list_pending``.
+
+    Filters to rows whose ``next_due_date`` is NULL — registrations the
+    operator hasn't initiated yet. Sorts alphabetically by state_code
+    so the rendered list is stable across pages.
+    """
+    out: list[PendingObligation] = []
+    for raw in rows:
+        if _parse_date(raw.get("next_due_date")) is not None:
+            continue
+        try:
+            obligation_id = UUID(str(raw.get("id")))
+        except (TypeError, ValueError):
+            _log.warning("compliance.bad_obligation_id id=%s", raw.get("id"))
+            continue
+        status_raw = raw.get("status") or "not_started"
+        if status_raw not in {
+            "not_started",
+            "in_progress",
+            "submitted",
+            "active",
+            "lapsed",
+        }:
+            _log.warning(
+                "compliance.bad_status id=%s status=%s",
+                obligation_id,
+                status_raw,
+            )
+            continue
+        out.append(
+            PendingObligation(
+                id=obligation_id,
+                state_code=str(raw.get("state_code") or ""),
+                authority=str(raw.get("authority") or ""),
+                description=str(raw.get("description") or ""),
+                status=cast(ObligationStatus, status_raw),
+            )
+        )
+    out.sort(key=lambda p: (p.state_code, p.authority))
     return out
 
 
@@ -786,6 +870,7 @@ __all__ = [
     "ObligationStatus",
     "ObligationsRepository",
     "ObligationsSummary",
+    "PendingObligation",
     "SupabaseComplianceObligationRepository",
     "SupabaseObligationsRepository",
     "UpcomingObligation",

@@ -206,7 +206,7 @@
     <div class="attn-section" data-test-id="today-attn-compliance">
       <h3 class="attn-section-head">Compliance deadlines · {{ compliance_count }}</h3>
       {% if not compliance_cards %}
-        <div class="empty empty-mini">No compliance deadlines in the next 90 days.</div>
+        <div class="empty empty-mini">No compliance deadlines in the next 200 days.</div>
       {% else %}
         <ul class="attn-list">
           {% for c in compliance_cards %}
@@ -219,6 +219,24 @@
         {% if compliance_count > compliance_cards|length %}
           <div class="attn-more">+ {{ compliance_count - compliance_cards|length }} more</div>
         {% endif %}
+      {% endif %}
+      {# Surface registrations the operator hasn't initiated yet so they
+         don't get forgotten. These rows have ``next_due_date IS NULL``
+         by design — no countdown applies until the operator opens the
+         registration with the state. Sorted by state_code for stable
+         ordering. #}
+      {% if pending_registrations %}
+        <div class="compliance-pending" data-test-id="today-attn-pending-registrations">
+          <h4 class="attn-subsection-head">Registrations not yet initiated · {{ pending_registrations|length }}</h4>
+          <ul class="attn-list attn-list--muted">
+            {% for reg in pending_registrations %}
+              <li class="attn-card" data-test-id="pending-registration-{{ reg.state_code|lower }}">
+                <span class="attn-card-title">{{ reg.state_code }} — {{ reg.authority }}</span>
+                <span class="attn-card-needs">no deadline set</span>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
       {% endif %}
     </div>
 

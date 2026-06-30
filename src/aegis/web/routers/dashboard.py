@@ -39,6 +39,7 @@ from aegis.api.deps import (
 )
 from aegis.audit import AuditLog
 from aegis.compliance.obligations import (
+    PendingObligation,
     build_compliance_attention_section,
     get_compliance_obligation_repository,
 )
@@ -230,6 +231,7 @@ async def index(
         compliance_triple,
         pending_funder_triple,
         shadow_review_triple,
+        pending_registrations,
     ) = await asyncio.gather(
         asyncio.to_thread(docs.count_by_parse_status),
         asyncio.to_thread(merchants_repo.count_total),
@@ -252,6 +254,7 @@ async def index(
             docs=docs,
             merchants=merchants_repo,
         ),
+        asyncio.to_thread(get_compliance_obligation_repository().list_pending),
         return_exceptions=True,
     )
 
@@ -261,6 +264,9 @@ async def index(
     # just renders empty.
     parse_counts = _safe_or_default(parse_counts, {}, "parse_counts")
     merchant_total = _safe_or_default(merchant_total, 0, "merchant_total")
+    pending_registrations_typed: list[PendingObligation] = _safe_or_default(
+        pending_registrations, [], "pending_registrations"
+    )
     recent_activity_rows = _safe_or_default(recent_activity_rows, [], "recent_activity_rows")
     attention_docs = _safe_or_default(attention_docs, [], "attention_docs")
     all_recent_docs = _safe_or_default(all_recent_docs, [], "all_recent_docs")
@@ -468,6 +474,7 @@ async def index(
             "compliance_count": compliance_count,
             "compliance_source_obligation_ids": compliance_source_obligation_ids,
             "compliance_cards": compliance_cards,
+            "pending_registrations": pending_registrations_typed,
             "shadow_review_count": shadow_review_count,
             "shadow_review_source_document_ids": (shadow_review_source_document_ids),
             "shadow_review_cards": shadow_review_cards,
