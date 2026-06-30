@@ -118,7 +118,7 @@ def check_bedrock_budget(feature: str) -> bool:
                 },
             }
         ).execute()
-    except Exception as exc:  # noqa: BLE001 — best-effort audit
+    except Exception as exc:
         _log.warning(
             "bedrock_budget.audit_failed feature=%s err=%s",
             feature,
