@@ -944,8 +944,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         )
     )
     # Source flags are optional — when neither is given, ``find_corpus_source``
-    # picks zip > onedrive_corpus_folder > local_corpus_folder from settings.
-    # Explicit flags always override auto-detect (operator control).
+    # picks zip > pdf-walk from ``settings.local_corpus_folder``. Explicit
+    # flags always override auto-detect (operator control).
     source = parser.add_mutually_exclusive_group(required=False)
     source.add_argument(
         "--folder",
@@ -953,9 +953,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Folder to walk recursively for *.pdf files. When omitted (and "
-            "--zip is also omitted), the script auto-detects via "
-            "settings.onedrive_corpus_zip → settings.onedrive_corpus_folder "
-            "→ settings.local_corpus_folder."
+            "--zip is also omitted), the script auto-detects from "
+            "settings.local_corpus_folder (zip > pdf-walk)."
         ),
     )
     source.add_argument(
@@ -985,15 +984,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def find_corpus_source(
     settings: Any,  # noqa: ANN401 — duck-typed Settings so tests can pass a stub
 ) -> tuple[str, Path | None, Path | None]:
-    """Pick the best corpus source from settings.
+    """Pick the best corpus source from ``settings.local_corpus_folder``.
 
-    Preference order, all paths driven by ``Settings``:
-
-      1. ``settings.onedrive_corpus_zip`` — preferred when the file exists.
-      2. ``settings.onedrive_corpus_folder`` — when the folder exists AND
-         contains at least one ``*.pdf`` (recursive).
-      3. ``settings.local_corpus_folder`` — on-box fallback for when the
-         OneDrive mount is down (rclone hiccup, FUSE restart, network).
+    Preference: a ``*.zip`` in the folder (single-file replacement
+    semantics) > loose ``*.pdf`` files (recursive walk).
 
     Returns ``(kind, zip_path, folder_path)``:
 
@@ -1001,14 +995,13 @@ def find_corpus_source(
       * ``("folder", None, Path)`` — caller passes ``folder`` to the walker.
       * ``("none", None, None)`` — nothing found; caller should bail.
     """
-    zip_path = Path(settings.onedrive_corpus_zip)
-    if zip_path.exists():
-        return "zip", zip_path, None
-    folder = Path(settings.onedrive_corpus_folder)
-    if folder.exists() and any(folder.rglob("*.pdf")):
-        return "folder", None, folder
     local = Path(settings.local_corpus_folder)
-    if local.exists() and any(local.rglob("*.pdf")):
+    if not local.exists():
+        return "none", None, None
+    zip_files = sorted(local.glob("*.zip"))
+    if zip_files:
+        return "zip", zip_files[0], None
+    if any(local.rglob("*.pdf")):
         return "folder", None, local
     return "none", None, None
 
@@ -1087,8 +1080,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(
                 "ERROR: no --folder or --zip and auto-detect found no corpus "
-                "(OneDrive mount missing? check settings.onedrive_corpus_zip / "
-                "settings.onedrive_corpus_folder / settings.local_corpus_folder)",
+                "(no files in settings.local_corpus_folder — "
+                "scp a .zip or .pdf to that path)",
                 file=sys.stderr,
             )
             return EXIT_CALLER_ERROR

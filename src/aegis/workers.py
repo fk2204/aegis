@@ -3311,10 +3311,12 @@ async def daily_funder_sync(ctx: dict[str, Any]) -> None:
 
 
 async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
-    """Mon 03:00 UTC — pull training corpus from OneDrive.
+    """Mon 03:00 UTC — ingest training corpus from the local folder.
 
-    Source preference: zip > onedrive folder > local fallback folder.
-    Logs the chosen source line before invoking the script.
+    Looks for a ``*.zip`` in ``settings.local_corpus_folder`` first
+    (preferred — single-file replacement semantics); falls back to
+    walking the folder for loose ``*.pdf`` files. The operator drops
+    files via ``scp`` per RUNBOOK § Adding Funders or Training Data.
 
     Skipped (with an error-level audit) when free disk on ``/`` falls
     below 5 GB — the corpus zip is multi-GB and the script also
@@ -3332,18 +3334,19 @@ async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
         _log.error("corpus_ingestion_skipped: insufficient disk space")
         return
     settings = get_settings()
-    zip_path = Path(settings.onedrive_corpus_zip)
-    folder_path = Path(settings.onedrive_corpus_folder)
     local_path = Path(settings.local_corpus_folder)
+    if not local_path.exists():
+        _log.warning("corpus_ingestion: %s does not exist", local_path)
+        return
+    zip_files = sorted(local_path.glob("*.zip"))
+    pdf_files = list(local_path.rglob("*.pdf"))
     args: list[str]
-    if zip_path.exists():
-        args = ["--zip", str(zip_path), "--apply"]
-    elif folder_path.exists():
-        args = ["--folder", str(folder_path), "--apply"]
-    elif local_path.exists():
+    if zip_files:
+        args = ["--zip", str(zip_files[0]), "--apply"]
+    elif pdf_files:
         args = ["--folder", str(local_path), "--apply"]
     else:
-        _log.warning("corpus_ingestion: no source - OneDrive mounted?")
+        _log.warning("corpus_ingestion: no .zip or .pdf in %s", local_path)
         return
     # Static literal argv; paths come from Settings (no user input).
     result = subprocess.run(  # noqa: S603

@@ -187,24 +187,22 @@ class Settings(BaseSettings):
     # configured or unmounted, so prod ticks become free no-ops.
     aegis_funder_monitor_path: str | None = None
 
-    # OneDrive integration (rclone-mounted at /mnt/onedrive on prod box).
-    # The operator's funder guidelines + training-corpus PDFs live in
-    # OneDrive; the prod Hetzner box mounts that tree at /mnt/onedrive via
-    # rclone + FUSE (see deploy/RUNBOOK.md § OneDrive rclone setup) so the
-    # worker reads them like local files. ``funders_folder_path`` is the
-    # canonical "one folder per funder" tree the daily funder-sync cron
-    # walks; ``onedrive_corpus_zip`` / ``onedrive_corpus_folder`` are the
-    # weekly training-corpus inputs (preferred order: zip > folder); and
-    # ``local_corpus_folder`` is the on-box fallback if OneDrive isn't
-    # mounted. The Croatian path component "Radna površina" is the
-    # operator-side "Desktop" folder under OneDrive.
+    # Local-folder funder + corpus inputs.
     #
-    # Override via env vars FUNDERS_FOLDER_PATH / ONEDRIVE_CORPUS_ZIP /
-    # ONEDRIVE_CORPUS_FOLDER / LOCAL_CORPUS_FOLDER for dev workstations
-    # where the OneDrive mount lives elsewhere.
-    funders_folder_path: str = "/mnt/onedrive/Radna površina/ajmo"
-    onedrive_corpus_zip: str = "/mnt/onedrive/Radna površina/Commera Lead Files.zip"
-    onedrive_corpus_folder: str = "/mnt/onedrive/Radna površina/Commera Lead Files"
+    # Replaced the rclone OneDrive mount (too fragile — depended on
+    # interactive OAuth, broken on SSH-only boxes). The operator copies
+    # files to the box once via ``scp`` and the crons walk those local
+    # paths. See deploy/RUNBOOK.md § Adding Funders or Training Data.
+    #
+    # ``funders_folder_path`` — one subfolder per funder, each carrying
+    # the canonical guideline file. ``daily_funder_sync`` walks it.
+    # ``local_corpus_folder`` — flat folder of PDFs OR a single .zip
+    # archive. ``weekly_corpus_ingestion`` prefers a .zip in the folder
+    # over loose PDFs.
+    #
+    # Override via env vars FUNDERS_FOLDER_PATH / LOCAL_CORPUS_FOLDER
+    # for dev workstations.
+    funders_folder_path: str = "/var/lib/aegis/funders"
     local_corpus_folder: str = "/var/lib/aegis/corpus"
 
     # Tampering composition rule mode. The rule itself
