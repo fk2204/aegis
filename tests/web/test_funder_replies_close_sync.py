@@ -129,7 +129,7 @@ def test_approved_outcome_posts_note_and_flips_status_to_funded(
     monkeypatch.setenv("AEGIS_DATA_RESIDENCY_CONFIRMED", "true")
     from aegis.config import get_settings
 
-    get_settings.cache_clear()  # type: ignore[attr-defined]
+    get_settings.cache_clear()
     merchant = _merchant()
     funder = _funder(uuid4())
     audit = InMemoryAuditLog()
@@ -161,7 +161,7 @@ def test_declined_outcome_flips_status_to_dead_lender(
     monkeypatch.setenv("AEGIS_DATA_RESIDENCY_CONFIRMED", "true")
     from aegis.config import get_settings
 
-    get_settings.cache_clear()  # type: ignore[attr-defined]
+    get_settings.cache_clear()
     merchant = _merchant()
     funder = _funder(uuid4())
     audit = InMemoryAuditLog()
