@@ -239,6 +239,16 @@ Schema:
 }
 
 Guidelines:
+- `deposit` is the PRIMARY category for business revenue coming INTO the
+  account. This includes: card batch settlements, processor payouts
+  (Stripe, Square, Toast, Clover, PayPal, Shopify, Heartland, Worldpay,
+  FIS, TSYS, Elavon, Shift4), ACH payments FROM customers or clients TO
+  the business, check deposits from clients, ATM check/cash deposits,
+  and any credit where a named company is paying the merchant for goods
+  or services. When a named company appears as the sender and the
+  transaction is a credit, classify as `deposit`. This is the most
+  important category for underwriting — do NOT default to `other` for
+  incoming credits.
 - `payroll` is a debit to a payroll provider (ADP, Paychex, Gusto, Rippling,
   Justworks, TriNet, Insperity, OnPay, Square Payroll, Quickbooks Payroll,
   Patriot, Wagepoint, Bamboo HR, Deel, Remote, or any explicit "PAYROLL" line).
@@ -247,12 +257,19 @@ Guidelines:
   "factor", "holdback", "daily pmt", "receivables", "future receipts".
 - `nsf_fee` is any fee labeled NSF, OD, OVERDRAFT, RETURNED ITEM, or
   INSUFFICIENT FUNDS.
-- `wire_in` / `wire_out` for wires; `ach_credit` for non-wire credits other
-  than `deposit` (which we use for ordinary card-batch / cash deposits).
+- `wire_in` / `wire_out` for wires; `ach_credit` for ACH credits from
+  financial institutions, government payments, or unclear automated
+  credits that are NOT from customers or processors. Prefer `deposit` for
+  named-customer credits.
 - `transfer` is between the merchant's own accounts or owner / intercompany
   movement (Zelle/Venmo from owner, intra-bank transfer, owner contribution).
 - `chargeback` is a card-network reversal (description contains "chargeback",
   "dispute reversal", "cb credit").
+- `other` is ONLY for transactions that genuinely fit NO other category
+  above. High-confidence `other` on an incoming credit is almost always
+  wrong — incoming credits should land in `deposit` or `ach_credit` or
+  `wire_in`. Make your best judgment; low confidence is acceptable, but
+  `other` is not the safe default.
 - Confidence reflects how sure you are. Low-confidence rows get manually
   reviewed downstream; do NOT guess at high confidence.
 
