@@ -73,13 +73,31 @@
         <tbody>
           {% for r in merchant_rows %}
             <tr onclick="window.location.href='/ui/merchants/{{ r.id }}'" data-test-id="merchants-list-row">
-              <td>
+              <td data-test-id="merchants-list-deal-status">
+                {# Status column precedence: merchant-identity flags
+                   (PROVISIONAL, NEEDS NAMING) win over the computed
+                   deal_status chip — those require operator action
+                   before the deal even enters the funnel. Below the
+                   identity flags, ``deal_status`` collapses per-doc
+                   parse_status + latest decision into one chip
+                   (Ready / Review / Parsing / Error / Declined). See
+                   ``compute_merchant_status`` in routers/merchants.py. #}
                 {% if r.is_provisional %}
                   {% with tone="warn", label="PROVISIONAL" %}{% include "_status_chip.html.j2" %}{% endwith %}
                 {% elif r.needs_manual_naming %}
                   {% with tone="warn", label="NEEDS NAMING" %}{% include "_status_chip.html.j2" %}{% endwith %}
+                {% elif r.deal_status == "Ready" %}
+                  <span class="chip pos">READY</span>
+                {% elif r.deal_status == "Review" %}
+                  <span class="chip warn">REVIEW</span>
+                {% elif r.deal_status == "Parsing" %}
+                  <span class="chip info">PARSING</span>
+                {% elif r.deal_status == "Error" %}
+                  <span class="chip neg">ERROR</span>
+                {% elif r.deal_status == "Declined" %}
+                  <span class="chip">DECLINED</span>
                 {% else %}
-                  <span class="mono-cell">—</span>
+                  <span class="hint">No docs</span>
                 {% endif %}
               </td>
               <td class="merchant">

@@ -34,7 +34,8 @@ import zipfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Annotated, Any, Final, cast
+from collections.abc import Sequence
+from typing import Annotated, Any, Final, Literal, cast
 from uuid import UUID
 
 from fastapi import (
@@ -199,6 +200,56 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
+# Merchant-list deal-status helper
+# ---------------------------------------------------------------------------
+
+
+# Type alias kept narrow so mypy --strict catches typos at the call site
+# rather than waiting for the template to silently fall through the
+# `{% else %}` branch.
+MerchantDealStatus = Literal["Ready", "Review", "Parsing", "Error", "Declined", "No docs"]
+
+
+def compute_merchant_status(
+    doc_statuses: Sequence[str],
+    has_decline_decision: bool,
+) -> MerchantDealStatus:
+    """Collapse a merchant's per-document parse statuses + latest
+    decision into a single operator-facing label for the merchant list.
+
+    Precedence (top wins):
+        Error    — any document parsed with ``error``
+        Review   — any document in ``manual_review`` / ``review``
+        Parsing  — at least one ``pending`` and no ``error``
+        Declined — latest decisions-row for the merchant is ``decline``
+                   AND none of the above triggered
+        Ready    — at least one ``proceed`` and no ``pending`` / ``error``
+        No docs  — merchant carries zero documents
+
+    The ``review`` parse_status (legacy synonym for ``manual_review`` in
+    ``aegis.storage.ParseStatus``) routes to ``Review`` for operator
+    parity; the dossier already treats them as the same band.
+    """
+    if not doc_statuses:
+        return "No docs"
+    statuses = set(doc_statuses)
+    if "error" in statuses:
+        return "Error"
+    if "manual_review" in statuses or "review" in statuses:
+        return "Review"
+    if "pending" in statuses:
+        return "Parsing"
+    if has_decline_decision:
+        return "Declined"
+    if "proceed" in statuses:
+        return "Ready"
+    # Edge case: docs exist but none in any of the recognized statuses
+    # (e.g. all in the ``decline`` enum value, which the parser never
+    # writes — defensive default).
+    return "No docs"
+
+
+# ---------------------------------------------------------------------------
 # List / create / edit
 # ---------------------------------------------------------------------------
 
@@ -210,6 +261,7 @@ async def list_merchants(
     docs: Annotated[DocumentRepository, Depends(get_repository)],
     assignments: Annotated[DealAssignmentRepository, Depends(get_deal_assignment_repository)],
     operators: Annotated[OperatorRepository, Depends(get_operator_repository)],
+    snapshot: Annotated[DecisionSnapshot, Depends(get_decision_snapshot)],
     operator: Annotated[Operator, Depends(current_operator)],
 ) -> HTMLResponse:
     """List merchants. Supports ``?mine=1`` to filter to the current
@@ -259,10 +311,19 @@ async def list_merchants(
     # convention as ``/ui/deals`` and ``_compute_stale_deals``.
     all_docs = docs.list_documents(limit=500)
     latest_doc_by_merchant: dict[UUID, DocumentRow] = {}
+    # Group every visible document by merchant so the Status column can
+    # roll up the merchant's parse_status set (not just the latest doc).
+    # Mirrors the "any doc error" / "any doc manual_review" precedence
+    # in ``compute_merchant_status``.
+    doc_statuses_by_merchant: dict[UUID, list[str]] = {}
+    doc_ids_by_merchant: dict[UUID, list[UUID]] = {}
     for d in all_docs:
-        if d.merchant_id is None or d.merchant_id in latest_doc_by_merchant:
+        if d.merchant_id is None:
             continue
-        latest_doc_by_merchant[d.merchant_id] = d
+        if d.merchant_id not in latest_doc_by_merchant:
+            latest_doc_by_merchant[d.merchant_id] = d
+        doc_statuses_by_merchant.setdefault(d.merchant_id, []).append(d.parse_status)
+        doc_ids_by_merchant.setdefault(d.merchant_id, []).append(d.id)
 
     analyses_by_doc = docs.get_analyses_by_document_ids(
         [d.id for d in latest_doc_by_merchant.values()]
@@ -336,6 +397,27 @@ async def list_merchants(
             # ``getattr(m, "assigned_to_email", None)`` pattern.
             assignee_label = getattr(m, "assigned_to_email", None)
 
+        # Deal status — one operator-facing label per merchant. Rolls
+        # the merchant's per-doc parse_status set + the latest
+        # decisions-row's ``decision`` into one of:
+        # Ready / Review / Parsing / Error / Declined / No docs.
+        # Decline lookup is per-merchant (find_latest_for_merchant uses
+        # the merchant's own document_ids as the lookup key); for the
+        # solo-operator scale (~100 merchants) this matches the existing
+        # N=2 batched-doc-load pattern at the read side.
+        merchant_doc_ids = doc_ids_by_merchant.get(m.id, [])
+        has_decline = False
+        if merchant_doc_ids:
+            latest_decision = snapshot.find_latest_for_merchant(
+                m.id,
+                deal_ids=merchant_doc_ids,
+            )
+            has_decline = latest_decision is not None and latest_decision.decision == "decline"
+        deal_status = compute_merchant_status(
+            doc_statuses_by_merchant.get(m.id, []),
+            has_decline_decision=has_decline,
+        )
+
         rows.append(
             {
                 "id": str(m.id),
@@ -345,6 +427,7 @@ async def list_merchants(
                 "measured_revenue": latest_analysis.true_revenue if latest_analysis else None,
                 "paper_grade": paper_grade,
                 "parse_status": latest_doc.parse_status if latest_doc else "no_upload",
+                "deal_status": deal_status,
                 "days_since_activity": days_since_activity,
                 "last_activity_display": last_activity_display,
                 "assignee_label": assignee_label or "—",
