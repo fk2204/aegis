@@ -105,7 +105,10 @@
       {% else %}
         <div class="attention-cards">
           {% for g in attention %}
-            <article class="attention-card band-{{ g.fraud_band }}">
+            <article class="attention-card band-{{ g.fraud_band }} attention-card--{{ g.severity_tier }}" data-test-id="attention-card-{{ g.severity_tier }}">
+              {% if g.severity_headline %}
+                <div class="attention-card-headline">{{ g.severity_headline }}</div>
+              {% endif %}
               <header class="card-head">
                 <div class="card-title">
                   {% if g.merchant_id %}<a href="/ui/merchants/{{ g.merchant_id }}">{{ g.merchant_label }}</a>{% else %}<span class="card-title-text">{{ g.merchant_label }}</span>{% endif %}

@@ -53,18 +53,18 @@ _CATEGORY_DISPLAY_ORDER: Final[tuple[CategoryName, ...]] = (
 # template consumes these directly so the section labels stay editable
 # in one place rather than scattered across Jinja.
 CATEGORY_LABELS: Final[dict[str, str]] = {
-    "stacking":       "Stacking & funder position",
-    "fabrication":    "Revenue fabrication",
-    "stress":         "Cashflow stress",
-    "concentration":  "Customer / processor concentration",
+    "stacking": "Stacking & funder position",
+    "fabrication": "Revenue fabrication",
+    "stress": "Cashflow stress",
+    "concentration": "Customer / processor concentration",
     "hidden_account": "Hidden-account signal",
-    "recency":        "Account recency",
-    "tampering":      "PDF tampering",
-    "soft":           "Context signals",
-    "math":           "Validation gate",
-    "composite":      "Composite signals",
-    "shadow":         "Operator review signals (shadow mode)",
-    "unknown":        "Unknown",
+    "recency": "Account recency",
+    "tampering": "PDF tampering",
+    "soft": "Context signals",
+    "math": "Validation gate",
+    "composite": "Composite signals",
+    "shadow": "Operator review signals (shadow mode)",
+    "unknown": "Unknown",
 }
 
 
@@ -86,9 +86,7 @@ class CategorizedFlags:
 
     @property
     def total_count(self) -> int:
-        return len(self.decline_class) + sum(
-            len(v) for v in self.by_category.values()
-        )
+        return len(self.decline_class) + sum(len(v) for v in self.by_category.values())
 
     @property
     def is_empty(self) -> bool:
@@ -128,6 +126,53 @@ class AttentionCard:
     # ``None`` for unlinked groups (the "—" bucket) and as a safe
     # default for legacy call sites that don't thread the value yet.
     merchant_status: str | None = None
+
+    @property
+    def severity_tier(self) -> str:
+        """Coarse severity bucket for the Today card's modifier class.
+
+        Three tiers — ``severe`` / ``elevated`` / ``routine`` — chosen so
+        the operator can visually triage the queue without reading every
+        chip. Mirrors the audit 2026-06-30 spec:
+
+          * ``severe``    — has at least one decline-class flag OR
+            ``worst_fraud_score >= 60`` (the parser-time prescreen
+            threshold neighborhood).
+          * ``elevated``  — ``worst_fraud_score >= 30`` and no decline
+            signals.
+          * ``routine``   — no decline signals, low / unknown fraud
+            score.
+
+        Returned bare (without the ``attention-card--`` prefix) so the
+        template can compose the class name in one place; the prior
+        ``band-{{ fraud_band }}`` and the new ``attention-card--*``
+        modifiers coexist on the same article.
+        """
+        if self.flags.decline_class:
+            return "severe"
+        score = self.worst_fraud_score or 0
+        if score >= 60:
+            return "severe"
+        if score >= 30:
+            return "elevated"
+        return "routine"
+
+    @property
+    def severity_headline(self) -> str | None:
+        """One-line plain-English headline for the severe-tier banner.
+
+        Returns ``None`` for elevated / routine cards (the existing
+        chip-row content carries enough signal there). Returns a short
+        sentence on severe cards so a worker scanning the queue sees
+        the dealbreaker before reading the chips.
+        """
+        if self.severity_tier != "severe":
+            return None
+        if self.flags.decline_class:
+            top = self.flags.decline_class[0]
+            return f"Likely decline — {top.title}"
+        score = self.worst_fraud_score or 0
+        return f"High fraud risk ({score}/100) — review before proceeding"
 
 
 @dataclass(frozen=True)
@@ -258,16 +303,12 @@ class PatternIndex:
                     continue
                 seen_per_code[p.code].add(source_id)
                 by_code.setdefault(p.code, []).append(
-                    _to_flag_source(
-                        tx, document_id=str(document_id), filename=filename
-                    )
+                    _to_flag_source(tx, document_id=str(document_id), filename=filename)
                 )
         return cls(by_code=by_code)
 
     @classmethod
-    def build_for_merchant(
-        cls, contexts: list[DocumentPatternContext]
-    ) -> PatternIndex:
+    def build_for_merchant(cls, contexts: list[DocumentPatternContext]) -> PatternIndex:
         """Build a per-merchant index across N docs with filename tagging.
 
         Within a single (doc, transaction_id) tuple, duplicates are
@@ -282,9 +323,7 @@ class PatternIndex:
         for ctx in contexts:
             if ctx.analysis is None or ctx.analysis.pattern_analysis is None:
                 continue
-            by_id: dict[UUID, ClassifiedTransaction] = {
-                t.id: t for t in ctx.transactions
-            }
+            by_id: dict[UUID, ClassifiedTransaction] = {t.id: t for t in ctx.transactions}
             for p in ctx.analysis.pattern_analysis.patterns:
                 for source_id in p.source_ids:
                     tx = by_id.get(source_id)
@@ -387,9 +426,7 @@ def derive_fraud_band(score: int | None) -> str:
     return "decline"
 
 
-def _maybe_attach_sources(
-    hf: HumanFlag, pattern_index: PatternIndex | None
-) -> HumanFlag:
+def _maybe_attach_sources(hf: HumanFlag, pattern_index: PatternIndex | None) -> HumanFlag:
     """Return ``hf`` decorated with ``source_transactions`` if the index
     has entries for its code; otherwise return ``hf`` unchanged.
 

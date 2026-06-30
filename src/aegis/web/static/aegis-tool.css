@@ -621,6 +621,40 @@
 .dossier-page .attention-card.band-review  { border-left-color: var(--review); }
 .dossier-page .attention-card.band-clear   { border-left-color: var(--approve); }
 .dossier-page .attention-card.band-unknown { border-left-color: var(--ink-3); }
+
+/* Severity-tier modifiers (audit 2026-06-30): a coarse three-tier
+   bucket (severe / elevated / routine) layered on top of the fraud_band
+   left-edge color. Severe cards add a stronger left border and an
+   inset shadow so they read as "dealbreaker" at a glance; elevated
+   cards bump only the border weight; routine cards stay neutral.
+   These compose with band-* so a decline-tier severe card retains its
+   red left edge AND picks up the severity weight. */
+.dossier-page .attention-card--severe {
+  border-left-width: 4px;
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--decline) 16%, transparent);
+  background: color-mix(in oklch, var(--decline) 4%, var(--paper));
+}
+.dossier-page .attention-card--elevated {
+  border-left-width: 3px;
+}
+.dossier-page .attention-card--routine {
+  border-left-width: 2px;
+}
+
+/* Severe-tier inline headline — one line of plain-English summary
+   that lives above the card head so a scanning worker reads the
+   verdict before any chips or document details. Only severe cards
+   carry one. */
+.dossier-page .attention-card-headline {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--decline);
+  margin: 0 0 10px 0;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--decline) 8%, transparent);
+}
 .dossier-page .attention-card .card-head {
   display: flex;
   align-items: flex-start;
