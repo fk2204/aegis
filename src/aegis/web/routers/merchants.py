@@ -2870,6 +2870,46 @@ async def merchant_reclassify_transaction(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get(
+    "/merchants/{merchant_id}/transactions/{transaction_id}/reclassify-form",
+    response_model=None,
+)
+async def merchant_reclassify_form(
+    request: Request,
+    merchant_id: UUID,
+    transaction_id: UUID,
+) -> HTMLResponse:
+    """Render the inline HTMX reclassify form partial.
+
+    Loaded by the ↻ button on a transaction row in the dossier
+    statements ledger. POSTs to the sibling reclassify endpoint
+    on save; the partial owns its own cancel button which clears
+    the modal target.
+    """
+    from aegis.counterparty.persistence import _VALID_CLASSES
+
+    response = templates.TemplateResponse(
+        request,
+        "_transaction_reclassify_form.html.j2",
+        {
+            "merchant_id": merchant_id,
+            "transaction_id": transaction_id,
+            "classes": sorted(_VALID_CLASSES),
+        },
+    )
+    return cast(HTMLResponse, response)
+
+
+@router.get(
+    "/merchants/{merchant_id}/transactions/cancel-reclassify",
+    response_model=None,
+)
+async def merchant_reclassify_cancel(merchant_id: UUID) -> HTMLResponse:
+    """Cancel target for the reclassify form — clears the modal."""
+    _ = merchant_id  # routed but unused; URL convention keeps it scoped
+    return HTMLResponse("")
+
+
 @router.post("/merchants/{merchant_id}/sec1071", response_model=None)
 async def merchant_set_sec1071(
     merchant_id: UUID,

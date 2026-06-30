@@ -174,6 +174,20 @@
           · {{ cf.statement_period_days }}d period
         </div>
 
+        {% set _low_cov = namespace(present=false, detail='') %}
+        {% for r in ut.risk_band.reasons %}
+          {% if r.factor == 'low_classification_coverage' %}
+            {% set _low_cov.present = true %}
+            {% set _low_cov.detail = r.detail %}
+          {% endif %}
+        {% endfor %}
+        {% if _low_cov.present %}
+          <div class="low-coverage-warning" data-test-id="low-classification-coverage-warning">
+            <strong>⚠ Low classification coverage.</strong> {{ _low_cov.detail }}
+            Reclassify transactions on the statements ledger before submitting.
+          </div>
+        {% endif %}
+
         <table class="queue" style="margin-top:8px;font-size:12.5px">
           <thead>
             <tr><th style="width:90px">Severity</th><th style="width:180px">Factor</th><th>Detail</th></tr>
