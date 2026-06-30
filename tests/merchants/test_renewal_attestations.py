@@ -17,7 +17,7 @@ A canary test enforces this so the audit log stays PII-clean.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -49,7 +49,13 @@ from aegis.merchants.repository import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
-_TODAY = date(2026, 6, 9)
+# Use today's UTC date (matches the route, which calls
+# ``datetime.now(UTC).date()``). The previous hardcoded ``date(2026, 6, 9)``
+# became wall-clock-dependent once real-today crossed any test merchant's
+# computed maturity offset — e.g. a TODAY+20 merchant turned overdue at
+# 2026-06-29 and started being filtered out of ``list_upcoming_renewals``
+# (delta_days < 0 path), which masked the OVERDUE chip assertion.
+_TODAY = datetime.now(UTC).date()
 
 
 def _merchant(
