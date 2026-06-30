@@ -943,12 +943,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "(build-plan §6.5)."
         )
     )
-    source = parser.add_mutually_exclusive_group(required=True)
+    # Source flags are optional — when neither is given, ``find_corpus_source``
+    # picks zip > onedrive_corpus_folder > local_corpus_folder from settings.
+    # Explicit flags always override auto-detect (operator control).
+    source = parser.add_mutually_exclusive_group(required=False)
     source.add_argument(
         "--folder",
         type=Path,
         default=None,
-        help="Folder to walk recursively for *.pdf files.",
+        help=(
+            "Folder to walk recursively for *.pdf files. When omitted (and "
+            "--zip is also omitted), the script auto-detects via "
+            "settings.onedrive_corpus_zip → settings.onedrive_corpus_folder "
+            "→ settings.local_corpus_folder."
+        ),
     )
     source.add_argument(
         "--zip",
@@ -958,7 +966,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "ZIP archive to extract to a temp directory; the extracted "
             "tree is walked recursively for *.pdf files and the temp "
-            "directory is removed on exit (success or failure)."
+            "directory is removed on exit (success or failure). When "
+            "omitted (and --folder is also omitted), the script "
+            "auto-detects via settings (see --folder)."
         ),
     )
     parser.add_argument(
@@ -970,6 +980,37 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     return parser
+
+
+def find_corpus_source(
+    settings: Any,  # noqa: ANN401 — duck-typed Settings so tests can pass a stub
+) -> tuple[str, Path | None, Path | None]:
+    """Pick the best corpus source from settings.
+
+    Preference order, all paths driven by ``Settings``:
+
+      1. ``settings.onedrive_corpus_zip`` — preferred when the file exists.
+      2. ``settings.onedrive_corpus_folder`` — when the folder exists AND
+         contains at least one ``*.pdf`` (recursive).
+      3. ``settings.local_corpus_folder`` — on-box fallback for when the
+         OneDrive mount is down (rclone hiccup, FUSE restart, network).
+
+    Returns ``(kind, zip_path, folder_path)``:
+
+      * ``("zip", Path, None)`` — caller passes ``zip_path`` to the walker.
+      * ``("folder", None, Path)`` — caller passes ``folder`` to the walker.
+      * ``("none", None, None)`` — nothing found; caller should bail.
+    """
+    zip_path = Path(settings.onedrive_corpus_zip)
+    if zip_path.exists():
+        return "zip", zip_path, None
+    folder = Path(settings.onedrive_corpus_folder)
+    if folder.exists() and any(folder.rglob("*.pdf")):
+        return "folder", None, folder
+    local = Path(settings.local_corpus_folder)
+    if local.exists() and any(local.rglob("*.pdf")):
+        return "folder", None, local
+    return "none", None, None
 
 
 def _resolve_walk_root(
@@ -1022,6 +1063,36 @@ def _resolve_walk_root(
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
 
+    # Auto-detect source from settings when the operator passes neither
+    # --folder nor --zip. The cron path (``weekly_corpus_ingestion`` in
+    # aegis.workers) always passes explicit flags; this branch covers
+    # manual one-shots where the operator wants "just use the OneDrive
+    # corpus, whatever shape it's in right now".
+    folder_arg = cast(Path | None, args.folder)
+    zip_arg = cast(Path | None, args.zip_path)
+    if folder_arg is None and zip_arg is None:
+        from aegis.config import get_settings
+
+        try:
+            kind, detected_zip, detected_folder = find_corpus_source(get_settings())
+        except Exception as exc:
+            print(f"ERROR: settings load failed: {exc}", file=sys.stderr)
+            return EXIT_RUNTIME_ERROR
+        if kind == "zip":
+            zip_arg = detected_zip
+            print(f"# auto-detected corpus zip: {zip_arg}", file=sys.stderr)
+        elif kind == "folder":
+            folder_arg = detected_folder
+            print(f"# auto-detected corpus folder: {folder_arg}", file=sys.stderr)
+        else:
+            print(
+                "ERROR: no --folder or --zip and auto-detect found no corpus "
+                "(OneDrive mount missing? check settings.onedrive_corpus_zip / "
+                "settings.onedrive_corpus_folder / settings.local_corpus_folder)",
+                file=sys.stderr,
+            )
+            return EXIT_CALLER_ERROR
+
     corpus_repo: CorpusDocumentsRepository
     bank_repo: BankLayoutRepository
     audit: AuditLog
@@ -1044,8 +1115,8 @@ def main(argv: list[str] | None = None) -> int:
 
     with ExitStack() as stack:
         walk_root = _resolve_walk_root(
-            folder=args.folder,
-            zip_path=args.zip_path,
+            folder=folder_arg,
+            zip_path=zip_arg,
             stack=stack,
         )
         if walk_root is None:
