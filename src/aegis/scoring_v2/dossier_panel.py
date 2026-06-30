@@ -20,6 +20,10 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from aegis.counterparty import classify_bundle
+from aegis.counterparty.persistence import (
+    load_override_aware_classifications,
+    persist_classifications,
+)
 from aegis.parser.models import ClassifiedTransaction
 from aegis.scoring_v2.industry import IndustryTier
 
@@ -182,6 +186,7 @@ def build_unified_tracks_view(
     analyses_by_doc: dict[UUID, Any] | None = None,
     industry_tier: IndustryTier | None = None,
     merchant: MerchantRow | None = None,
+    persist_to_db: bool = False,
 ) -> UnifiedTracksView:
     """Assemble the A+B+C view for a merchant dossier.
 
@@ -303,6 +308,27 @@ def build_unified_tracks_view(
 
     if transactions_by_doc:
         classifications, _ = classify_bundle(transactions_by_doc, accounts)
+        # Migration-102 override-aware merge: operator-set overrides
+        # take precedence over the live classifier output. Read the
+        # overridden rows first (a single SELECT, small in practice
+        # since overrides are rare), then patch them on top of the
+        # in-memory classifier mapping.
+        all_txn_ids = [t.id for txns in transactions_by_doc.values() for t in txns]
+        overrides = load_override_aware_classifications(all_txn_ids)
+        if overrides:
+            merged: dict[UUID, Any] = dict(classifications)
+            merged.update(overrides)
+            classifications = merged
+        # Best-effort persistence (migration 102) — write the freshly-
+        # classified rows back so future scoring passes can read the
+        # persisted values and the operator review surface has a
+        # stable target. Overridden rows are filtered server-side so
+        # this call never clobbers an operator decision. Failures are
+        # logged but do not break the dossier render — the in-memory
+        # ``classifications`` remain authoritative for the rest of
+        # this request.
+        if persist_to_db:
+            persist_classifications(classifications)
         risk_band = compute_risk_band(
             transactions_by_doc,
             classifications,

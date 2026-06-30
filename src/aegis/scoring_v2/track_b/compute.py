@@ -222,6 +222,37 @@ def compute_risk_band(
         severities.append("elevated")
         reasons.append(net_revenue_negative_reason)
 
+    # ── Low classification coverage gate (audit 2026-06-30 P1) ───
+    # When more than half of the merchant's gross incoming dollars land
+    # in counterparty=unknown (i.e. the dictionary couldn't match a
+    # bank-specific descriptor for them), the revenue / band figures
+    # are unreliable — Turnbull's $471K was the canonical case. Surface
+    # as a CRITICAL FactorReason so the underwriter sees the
+    # signal-quality warning before reading the band, and gate the
+    # deal accordingly. ``low_classification_coverage`` is the
+    # operator-facing factor name; the matching parser-side Pattern
+    # code is the same so logs / audit grep across the two layers.
+    total_classifiable_inflow = (
+        agg.revenue_total + agg.unknown_incoming_total + agg.excluded_inflow_total
+    )
+    if total_classifiable_inflow > Decimal("0"):
+        unknown_share = Decimal(agg.unknown_incoming_total) / Decimal(total_classifiable_inflow)
+        if unknown_share > Decimal("0.50"):
+            severities.append("critical")
+            reasons.append(
+                FactorReason(
+                    factor="low_classification_coverage",
+                    severity="critical",
+                    detail=(
+                        f"{unknown_share:.0%} of gross incoming "
+                        f"(${agg.unknown_incoming_total:,.0f}) could not "
+                        f"be classified as revenue or transfers. True "
+                        f"revenue figure is unreliable — manual review "
+                        f"required before scoring this deal."
+                    ),
+                )
+            )
+
     # Revenue is always computable (zero when no revenue rows).
     rev_sev = severity_for_monthly_revenue(monthly_revenue)
     severities.append(rev_sev)

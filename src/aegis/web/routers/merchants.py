@@ -2804,6 +2804,72 @@ def _sec1071_string_or_none(raw: str, allowed: frozenset[str], *, field: str) ->
     return trimmed or None
 
 
+@router.post(
+    "/merchants/{merchant_id}/transactions/{transaction_id}/reclassify",
+    response_model=None,
+)
+async def merchant_reclassify_transaction(
+    merchant_id: UUID,
+    transaction_id: UUID,
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    counterparty_class: Annotated[str, Form()],
+    reason: Annotated[str, Form()] = "",
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> Response:
+    """Operator override of one transaction's counterparty class.
+
+    Migration 102 — persists the new class + reason + override
+    metadata to ``transactions``. Subsequent ``compute_unified_tracks_view``
+    runs honor the override (the live classifier output is patched
+    with persisted overridden rows before scoring).
+
+    Audit: one ``transaction.counterparty_overridden`` row per
+    successful save. Details carry the txn id, the new class, and a
+    truncated reason — never PII from the description column.
+    """
+    from aegis.counterparty.persistence import (
+        _VALID_CLASSES,
+        record_override,
+    )
+
+    operator = actor_email or "operator:unknown"
+
+    if counterparty_class not in _VALID_CLASSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"counterparty_class must be one of "
+                f"{sorted(_VALID_CLASSES)}; got {counterparty_class!r}"
+            ),
+        )
+
+    ok = record_override(
+        transaction_id=transaction_id,
+        counterparty_class=counterparty_class,
+        reason=reason,
+        operator=operator,
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed to persist counterparty override",
+        )
+
+    audit.record(
+        actor=operator,
+        action="transaction.counterparty_overridden",
+        subject_type="transaction",
+        subject_id=transaction_id,
+        details={
+            "merchant_id": str(merchant_id),
+            "new_class": counterparty_class,
+            "reason_truncated": reason[:120],
+        },
+    )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/merchants/{merchant_id}/sec1071", response_model=None)
 async def merchant_set_sec1071(
     merchant_id: UUID,
@@ -4993,6 +5059,11 @@ async def merchant_detail(
         analyses_by_doc=analyses_by_doc,
         industry_tier=industry_risk_tier(merchant.industry_choice),
         merchant=merchant,
+        # Migration 102 — best-effort persist counterparty
+        # classifications on dossier render so future scoring passes
+        # can read the persisted values and the operator review
+        # surface has a stable target.
+        persist_to_db=True,
     )
 
     # Funder-note submission history (newest-first). Dossier renders a
@@ -5707,6 +5778,8 @@ def _build_pdf_dossier_context(
 
     # Unified A+B+C view — drives the industry-tier chip on the PDF.
     # Same source as the on-screen dossier (``build_unified_tracks_view``).
+    # PDF export path — skip the migration-102 persistence (the on-screen
+    # dossier route covers it; the PDF render is the dossier's twin).
     from aegis.scoring_v2.dossier_panel import build_unified_tracks_view
 
     unified_tracks = build_unified_tracks_view(
