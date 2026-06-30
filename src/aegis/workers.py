@@ -3319,7 +3319,7 @@ async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
     Skipped (with an error-level audit) when free disk on ``/`` falls
     below 5 GB — the corpus zip is multi-GB and the script also
     extracts it to a tmp dir before walking, so the worst-case
-    on-disk footprint is roughly 2× the zip size.
+    on-disk footprint is roughly 2x the zip size.
     """
     import os
     import subprocess
