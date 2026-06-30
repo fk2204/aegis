@@ -17,7 +17,10 @@
 #
 # The script logs to stdout — capture via the SSH-side redirect.
 
-set -e
+# NOTE: do NOT use `set -e`. resync_close_leads.py exits 3 on a single
+# merchant-level CloseError ("at least one merchant failed") which is
+# expected for a 42-lead batch with transient blips. Each step is
+# independent — a failure in one does not invalidate the others.
 cd /opt/aegis
 set -a
 # shellcheck disable=SC1091
@@ -27,21 +30,25 @@ set +a
 echo "=== $(date) Starting ops batch ==="
 
 echo "--- OFAC refresh ---"
-.venv/bin/python scripts/update_ofac_list.py
+.venv/bin/python scripts/update_ofac_list.py \
+    || echo "OFAC refresh exited $? — continuing"
 
 echo "--- Close re-sync ---"
-.venv/bin/python scripts/resync_close_leads.py --apply
+.venv/bin/python scripts/resync_close_leads.py --apply \
+    || echo "Close re-sync exited $? — continuing (partial failures expected)"
 
 echo "--- Background checks (parallel) ---"
-.venv/bin/python scripts/recover_legacy_docs.py --run-background-checks-all --apply &
+.venv/bin/python scripts/recover_legacy_docs.py --run-background-checks-all --apply \
+    || echo "Background checks exited $? — continuing" &
 BG_PID=$!
 
 echo "--- Reparse sealed manual_review ---"
 .venv/bin/python scripts/recover_legacy_docs.py \
-    --reparse-sealed-manual-review --all-merchants --apply
+    --reparse-sealed-manual-review --all-merchants --apply \
+    || echo "Reparse exited $? — continuing"
 
 echo "--- Narrator backfill ---"
-.venv/bin/python - <<'PYEOF'
+.venv/bin/python - <<'PYEOF' || echo "Narrator backfill exited $? — continuing"
 import asyncio
 from arq import create_pool
 from arq.connections import RedisSettings
@@ -81,7 +88,7 @@ asyncio.run(main())
 PYEOF
 
 echo "--- Document status snapshot ---"
-.venv/bin/python - <<'PYEOF'
+.venv/bin/python - <<'PYEOF' || echo "Status snapshot exited $? — continuing"
 from aegis.db import get_supabase
 
 sb = get_supabase()
@@ -93,7 +100,7 @@ for s in ["manual_review", "proceed", "error", "pending"]:
 PYEOF
 
 echo "--- Waiting on background-checks job ---"
-wait $BG_PID
+wait $BG_PID || echo "Background-checks job exited $? — continuing"
 echo "Background checks complete"
 
 echo "=== $(date) Ops batch complete ==="
