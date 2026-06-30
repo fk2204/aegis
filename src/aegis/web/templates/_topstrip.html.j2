@@ -64,9 +64,11 @@
           <a href="/ui/admin/text-layer-probe-review" role="menuitem" data-test-id="settings-probe-review">Probe review</a>
         </div>
       </div>
-      <span class="op-chip op-chip--{{ _op.role }}" title="{{ _op.email }}">
-        {{ _op.display_name }} · <strong>{{ _op.role }}</strong>
-      </span>
+      {% set _name_parts = (_op.display_name or '').split() %}
+      {% set _initials = ((_name_parts[0][0] if _name_parts else '') ~ (_name_parts[-1][0] if _name_parts|length > 1 else (_name_parts[0][1] if _name_parts and _name_parts[0]|length > 1 else '')))|upper %}
+      <span class="op-avatar op-avatar--{{ _op.role }}"
+            title="{{ _op.display_name }} · {{ _op.role }} · {{ _op.email }}"
+            data-test-id="op-avatar">{{ _initials or '?' }}</span>
     {% endif %}
     <span style="color:var(--sage)">aegis · {{ now|default('') }}</span>
   </div>

@@ -138,6 +138,11 @@
  * match the pre-Wave-1 inline-styled link byte-for-byte.
  * =================================================================== */
 
+.dossier-page .topstrip .links a {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
 .dossier-page .topstrip .links a.is-active {
   color: #fff;
   font-weight: 600;
@@ -741,6 +746,24 @@
   color: var(--ink-3);
   border-color: var(--rule);
 }
+
+/* --- OPERATOR AVATAR — 32px circular initials chip --------------
+ * Replaces the verbose `.op-chip` text rendering in the topstrip with
+ * a compact circular avatar showing the operator's initials. Tooltip
+ * (set inline on the span) preserves the name + role + email so the
+ * informational content is still reachable on hover. Role-suffix
+ * class kept as a tuning hook for future role-based color cues. */
+.op-avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--sage-deep, #4a5d52); color: #fff;
+  font-weight: 700; font-size: 12px; letter-spacing: 0.02em;
+  user-select: none; cursor: default;
+  margin-left: 8px;
+}
+.op-avatar--admin { background: var(--sage-deep, #4a5d52); }
+.op-avatar--operator { background: var(--ink-2, #6a7a72); }
+.op-avatar--viewer { background: var(--ink-3, #8a9a92); }
 
 /* --- NOTIFICATIONS BELL ---------------------------------------- */
 .bell-wrap {
