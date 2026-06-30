@@ -148,6 +148,16 @@ _BANK_NAME_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"\bLili\b", re.IGNORECASE), "Lili"),
     (re.compile(r"\bRho\b", re.IGNORECASE), "Rho"),
     (re.compile(r"\bBrex\b", re.IGNORECASE), "Brex"),
+    # 2026-06-30 — regional banks + credit unions surfaced by the corpus
+    # diagnostic on Filip's 290-PDF training-corpus zip (top tokens in the
+    # 125 unknown-bank cohort). Each had >= 1 hit; adding them reduces the
+    # "NULL bank_name" tail without overfitting on transaction-descriptor
+    # noise. Vision-based detection for image-only headers is a separate,
+    # deferred feature.
+    (re.compile(r"\bCeltic\s+Bank\b", re.IGNORECASE), "Celtic Bank"),
+    (re.compile(r"\bProsperity\s+Bank\b", re.IGNORECASE), "Prosperity Bank"),
+    (re.compile(r"\bOptimum\s+Bank\b", re.IGNORECASE), "Optimum Bank"),
+    (re.compile(r"\bAmerica\s+First\s+Federal\s+Credit\s+Union\b", re.IGNORECASE), "America First Federal Credit Union"),
 )
 
 
