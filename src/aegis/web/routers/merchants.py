@@ -2910,6 +2910,62 @@ async def merchant_reclassify_cancel(merchant_id: UUID) -> HTMLResponse:
     return HTMLResponse("")
 
 
+@router.get(
+    "/merchants/{merchant_id}/sba-referral",
+    response_model=None,
+)
+async def merchant_sba_referral_package(
+    request: Request,
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    docs: Annotated[DocumentRepository, Depends(get_repository)],
+) -> HTMLResponse:
+    """Render the SBA referral package (G1 — 2026-06-30).
+
+    Printable HTML view summarizing the merchant, owner, financials,
+    and AEGIS narrative. Operator clicks the "Generate SBA Referral
+    Package" button on the dossier (only shown when
+    ``sba_eligibility.eligible == True``), reviews the rendered
+    page, and uses browser Print / Save as PDF to share with the
+    partner SBA lender.
+
+    Full WeasyPrint-based PDF rendering is a follow-up; the
+    print-from-browser path is the MVP that ships today.
+    """
+    from datetime import UTC, datetime
+
+    from aegis.scoring_v2.sba_eligibility import check_sba_eligibility
+
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    all_docs = docs.list_documents(merchant_id=merchant.id, limit=20)
+    analyses_by_doc = docs.get_analyses_by_document_ids([d.id for d in all_docs])
+    latest_analysis = next((a for a in analyses_by_doc.values() if a is not None), None)
+    if latest_analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No analyses on file — parse a statement before generating an SBA referral",
+        )
+
+    sba = check_sba_eligibility(merchant, latest_analysis)
+
+    response = templates.TemplateResponse(
+        request,
+        "_sba_referral_package.html.j2",
+        {
+            "merchant": merchant,
+            "analysis": latest_analysis,
+            "sba": sba,
+            "narrator_summary": None,
+            "generated_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+        },
+    )
+    return cast(HTMLResponse, response)
+
+
 # Map the four operator-facing button labels to the ReplyOutcome
 # Literal accepted by ``aegis.funders.replies``. ``withdrawn`` collapses
 # to ``no_response`` because the merchant pulling out before the funder

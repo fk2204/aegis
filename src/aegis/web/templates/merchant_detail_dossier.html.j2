@@ -643,6 +643,12 @@
                 Est. max ${{ "{:,.0f}".format(sba_eligibility.estimated_max_amount) }}
               </span>
             {% endif %}
+            <a href="/ui/merchants/{{ merchant.id }}/sba-referral"
+               target="_blank"
+               data-test-id="sba-referral-link"
+               style="margin-left:12px;padding:4px 10px;background:#2d7a2d;color:white;border-radius:3px;text-decoration:none;font-size:11px;text-transform:uppercase;letter-spacing:0.06em">
+              Generate Referral Package
+            </a>
           </div>
         {% else %}
           <details class="sba-not-eligible" data-test-id="sba-ineligible-details"
