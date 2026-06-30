@@ -3434,6 +3434,142 @@ def _alert_long_standing_empty_funders() -> None:
             )
 
 
+async def redis_queue_health_check_cron(ctx: dict[str, Any]) -> None:
+    """Every 5 min — alert if arq queue depth > threshold (2026-06-30 E1).
+
+    A backed-up arq queue means parse jobs (and the rest of the worker's
+    workload) aren't moving — usually because the worker crashed, OOM-
+    killed, or is wedged on a single long-running job. We surface as
+    an audit_log row (not a notification — same rationale as D1) so the
+    dashboard's recent-activity panel shows the alert.
+
+    De-duped against a 1-hour audit window so a sustained backup
+    doesn't spam the log with 12 rows per hour.
+    """
+    del ctx
+    queue_depth_threshold = 50
+    try:
+        import redis.asyncio as aioredis
+
+        from aegis.config import get_settings
+
+        s = get_settings()
+        r = aioredis.from_url(s.redis_url)
+        try:
+            depth_raw = await r.llen("arq:queue:default")
+        finally:
+            await r.close()
+        depth = int(depth_raw or 0)
+        _log.info("redis_queue_depth depth=%d threshold=%d", depth, queue_depth_threshold)
+        if depth <= queue_depth_threshold:
+            return
+
+        from datetime import UTC, datetime, timedelta
+
+        from aegis.audit import SupabaseAuditLog
+        from aegis.db import get_supabase
+
+        sb = get_supabase()
+        cutoff = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        existing = (
+            sb.table("audit_log")
+            .select("id")
+            .eq("action", "system.queue_depth_high")
+            .gte("created_at", cutoff)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return
+        SupabaseAuditLog().record(
+            actor="system:queue_monitor",
+            action="system.queue_depth_high",
+            subject_type="system",
+            details={
+                "depth": depth,
+                "threshold": queue_depth_threshold,
+                "message": (
+                    f"arq:queue:default depth is {depth} (threshold "
+                    f"{queue_depth_threshold}). Check aegis-worker service."
+                ),
+            },
+        )
+    except Exception as exc:
+        _log.warning("redis_queue_health_check_failed exc=%s", exc)
+
+
+async def ssl_certificate_check_cron(ctx: dict[str, Any]) -> None:
+    """Monday 09:00 UTC — alert if SSL cert expires in < 30 days (E2).
+
+    Cloudflare-managed SSL renews automatically, but the AEGIS public
+    domain is the operator's safety net — a misconfigured renewal would
+    surface to merchants as a browser warning before AEGIS itself
+    notices. Weekly check + 30-day lead time gives the operator a
+    month to investigate.
+
+    De-duped against a 7-day audit window so a sustained "expires
+    soon" condition doesn't write a fresh audit row every weekly run.
+    """
+    del ctx
+    import socket
+    import ssl
+    from datetime import datetime, timedelta
+
+    lead_days = 30
+    host = "aegis.commerafunding.com"
+    try:
+        ctx_ssl = ssl.create_default_context()
+        with socket.create_connection((host, 443), timeout=10) as sock:
+            with ctx_ssl.wrap_socket(sock, server_hostname=host) as ssock:
+                cert = ssock.getpeercert()
+        if not cert:
+            _log.warning("ssl_cert_check.no_cert host=%s", host)
+            return
+        not_after_raw = cert.get("notAfter")
+        if not_after_raw is None:
+            _log.warning("ssl_cert_check.no_notAfter host=%s", host)
+            return
+        expiry = datetime.strptime(str(not_after_raw), "%b %d %H:%M:%S %Y %Z")
+        days_left = (expiry - datetime.utcnow()).days
+        _log.info("ssl_cert_days_remaining host=%s days=%d", host, days_left)
+        if days_left >= lead_days:
+            return
+
+        from datetime import UTC
+
+        from aegis.audit import SupabaseAuditLog
+        from aegis.db import get_supabase
+
+        sb = get_supabase()
+        cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+        existing = (
+            sb.table("audit_log")
+            .select("id")
+            .eq("action", "system.ssl_certificate_expiring")
+            .gte("created_at", cutoff)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return
+        SupabaseAuditLog().record(
+            actor="system:ssl_monitor",
+            action="system.ssl_certificate_expiring",
+            subject_type="system",
+            details={
+                "host": host,
+                "expires_on": expiry.date().isoformat(),
+                "days_left": days_left,
+                "message": (
+                    f"SSL certificate for {host} expires in {days_left} "
+                    f"days ({expiry.date().isoformat()}). Renew immediately."
+                ),
+            },
+        )
+    except Exception as exc:
+        _log.warning("ssl_certificate_check_failed host=%s exc=%s", host, exc)
+
+
 async def weekly_calibration_cron(ctx: dict[str, Any]) -> None:
     """Monday 04:00 UTC — compute weekly calibration snapshot.
 
@@ -3637,6 +3773,20 @@ class WorkerSettings:
             weekly_calibration_cron,
             weekday=0,
             hour=4,
+            minute=0,
+            run_at_startup=False,
+        ),
+        # Every 5 min — alert if arq queue is backing up (E1).
+        cron(
+            redis_queue_health_check_cron,
+            minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55},
+            run_at_startup=False,
+        ),
+        # Monday 09:00 UTC — SSL certificate expiry check (E2).
+        cron(
+            ssl_certificate_check_cron,
+            weekday=0,
+            hour=9,
             minute=0,
             run_at_startup=False,
         ),

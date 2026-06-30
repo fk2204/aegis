@@ -61,6 +61,34 @@ Not yet automated. Manual snapshot through the Hetzner Cloud console
 every Monday morning is the interim cadence — see the cred-rotation
 log below for the last manual sync timestamp.
 
+### Automating snapshots — what Filip needs to do (E3, 2026-06-30)
+
+The 2026-06-30 audit found `HETZNER_API_TOKEN` is NOT in
+`/etc/aegis/aegis.env`, which blocks any automated snapshot
+implementation. To unblock:
+
+1. **One-time** (~5 min): In the Hetzner Cloud console, go to
+   Security → API Tokens → "Generate API token". Set:
+   - **Name:** `aegis-prod-snapshot-cron`
+   - **Permissions:** `Read & Write` (snapshot create needs write)
+   - Copy the token immediately (Hetzner only shows it once).
+2. **One-time** (~30 sec): Add to `/etc/aegis/aegis.env` on the
+   prod box (root SSH):
+
+   ```
+   HETZNER_API_TOKEN=<paste-the-token>
+   HETZNER_SERVER_ID=<server id from the Hetzner console URL>
+   ```
+
+   Restart aegis-worker for the new env to load:
+   `sudo systemctl restart aegis-worker`
+
+Once those two env vars exist, a follow-up commit can register a
+daily `cron(hetzner_snapshot_cron, hour=3, minute=0)` job that hits
+`POST /v1/servers/{server_id}/actions/create_image` with the token
+and writes an audit row per snapshot. Until then snapshots stay
+manual.
+
 ### Why we haven't done this yet
 
 The deploy posture is stable enough (auto-deploy on `main`, CI
