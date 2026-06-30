@@ -163,9 +163,7 @@ def stub_close_client(
             return httpx.Response(200, json={"id": _LEAD_ID, "updated": True})
         return httpx.Response(200, json=_lead_payload())
 
-    return CloseClient(
-        http_client=httpx.Client(transport=httpx.MockTransport(transport))
-    )
+    return CloseClient(http_client=httpx.Client(transport=httpx.MockTransport(transport)))
 
 
 def _build_client(
@@ -380,7 +378,7 @@ def test_read_deal_without_documents_returns_no_document(
     assert resp.status_code == 200
     body = resp.json()
     assert body["parse_status"] == "no_document"
-    assert body["fraud_score"] is None
+    assert "fraud_score" not in body
     assert body["has_analysis"] is False
 
 
@@ -502,9 +500,7 @@ def test_sync_with_decision_patches_exactly_five_close_custom_fields(
 
     # 5. Defense: explicitly assert no funder-related key sneaks in.
     for key in patch_body:
-        assert "funder" not in key.lower(), (
-            f"funder-related field in update body: {key}"
-        )
+        assert "funder" not in key.lower(), f"funder-related field in update body: {key}"
 
 
 def test_sync_without_decision_returns_400(
@@ -589,14 +585,10 @@ def test_rate_limit_triggers_after_60_requests_per_window(
     headers = _auth_headers()
     last_status: int | None = None
     for _ in range(60):
-        resp = client.get(
-            f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers
-        )
+        resp = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
         last_status = resp.status_code
     assert last_status == 200, "first 60 requests should pass"
 
-    overflow = client.get(
-        f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers
-    )
+    overflow = client.get(f"/api/close-callback/merchant/{_LEAD_ID}", headers=headers)
     assert overflow.status_code == 429
     assert "Rate limit" in overflow.text

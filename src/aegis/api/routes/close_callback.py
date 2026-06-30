@@ -169,7 +169,6 @@ class CallbackDealResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     merchant_id: str
-    fraud_score: int | None
     parse_status: str
     has_analysis: bool
 
@@ -299,7 +298,6 @@ async def callback_read_deal(
         )
         return CallbackDealResponse(
             merchant_id=str(merchant.id),
-            fraud_score=None,
             parse_status="no_document",
             has_analysis=False,
         )
@@ -318,7 +316,6 @@ async def callback_read_deal(
     )
     return CallbackDealResponse(
         merchant_id=str(merchant.id),
-        fraud_score=latest.fraud_score,
         parse_status=latest.parse_status,
         has_analysis=has_analysis,
     )
