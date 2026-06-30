@@ -3258,10 +3258,11 @@ async def daily_funder_sync(ctx: dict[str, Any]) -> None:
     Audit rows + structured stderr land in the worker log.
     """
     import os
-    import subprocess  # noqa: S404 — static literal argv, no shell=True
+    import subprocess
 
     del ctx
-    result = subprocess.run(  # noqa: S603 — static literal argv
+    # Static literal argv (no shell=True, no user-controlled values).
+    result = subprocess.run(
         ["/opt/aegis/.venv/bin/python", "scripts/sync_funders_from_folder.py", "--apply"],
         cwd="/opt/aegis",
         capture_output=True,
@@ -3282,7 +3283,7 @@ async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
     Logs the chosen source line before invoking the script.
     """
     import os
-    import subprocess  # noqa: S404 — static literal argv, no shell=True
+    import subprocess
     from pathlib import Path
 
     from aegis.config import get_settings
@@ -3302,7 +3303,8 @@ async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
     else:
         _log.warning("corpus_ingestion: no source - OneDrive mounted?")
         return
-    result = subprocess.run(  # noqa: S603 — static literal argv (paths via Settings)
+    # Static literal argv; paths come from Settings (no user input).
+    result = subprocess.run(
         ["/opt/aegis/.venv/bin/python", "scripts/ingest_training_corpus.py", *args],
         cwd="/opt/aegis",
         capture_output=True,
