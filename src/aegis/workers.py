@@ -3241,6 +3241,81 @@ async def reparse_bank_manual_review(
     return {"bank_name": bank_name, "trigger": trigger, "enqueued": enqueued}
 
 
+# ─────────────────────────────────────────────────────────────────────
+# OneDrive automation crons (rclone-mounted at /mnt/onedrive on prod).
+# Shell out to the existing operator scripts so this module doesn't
+# duplicate their auth/extraction paths. Subprocess argv is static; no
+# shell=True; no user-controlled values reach the command line.
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def daily_funder_sync(ctx: dict[str, Any]) -> None:
+    """07:00 UTC daily — pull funder definitions from OneDrive.
+
+    Shells out to ``scripts/sync_funders_from_folder.py --apply``. The
+    script reads ``settings.funders_folder_path`` (mounted OneDrive path
+    on the prod box) and idempotently syncs each per-funder subfolder.
+    Audit rows + structured stderr land in the worker log.
+    """
+    import os
+    import subprocess  # nosec B404 — static literal argv, no shell=True
+
+    del ctx
+    result = subprocess.run(  # nosec B603 — static literal argv
+        ["/opt/aegis/.venv/bin/python", "scripts/sync_funders_from_folder.py", "--apply"],
+        cwd="/opt/aegis",
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env={**os.environ, "AEGIS_DATA_RESIDENCY_CONFIRMED": "true"},
+        check=False,
+    )
+    _log.info("funder_sync stdout: %s", result.stdout[-500:])
+    if result.returncode != 0:
+        _log.error("funder_sync_failed: %s", result.stderr[-300:])
+
+
+async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
+    """Mon 03:00 UTC — pull training corpus from OneDrive.
+
+    Source preference: zip > onedrive folder > local fallback folder.
+    Logs the chosen source line before invoking the script.
+    """
+    import os
+    import subprocess  # nosec B404 — static literal argv, no shell=True
+    from pathlib import Path
+
+    from aegis.config import get_settings
+
+    del ctx
+    settings = get_settings()
+    zip_path = Path(settings.onedrive_corpus_zip)
+    folder_path = Path(settings.onedrive_corpus_folder)
+    local_path = Path(settings.local_corpus_folder)
+    args: list[str]
+    if zip_path.exists():
+        args = ["--zip", str(zip_path), "--apply"]
+    elif folder_path.exists():
+        args = ["--folder", str(folder_path), "--apply"]
+    elif local_path.exists():
+        args = ["--folder", str(local_path), "--apply"]
+    else:
+        _log.warning("corpus_ingestion: no source - OneDrive mounted?")
+        return
+    result = subprocess.run(  # nosec B603 — static literal argv (paths via Settings)
+        ["/opt/aegis/.venv/bin/python", "scripts/ingest_training_corpus.py", *args],
+        cwd="/opt/aegis",
+        capture_output=True,
+        text=True,
+        timeout=600,
+        env={**os.environ, "AEGIS_DATA_RESIDENCY_CONFIRMED": "true"},
+        check=False,
+    )
+    _log.info("corpus_ingestion stdout: %s", result.stdout[-500:])
+    if result.returncode != 0:
+        _log.error("corpus_ingestion_failed: %s", result.stderr[-300:])
+
+
 class WorkerSettings:
     """arq config. Reads concurrency + timeout from env via Settings."""
 
@@ -3330,6 +3405,18 @@ class WorkerSettings:
         cron(
             requeue_stuck_documents_cron,
             minute={0, 30},
+            run_at_startup=False,
+        ),
+        # 07:00 UTC daily — pull funder definitions from the rclone-mounted
+        # OneDrive tree. Idempotent per the script's own hash gate.
+        cron(daily_funder_sync, hour=7, minute=0, run_at_startup=False),
+        # 03:00 UTC Mondays — weekly training-corpus refresh from OneDrive
+        # (zip > folder > local fallback). The script chooses the source.
+        cron(
+            weekly_corpus_ingestion,
+            weekday="mon",
+            hour=3,
+            minute=0,
             run_at_startup=False,
         ),
     )
