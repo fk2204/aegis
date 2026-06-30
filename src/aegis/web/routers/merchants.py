@@ -31,10 +31,10 @@ import hashlib
 import io
 import re
 import zipfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from collections.abc import Sequence
 from typing import Annotated, Any, Final, Literal, cast
 from uuid import UUID
 

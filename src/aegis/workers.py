@@ -3304,7 +3304,7 @@ async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
         _log.warning("corpus_ingestion: no source - OneDrive mounted?")
         return
     # Static literal argv; paths come from Settings (no user input).
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603
         ["/opt/aegis/.venv/bin/python", "scripts/ingest_training_corpus.py", *args],
         cwd="/opt/aegis",
         capture_output=True,
