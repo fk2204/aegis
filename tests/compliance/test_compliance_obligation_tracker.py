@@ -160,6 +160,57 @@ def test_list_upcoming_skips_null_next_due_date() -> None:
 
 
 # ===========================================================================
+# list_pending — registrations the operator hasn't initiated yet
+# (next_due_date IS NULL). Surface on the dashboard so they don't get
+# forgotten between cron ticks.
+# ===========================================================================
+
+
+def test_list_pending_returns_rows_with_null_due_date() -> None:
+    """All five seeded prod-style pending registrations (VA / CT / UT /
+    MO / CA) carry next_due_date=NULL. ``list_pending`` returns them."""
+    today = date.today()
+    repo = InMemoryComplianceObligationRepository(
+        rows=[
+            _seed_row(state_code="VA", authority="VA HB 1027", next_due_date=None),
+            _seed_row(state_code="CT", authority="CT SB 1010", next_due_date=None),
+            _seed_row(state_code="UT", authority="UT HB 198", next_due_date=None),
+            # A non-pending row that should NOT surface — has a deadline.
+            _seed_row(state_code="TX", next_due_date=today + timedelta(days=120)),
+        ]
+    )
+    pending = repo.list_pending()
+    assert len(pending) == 3
+    assert {p.state_code for p in pending} == {"VA", "CT", "UT"}
+
+
+def test_list_pending_sorts_by_state_code() -> None:
+    """Stable ordering — ascending state_code for a deterministic render."""
+    repo = InMemoryComplianceObligationRepository(
+        rows=[
+            _seed_row(state_code="VA", next_due_date=None),
+            _seed_row(state_code="CA", next_due_date=None),
+            _seed_row(state_code="MO", next_due_date=None),
+        ]
+    )
+    pending = repo.list_pending()
+    assert [p.state_code for p in pending] == ["CA", "MO", "VA"]
+
+
+def test_list_pending_excludes_rows_with_dates() -> None:
+    """Only NULL-next_due_date rows count as "pending"; anything with
+    a date is either upcoming OR overdue, not pending."""
+    today = date.today()
+    repo = InMemoryComplianceObligationRepository(
+        rows=[
+            _seed_row(state_code="TX", next_due_date=today + timedelta(days=10)),
+            _seed_row(state_code="CA", next_due_date=today - timedelta(days=5)),
+        ]
+    )
+    assert repo.list_pending() == []
+
+
+# ===========================================================================
 # mark_status — writes audit row, raises on missing id
 # ===========================================================================
 
