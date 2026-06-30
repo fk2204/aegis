@@ -3311,12 +3311,19 @@ async def daily_funder_sync(ctx: dict[str, Any]) -> None:
 
 
 async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
-    """Mon 03:00 UTC — ingest training corpus from the local folder.
+    """Manual training-corpus ingestion entrypoint (NOT scheduled).
+
+    The cron registration was removed 2026-06-30 — corpus refresh is
+    rare, operator-triggered work (a few times a year when a new batch
+    of training statements lands). Running it weekly burned worker
+    cycles re-deduping the same 200-300 PDFs. The function stays
+    defined so a future operator can either re-register it on a cron
+    OR invoke it directly via ``rq enqueue weekly_corpus_ingestion``.
 
     Looks for a ``*.zip`` in ``settings.local_corpus_folder`` first
     (preferred — single-file replacement semantics); falls back to
     walking the folder for loose ``*.pdf`` files. The operator drops
-    files via ``scp`` per RUNBOOK § Adding Funders or Training Data.
+    files via ``scp`` per RUNBOOK § Bank Statement Training Corpus.
 
     Skipped (with an error-level audit) when free disk on ``/`` falls
     below 5 GB — the corpus zip is multi-GB and the script also
@@ -3454,18 +3461,15 @@ class WorkerSettings:
             minute={0, 30},
             run_at_startup=False,
         ),
-        # 07:00 UTC daily — pull funder definitions from the rclone-mounted
-        # OneDrive tree. Idempotent per the script's own hash gate.
+        # 07:00 UTC daily — pull funder definitions from the local
+        # ``/var/lib/aegis/funders`` tree. Idempotent per the script's
+        # own hash gate. The corpus-ingestion cron used to live here too
+        # but was de-scheduled 2026-06-30 — corpus refresh is rare,
+        # operator-triggered work (see ``weekly_corpus_ingestion``
+        # docstring + deploy/RUNBOOK.md § Bank Statement Training
+        # Corpus). The function stays defined so a future operator can
+        # re-enable cron registration without re-implementing the body.
         cron(daily_funder_sync, hour=7, minute=0, run_at_startup=False),
-        # 03:00 UTC Mondays — weekly training-corpus refresh from OneDrive
-        # (zip > folder > local fallback). The script chooses the source.
-        cron(
-            weekly_corpus_ingestion,
-            weekday="mon",
-            hour=3,
-            minute=0,
-            run_at_startup=False,
-        ),
     )
     on_startup = _on_startup
     on_shutdown = _on_shutdown

@@ -877,38 +877,49 @@ If those all work but the queue is full, the worker process is wedged.
 
 ---
 
-## Adding Funders or Training Data
+## Adding Funder Guidelines (automated daily sync)
 
-Funder definitions + training corpus inputs live in two local folders on the prod box: `/var/lib/aegis/funders` (one subfolder per funder, each with its canonical guideline file) and `/var/lib/aegis/corpus` (loose `*.pdf` files OR a single `*.zip` archive). Two arq crons walk those paths on a schedule:
+Funder definitions live in `/var/lib/aegis/funders/` — one subfolder per funder, each with its canonical guideline file. The cron `daily_funder_sync` walks the tree at 07:00 UTC every day, hashes each guideline file, and syncs the changes idempotently via `scripts/sync_funders_from_folder.py --apply`.
 
-- `daily_funder_sync` — 07:00 UTC daily, runs `scripts/sync_funders_from_folder.py --apply`.
-- `weekly_corpus_ingestion` — Mon 03:00 UTC, runs `scripts/ingest_training_corpus.py` (zip preferred, falls back to pdf-walk).
-
-Both gate on a `_check_disk_space` floor (2 GB for funders, 5 GB for corpus); when low they audit-log + skip rather than crash. Files are copied to the box via `scp`:
+Add a new funder (or update an existing one):
 
 ```
-# Add a funder — one folder per funder, each with the canonical guideline file inside
 scp -i ~/.ssh/aegis_ci_deploy -r "C:\path\to\FunderName" root@5.161.51.105:/var/lib/aegis/funders/
-
-# Add training bank statements — drop a single .zip OR loose .pdf files
-scp -i ~/.ssh/aegis_ci_deploy "C:\path\to\statements.zip" root@5.161.51.105:/var/lib/aegis/corpus/
 ```
 
-After the copy lands, the next cron tick picks the files up automatically. No mount, no auth, no follow-up command.
-
-To trigger immediately (skipping the cron wait):
+The next 07:00 UTC tick picks it up. To trigger immediately (skip the cron wait):
 
 ```
 ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 \
   "cd /opt/aegis && set -a && source /etc/aegis/aegis.env && set +a && \
    .venv/bin/python scripts/sync_funders_from_folder.py --apply"
-
-ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 \
-  "cd /opt/aegis && set -a && source /etc/aegis/aegis.env && set +a && \
-   .venv/bin/python scripts/ingest_training_corpus.py --apply"
 ```
 
-Config knobs (override via `/etc/aegis/aegis.env` if the local paths ever move): `FUNDERS_FOLDER_PATH`, `LOCAL_CORPUS_FOLDER`.
+The cron gates on a 2 GB free-disk floor (`_check_disk_space`) and audit-logs + skips when low. Override the folder path via the `FUNDERS_FOLDER_PATH` env var in `/etc/aegis/aegis.env`.
+
+---
+
+## Bank Statement Training Corpus (one-time, run as needed — NOT automated)
+
+Run manually only when you have new training statements to add. Corpus refresh is rare (a few times a year when a new batch lands); running it weekly burned worker cycles re-deduping the same 200-300 PDFs, so the cron registration was removed 2026-06-30. The `weekly_corpus_ingestion` worker function is still defined for one-shot enqueue or future cron restoration.
+
+1. SCP your statements (ZIP preferred, or loose PDFs) to the server:
+
+   ```
+   scp -i ~/.ssh/aegis_ci_deploy "C:\path\to\statements.zip" root@5.161.51.105:/var/lib/aegis/corpus/
+   ```
+
+2. Run ingestion once:
+
+   ```
+   ssh -i ~/.ssh/aegis_ci_deploy root@5.161.51.105 \
+     "cd /opt/aegis && set -a && source /etc/aegis/aegis.env && set +a && \
+      .venv/bin/python scripts/ingest_training_corpus.py --zip '/var/lib/aegis/corpus/YOUR_FILE.zip' --apply"
+   ```
+
+3. Check the trailing summary — it reports banks detected, hints generated, fingerprints added.
+
+This improves parser accuracy for those specific banks going forward. No need to repeat unless you have a new batch of statements from banks not yet covered. Override the folder path via the `LOCAL_CORPUS_FOLDER` env var in `/etc/aegis/aegis.env`.
 
 ---
 
