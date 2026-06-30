@@ -843,6 +843,19 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE conname='merchants_status_check' "
         "AND pg_get_constraintdef(oid) LIKE '%disqualified%'"
     ),
+    "101_rls_remediation.sql": (
+        # 101 — Supabase Security Advisor remediation: enables RLS on
+        # 8 exposed tables + adds deny_all_anon policies + flips two
+        # views to security_invoker. Probe the deny_all_anon policy
+        # on ``notifications`` as the canary — its presence proves
+        # both ENABLE ROW LEVEL SECURITY and CREATE POLICY ran (a
+        # policy can't exist on a table whose RLS the migration
+        # left off).
+        "SELECT 1 FROM pg_policies "
+        "WHERE schemaname='public' "
+        "AND tablename='notifications' "
+        "AND policyname='deny_all_anon'"
+    ),
 }
 
 
