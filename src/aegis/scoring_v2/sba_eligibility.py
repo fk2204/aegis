@@ -61,6 +61,19 @@ _FICO_7A_FLOOR: int = 680
 _REVENUE_EXPRESS_FLOOR: Decimal = Decimal("50000")
 _EST_MAX_MULTIPLE: Decimal = Decimal("36")
 
+# Track B risk indicators that hard-disqualify SBA referral. These run
+# AFTER the merchant-profile blockers above so the dossier shows the
+# correct reason for ineligibility rather than just "TIB too low".
+#
+# An SBA lender won't take a deal with active stacking — 3+ confirmed
+# MCA positions means the merchant is already maxed out on alt funding
+# and the SBA underwriting will reject regardless of TIB / FICO. NSF
+# >= 10 in the analysed window means the cashflow is too noisy for an
+# SBA term. ``true_revenue == 0`` means we can't even quote a program
+# tier — anything else we'd compute would be misleading.
+_MCA_POSITIONS_DISQUALIFIER: int = 3
+_NSF_DISQUALIFIER: int = 10
+
 
 @dataclass(frozen=True)
 class SBAEligibilityResult:
@@ -148,6 +161,24 @@ def check_sba_eligibility(
         blockers.append("Revenue too low for most SBA programs")
     elif revenue > _REVENUE_STRENGTH:
         strengths.append(f"Monthly revenue > ${_REVENUE_STRENGTH:,.0f}")
+
+    # Track B hard disqualifiers — pull from the analysis row directly
+    # so the SBA pre-screen respects what the parser already detected.
+    # Without these gates the dossier showed "SBA ELIGIBLE — EXPRESS,
+    # $X" on merchants with 11 confirmed MCA positions and 26 NSFs
+    # which made no sense to the underwriter (Turnbull, 2026-06-30).
+    if analysis.true_revenue == 0:
+        blockers.append("No measurable revenue — cannot determine SBA eligibility")
+    if analysis.mca_positions >= _MCA_POSITIONS_DISQUALIFIER:
+        blockers.append(
+            f"{analysis.mca_positions} confirmed MCA positions "
+            f"(≥{_MCA_POSITIONS_DISQUALIFIER}) — not SBA bankable"
+        )
+    if analysis.num_nsf >= _NSF_DISQUALIFIER:
+        blockers.append(
+            f"{analysis.num_nsf} NSF events in window "
+            f"(≥{_NSF_DISQUALIFIER}) — cashflow too noisy for SBA term"
+        )
 
     eligible = len(blockers) == 0
 
