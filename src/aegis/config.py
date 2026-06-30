@@ -187,16 +187,25 @@ class Settings(BaseSettings):
     # configured or unmounted, so prod ticks become free no-ops.
     aegis_funder_monitor_path: str | None = None
 
-    # Local-folder funder guidelines sync (scripts/sync_funders_from_folder.py).
-    # The operator's funder guidelines live under their personal OneDrive
-    # path on the Windows workstation. Each immediate subfolder is one
-    # funder; the newest supported file (PDF / DOCX / DOC / XLSX / XLS /
-    # JPG / JPEG / PNG / TXT) is the canonical guideline document. The
-    # script SHA-256s the file and skips when the hash matches
-    # ``funders.guidelines_data._file_hash``. ``--folder`` on the script
-    # overrides this default; the env var ``FUNDERS_FOLDER_PATH`` is the
-    # ops-side override knob.
-    funders_folder_path: str = r"C:\Users\fkozi\OneDrive\Radna površina\COMMERA FUNDING\Funders"
+    # OneDrive integration (rclone-mounted at /mnt/onedrive on prod box).
+    # The operator's funder guidelines + training-corpus PDFs live in
+    # OneDrive; the prod Hetzner box mounts that tree at /mnt/onedrive via
+    # rclone + FUSE (see deploy/RUNBOOK.md § OneDrive rclone setup) so the
+    # worker reads them like local files. ``funders_folder_path`` is the
+    # canonical "one folder per funder" tree the daily funder-sync cron
+    # walks; ``onedrive_corpus_zip`` / ``onedrive_corpus_folder`` are the
+    # weekly training-corpus inputs (preferred order: zip > folder); and
+    # ``local_corpus_folder`` is the on-box fallback if OneDrive isn't
+    # mounted. The Croatian path component "Radna površina" is the
+    # operator-side "Desktop" folder under OneDrive.
+    #
+    # Override via env vars FUNDERS_FOLDER_PATH / ONEDRIVE_CORPUS_ZIP /
+    # ONEDRIVE_CORPUS_FOLDER / LOCAL_CORPUS_FOLDER for dev workstations
+    # where the OneDrive mount lives elsewhere.
+    funders_folder_path: str = "/mnt/onedrive/Radna površina/ajmo"
+    onedrive_corpus_zip: str = "/mnt/onedrive/Radna površina/Commera Lead Files.zip"
+    onedrive_corpus_folder: str = "/mnt/onedrive/Radna površina/Commera Lead Files"
+    local_corpus_folder: str = "/var/lib/aegis/corpus"
 
     # Tampering composition rule mode. The rule itself
     # (``aegis.parser.tampering.evaluate_tampering``) always runs and
