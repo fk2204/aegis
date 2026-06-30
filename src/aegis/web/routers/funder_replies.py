@@ -38,11 +38,15 @@ from fastapi.responses import HTMLResponse
 
 from aegis.api.deps import (
     get_audit,
+    get_close_client,
     get_funder_note_submission_repository,
     get_funder_reply_repository,
     get_funder_repository,
+    get_merchant_repository,
 )
 from aegis.audit import AuditLog
+from aegis.close.client import CloseClient, CloseError
+from aegis.config import get_settings
 from aegis.funder_note_submissions.repository import (
     FunderNoteSubmissionNotFoundError,
     FunderNoteSubmissionRepository,
@@ -55,8 +59,12 @@ from aegis.funders.replies import (
     record_outcome,
 )
 from aegis.funders.repository import FunderRepository
+from aegis.logger import get_logger
+from aegis.merchants.repository import MerchantNotFoundError, MerchantRepository
 from aegis.ops.operators import resolve_operator_email
 from aegis.web._templates import templates
+
+_log = get_logger(__name__)
 
 router = APIRouter()
 
@@ -114,6 +122,154 @@ def _resolve_funder_name(
     return f"funder {str(funder_id)[:8]}"
 
 
+# Outcome → Close opportunity status mapping. Only approved / declined
+# flip the status; countered + no_response leave the opportunity where
+# it is (the operator is still negotiating).
+_OUTCOME_TO_CLOSE_STATUS: dict[ReplyOutcome, str] = {
+    "approved": "close_funded_status_id",
+    "declined": "close_dead_lender_status_id",
+}
+
+
+def _format_outcome_note(
+    *,
+    funder_name: str,
+    outcome: ReplyOutcome,
+    amount: Decimal | None,
+    factor_rate: Decimal | None,
+    term_days: int | None,
+    notes: str | None,
+    actor_email: str,
+) -> str:
+    """Build the Close-note body that mirrors the AEGIS outcome capture.
+
+    Plain text, no PII beyond the merchant's own funder context. Used
+    by ``_sync_outcome_to_close`` after a successful ``record_outcome``.
+    """
+    lines = [f"AEGIS funder outcome: {funder_name} — {outcome}"]
+    if amount is not None:
+        lines.append(f"  amount: ${amount}")
+    if factor_rate is not None:
+        lines.append(f"  factor rate: {factor_rate}")
+    if term_days is not None:
+        lines.append(f"  term: {term_days} days")
+    if notes:
+        lines.append(f"  notes: {notes}")
+    lines.append(f"  recorded by: {actor_email}")
+    return "\n".join(lines)
+
+
+def _sync_outcome_to_close(
+    *,
+    merchant_id: UUID,
+    funder_id: UUID,
+    submission_id: UUID,
+    outcome: ReplyOutcome,
+    outcome_amount: Decimal | None,
+    outcome_factor_rate: Decimal | None,
+    outcome_term_days: int | None,
+    outcome_notes: str | None,
+    merchants_repo: MerchantRepository,
+    funder_repo: FunderRepository,
+    close_client: CloseClient | None,
+    audit: AuditLog,
+    actor_email: str,
+) -> None:
+    """Best-effort Close mirror of a funder-reply outcome.
+
+    Two writes when the merchant has a Close lead AND opportunity:
+      1. ``POST /activity/note/`` summarising the outcome.
+      2. ``PUT /opportunity/{id}/`` flipping ``status_id`` to
+         Funded (approved) or Dead-Lender (declined).
+
+    ``countered`` and ``no_response`` post the note but never change
+    the opportunity status — the operator is still negotiating.
+
+    All failures are audited (``close.outcome_sync.failed``) and logged
+    but never re-raised: the AEGIS ``funder_replies`` row is the
+    authoritative outcome state. A Close hiccup must not block the
+    operator's capture.
+    """
+    if close_client is None:
+        return
+    try:
+        merchant = merchants_repo.get(merchant_id)
+    except MerchantNotFoundError:
+        _log.warning(
+            "close.outcome_sync.merchant_missing merchant_id=%s submission_id=%s",
+            merchant_id, submission_id,
+        )
+        return
+    if not merchant.close_lead_id:
+        return
+    funder_name = _resolve_funder_name(funder_repo, funder_id)
+    note_text = _format_outcome_note(
+        funder_name=funder_name,
+        outcome=outcome,
+        amount=outcome_amount,
+        factor_rate=outcome_factor_rate,
+        term_days=outcome_term_days,
+        notes=outcome_notes,
+        actor_email=actor_email,
+    )
+    try:
+        close_client.post_note(merchant.close_lead_id, note_text)
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="close.outcome_note_posted",
+            subject_type="funder_note_submission",
+            subject_id=submission_id,
+            details={"close_lead_id": merchant.close_lead_id, "outcome": outcome},
+        )
+    except CloseError as exc:
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="close.outcome_sync.failed",
+            subject_type="funder_note_submission",
+            subject_id=submission_id,
+            details={"stage": "note", "error": str(exc)[:300]},
+        )
+        _log.warning(
+            "close.outcome_note_post_failed submission_id=%s err=%s",
+            submission_id, exc,
+        )
+    settings_attr = _OUTCOME_TO_CLOSE_STATUS.get(outcome)
+    if settings_attr is None or not merchant.close_opportunity_id:
+        return
+    target_status_id = getattr(get_settings(), settings_attr)
+    try:
+        close_client.update_opportunity_status(
+            merchant.close_opportunity_id, target_status_id
+        )
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="close.opportunity_status_synced",
+            subject_type="funder_note_submission",
+            subject_id=submission_id,
+            details={
+                "close_opportunity_id": merchant.close_opportunity_id,
+                "status_id": target_status_id,
+                "outcome": outcome,
+            },
+        )
+    except CloseError as exc:
+        audit.record(
+            actor="dashboard",
+            actor_email=actor_email,
+            action="close.outcome_sync.failed",
+            subject_type="funder_note_submission",
+            subject_id=submission_id,
+            details={"stage": "status", "error": str(exc)[:300]},
+        )
+        _log.warning(
+            "close.opportunity_status_sync_failed submission_id=%s err=%s",
+            submission_id, exc,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -161,6 +317,8 @@ async def record_funder_reply_outcome(
         Depends(get_funder_note_submission_repository),
     ],
     funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    close_client: Annotated[CloseClient | None, Depends(get_close_client)],
     audit: Annotated[AuditLog, Depends(get_audit)],
     merchant_id: Annotated[UUID, Form()],
     funder_id: Annotated[UUID, Form()],
@@ -274,6 +432,29 @@ async def record_funder_reply_outcome(
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"funder_reply_persist_unavailable: {exc}",
         ) from exc
+
+    # 2026-06-30 — Close outbound sync. After the funder_replies row
+    # lands, mirror the outcome back to the Close lead: post a note
+    # summarizing the decision + flip the opportunity status_id to
+    # Funded / Dead-Lender when approved / declined. Best-effort: any
+    # Close-side error audits + logs but never fails the operator's
+    # outcome capture (the funder_replies write is the authoritative
+    # AEGIS state; Close mirroring is convenience for the CRM view).
+    _sync_outcome_to_close(
+        merchant_id=merchant_id,
+        funder_id=funder_id,
+        submission_id=submission_id,
+        outcome=typed_outcome,
+        outcome_amount=amount,
+        outcome_factor_rate=factor_rate,
+        outcome_term_days=term_days,
+        outcome_notes=notes_normalized,
+        merchants_repo=merchants_repo,
+        funder_repo=funder_repo,
+        close_client=close_client,
+        audit=audit,
+        actor_email=recorded_by,
+    )
 
     # Re-fetch the submission row so the swap surfaces any updates the
     # repository made (currently only updated_at on this surface — the

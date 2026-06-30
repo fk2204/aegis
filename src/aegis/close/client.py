@@ -507,6 +507,25 @@ class CloseClient:
         """
         return self.request("PUT", f"/api/v1/opportunity/{opportunity_id}/", json=fields)
 
+    def update_opportunity_status(
+        self, opportunity_id: str, status_id: str
+    ) -> dict[str, Any]:
+        """PUT /api/v1/opportunity/{opportunity_id}/ — updates ``status_id``.
+
+        Companion to :meth:`update_opportunity_custom_fields`. Used by the
+        funder-reply outcome flow to flip the Close opportunity to
+        ``stat_*`` (Funded / Dead - Lender) when the operator records
+        ``approved`` / ``declined`` in AEGIS. Caller is responsible for
+        picking the correct status_id from settings (see
+        ``Settings.close_funded_status_id`` and
+        ``Settings.close_dead_lender_status_id``).
+        """
+        return self.request(
+            "PUT",
+            f"/api/v1/opportunity/{opportunity_id}/",
+            json={"status_id": status_id},
+        )
+
     def create_task(
         self,
         lead_id: str,
