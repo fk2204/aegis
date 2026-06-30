@@ -1957,6 +1957,28 @@
               The deal isn&apos;t yet scoreable &mdash; upload at least one analyzed statement before funder matching runs.
             {% endif %}
           </div>
+          {# 2026-06-30 — when matching returned ZERO and we have an
+             exclusion summary, surface per-funder rejection reasons
+             instead of leaving the operator to guess. List rendered
+             only when reasons exist (avoids an empty <ul> on the
+             "not-yet-scoreable" branch). #}
+          {% if match_exclusion_reasons %}
+            <div class="exclusion-summary"
+                 data-test-id="dossier-funder-matching-exclusions"
+                 style="margin-top:10px">
+              <div class="copy" style="font-size:12px;color:var(--ink-3);text-transform:uppercase;letter-spacing:0.06em">
+                Per-funder exclusion ({{ match_exclusion_reasons|length }})
+              </div>
+              <ul style="margin:6px 0 0 0;padding-left:18px;font-size:12.5px">
+                {% for r in match_exclusion_reasons %}
+                  <li data-test-id="dossier-funder-exclusion-row">
+                    <strong>{{ r.name }}</strong> &middot;
+                    <span class="desc">{{ r.reason }}</span>
+                  </li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
         </div>
       {% else %}
         {# Fix 2 (2026-06-26) — when every statement is manual_review and

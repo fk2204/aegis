@@ -874,6 +874,66 @@ def _build_match_cards(
     return cards
 
 
+def _explain_funder_rejections(
+    *,
+    merchant: MerchantRow,
+    score_input: ScoreInput,
+    funder_repo: FunderRepository,
+) -> list[dict[str, str]]:
+    """When ``_build_match_cards`` returns empty, build a per-funder
+    exclusion summary so the dossier can render WHY no funder matched
+    instead of a silent "no matches" empty state.
+
+    Returns a list of ``{name, reason}`` dicts in funder-name order.
+    Conservative heuristic: checks the four most-common rejection
+    criteria (excluded_states, max_positions, accepts_stacking,
+    min_monthly_revenue, min_credit_score) and reports the FIRST one
+    that fails per funder. The real matcher may have additional gates
+    (tier matrix, industry exclusions); those collapse into a generic
+    "criteria mismatch" tail explanation.
+
+    Pure read of repo + merchant + score input; no Bedrock, no audit.
+    """
+    out: list[dict[str, str]] = []
+    state_uc = (score_input.state or merchant.state or "").upper()
+    positions = score_input.mca_positions
+    revenue = score_input.monthly_revenue
+    fico = score_input.credit_score
+    for funder in funder_repo.list_active():
+        reason: str | None = None
+        if funder.excluded_states and state_uc in funder.excluded_states:
+            reason = f"state {state_uc} on funder's excluded list"
+        elif funder.max_positions is not None and positions > funder.max_positions:
+            reason = (
+                f"merchant has {positions} MCA position(s); funder cap is "
+                f"{funder.max_positions}"
+            )
+        elif funder.accepts_stacking is False and positions > 0:
+            reason = (
+                f"merchant has {positions} MCA position(s); funder does not "
+                f"accept stacking"
+            )
+        elif (
+            funder.min_monthly_revenue is not None
+            and revenue < funder.min_monthly_revenue
+        ):
+            reason = (
+                f"monthly revenue ${revenue:,.0f} below funder minimum "
+                f"${funder.min_monthly_revenue:,.0f}"
+            )
+        elif (
+            funder.min_credit_score is not None
+            and fico is not None
+            and fico < funder.min_credit_score
+        ):
+            reason = f"FICO {fico} below funder minimum {funder.min_credit_score}"
+        else:
+            reason = "criteria mismatch (industry / tier matrix / NSF tolerance)"
+        out.append({"name": funder.name, "reason": reason})
+    out.sort(key=lambda r: r["name"].lower())
+    return out
+
+
 @router.get("/merchants/{merchant_id}/match", response_class=HTMLResponse)
 async def merchant_match(
     request: Request,
@@ -5023,6 +5083,22 @@ async def merchant_detail(
             top_matched_funder = funder_repo.get(UUID(matched_funders_cards[0]["funder_id"]))
             stips_result = evaluate_stips(top_matched_funder, merchant)
 
+    # When matching returned ZERO funders, surface a per-funder
+    # exclusion summary so the operator sees WHY rather than a silent
+    # "no matches yet". Cheap second pass over the same funder list —
+    # no Bedrock, no audit. Empty list when matches exist.
+    match_exclusion_reasons: list[dict[str, str]] = []
+    if (
+        not matched_funders_cards
+        and not ofac_blocked
+        and score_input is not None
+    ):
+        match_exclusion_reasons = _explain_funder_rejections(
+            merchant=merchant,
+            score_input=score_input,
+            funder_repo=funder_repo,
+        )
+
     # Most-recent funder reply per funder (audit-derived). The /match
     # panel surfaces these on each card; the inline § 4 panel mirrors
     # that affordance so the operator sees the reply chip without
@@ -5354,6 +5430,7 @@ async def merchant_detail(
             "stips_result": (stips_result.model_dump() if stips_result else None),
             "top_matched_funder_name": (top_matched_funder.name if top_matched_funder else None),
             "matched_funders": matched_funders_cards,
+            "match_exclusion_reasons": match_exclusion_reasons,
             "matched_funder_responses": matched_funder_responses,
             "submitted_funder_ids": submitted_funder_ids,
             "override_pattern_codes": override_pattern_codes,
