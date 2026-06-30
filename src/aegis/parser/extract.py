@@ -16,6 +16,7 @@ drill-down stays accurate.
 from __future__ import annotations
 
 import io
+import logging
 from typing import Any, Final
 
 import pikepdf
@@ -27,6 +28,8 @@ from aegis.parser.models import ExtractedStatement, Transaction
 from aegis.parser.page_router import PageStrategy, PageStrategyDecision
 from aegis.parser.period_regex import PeriodMatch, extract_period_via_regex
 from aegis.parser.prompts import EXTRACTION_PROMPT, EXTRACTION_PROMPT_VISION
+
+_log = logging.getLogger(__name__)
 
 # Placeholder strings the LLM uses when a value isn't visible in the document.
 # Compared case-insensitively, after .strip(). Coerced to None before
@@ -127,7 +130,8 @@ def _extract_first_page_text(pdf_bytes: bytes) -> str:
             if doc.page_count == 0:
                 return ""
             return str(doc.load_page(0).get_text("text") or "")
-    except Exception:
+    except Exception as exc:
+        _log.debug("extract.first_page_text_failed", exc_info=exc)
         return ""
 
 

@@ -29,6 +29,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import logging
 import re
 import zipfile
 from collections.abc import Sequence
@@ -195,6 +196,8 @@ from aegis.web._slug import slugify
 from aegis.web._soft_signals import parse_soft_signal_flags
 from aegis.web._stacking_card import build_stacking_card
 from aegis.web._templates import templates
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -905,18 +908,11 @@ def _explain_funder_rejections(
             reason = f"state {state_uc} on funder's excluded list"
         elif funder.max_positions is not None and positions > funder.max_positions:
             reason = (
-                f"merchant has {positions} MCA position(s); funder cap is "
-                f"{funder.max_positions}"
+                f"merchant has {positions} MCA position(s); funder cap is {funder.max_positions}"
             )
         elif funder.accepts_stacking is False and positions > 0:
-            reason = (
-                f"merchant has {positions} MCA position(s); funder does not "
-                f"accept stacking"
-            )
-        elif (
-            funder.min_monthly_revenue is not None
-            and revenue < funder.min_monthly_revenue
-        ):
+            reason = f"merchant has {positions} MCA position(s); funder does not accept stacking"
+        elif funder.min_monthly_revenue is not None and revenue < funder.min_monthly_revenue:
             reason = (
                 f"monthly revenue ${revenue:,.0f} below funder minimum "
                 f"${funder.min_monthly_revenue:,.0f}"
@@ -4232,7 +4228,12 @@ def _build_merchant_monthly_trend(
                 deposits = Decimal(row.get("deposits") or "0")
                 avg_balance = Decimal(row.get("avg_balance") or "0")
                 nsf_count = int(row.get("nsf_count") or "0")
-            except (InvalidOperation, ValueError):
+            except (InvalidOperation, ValueError) as exc:
+                _log.warning(
+                    "merchants.monthly_aggregation_row_skipped month=%s exc=%s",
+                    month,
+                    exc,
+                )
                 continue
             by_month[month] = {
                 "month": month,
@@ -5088,11 +5089,7 @@ async def merchant_detail(
     # "no matches yet". Cheap second pass over the same funder list —
     # no Bedrock, no audit. Empty list when matches exist.
     match_exclusion_reasons: list[dict[str, str]] = []
-    if (
-        not matched_funders_cards
-        and not ofac_blocked
-        and score_input is not None
-    ):
+    if not matched_funders_cards and not ofac_blocked and score_input is not None:
         match_exclusion_reasons = _explain_funder_rejections(
             merchant=merchant,
             score_input=score_input,

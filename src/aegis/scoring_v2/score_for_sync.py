@@ -33,6 +33,7 @@ default bundle without operator input.
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from uuid import UUID
 
@@ -50,6 +51,8 @@ from aegis.scoring.score import score_deal
 from aegis.scoring_v2.industry import industry_risk_tier
 from aegis.scoring_v2.score_deal_inputs import compute_score_deal_track_inputs
 from aegis.storage import AnalysisRow, DocumentRepository
+
+_log = logging.getLogger(__name__)
 
 # Cross-layer note: ``_collect_analyzed_for_merchant`` lives in the
 # web-layer ``aegis.web._router_helpers`` because that's where the
@@ -178,7 +181,8 @@ def _pattern_analysis_for_score(
             analysis.statement_period_start,
             analysis.statement_period_end,
         )
-    except Exception:
+    except Exception as exc:
+        _log.warning("score_for_sync.pattern_analyze_failed", exc_info=exc)
         return None
 
 

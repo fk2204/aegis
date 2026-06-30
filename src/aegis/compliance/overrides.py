@@ -375,7 +375,8 @@ class SupabaseOverrideRepository:
     def rows(self) -> list[dict[str, Any]]:  # pragma: no cover
         try:
             result = get_supabase().table("overrides").select("*").execute()
-        except Exception:
+        except Exception as exc:
+            _log.warning("overrides.rows_query_failed", exc_info=exc)
             return []
         return [dict(r) for r in (result.data or []) if isinstance(r, dict)]
 

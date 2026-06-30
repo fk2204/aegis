@@ -994,7 +994,13 @@ def _compute_monthly_comparison(
                 deposits_by_month[month] += Decimal(row.get("deposits") or "0")
                 nsf_by_month[month] += int(row.get("nsf_count") or "0")
                 balance_samples[month].append(Decimal(row.get("avg_balance") or "0"))
-            except (InvalidOperation, ValueError):
+            except (InvalidOperation, ValueError) as exc:
+                _log.warning(
+                    "dashboard.monthly_aggregation_row_skipped doc_id=%s month=%s exc=%s",
+                    doc_id,
+                    month,
+                    exc,
+                )
                 continue
             sources_by_month[month].append(str(doc_id))
 

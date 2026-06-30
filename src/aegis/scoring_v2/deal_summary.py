@@ -18,6 +18,7 @@ prose), see ``generate_funder_narrative`` in the same module.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal, Protocol
@@ -26,6 +27,8 @@ from aegis.merchants.models import MerchantRow
 from aegis.scoring.models import ScoreResult
 from aegis.scoring_v2.balance_health import BalanceHealthAggregation
 from aegis.scoring_v2.mca_stack import MCAStackAggregation
+
+_log = logging.getLogger(__name__)
 
 DealVerdict = Literal["clean", "review", "decline"]
 
@@ -427,12 +430,14 @@ def generate_funder_narrative(
             from aegis.ops.cost_tracking import build_cost_tracking_client
 
             client = build_cost_tracking_client(call_type="narrator")
-        except Exception:
+        except Exception as exc:
+            _log.warning("deal_summary.narrator_client_init_failed", exc_info=exc)
             return ""
 
     try:
         text = client.generate_text(prompt)
-    except Exception:
+    except Exception as exc:
+        _log.warning("deal_summary.narrator_generate_failed", exc_info=exc)
         return ""
 
     cleaned = (text or "").strip()
