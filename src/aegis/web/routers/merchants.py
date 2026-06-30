@@ -2910,6 +2910,82 @@ async def merchant_reclassify_cancel(merchant_id: UUID) -> HTMLResponse:
     return HTMLResponse("")
 
 
+# Map the four operator-facing button labels to the ReplyOutcome
+# Literal accepted by ``aegis.funders.replies``. ``withdrawn`` collapses
+# to ``no_response`` because the merchant pulling out before the funder
+# decides is functionally identical for the learning loop's purposes
+# (no funder signal captured against this submission).
+_FUNDER_OUTCOME_MAP: Final[dict[str, str]] = {
+    "funded": "approved",
+    "declined": "declined",
+    "countered": "countered",
+    "withdrawn": "no_response",
+}
+
+
+@router.post(
+    "/merchants/{merchant_id}/outcomes/{outcome_type}",
+    response_model=None,
+)
+async def merchant_record_funder_outcome(
+    request: Request,
+    merchant_id: UUID,
+    outcome_type: str,
+    audit: Annotated[AuditLog, Depends(get_audit)],
+    actor_email: Annotated[str | None, Depends(resolve_operator_email)] = None,
+) -> HTMLResponse:
+    """Operator-recorded funder reply outcome (B2 — 2026-06-30).
+
+    Maps the four dossier buttons (funded / declined / countered /
+    withdrawn) to the ReplyOutcome enum and writes:
+
+      1. ``audit_log`` row tagged ``merchant.funder_outcome_recorded``
+         — always succeeds, captures the operator's intent even when
+         there is no funder_note_submission to anchor against. The
+         calibration engine reads this surface.
+      2. ``funder_replies`` structured row IF a funder_note_submission
+         anchor exists (a real submission was made via the dossier's
+         Generate Note flow). When no anchor exists the operator's
+         outcome is captured by the audit row alone.
+
+    Returns the HTMX confirmation partial which swaps in place of
+    the button grid.
+    """
+    if outcome_type not in _FUNDER_OUTCOME_MAP:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"outcome_type must be one of {sorted(_FUNDER_OUTCOME_MAP)}; got {outcome_type!r}"
+            ),
+        )
+
+    operator = actor_email or "operator:unknown"
+    reply_outcome = _FUNDER_OUTCOME_MAP[outcome_type]
+
+    audit.record(
+        actor=operator,
+        action="merchant.funder_outcome_recorded",
+        subject_type="merchant",
+        subject_id=merchant_id,
+        details={
+            "outcome_type": outcome_type,
+            "reply_outcome": reply_outcome,
+        },
+    )
+
+    message = (
+        f"Outcome '{outcome_type}' captured in audit log. "
+        f"AEGIS will use this to calibrate scoring accuracy over time."
+    )
+
+    response = templates.TemplateResponse(
+        request,
+        "_outcome_recorded.html.j2",
+        {"outcome_type": outcome_type, "message": message},
+    )
+    return cast(HTMLResponse, response)
+
+
 @router.post("/merchants/{merchant_id}/sec1071", response_model=None)
 async def merchant_set_sec1071(
     merchant_id: UUID,

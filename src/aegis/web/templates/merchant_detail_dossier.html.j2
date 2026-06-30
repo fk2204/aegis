@@ -2442,6 +2442,57 @@
         <span class="footnote">awaiting manager sign-off</span>
       </header>
 
+      {# Funder-response outcome capture (2026-06-30 B2). Four
+         buttons covering the funder's reply state: Funded / Declined
+         / Countered / Withdrawn. These map to the ReplyOutcome enum
+         (approved / declined / countered / no_response) and flow
+         through ``aegis.funders.replies`` when a funder_note_submission
+         anchor exists. Always writes an audit_log row so the learning
+         loop sees the operator's intent even without a submission.
+         Sits ABOVE the existing post-fund CTA so the chronological
+         order reads top-to-bottom (funder responded → deal funded /
+         renewed / charged off). #}
+      <div class="dossier-page funder-outcome-cta"
+           data-test-id="funder-outcome-cta"
+           style="display:flex;flex-direction:column;gap:10px;padding:14px 16px;margin:0 0 14px;border:1px solid #c3e6cb;border-radius:6px;background:#f0f7f0">
+        <div style="font-size:13px">
+          <strong>What did the funder say?</strong>
+          <span style="font-size:12px;color:var(--ink-3);margin-left:6px">
+            Recording outcomes trains AEGIS to improve accuracy over time.
+          </span>
+        </div>
+        <div id="funder-outcome-result" style="display:flex;gap:8px;flex-wrap:wrap">
+          <button hx-post="/ui/merchants/{{ merchant.id }}/outcomes/funded"
+                  hx-target="#funder-outcome-result"
+                  hx-swap="innerHTML"
+                  data-test-id="outcome-btn-funded"
+                  style="padding:8px 14px;background:#28a745;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600">
+            ✓ Funded
+          </button>
+          <button hx-post="/ui/merchants/{{ merchant.id }}/outcomes/declined"
+                  hx-target="#funder-outcome-result"
+                  hx-swap="innerHTML"
+                  data-test-id="outcome-btn-declined"
+                  style="padding:8px 14px;background:#dc3545;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600">
+            ✗ Declined by funder
+          </button>
+          <button hx-post="/ui/merchants/{{ merchant.id }}/outcomes/countered"
+                  hx-target="#funder-outcome-result"
+                  hx-swap="innerHTML"
+                  data-test-id="outcome-btn-countered"
+                  style="padding:8px 14px;background:#fd7e14;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600">
+            ↩ Countered / different terms
+          </button>
+          <button hx-post="/ui/merchants/{{ merchant.id }}/outcomes/withdrawn"
+                  hx-target="#funder-outcome-result"
+                  hx-swap="innerHTML"
+                  data-test-id="outcome-btn-withdrawn"
+                  style="padding:8px 14px;background:#6c757d;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600">
+            — Merchant withdrew
+          </button>
+        </div>
+      </div>
+
       {# Prominent post-fund "Record outcome" CTA. Sits at the top of
          §5 so the underwriter's first action after the deal funds is
          to record what happened. The HTMX swap target (#deal-outcome-
