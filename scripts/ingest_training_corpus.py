@@ -157,7 +157,10 @@ _BANK_NAME_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"\bCeltic\s+Bank\b", re.IGNORECASE), "Celtic Bank"),
     (re.compile(r"\bProsperity\s+Bank\b", re.IGNORECASE), "Prosperity Bank"),
     (re.compile(r"\bOptimum\s+Bank\b", re.IGNORECASE), "Optimum Bank"),
-    (re.compile(r"\bAmerica\s+First\s+Federal\s+Credit\s+Union\b", re.IGNORECASE), "America First Federal Credit Union"),
+    (
+        re.compile(r"\bAmerica\s+First\s+Federal\s+Credit\s+Union\b", re.IGNORECASE),
+        "America First Federal Credit Union",
+    ),
 )
 
 
