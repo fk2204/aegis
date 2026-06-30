@@ -67,7 +67,10 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
     # bundle on 2026-06-05 (7 pairs, 0 false matches).
     (
         r"Online Banking transfer\s+(?:to|from)\s+(?:CHK|SAV)\s+\d+",
-        _PLACEHOLDER_OWN_TRANSFER, "boa_online_transfer", 100, "either",
+        _PLACEHOLDER_OWN_TRANSFER,
+        "boa_online_transfer",
+        100,
+        "either",
     ),
     # Lowercase / non-"Banking" variant — same shape, different bank or
     # BoA's product copy variation. Verified 2026-06-05 against VU's
@@ -79,15 +82,35 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
     # "Banking" is absent.
     (
         r"\bOnline transfer\s+(?:to|from)\s+(?:CHK|SAV)\s+\d+",
-        _PLACEHOLDER_OWN_TRANSFER, "generic_online_transfer", 85, "either",
+        _PLACEHOLDER_OWN_TRANSFER,
+        "generic_online_transfer",
+        85,
+        "either",
     ),
     # Chase-style transfer description (anecdotal; promote to verified
     # once we have a real Chase fixture).
     (
         r"REMOTE ONLINE TRANSFER",
-        _PLACEHOLDER_OWN_TRANSFER, "chase_remote_transfer", 85, "either",
+        _PLACEHOLDER_OWN_TRANSFER,
+        "chase_remote_transfer",
+        85,
+        "either",
     ),
-
+    # Truist online-banking transfer — uses "****XXXX" masked-account
+    # format instead of BoA's "CHK 7722" form. Verified against
+    # Turnbull's Truist bundle on 2026-06-30:
+    #   "TRUIST ONLINE TRANSFER ONLINE TO ****8865"
+    #   "TRUIST ONLINE TRANSFER ONLINE FROM ****8865 -"
+    # Same merchant moving money between Truist accounts → own_account
+    # placeholder for bundle matching. The masked-account
+    # ``****8865`` is captured by ``_OTHER_ACCOUNT_RE`` below.
+    (
+        r"TRUIST ONLINE TRANSFER ONLINE\s+(?:TO|FROM)\s+\*{2,}\d+",
+        _PLACEHOLDER_OWN_TRANSFER,
+        "truist_online_transfer",
+        100,
+        "either",
+    ),
     # ──────────────────────────────────────────────────────────────────
     # BOOK WIRES — direct class; NOT routed through the bundle matcher
     # ──────────────────────────────────────────────────────────────────
@@ -108,9 +131,11 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
     # operator resolution.
     (
         r"WIRE TYPE:BOOK\s+(?:IN|OUT)",
-        "book_wire_unresolved", "book_wire_trn_only", 90, "either",
+        "book_wire_unresolved",
+        "book_wire_trn_only",
+        90,
+        "either",
     ),
-
     # ──────────────────────────────────────────────────────────────────
     # CARD PAYDOWN — paying down a credit card (NOT an own_account move)
     # ──────────────────────────────────────────────────────────────────
@@ -119,14 +144,29 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
     # The CRD prefix is the disambiguator vs CHK/SAV (own_account).
     (
         r"Online Banking payment\s+to\s+CRD\s+\d+",
-        "card_paydown", "boa_crd_paydown", 100, "outgoing",
+        "card_paydown",
+        "boa_crd_paydown",
+        100,
+        "outgoing",
     ),
     # Generic CC payment phrasings.
     (
         r"\bCC PAYMENT\b|CREDIT CARD PAYMENT|CARD PAYMENT",
-        "card_paydown", "generic_card_payment", 80, "outgoing",
+        "card_paydown",
+        "generic_card_payment",
+        80,
+        "outgoing",
     ),
-
+    # Truist credit-card paydown. Specific to the "ONLINE CREDIT CARD PMT
+    # ONLINE TO ****XXXX" string Truist emits. Verified against Turnbull:
+    #   "TRUIST ONLINE CREDIT CARD PMT ONLINE TO ****4466"
+    (
+        r"TRUIST ONLINE CREDIT CARD PMT ONLINE\s+TO\s+\*{2,}\d+",
+        "card_paydown",
+        "truist_crd_paydown",
+        100,
+        "outgoing",
+    ),
     # ──────────────────────────────────────────────────────────────────
     # INTERNATIONAL — incoming international wire
     # ──────────────────────────────────────────────────────────────────
@@ -136,13 +176,18 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
     # ($99.5K / $100K / $125K).
     (
         r"INTERNATIONAL\s+W[HI]\b",
-        "international_client", "boa_international_wire", 95, "incoming",
+        "international_client",
+        "boa_international_wire",
+        95,
+        "incoming",
     ),
     (
         r"FOREIGN INWARD",
-        "international_client", "foreign_inward_wire", 90, "incoming",
+        "international_client",
+        "foreign_inward_wire",
+        90,
+        "incoming",
     ),
-
     # ──────────────────────────────────────────────────────────────────
     # PROCESSORS — payment rails / e-commerce gateways
     # ──────────────────────────────────────────────────────────────────
@@ -150,42 +195,65 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
     # WooPayments (WooCommerce). Verified against VU.
     (
         r"\bWooPayments\b|WOOPAY",
-        "processor", "woocommerce", 95, "incoming",
+        "processor",
+        "woocommerce",
+        95,
+        "incoming",
     ),
     (
         r"\bSHOPIFY\b",
-        "processor", "shopify", 95, "incoming",
+        "processor",
+        "shopify",
+        95,
+        "incoming",
     ),
     (
         r"\bSTRIPE\b(?!\s+CHARGEBACK)",  # Stripe chargeback is its own category upstream
-        "processor", "stripe", 95, "incoming",
+        "processor",
+        "stripe",
+        95,
+        "incoming",
     ),
     (
         r"\bPAYPAL\b|\bPP\*",
-        "processor", "paypal", 90, "incoming",
+        "processor",
+        "paypal",
+        90,
+        "incoming",
     ),
     # SQUARE INC is the funder name; SQ* prefix on CHECKCARD is a
     # square seller (also processor-routed).
     (
         r"\bSQUARE\s+INC\b|\bSQ\s*\*",
-        "processor", "square", 90, "incoming",
+        "processor",
+        "square",
+        90,
+        "incoming",
     ),
     (
         r"\bCLOVER\b|CLOVER NETWORK",
-        "processor", "clover", 90, "incoming",
+        "processor",
+        "clover",
+        90,
+        "incoming",
     ),
     (
         r"\bAMAZON PAY\b|AMAZONPAY",
-        "processor", "amazon_pay", 90, "incoming",
+        "processor",
+        "amazon_pay",
+        90,
+        "incoming",
     ),
     # CPS MERCHANT SER = Card Processing Services merchant fee. The
     # merchant is paying the processor for processing — so for the
     # MERCHANT this is an expense to a processor. Direction matters.
     (
         r"CPS MERCHANT SER",
-        "processor", "cps_merchant_fee", 70, "either",
+        "processor",
+        "cps_merchant_fee",
+        70,
+        "either",
     ),
-
     # ──────────────────────────────────────────────────────────────────
     # END CUSTOMER — named business/individual via Zelle, named ACH, wire
     # ──────────────────────────────────────────────────────────────────
@@ -195,15 +263,20 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
     # concentration signal.
     (
         r"Zelle payment from\s+",
-        "end_customer", "zelle_incoming", 85, "incoming",
+        "end_customer",
+        "zelle_incoming",
+        85,
+        "incoming",
     ),
     # Zelle OUTGOING — could be an end customer (refund) or own
     # account / vendor. Default to unknown; operator decides.
     (
         r"Zelle payment to\s+",
-        "unknown", "zelle_outgoing_review", 50, "outgoing",
+        "unknown",
+        "zelle_outgoing_review",
+        50,
+        "outgoing",
     ),
-
     # ──────────────────────────────────────────────────────────────────
     # KNOWN NOISE — fees, verifications, statement items
     # ──────────────────────────────────────────────────────────────────
@@ -215,17 +288,26 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
     # MUST appear before ACCTVERIFY to win the more-specific match.
     (
         r"VENMO\s+DES:CASHOUT",
-        "processor", "venmo_cashout", 90, "incoming",
+        "processor",
+        "venmo_cashout",
+        90,
+        "incoming",
     ),
     # Venmo account-verification micro-deposits. Not revenue.
     (
         r"VENMO\s+DES:ACCTVERIFY",
-        "unknown", "venmo_acctverify", 30, "either",
+        "unknown",
+        "venmo_acctverify",
+        30,
+        "either",
     ),
     # BoA preferred-rewards credit (a fee waiver / rebate).
     (
         r"Prfd\s+Rwds\s+for\s+Bus-Book",
-        "unknown", "boa_preferred_rewards", 40, "incoming",
+        "unknown",
+        "boa_preferred_rewards",
+        40,
+        "incoming",
     ),
     # Generic CHECKCARD / PURCHASE — the merchant SPENDING with a debit
     # card. Expense; not in the 7 counterparty categories. Operator
@@ -233,13 +315,18 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
     # into "end_customer" or "processor".
     (
         r"\bCHECKCARD\s+\d",
-        "unknown", "card_purchase_outgoing", 40, "outgoing",
+        "unknown",
+        "card_purchase_outgoing",
+        40,
+        "outgoing",
     ),
     (
         r"^PURCHASE\s+\d",
-        "unknown", "card_purchase_outgoing", 40, "outgoing",
+        "unknown",
+        "card_purchase_outgoing",
+        40,
+        "outgoing",
     ),
-
     # ──────────────────────────────────────────────────────────────────
     # CLAIMS / INSURANCE / NAMED-ACH — heuristics
     # ──────────────────────────────────────────────────────────────────
@@ -249,24 +336,96 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
     # end_customer for now; operator may want a separate category.
     (
         r"CLAIMS PROCESSING TRANSACTION",
-        "end_customer", "insurance_claim_payout", 60, "incoming",
+        "end_customer",
+        "insurance_claim_payout",
+        60,
+        "incoming",
+    ),
+    # ──────────────────────────────────────────────────────────────────
+    # BANK INTERNAL FEES — not revenue, not counterparty signal.
+    # Classify as ``unknown`` with a specific reason so the operator
+    # review queue can filter them out without manual inspection.
+    # Verified against Turnbull (20 OVERDRAFT + 4 RETURNED ITEM rows).
+    # ──────────────────────────────────────────────────────────────────
+    (
+        r"\bOVERDRAFT\b.*\bFEE\b|\bRETURNED\s+ITEM\s+FEE\b|\bNSF\s+FEE\b",
+        "unknown",
+        "bank_internal_fee",
+        95,
+        "outgoing",
+    ),
+    # ──────────────────────────────────────────────────────────────────
+    # CHECK PAYMENTS (outgoing) — operator-written checks. NOT revenue,
+    # NOT a counterparty signal (payee name doesn't appear in the
+    # description; just the check number). Tag as ``unknown`` with a
+    # specific reason so they don't sit in the "needs review" bucket.
+    # Matches:
+    #   "CHECK 11721", "Check 11728", "CHECK *11727", "CHECK #11715"
+    # Verified against Turnbull (~100 such rows across the bundle).
+    # ──────────────────────────────────────────────────────────────────
+    (
+        r"^(?:CHECK|Check)\s+[*#]?\d+\b",
+        "unknown",
+        "check_payment_outgoing",
+        80,
+        "outgoing",
+    ),
+    # ──────────────────────────────────────────────────────────────────
+    # ATM CHECK / CASH DEPOSIT — incoming, customer revenue typically.
+    # Verified against Turnbull:
+    #   "TRUIST ATM CHECK DEPOSIT 05-24-26 11:50 A179 LUMBERTON MAIN BRANCH"
+    # Operator can override if it was an owner cash injection — the
+    # low-medium confidence (75) flags the row for review.
+    # ──────────────────────────────────────────────────────────────────
+    (
+        r"\bATM\s+(?:CHECK\s+)?(?:DEPOSIT|CASH\s+DEPOSIT)\b",
+        "end_customer",
+        "atm_check_or_cash_deposit",
+        75,
+        "incoming",
+    ),
+    # ──────────────────────────────────────────────────────────────────
+    # NAMED-CUSTOMER ACH CREDITS (revenue-classification fix for B2B
+    # merchants with named corporate customers). These patterns are
+    # placed AFTER all processor patterns above so a "PAYMENTS PAYPAL …"
+    # description hits the more-specific PAYPAL rule first.
+    # ──────────────────────────────────────────────────────────────────
+    #
+    # Truist's named-ACH-credit description prefix:
+    #   "PAYMENTS Murphy Brown 0011THE TURNBULL CO CUSTOMER ID 252494"
+    # Murphy Brown is a real recurring corporate customer; the same
+    # shape covers any "PAYMENTS <CompanyName> …" Truist describes.
+    # Currently NULL-classified rows cost real revenue (5 such entries
+    # on Turnbull alone totalled ~$42,938). Tag as end_customer when
+    # incoming; operator override surface refines.
+    (
+        r"^PAYMENTS\s+[A-Za-z]",
+        "end_customer",
+        "ach_corp_payments_named",
+        70,
+        "incoming",
+    ),
+    # Truist generic "ACH CORP CREDIT" prefix without the PAYMENTS
+    # leader. Broader catch — same revenue intent, different phrasing.
+    (
+        r"\bACH\s+CORP\s+CREDIT\b",
+        "end_customer",
+        "ach_corp_credit",
+        60,
+        "incoming",
     ),
 )
 
 
 # Compile once at import time. Public ordering matters; expose the
 # compiled list so tests can introspect rule order.
-COUNTERPARTY_PATTERNS: Final[
-    tuple[tuple[re.Pattern[str], str, str, int, str], ...]
-] = tuple(
+COUNTERPARTY_PATTERNS: Final[tuple[tuple[re.Pattern[str], str, str, int, str], ...]] = tuple(
     (re.compile(pat, re.IGNORECASE), cls, reason, conf, direction)
     for pat, cls, reason, conf, direction in _PATTERNS_RAW
 )
 
 
-def lookup_dictionary(
-    description: str, amount_sign: int
-) -> tuple[str, str, int] | None:
+def lookup_dictionary(description: str, amount_sign: int) -> tuple[str, str, int] | None:
     """Run the description through the dictionary. Return
     (counterparty_or_placeholder, reason, confidence) or None if no
     rule matched.
@@ -296,18 +455,32 @@ def lookup_dictionary(
 
 
 # Other-account-last-4 extractor. Patterns like:
-#   "Online Banking transfer to CHK 7722 Confirmation# …" → "7722"
-#   "Online Banking payment to CRD 0993 Confirmation# …"  → "0993"
-#   "WIRE TYPE:BOOK IN DATE:… <…> …"                       → None (no acct in line)
+#   "Online Banking transfer to CHK 7722 Confirmation# …"   → "7722"   (BoA)
+#   "Online Banking payment to CRD 0993 Confirmation# …"    → "0993"   (BoA)
+#   "TRUIST ONLINE TRANSFER ONLINE TO ****8865"             → "8865"   (Truist)
+#   "WIRE TYPE:BOOK IN DATE:… <…> …"                         → None
+#
+# Group 1 = BoA-style ``CHK|SAV|CRD <digits>``;
+# Group 2 = Truist-style ``****<digits>`` (or any N-asterisk mask).
+# Whichever side matches contributes the digits to the extractor.
 _OTHER_ACCOUNT_RE: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:CHK|SAV|CRD)\s+(\d{3,12})\b"
+    r"(?:CHK|SAV|CRD)\s+(\d{3,12})|\*{2,}(\d{3,12})",
+    re.IGNORECASE,
 )
 
 
 def extract_other_account_last4(description: str) -> str | None:
-    """Pull the OTHER account's last-4 from the description, or None."""
+    """Pull the OTHER account's last-4 from the description, or None.
+
+    Returns the matched digits regardless of which bank's format
+    produced them — BoA's ``CHK 7722`` and Truist's ``****8865`` both
+    surface as ``"7722"`` / ``"8865"`` so the bundle matcher can pair
+    transfers across either shape.
+    """
     m = _OTHER_ACCOUNT_RE.search(description)
-    return m.group(1) if m else None
+    if m is None:
+        return None
+    return m.group(1) or m.group(2)
 
 
 # Confirmation# extractor. BoA's "Online Banking transfer" uses a
