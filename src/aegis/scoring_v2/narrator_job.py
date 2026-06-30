@@ -244,6 +244,29 @@ async def generate_narrator_summary(
                 "reason": "narrator_already_set",
             }
 
+        # Budget gate. Narrator backfill is autonomous (fires on every
+        # parse completion + on operator-requested backfill); the daily
+        # ceiling caps that flood. Operator-triggered "Refresh narrator"
+        # POSTs reach this same job but should not be subject to the
+        # gate — that surface uses the dedicated refresh endpoint which
+        # bypasses this code path entirely.
+        from aegis.bedrock_budget import check_bedrock_budget
+
+        if not check_bedrock_budget("narrator_backfill"):
+            audit.record(
+                actor="system",
+                action="narrator.skipped_budget",
+                subject_type="document",
+                subject_id=document_id,
+                details={"merchant_id": str(merchant_id)},
+            )
+            return {
+                "document_id": document_id_str,
+                "merchant_id": merchant_id_str,
+                "skipped": True,
+                "reason": "bedrock_budget_exceeded",
+            }
+
         document = docs.get_document(document_id)
         merchant = merchants.get(merchant_id)
 

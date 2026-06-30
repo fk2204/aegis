@@ -3126,6 +3126,37 @@ async def run_background_checks(
             "skipped": True,
         }
 
+    # Budget gate. Background checks fire two Bedrock calls per merchant
+    # (UCC + web-presence). Skip the pair when today's automated spend
+    # has hit the daily ceiling so a fresh-create webhook flood can't
+    # blow the budget. Operator-triggered re-runs from the dossier
+    # remain unaffected — they go through different code paths.
+    from aegis.bedrock_budget import check_bedrock_budget
+
+    if not check_bedrock_budget("background_checks"):
+        _log.error(
+            "background_checks.skipped_budget merchant_id=%s trigger=%s",
+            merchant_id,
+            trigger,
+        )
+        audit.record(
+            actor="system",
+            action="merchant.background_checks_complete",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={
+                "trigger": trigger,
+                "skipped": True,
+                "reason": "bedrock_budget_exceeded",
+                "failed_checks": [],
+            },
+        )
+        return {
+            "merchant_id": merchant_id_str,
+            "trigger": trigger,
+            "skipped": True,
+        }
+
     audit.record(
         actor="system",
         action="merchant.background_checks_started",
@@ -3295,6 +3326,11 @@ async def daily_funder_sync(ctx: dict[str, Any]) -> None:
     if not _check_disk_space(min_free_gb=2.0):
         _log.error("funder_sync_skipped: insufficient disk space")
         return
+    from aegis.bedrock_budget import check_bedrock_budget
+
+    if not check_bedrock_budget("funder_sync"):
+        _log.error("funder_sync_skipped: daily Bedrock budget exceeded")
+        return
     # Static literal argv (no shell=True, no user-controlled values).
     result = subprocess.run(
         ["/opt/aegis/.venv/bin/python", "scripts/sync_funders_from_folder.py", "--apply"],
@@ -3339,6 +3375,11 @@ async def weekly_corpus_ingestion(ctx: dict[str, Any]) -> None:
     del ctx
     if not _check_disk_space(min_free_gb=5.0):
         _log.error("corpus_ingestion_skipped: insufficient disk space")
+        return
+    from aegis.bedrock_budget import check_bedrock_budget
+
+    if not check_bedrock_budget("corpus_ingestion"):
+        _log.error("corpus_ingestion_skipped: daily Bedrock budget exceeded")
         return
     settings = get_settings()
     local_path = Path(settings.local_corpus_folder)
