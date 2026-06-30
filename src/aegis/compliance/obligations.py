@@ -48,11 +48,16 @@ _log = get_logger(__name__)
 REMINDER_THRESHOLD_DAYS: tuple[int, ...] = (60, 30, 14)
 
 # Today dashboard "Compliance deadlines" attention-card horizon.
-# Widened from 90 → 180 days (2026-06-28) so the TX OCCC 2026-12-31
-# filing (~186 days out at widen time) surfaces with operator lead
-# time. Reminder cron thresholds (REMINDER_THRESHOLD_DAYS) are NOT
-# touched — they remain 60/30/14 days for audit-row firing.
-TODAY_CARD_HORIZON_DAYS: int = 180
+# Widened in two passes:
+#   * 90 → 180 days (2026-06-28) so the TX OCCC 2026-12-31 filing
+#     (~186 days out at widen time) surfaces with operator lead time.
+#   * 180 → 200 days (2026-06-30) — 180 turned out to be 4 days too
+#     short the next time we measured (TX HB 700 = 184 days from
+#     2026-06-30), so the card silently went empty. 200 gives a small
+#     buffer against the same boundary problem ticking around midyear
+#     turn-overs. Reminder cron thresholds (REMINDER_THRESHOLD_DAYS)
+#     are NOT touched — they remain 60/30/14 days for audit-row firing.
+TODAY_CARD_HORIZON_DAYS: int = 200
 
 # Color buckets for the Today card. Matches REMINDER_THRESHOLD_DAYS so
 # an item that just fired a 14-day reminder shows red; a 30-day fire
@@ -721,12 +726,12 @@ def build_compliance_attention_section(
       * amber  — 15..30 days
       * yellow — 31..60 days
 
-    Rows beyond ``TODAY_CARD_HORIZON_DAYS=180`` are skipped — the
-    operator's standard prep cycle is 60 days, and the widened
-    180-day horizon (2026-06-28) gives long-lead state filings such
-    as the TX OCCC 2026-12-31 deadline runway on the Today card
-    before the 60-day reminder cron starts firing. Reminder cron
-    thresholds are unchanged at 60/30/14 days.
+    Rows beyond ``TODAY_CARD_HORIZON_DAYS=200`` are skipped — the
+    operator's standard prep cycle is 60 days, and the 200-day
+    horizon (widened from 180 on 2026-06-30, originally 90) gives
+    long-lead state filings such as the TX OCCC 2026-12-31 deadline
+    runway on the Today card before the 60-day reminder cron starts
+    firing. Reminder cron thresholds are unchanged at 60/30/14 days.
     """
     rows = obligations.list_upcoming(horizon_days)
     source_ids: list[str] = [str(r.id) for r in rows]
