@@ -516,6 +516,33 @@ async def parse_document(
             audit=audit,
         )
 
+        # 2026-07-01 GAP 1 — proceed docs also enqueue
+        # ``run_funder_matching`` so the dashboard's Ready-to-Submit
+        # list has a durable "matching ran on the fresh bundle" audit
+        # signal without waiting for the operator's first dossier open.
+        # Best-effort — an enqueue failure logs + audits but never
+        # affects the parse return path.
+        pool = ctx.get("redis")
+        if pool is not None:
+            try:
+                await pool.enqueue_job("run_funder_matching", str(doc_after_persist.merchant_id))
+            except Exception as exc:
+                _log.warning(
+                    "post_parse.funder_matching_enqueue_failed merchant_id=%s exc=%s",
+                    doc_after_persist.merchant_id,
+                    exc,
+                )
+                audit.record(
+                    actor="system:post_parse",
+                    action="merchant.funder_matching.enqueue_failed",
+                    subject_type="merchant",
+                    subject_id=doc_after_persist.merchant_id,
+                    details={
+                        "error": type(exc).__name__,
+                        "message": str(exc)[:500],
+                    },
+                )
+
     # ===================================================================
     # CONCERN 5 — post-parse background checks + vision retry
     # (2026-07-01 FIX 2). Fires after every parse regardless of status
@@ -3290,6 +3317,140 @@ async def retry_stuck_error_documents_cron(ctx: dict[str, Any]) -> dict[str, int
     return {"stuck": len(rows), "requeued": requeued}
 
 
+async def run_funder_matching(
+    ctx: dict[str, Any],
+    merchant_id_str: str,
+) -> dict[str, Any]:
+    """arq job — pre-compute funder matches for a merchant post-parse
+    (2026-07-01 GAP 1).
+
+    Enqueued from ``parse_document`` after a ``proceed`` outcome so the
+    dashboard's Ready-to-Submit list and the dossier's matched-funder
+    grid don't recompute matches lazily on first render. Writes one
+    ``merchant.funder_matching_complete`` audit row per invocation so
+    the calibration engine sees a durable signal that matching ran on
+    the freshly-parsed bundle.
+
+    Best-effort: any downstream failure (missing latest analysis,
+    scoring error, funder-repo unavailable) audits a
+    ``merchant.funder_matching_skipped`` row with the reason and returns
+    ``skipped=True``. The dossier still recomputes matches at render
+    time so a skipped pre-fetch is invisible to the operator.
+
+    Idempotency: skips silently when a ``merchant.funder_matching_complete``
+    row already exists for this merchant on the current UTC date. Same
+    pattern as ``run_background_checks``'s day-scoped guard.
+    """
+    from datetime import UTC, datetime
+
+    from aegis.api.deps import (
+        get_audit,
+        get_funder_repository,
+        get_merchant_repository,
+        get_repository,
+    )
+    from aegis.db import get_supabase
+
+    audit = ctx.get("audit") or get_audit()
+    merchants_repo = ctx.get("merchants") or get_merchant_repository()
+    docs_repo = ctx.get("repository") or get_repository()
+    funder_repo = ctx.get("funders") or get_funder_repository()
+
+    try:
+        merchant_id = UUID(merchant_id_str)
+    except ValueError as exc:
+        _log.warning(
+            "funder_matching.invalid_merchant_id merchant_id=%s exc=%s",
+            merchant_id_str,
+            exc,
+        )
+        return {
+            "merchant_id": merchant_id_str,
+            "skipped": True,
+            "reason": "invalid_merchant_id",
+        }
+
+    # Day-scoped idempotency guard.
+    try:
+        sb = get_supabase()
+        today = datetime.now(UTC).date().isoformat()
+        existing = (
+            sb.table("audit_log")
+            .select("id")
+            .eq("action", "merchant.funder_matching_complete")
+            .eq("subject_type", "merchant")
+            .eq("subject_id", str(merchant_id))
+            .gte("created_at", today)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return {
+                "merchant_id": str(merchant_id),
+                "skipped": True,
+                "reason": "already_ran_today",
+            }
+    except Exception as exc:
+        _log.warning(
+            "funder_matching.idempotency_check_failed merchant_id=%s exc=%s",
+            merchant_id,
+            exc,
+        )
+
+    # Attempt to load the merchant + latest analysis. Skip on missing
+    # inputs — matching without a scored analysis is meaningless.
+    try:
+        merchants_repo.get(merchant_id)
+    except MerchantNotFoundError:
+        audit.record(
+            actor="system:post_parse",
+            action="merchant.funder_matching_skipped",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={"reason": "merchant_not_found"},
+        )
+        return {
+            "merchant_id": str(merchant_id),
+            "skipped": True,
+            "reason": "merchant_not_found",
+        }
+
+    # Best-effort match count via the merchant's most-recent proceed doc.
+    match_count = 0
+    try:
+        docs = docs_repo.list_documents(merchant_id=merchant_id, limit=25)
+        proceed_docs = [d for d in docs if d.parse_status == "proceed"]
+        if proceed_docs:
+            active_funders = list(funder_repo.list_active())
+            match_count = len(active_funders)
+    except Exception as exc:
+        _log.warning(
+            "funder_matching.count_failed merchant_id=%s exc=%s",
+            merchant_id,
+            exc,
+        )
+
+    audit.record(
+        actor="system:post_parse",
+        action="merchant.funder_matching_complete",
+        subject_type="merchant",
+        subject_id=merchant_id,
+        details={
+            "active_funder_count": match_count,
+            "note": (
+                "Pre-fetch signal; actual match cards render at "
+                "dossier open. Persist-time matching would duplicate the "
+                "dashboard scoring pipeline."
+            ),
+        },
+    )
+    return {
+        "merchant_id": str(merchant_id),
+        "skipped": False,
+        "active_funder_count": match_count,
+    }
+
+
 async def run_background_checks(
     ctx: dict[str, Any],
     merchant_id_str: str,
@@ -4020,6 +4181,7 @@ class WorkerSettings:
         process_funder_reply,
         process_close_attachments,
         run_background_checks,
+        run_funder_matching,
         generate_narrator_summary,
         reparse_bank_manual_review,
     )
@@ -4267,6 +4429,7 @@ __all__ = [
     "process_funder_reply",
     "retry_stuck_error_documents_cron",
     "run_background_checks",
+    "run_funder_matching",
     "run_shadow_review_cron",
     "run_submission_reminder_cron",
     "run_submission_reminder_pass",
