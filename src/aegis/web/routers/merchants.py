@@ -5025,13 +5025,41 @@ async def merchant_detail(
     # branch (gated on ``items and merchant.is_finalized``) didn't fire.
     track_a_verdict: IntegrityVerdict | None = None
     track_b_band: Any = None
-    _log.info(
-        "dossier.gap2.entry merchant=%s latest_doc=%s latest_analysis=%s finalized=%s",
-        merchant_id,
-        latest_doc is not None,
-        latest_analysis is not None,
-        merchant.is_finalized,
-    )
+    # 2026-07-01 GAP 2 — fire the band-persist on ALL analyzed items
+    # for the merchant, not just when latest_doc has an analysis. The
+    # scoring block below is guarded on latest_analysis (i.e. the most
+    # recent uploaded doc has an analysis row). Turnbull's most recent
+    # doc is a Commera_Proposal PDF (parse_status='error', no analysis),
+    # so latest_analysis is None and the scoring block was silently
+    # skipped, leaving business_risk_band unpersisted despite 5 proceed
+    # bank statements sitting in the analyses table. Fire the persist
+    # here so the band lands on every analyzed doc regardless of the
+    # latest-doc guard.
+    _all_analyzed_items = _collect_analyzed_for_merchant(docs, merchant_id, window=999, bundle=None)
+    if _all_analyzed_items and merchant.is_finalized:
+        try:
+            _early_track_a, _early_track_b = compute_score_deal_track_inputs(
+                documents=all_docs,
+                list_transactions=docs.list_transactions,
+                analyses_by_doc=analyses_by_doc,
+                merchant_id=merchant_id,
+                industry_tier=industry_risk_tier(merchant.industry_choice),
+            )
+            _early_band_level = (
+                getattr(_early_track_b, "band", None) if _early_track_b is not None else None
+            )
+            if isinstance(_early_band_level, str):
+                for _early_doc, _early_analysis in _all_analyzed_items:
+                    if _early_analysis is not None:
+                        docs.persist_business_risk_band(
+                            _early_analysis.document_id, _early_band_level
+                        )
+        except Exception as exc:
+            _log.warning(
+                "dossier.gap2.early_persist_failed merchant=%s exc=%s",
+                merchant_id,
+                exc,
+            )
     if latest_doc is not None and latest_analysis is not None:
         all_items = _collect_analyzed_for_merchant(docs, merchant_id, window=999, bundle=None)
         bundle_options = _bundle_keys_for_merchant(all_items)
