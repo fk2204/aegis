@@ -5025,6 +5025,13 @@ async def merchant_detail(
     # branch (gated on ``items and merchant.is_finalized``) didn't fire.
     track_a_verdict: IntegrityVerdict | None = None
     track_b_band: Any = None
+    _log.info(
+        "dossier.gap2.entry merchant=%s latest_doc=%s latest_analysis=%s finalized=%s",
+        merchant_id,
+        latest_doc is not None,
+        latest_analysis is not None,
+        merchant.is_finalized,
+    )
     if latest_doc is not None and latest_analysis is not None:
         all_items = _collect_analyzed_for_merchant(docs, merchant_id, window=999, bundle=None)
         bundle_options = _bundle_keys_for_merchant(all_items)
