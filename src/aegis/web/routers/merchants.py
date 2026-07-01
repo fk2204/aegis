@@ -5098,13 +5098,17 @@ async def merchant_detail(
             # 2026-07-01 GAP 2 — persist the Track B band on the
             # dossier's active bundle so downstream consumers (Ready-
             # to-Submit filter, calibration cron) can read the band
-            # without re-scoring. Best-effort — a Supabase blip audits
-            # via the storage layer but never breaks the dossier
-            # render.
+            # without re-scoring. ``track_b_band`` is a
+            # ``BusinessRiskBand`` Pydantic model; the persistence
+            # column is the ``BandLevel`` string on its ``.band``
+            # attribute. Best-effort — a Supabase blip audits via the
+            # storage layer but never breaks the dossier render.
             if track_b_band is not None:
-                for _doc, _analysis in items:
-                    if _analysis is not None:
-                        docs.persist_business_risk_band(_analysis.document_id, track_b_band)
+                _band_level = getattr(track_b_band, "band", None)
+                if isinstance(_band_level, str):
+                    for _doc, _analysis in items:
+                        if _analysis is not None:
+                            docs.persist_business_risk_band(_analysis.document_id, _band_level)
             try:
                 score_result = score_deal(
                     score_input,

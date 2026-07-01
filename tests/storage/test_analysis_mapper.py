@@ -132,6 +132,7 @@ def _full_analysis_row() -> AnalysisRow:
             "generated_at": "2026-06-26T17:00:00+00:00",
             "version": 1,
         },
+        business_risk_band="moderate",
     )
 
 
