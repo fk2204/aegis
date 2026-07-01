@@ -163,6 +163,8 @@ class _ClassBucket:
 def aggregate_bundle(
     transactions_by_doc: Mapping[str, list[ClassifiedTransaction]],
     classifications: Mapping[UUID, CounterpartyClassification],
+    *,
+    persist: bool = True,
 ) -> BundleAggregation:
     """Roll up a parse bundle by counterparty class.
 
@@ -175,6 +177,15 @@ def aggregate_bundle(
         Output of ``classify_bundle``. Must contain a classification
         for every transaction in ``transactions_by_doc`` (the
         classifier produces one per row).
+    persist
+        When True (default), best-effort persists the classifications
+        back to ``transactions`` via
+        ``aegis.counterparty.persistence.persist_classifications``.
+        The write is override-aware server-side (operator overrides
+        are skipped) and failure-tolerant — a DB unavailability logs
+        a WARN and returns without disrupting the aggregation return.
+        Pass ``persist=False`` for pure-function callers (tests,
+        shadow-analytic scripts) that don't want the side effect.
 
     Returns
     -------
@@ -189,6 +200,21 @@ def aggregate_bundle(
         caller; fail loud rather than silently treat as unknown.
     """
     flat = [t for txns in transactions_by_doc.values() for t in txns]
+
+    # Persist classifications (P2 wiring, 2026-07-01). This runs BEFORE
+    # the aggregation so a DB blip doesn't block the rollup, and the
+    # persistence module itself is fail-open — get_supabase() raising
+    # in a test-env or on a network blip returns 0 (logged warning).
+    # Any code path that produces a ``classifications`` mapping via
+    # ``aggregate_bundle`` now writes counterparty_class /
+    # counterparty_confidence / counterparty_reason to the transactions
+    # table (skipping operator-overridden rows server-side).
+    if persist and classifications:
+        # Import locally so ``aggregate_bundle`` stays importable by
+        # test harnesses that don't stub the persistence module.
+        from aegis.counterparty.persistence import persist_classifications
+
+        persist_classifications(classifications)
 
     by_class_data: dict[CounterpartyClass, _ClassBucket] = {}
 
@@ -228,11 +254,7 @@ def aggregate_bundle(
         start=Money(Decimal("0")),
     )
     excluded_inflow = sum(
-        (
-            r.incoming_total
-            for r in rollups
-            if r.counterparty in NON_REVENUE_INFLOW_CLASSES
-        ),
+        (r.incoming_total for r in rollups if r.counterparty in NON_REVENUE_INFLOW_CLASSES),
         start=Money(Decimal("0")),
     )
 
