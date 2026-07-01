@@ -112,10 +112,17 @@ async def test_idempotent_skip_when_both_checks_already_populated(
     audit: InMemoryAuditLog,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Merchant already has UCC + web-presence timestamps → worker writes
-    a single ``merchant.background_checks_complete`` row with
-    ``skipped=True`` + ``reason=already_populated`` and does NOT invoke
-    either refresher."""
+    """Merchant already has FRESH UCC + web-presence timestamps (both
+    within the last 30 days) → worker writes a single
+    ``merchant.background_checks_complete`` row with ``skipped=True``
+    + ``reason=fresh_within_30_days`` and does NOT invoke either
+    refresher.
+
+    2026-07-01: guard tightened from "both populated ever" to "both
+    populated within the last 30 days" so stale checks refresh
+    automatically. Test fixture uses ``now`` timestamps — both are
+    fresh → skip path fires.
+    """
     now = datetime.now(UTC)
     merchant = _seed_merchant(merchants, ucc_checked_at=now, web_presence_scanned_at=now)
     ucc_calls, wp_calls = _patch_refreshers(monkeypatch)
@@ -135,7 +142,7 @@ async def test_idempotent_skip_when_both_checks_already_populated(
     row = rows[0]
     assert row["action"] == "merchant.background_checks_complete"
     assert row["details"]["skipped"] is True
-    assert row["details"]["reason"] == "already_populated"
+    assert row["details"]["reason"] == "fresh_within_30_days"
     assert row["details"]["failed_checks"] == []
     assert row["details"]["trigger"] == "close_webhook"
 
