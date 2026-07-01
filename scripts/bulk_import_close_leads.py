@@ -154,9 +154,21 @@ def _record_disqualified_outcomes(
     client: CloseClient,
     existing_by_lead: dict[str, str],
 ) -> tuple[int, int]:
-    """Group 2 — write funder_replies.outcome='declined' for AEGIS
-    merchants whose Close lead is currently in the Disqualified bucket
-    and don't yet have a recorded funder reply."""
+    """Group 2 — write ``audit_log`` rows tagging AEGIS merchants whose
+    Close lead is currently in the Disqualified bucket.
+
+    Original design (2026-07-01) wrote to ``funder_replies`` but the
+    schema doesn't fit: that table anchors per-(deal_id or submission_id)
+    with NOT NULL funder_id, so a merchant-level "operator disqualified
+    the lead in the CRM" row can't land there without inventing a
+    funder + deal pair. The audit-log tag captures the ground truth
+    signal the calibration engine actually consumes:
+    ``merchant.close_disqualified_sync`` on the merchant subject_id +
+    the operator's Close lead_id in ``details``.
+
+    Idempotent: skipped when the merchant already carries a
+    ``merchant.close_disqualified_sync`` row.
+    """
     print(f"\nFetching Close leads with status: {_DISQUAL_STATUS}")
     disq = _search_leads_by_status(client, _DISQUAL_STATUS)
     print(f"Found: {len(disq)}")
@@ -174,15 +186,17 @@ def _record_disqualified_outcomes(
 
         try:
             existing = (
-                sb.table("funder_replies")
+                sb.table("audit_log")
                 .select("id")
-                .eq("merchant_id", merchant_id)
+                .eq("subject_type", "merchant")
+                .eq("subject_id", merchant_id)
+                .eq("action", "merchant.close_disqualified_sync")
                 .limit(1)
                 .execute()
             )
         except Exception as exc:
             _log.warning(
-                "bulk_import.reply_lookup_failed merchant=%s exc=%s",
+                "bulk_import.audit_lookup_failed merchant=%s exc=%s",
                 merchant_id,
                 exc,
             )
@@ -192,17 +206,22 @@ def _record_disqualified_outcomes(
             continue
 
         payload: dict[str, Any] = {
-            "merchant_id": merchant_id,
-            "outcome": "declined",
-            "notes": (
-                "Auto-recorded: lead status is Disqualified in Close as of "
-                f"{datetime.now(UTC).date().isoformat()}."
-            ),
-            "recorded_at": datetime.now(UTC).isoformat(),
-            "source": "close_disqualified_sync",
+            "actor": "system:bulk_import_close_leads",
+            "action": "merchant.close_disqualified_sync",
+            "subject_type": "merchant",
+            "subject_id": merchant_id,
+            "details": {
+                "close_lead_id": lead_id,
+                "recorded_at": datetime.now(UTC).isoformat(),
+                "note": (
+                    "Lead status was Disqualified in Close as of "
+                    f"{datetime.now(UTC).date().isoformat()}. Feed to "
+                    "calibration ground-truth as a no-fund outcome."
+                ),
+            },
         }
         try:
-            sb.table("funder_replies").insert(cast(Any, payload)).execute()
+            sb.table("audit_log").insert(cast(Any, payload)).execute()
             outcomes_recorded += 1
             _log.info(
                 "bulk_import.outcome_declined merchant=%s lead_id=%s",
