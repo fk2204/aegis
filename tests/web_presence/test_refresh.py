@@ -118,7 +118,9 @@ def test_refresh_persists_empty_result_on_bedrock_failure() -> None:
     refreshed = repo.get(merchant.id)
     assert refreshed.web_presence_summary is None
     assert refreshed.web_presence_flags == []
-    assert refreshed.web_presence_scanned_at is None
+    # 2026-07-01 Phase 2B: timestamp always lands (was None before the
+    # fix). Bedrock-succeeded distinction moved to audit-detail.
+    assert refreshed.web_presence_scanned_at is not None
 
     row = next(e for e in audit.entries if e["action"] == "merchant.web_presence.scanned")
     assert row["details"]["bedrock_succeeded"] is False

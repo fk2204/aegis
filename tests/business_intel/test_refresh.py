@@ -86,6 +86,10 @@ def test_refresh_persists_lists_and_writes_audit() -> None:
 
 
 def test_refresh_persists_empty_on_bedrock_failure() -> None:
+    """2026-07-01 Phase 2B: even when Bedrock fails, ``ucc_checked_at``
+    is set to ``datetime.now(UTC)`` so the 30-day staleness guard sees
+    the attempt. The "Bedrock actually succeeded" signal moves to the
+    audit-detail ``bedrock_succeeded`` field."""
     repo = InMemoryMerchantRepository()
     audit = InMemoryAuditLog()
     merchant = _make_merchant()
@@ -100,7 +104,8 @@ def test_refresh_persists_empty_on_bedrock_failure() -> None:
     refreshed = repo.get(merchant.id)
     assert refreshed.ucc_filings == []
     assert refreshed.ucc_default_indicators == []
-    assert refreshed.ucc_checked_at is None
+    # Timestamp always lands (was None before the 2026-07-01 fix).
+    assert refreshed.ucc_checked_at is not None
 
     row = next(e for e in audit.entries if e["action"] == "merchant.ucc_check.completed")
     assert row["details"]["bedrock_succeeded"] is False

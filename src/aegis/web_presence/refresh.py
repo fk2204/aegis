@@ -64,17 +64,26 @@ def refresh_web_presence_for_merchant(
     result and audit that the attempt happened so the operator sees the
     refresh click did SOMETHING (even if Bedrock was down).
     """
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
     merchant = merchants_repo.get(merchant_id)
     result = scanner(
         business_name=merchant.business_name or "",
         city=merchant.state,  # state-only is enough; city not on MerchantRow today
         state=merchant.state,
     )
+    # 2026-07-01 Phase 2B — always land a timestamp so the
+    # background-check contract's "we attempted this" signal persists
+    # even when Bedrock failed. Distinction between "scanned, empty"
+    # vs "scan failed" is preserved via ``bedrock_succeeded`` in the
+    # audit-detail below.
+    _timestamp = result.scanned_at or _dt.now(_UTC)
     updated = merchant.model_copy(
         update={
             "web_presence_summary": result.summary or None,
             "web_presence_flags": list(result.risk_flags),
-            "web_presence_scanned_at": result.scanned_at,
+            "web_presence_scanned_at": _timestamp,
         }
     )
     merchants_repo.upsert(updated)

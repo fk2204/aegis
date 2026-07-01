@@ -52,17 +52,28 @@ def refresh_ucc_for_merchant(
     ``bedrock_succeeded=False`` so the operator can distinguish
     "checked and found nothing" from "check failed".
     """
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
     merchant = merchants_repo.get(merchant_id)
     result = checker(
         business_name=merchant.business_name or "",
         state=merchant.state,
         owner_name=merchant.owner_name,
     )
+    # Always land a timestamp so the background-check contract's
+    # "we attempted this" signal persists even when Bedrock failed.
+    # Distinction between "checked, empty" vs "check failed" is
+    # preserved via the ``bedrock_succeeded`` audit-detail field
+    # below. (2026-07-01 Phase 2B — was previously leaving
+    # ucc_checked_at NULL on any Bedrock failure, which meant the
+    # 30-day staleness guard could never register the attempt.)
+    _timestamp = result.checked_at or _dt.now(_UTC)
     updated = merchant.model_copy(
         update={
             "ucc_filings": list(result.ucc_filings),
             "ucc_default_indicators": list(result.default_indicators),
-            "ucc_checked_at": result.checked_at,
+            "ucc_checked_at": _timestamp,
         }
     )
     merchants_repo.upsert(updated)
