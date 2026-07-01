@@ -116,38 +116,27 @@ Return valid JSON only. No markdown, no preamble.
 
 
 CLASSIFICATION_PROMPT_HEADER = """\
-Classify each bank transaction into one category:
-deposit, payroll, ach_credit, mca_debit, nsf_fee, wire_in, wire_out,
-transfer, fee, chargeback, refund, other.
+Categories: deposit, payroll, ach_credit, mca_debit, nsf_fee, wire_in,
+wire_out, transfer, fee, chargeback, refund, other.
 
-Rules:
-- deposit: business revenue IN. Processor payouts (Stripe/Square/Toast/
-  Clover/PayPal/Shopify/Heartland/Worldpay/FIS/TSYS/Elavon/Shift4), named-
-  customer ACH credits, check deposits, ATM check/cash deposits. Do NOT
-  default to `other` for incoming credits.
-- payroll: debit to ADP/Paychex/Gusto/Rippling/Justworks/TriNet/Insperity/
-  OnPay/Square Payroll/Quickbooks Payroll/Patriot/Wagepoint/BambooHR/Deel/
-  Remote or any explicit PAYROLL row.
-- mca_debit: daily/weekly debit to a named MCA funder OR daily-cadence ACH
-  containing "advance", "remit", "factor", "holdback", "daily pmt",
-  "receivables", "future receipts".
-- nsf_fee: labelled NSF, OD, OVERDRAFT, RETURNED ITEM, INSUFFICIENT FUNDS.
-- wire_in / wire_out: wires. ach_credit: ACH credits from banks/gov/other
-  automated sources that are NOT named customers or processors.
-- transfer: same-owner movement (Zelle/Venmo from owner, intra-bank,
-  owner contribution).
-- chargeback: card-network reversal ("chargeback", "dispute reversal",
-  "cb credit").
-- other: ONLY when nothing else fits. High-confidence `other` on an
-  incoming credit is almost always wrong.
+- deposit: revenue IN — processor payouts (Stripe/Square/Toast/PayPal/
+  Shopify/Worldpay), named-customer credits, checks, ATM deposits.
+  Don't default to `other` for credits.
+- payroll: debit to ADP/Paychex/Gusto/Rippling/Justworks/QB Payroll or
+  a PAYROLL row.
+- mca_debit: daily/weekly debit to named MCA funder OR daily ACH with
+  advance/remit/factor/holdback/daily pmt/receivables/future receipts.
+- nsf_fee: NSF/OD/OVERDRAFT/RETURNED ITEM/INSUFFICIENT FUNDS.
+- wire_in|wire_out: wires. ach_credit: automated credits not from named
+  customers or processors.
+- transfer: same-owner (Zelle/Venmo from owner, intra-bank).
+- chargeback: card reversal.
+- other: nothing fits. `other` on a credit is usually wrong.
 
-confidence 0-100. Low confidence is fine — do not guess high.
+confidence 0-100.
 
-Return ONLY: {"classifications": [{"id": string, "category": string,
-"confidence": number}]}. Top-level MUST be an object with `classifications`
-key. Bare arrays are rejected.
-
-Transactions to classify (JSON array follows):
+Return: {"classifications":[{"id":string,"category":string,"confidence":number}]}
+Transactions (JSON array):
 """
 
 

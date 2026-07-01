@@ -4026,6 +4026,78 @@ async def ssl_certificate_check_cron(ctx: dict[str, Any]) -> None:
         _log.warning("ssl_certificate_check_failed host=%s exc=%s", host, exc)
 
 
+async def daily_cost_check(ctx: dict[str, Any]) -> None:
+    """Daily 08:00 UTC — alert when yesterday's Bedrock spend exceeds $5.
+
+    Reads ``llm_costs`` for the previous UTC day and sums
+    ``estimated_cost_usd``. When the total tops $5 an ``audit_log`` row
+    fires with ``action='system.bedrock_cost_high'`` so the operator's
+    dashboard picks it up. De-duped via a matching-action lookup with
+    a 24h window so a sustained-high day doesn't spam the log across
+    multiple cron misfires.
+    """
+    del ctx
+    from datetime import UTC, timedelta
+    from datetime import datetime as _dt
+
+    from aegis.audit import SupabaseAuditLog
+    from aegis.db import get_supabase
+
+    try:
+        sb = get_supabase()
+        now = _dt.now(UTC)
+        yesterday_start = (now - timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        rows = (
+            sb.table("llm_costs")
+            .select("estimated_cost_usd")
+            .gte("called_at", yesterday_start.isoformat())
+            .lt("called_at", today_start.isoformat())
+            .execute()
+        )
+        _data_rows = cast("list[dict[str, Any]]", rows.data or [])
+        total = sum(float(r.get("estimated_cost_usd") or 0) for r in _data_rows)
+        count = len(_data_rows)
+        _log.info("daily_cost_check.total usd=%.4f calls=%d", total, count)
+        if total <= 5.00:
+            return
+
+        # Dedupe: skip if an audit row for the same action landed in
+        # the last 24 hours (prevents a stuck cron from flooding the
+        # log during a sustained high-spend day).
+        dedupe_cutoff = (now - timedelta(hours=24)).isoformat()
+        existing = (
+            sb.table("audit_log")
+            .select("id")
+            .eq("action", "system.bedrock_cost_high")
+            .gte("created_at", dedupe_cutoff)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            _log.info("daily_cost_check.dedupe_skip prior_within_24h=true")
+            return
+
+        SupabaseAuditLog().record(
+            actor="system:cost_check",
+            action="system.bedrock_cost_high",
+            subject_type="system",
+            details={
+                "yesterday_total_usd": round(total, 4),
+                "call_count": count,
+                "monthly_pace_usd": round(total * 30, 2),
+                "message": (
+                    f"Bedrock spend yesterday: ${total:.2f} ({count} calls). "
+                    f"Monthly pace: ${total * 30:.0f}. Check AWS console."
+                ),
+            },
+        )
+    except Exception as exc:
+        _log.warning("daily_cost_check.failed exc=%s", exc)
+
+
 async def daily_hetzner_snapshot(ctx: dict[str, Any]) -> None:
     """Daily 03:30 UTC — Hetzner Cloud snapshot of the AEGIS prod box.
 
@@ -4322,6 +4394,18 @@ class WorkerSettings:
             minute=30,
             run_at_startup=False,
         ),
+        # Daily 08:00 UTC — Bedrock spend alert (2026-07-01 FIX 1).
+        # Sums yesterday's ``llm_costs`` and audits a system row when
+        # the day's total exceeds $5. 08:00 UTC lands in the operator's
+        # morning queue (~03:00 America/New_York — noise-free window)
+        # right after ssl_certificate_check_cron. Dedupe guard inside
+        # the job prevents a stuck-cron flood on sustained high days.
+        cron(
+            daily_cost_check,
+            hour=8,
+            minute=0,
+            run_at_startup=False,
+        ),
     )
     on_startup = _on_startup
     on_shutdown = _on_shutdown
@@ -4423,6 +4507,7 @@ def _maybe_emit_parse_complete_notification(
 
 __all__ = [
     "WorkerSettings",
+    "daily_cost_check",
     "generate_narrator_summary",
     "parse_document",
     "process_close_attachments",
