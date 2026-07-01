@@ -316,20 +316,37 @@ class BedrockClient:
         ``max_uses`` caps how many web-search round-trips Anthropic can
         run server-side per invocation. Five is enough for a reputation
         sketch without burning unbounded search credits.
+
+        Graceful fallback (2026-07-01): Bedrock's tool registry no longer
+        accepts ``web_search_20250305`` — the API returns 400 with a
+        ``does not match any of the expected tags`` message. When we
+        detect that specific rejection we transparently fall through to
+        ``invoke_prompt_only`` so the caller's timestamp still lands
+        (reputation content is best-effort; the timestamp on the
+        merchant is the durable "we tried this" signal).
         """
-        response = self._client.messages.create(
-            model=self._model,
-            max_tokens=2048,
-            tools=[
-                {
-                    "type": "web_search_20250305",
-                    "name": "web_search",
-                    "max_uses": max_uses,
-                }
-            ],
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return _text_blocks(response)
+        try:
+            response = self._client.messages.create(
+                model=self._model,
+                max_tokens=2048,
+                tools=[
+                    {
+                        "type": "web_search_20250305",
+                        "name": "web_search",
+                        "max_uses": max_uses,
+                    }
+                ],
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return _text_blocks(response)
+        except Exception as exc:
+            msg = str(exc)
+            if "web_search_20250305" in msg and "does not match any of the expected tags" in msg:
+                # Bedrock no longer registers the web_search server tool.
+                # Fall back to a plain prompt-only call so the caller's
+                # write path still lands.
+                return self.invoke_prompt_only(prompt, max_tokens=2048)
+            raise
 
     def invoke_prompt_only(self, prompt: str, *, max_tokens: int = 512) -> str:
         """Send a prompt with NO tools attached; return concatenated text blocks.

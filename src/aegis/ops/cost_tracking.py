@@ -335,19 +335,33 @@ class CostTrackingBedrockClient:
         return _text_blocks(response)
 
     def invoke_with_web_search(self, prompt: str, *, max_uses: int = 5) -> str:
-        """Mirror :meth:`BedrockClient.invoke_with_web_search` with cost recording."""
-        response = self._inner._client.messages.create(
-            model=self._inner._model,
-            max_tokens=2048,
-            tools=[
-                {
-                    "type": "web_search_20250305",
-                    "name": "web_search",
-                    "max_uses": max_uses,
-                }
-            ],
-            messages=[{"role": "user", "content": prompt}],
-        )
+        """Mirror :meth:`BedrockClient.invoke_with_web_search` with cost
+        recording, plus the 2026-07-01 graceful fallback for
+        ``web_search_20250305`` deprecation. See the underlying
+        ``BedrockClient.invoke_with_web_search`` docstring for the
+        rationale."""
+        try:
+            response = self._inner._client.messages.create(
+                model=self._inner._model,
+                max_tokens=2048,
+                tools=[
+                    {
+                        "type": "web_search_20250305",
+                        "name": "web_search",
+                        "max_uses": max_uses,
+                    }
+                ],
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:
+            msg = str(exc)
+            if "web_search_20250305" in msg and "does not match any of the expected tags" in msg:
+                # Fall through to the prompt-only path so the caller's
+                # timestamp still lands. Cost tracking on the fallback
+                # comes through the wrapped ``generate_text`` call the
+                # inner method dispatches to.
+                return self._inner.invoke_prompt_only(prompt, max_tokens=2048)
+            raise
         self._audit_usage("invoke_with_web_search", response)
         from aegis.llm import _text_blocks
 
