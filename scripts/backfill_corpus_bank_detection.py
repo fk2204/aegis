@@ -50,6 +50,11 @@ import pymupdf
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "src"))
+# Also make ``scripts`` package importable so the delegate below can
+# reuse ``ingest_training_corpus.detect_bank_name`` — systemd-run
+# doesn't put /opt/aegis on sys.path by default.
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from aegis.db import get_supabase  # noqa: E402
 from aegis.logger import get_logger  # noqa: E402
