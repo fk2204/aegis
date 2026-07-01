@@ -91,6 +91,13 @@ _CONTINUITY_TOL = Decimal("0.01")
 # that a real "missing transaction row" produces.
 _SERVICE_CHARGE_TOLERANCE = Decimal("75.00")
 
+# 2026-07-01 P1.b — Negative-gap tolerance (listed > printed). Observed
+# on Transplex's 6 TD Bank statements: extracted-row sum exceeds the
+# printed withdrawal total by $3-$5. Kept tight so LOAD LIFT's TD
+# shadow-mode contract test ($15 drift) stays hard-failed as it was
+# pre-P1.
+_NEGATIVE_GAP_TOLERANCE = Decimal("-10.00")
+
 # R1.5 shadow check: a transaction-id-like field must be populated on at
 # least this fraction of rows AND those values must be majority numeric
 # before we'll treat it as a real sequence. Below the floor we treat the
@@ -227,20 +234,32 @@ def _check_listed_vs_summary(statement: ExtractedStatement, ctx: _ValidationCont
             f"vs printed {summary.deposit_total}"
         )
     if not money_eq(listed_wd, summary.withdrawal_total, tol=_TOL):
-        # Bank service-charge carve-out (2026-07-01 P1). When the
-        # printed withdrawal total is slightly HIGHER than the sum of
-        # extracted rows, the delta is almost certainly a monthly
-        # service fee the bank rolls into the summary but never lists
-        # as a transaction line. Emit a soft signal instead of the
-        # hard-fail; the parse still proceeds and the underwriter
-        # sees the note on the dossier.
+        # Bank service-charge carve-out.
+        #
+        # 2026-07-01 P1 — Positive-gap branch (printed > listed): TD's
+        # monthly $65 service fee is included in the printed withdrawal
+        # summary but not extracted as a transaction row. Chase $25-35
+        # and BoA $29.95 monthly fees fall in the same shape. Tolerance
+        # is $75 so any known bank monthly-fee shape clears.
+        #
+        # 2026-07-01 P1.b — Negative-gap branch (listed > printed):
+        # observed on Transplex's 6 TD Bank statements where the
+        # parser's extracted rows exceed the printed withdrawal total
+        # by $3-$5 — TD's summary appears to exclude a small fee that
+        # IS in the transaction list. Tolerance is TIGHT ($10) here so
+        # LOAD LIFT's TD shadow-mode contract stays intact (its test
+        # scenario uses a $15 drift, which stays hard-failed).
         wd_gap = summary.withdrawal_total - listed_wd
-        if wd_gap > Decimal("0") and wd_gap <= _SERVICE_CHARGE_TOLERANCE:
+        _positive_ok = wd_gap > Decimal("0") and wd_gap <= _SERVICE_CHARGE_TOLERANCE
+        _negative_ok = wd_gap < Decimal("0") and wd_gap >= _NEGATIVE_GAP_TOLERANCE
+        if _positive_ok or _negative_ok:
+            direction = "printed" if wd_gap > Decimal("0") else "listed"
             ctx.warnings.append(
                 f"reconciliation_service_charge_suspected: listed {listed_wd} "
-                f"vs printed {summary.withdrawal_total} (gap ${wd_gap}). "
-                "Likely bank service fee in printed total not listed as a "
-                "transaction row."
+                f"vs printed {summary.withdrawal_total} "
+                f"(gap ${abs(wd_gap)} on {direction} side). "
+                "Likely bank service fee handled inconsistently between "
+                "the summary total and the transaction listing."
             )
         else:
             ctx.failures.append(
