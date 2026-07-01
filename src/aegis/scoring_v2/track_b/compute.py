@@ -192,8 +192,19 @@ def compute_risk_band(
         monthly_revenue = Decimal("0")
     adb, lowest, neg_days = compute_running_balance_stats(transactions_by_doc)
     nsf = compute_nsf_count(transactions_by_doc)
-    mca = compute_mca_position_count(transactions_by_doc)
-    mca_confirmed, mca_pattern = compute_mca_position_breakdown(transactions_by_doc)
+    # Resolve the score window from posted_date across the bundle so
+    # both MCA-count functions use the same start/end (2026-07-01 bug
+    # fix — position-count now counts distinct funder streams via the
+    # parser's grouping detector rather than raw debit rows).
+    _bundle_dates = [
+        t.posted_date for txns in transactions_by_doc.values() for t in txns if t.posted_date
+    ]
+    _period_start = min(_bundle_dates) if _bundle_dates else None
+    _period_end = max(_bundle_dates) if _bundle_dates else None
+    mca = compute_mca_position_count(transactions_by_doc, _period_start, _period_end)
+    mca_confirmed, mca_pattern = compute_mca_position_breakdown(
+        transactions_by_doc, _period_start, _period_end
+    )
     intl_share = compute_international_share_pct(agg)
 
     cashflow = CashflowSignals(

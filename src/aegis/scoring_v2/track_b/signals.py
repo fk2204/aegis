@@ -32,10 +32,14 @@ from collections import defaultdict
 from collections.abc import Mapping
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
+from typing import TYPE_CHECKING
 
 from aegis.money import Money
 from aegis.parser.models import ClassifiedTransaction
 from aegis.scoring_v2.aggregation import BundleAggregation
+
+if TYPE_CHECKING:
+    from aegis.parser.patterns import McaPosition
 
 # At least 25% of rows must carry running_balance for the balance
 # stats to be considered reliable. Below this threshold, the balance
@@ -133,53 +137,92 @@ def compute_nsf_count(
     return sum(1 for t in _flatten(transactions_by_doc) if t.category == "nsf_fee")
 
 
+def _resolve_period(
+    transactions_by_doc: Mapping[str, list[ClassifiedTransaction]],
+    period_start: date | None,
+    period_end: date | None,
+) -> tuple[date, date] | None:
+    """Return (start, end) — either the caller-supplied window or the
+    widest posted_date span across the bundle. ``None`` when there are
+    no posted_date rows to derive a window from (empty bundle)."""
+    if period_start is not None and period_end is not None:
+        return period_start, period_end
+    dates = [t.posted_date for t in _flatten(transactions_by_doc) if t.posted_date]
+    if not dates:
+        return None
+    return min(dates), max(dates)
+
+
+def _positions_for_bundle(
+    transactions_by_doc: Mapping[str, list[ClassifiedTransaction]],
+    period_start: date | None,
+    period_end: date | None,
+) -> list[McaPosition]:
+    """Run the parser's grouping detector against the bundle's debits.
+
+    Bug fix 2026-07-01: previously ``compute_mca_position_count`` and
+    ``compute_mca_position_breakdown`` walked raw ``mca_debit`` rows and
+    counted each transaction as a "position" — so a merchant like
+    Turnbull with 30 daily Headway debits + 3 monthly Fundworks debits
+    surfaced as 33 positions instead of 2. The parser's
+    ``_detect_mca_positions`` already groups debits by normalized
+    description and returns one ``McaPosition`` per distinct funder
+    stream (≥3 occurrences, plus the named-funder or daily-cadence
+    gate). Both Track B signals now delegate to that detector so the
+    dossier's "confirmed / possible" split matches the number of real
+    funder streams.
+
+    Uses all NEGATIVE-amount rows (not just ``category='mca_debit'``)
+    so a mis-classified Headway debit still lands in the correct
+    bucket via the funder-name match. The frequency + cadence gates
+    inside ``_detect_mca_positions`` prevent this from over-counting.
+    """
+    from aegis.parser.patterns import _detect_mca_positions
+
+    resolved = _resolve_period(transactions_by_doc, period_start, period_end)
+    if resolved is None:
+        return []
+    start, end = resolved
+    debits = [t for t in _flatten(transactions_by_doc) if t.amount < 0]
+    return _detect_mca_positions(debits, start, end)
+
+
 def compute_mca_position_count(
     transactions_by_doc: Mapping[str, list[ClassifiedTransaction]],
+    period_start: date | None = None,
+    period_end: date | None = None,
 ) -> int:
-    """Count transactions classified as ``mca_debit`` by the parser.
+    """Count DISTINCT MCA positions (unique funder streams).
 
-    Each ``mca_debit`` row represents an active MCA debit pull (one
-    instance of a daily/weekly remittance). This count is a coarse
-    proxy for stacking — the underwriter cross-references against
-    named funders to count distinct positions. Track B exposes the
-    raw count; the band logic treats anything >= 1 as a concern and
-    >= 3 as elevated.
+    Delegates to the parser's ``_detect_mca_positions`` grouping. See
+    ``_positions_for_bundle`` for the load-bearing rationale — this
+    replaces the earlier row-counting behaviour that inflated stacking
+    counts for merchants with daily-cadence debits.
+
+    ``period_start`` / ``period_end`` default to the bundle's widest
+    posted_date span when omitted — safe for legacy callers that
+    haven't been threaded with the score-window dates.
     """
-    return sum(1 for t in _flatten(transactions_by_doc) if t.category == "mca_debit")
+    return len(_positions_for_bundle(transactions_by_doc, period_start, period_end))
 
 
 def compute_mca_position_breakdown(
     transactions_by_doc: Mapping[str, list[ClassifiedTransaction]],
+    period_start: date | None = None,
+    period_end: date | None = None,
 ) -> tuple[int, int]:
-    """Split the MCA-debit count into ``(confirmed, pattern)``.
+    """Split the DISTINCT MCA position count into ``(confirmed, pattern)``.
 
-    Walks every ``mca_debit`` row; ``confirmed`` counts those whose
-    description contains a ``KNOWN_FUNDERS`` substring (named funder
-    recognized — high confidence). ``pattern`` counts the rest — the
-    LLM classified them as MCA but no named funder string is present,
-    so the operator should verify before treating them as stacking.
-
-    Total returned by ``compute_mca_position_count`` is the sum of the
-    two; the buckets are exhaustive across ``mca_debit`` rows.
-
-    Imported lazily from :mod:`aegis.parser.patterns` so the Track B
-    layer doesn't take a hard dependency on the parser package at
-    import time.
+    Both buckets sum to ``compute_mca_position_count``. ``confirmed``
+    is the count of positions whose ``match_source == "known_funder"``
+    (named MCA funder recognised in the description). ``pattern`` is
+    the count whose ``match_source == "pattern"`` (daily-cadence match
+    without a named funder — operator verification needed before
+    treating as confirmed stacking).
     """
-    # Local import keeps the module dependency direction one-way
-    # (track_b → parser at call time, not import time).
-    from aegis.parser.patterns import KNOWN_FUNDERS
-
-    confirmed = 0
-    pattern = 0
-    for t in _flatten(transactions_by_doc):
-        if t.category != "mca_debit":
-            continue
-        desc_lower = t.description.lower()
-        if any(f in desc_lower for f in KNOWN_FUNDERS):
-            confirmed += 1
-        else:
-            pattern += 1
+    positions = _positions_for_bundle(transactions_by_doc, period_start, period_end)
+    confirmed = sum(1 for p in positions if p.match_source == "known_funder")
+    pattern = sum(1 for p in positions if p.match_source == "pattern")
     return confirmed, pattern
 
 

@@ -112,6 +112,12 @@ KNOWN_FUNDERS: Final[tuple[str, ...]] = (
     "greenbox capital",
     "rapid capital funding",
     "expansion capital group",
+    # 2026-07-01 additions surfaced during Turnbull + Transplex review.
+    # Both are named funders that appeared in operator dossiers but
+    # weren't in the registry — so their debits were bucketing as
+    # "pattern" (daily-cadence match only) instead of "confirmed".
+    "fundworks",
+    "revenued",
 )
 
 # Behavioral terms — only count when frequency confirms (TS-review fix).
