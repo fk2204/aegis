@@ -1684,6 +1684,11 @@ def _upsert_merchant_from_lead(
                     "business_name": new_merchant.business_name,
                 },
             )
+            _emit_intake_data_quality_warnings(
+                audit=audit,
+                merchant_id=new_merchant.id,
+                fields=new_fields,
+            )
             return True
 
     # Read-before-write diff. If nothing changed, skip the write.
@@ -1712,7 +1717,60 @@ def _upsert_merchant_from_lead(
             "changed_keys": sorted(diff.keys()),
         },
     )
+    # Re-evaluate intake warnings on update — a corrected re-submission
+    # with realistic revenue values clears the "$55" data-entry warning;
+    # a fresh update that still trips the rules gets re-flagged.
+    financial_changed = {
+        "monthly_revenue",
+        "requested_amount",
+        "stated_mca_balance",
+    } & set(diff.keys())
+    if financial_changed:
+        _emit_intake_data_quality_warnings(
+            audit=audit,
+            merchant_id=existing.id,
+            fields={
+                "monthly_revenue": updated.monthly_revenue,
+                "requested_amount": updated.requested_amount,
+                "stated_mca_balance": updated.stated_mca_balance,
+            },
+        )
     return False
+
+
+def _emit_intake_data_quality_warnings(
+    *,
+    audit: AuditLog,
+    merchant_id: UUID,
+    fields: dict[str, Any],
+) -> None:
+    """Fire ``merchant.intake_data_quality_warning`` audit rows for
+    each warning ``validate_intake_financial_data`` returns.
+
+    Called from ``_upsert_merchant_from_lead`` on both fresh-create and
+    field-change-update paths. The audit row's ``details.code`` mirrors
+    the ``IntakeWarning.code`` so the dossier + calibration surfaces can
+    filter by warning class. Nothing here blocks the webhook write —
+    warnings are informational only.
+    """
+    from aegis.merchants.intake_validation import validate_intake_financial_data
+
+    warnings = validate_intake_financial_data(
+        monthly_revenue=fields.get("monthly_revenue"),
+        requested_amount=fields.get("requested_amount"),
+        stated_mca_balance=fields.get("stated_mca_balance"),
+    )
+    for w in warnings:
+        audit.record(
+            actor="close_webhook",
+            action="merchant.intake_data_quality_warning",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={
+                "code": w.code,
+                "message": w.message,
+            },
+        )
 
 
 def _record_unknown_field(
