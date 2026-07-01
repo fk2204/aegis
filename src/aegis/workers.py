@@ -3512,8 +3512,22 @@ async def run_background_checks(
         )
         return {"merchant_id": merchant_id_str, "trigger": trigger, "skipped": True}
 
-    # Idempotency: both checks already populated → skip silently.
-    if merchant.web_presence_scanned_at is not None and merchant.ucc_checked_at is not None:
+    # Staleness idempotency (2026-07-01): re-run when EITHER check is
+    # older than _RECHECK_AFTER_DAYS. Previously skipped whenever both
+    # timestamps were present regardless of age, which meant checks
+    # never refreshed on merchants past their initial sweep.
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    _recheck_after_days = 30
+    _now = _dt.now(UTC)
+    _ucc_stale = merchant.ucc_checked_at is None or (
+        (_now - merchant.ucc_checked_at).days > _recheck_after_days
+    )
+    _web_stale = merchant.web_presence_scanned_at is None or (
+        (_now - merchant.web_presence_scanned_at).days > _recheck_after_days
+    )
+    if not (_ucc_stale or _web_stale):
         audit.record(
             actor="system",
             action="merchant.background_checks_complete",
@@ -3522,7 +3536,7 @@ async def run_background_checks(
             details={
                 "trigger": trigger,
                 "skipped": True,
-                "reason": "already_populated",
+                "reason": "fresh_within_30_days",
                 "failed_checks": [],
             },
         )
@@ -3585,6 +3599,38 @@ async def run_background_checks(
             merchants_repo=merchants,
             audit=audit,
         )
+        # OFAC match notification (2026-07-01 Step 4). Emit an audit
+        # signal beyond the standard compliance.ofac_screened /
+        # compliance.ofac_block rows so the dashboard's recent-
+        # activity feed can render a "match found" chip. Re-reads the
+        # merchant to see the freshly-persisted ofac_is_clear column.
+        try:
+            _post_ofac_merchant = merchants.get(merchant_id)
+            if _post_ofac_merchant.ofac_is_clear is False:
+                audit.record(
+                    actor="system:background_checks",
+                    action="merchant.ofac_match_notify",
+                    subject_type="merchant",
+                    subject_id=merchant_id,
+                    details={
+                        "business_name": _post_ofac_merchant.business_name,
+                        "message": (
+                            "OFAC MATCH — "
+                            f"{_post_ofac_merchant.business_name} "
+                            "matched sanction-list entries. Funder "
+                            "matching blocked pending compliance review."
+                        ),
+                        "link": f"/ui/merchants/{merchant_id}",
+                    },
+                )
+        except MerchantNotFoundError:
+            pass
+        except Exception:
+            _log.warning(
+                "background_checks.ofac_notify_failed merchant_id=%s",
+                merchant_id,
+                exc_info=True,
+            )
     except MerchantNotFoundError:
         _log.warning(
             "background_checks.ofac_skip_missing_merchant merchant_id=%s",

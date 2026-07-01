@@ -136,7 +136,7 @@ wire_out, transfer, fee, chargeback, refund, other.
 confidence 0-100.
 
 Return: {"classifications":[{"id":string,"category":string,"confidence":number}]}
-Transactions (JSON array):
+Transactions to classify (JSON array follows):
 """
 
 
