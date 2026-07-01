@@ -216,6 +216,18 @@ _BANK_NAME_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"\bUmpqua\s+Bank\b", re.IGNORECASE), "Umpqua Bank"),
     (re.compile(r"\bChase\s+Business\s+Complete", re.IGNORECASE), "JPMorgan Chase Bank, N.A."),
     (re.compile(r"\bChase\s+Total\s+Checking", re.IGNORECASE), "JPMorgan Chase Bank, N.A."),
+    # 2026-07-01 (P5.b) — patterns sampled from the 116-row NULL
+    # cohort's actual first-page text. Each hit was seen ≥3x in the
+    # sample. "The Bank -" is intentionally scoped by the trailing
+    # dash + location suffix (seen as "THE BANK - OAKLEY") so it
+    # doesn't over-match against every doc that starts with "The
+    # bank".
+    (re.compile(r"\bBank\s+of\s+the\s+Sierra\b", re.IGNORECASE), "Bank of the Sierra"),
+    (
+        re.compile(r"\bNBARIZONA\.C|National\s+Bank\s+of\s+Arizona\b", re.IGNORECASE),
+        "National Bank of Arizona",
+    ),
+    (re.compile(r"\bTHE\s+BANK\s*-\s*OAKLEY\b", re.IGNORECASE), "The Bank of Oakley"),
 )
 
 
