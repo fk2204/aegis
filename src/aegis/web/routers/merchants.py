@@ -5103,8 +5103,18 @@ async def merchant_detail(
             # column is the ``BandLevel`` string on its ``.band``
             # attribute. Best-effort — a Supabase blip audits via the
             # storage layer but never breaks the dossier render.
+            _log.info(
+                "dossier.gap2.band_check track_b_band_type=%s items=%d",
+                type(track_b_band).__name__,
+                len(items),
+            )
             if track_b_band is not None:
                 _band_level = getattr(track_b_band, "band", None)
+                _log.info(
+                    "dossier.gap2.band_extracted band=%r type=%s",
+                    _band_level,
+                    type(_band_level).__name__,
+                )
                 if isinstance(_band_level, str):
                     for _doc, _analysis in items:
                         if _analysis is not None:
