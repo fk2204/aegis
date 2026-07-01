@@ -893,6 +893,14 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE conrelid='public.analyses'::regclass "
         "AND conname='analyses_business_risk_band_check'"
     ),
+    "106_merchant_outcomes.sql": (
+        # 106 — merchant_outcomes table. Probe the outcome-enum CHECK
+        # so a stub table create without the enum values landing
+        # doesn't register as complete.
+        "SELECT 1 FROM pg_constraint "
+        "WHERE conrelid='public.merchant_outcomes'::regclass "
+        "AND pg_get_constraintdef(oid) LIKE '%funded%declined%'"
+    ),
 }
 
 

@@ -3029,6 +3029,38 @@ async def merchant_record_funder_outcome(
         },
     )
 
+    # Migration 106 (2026-07-01 FIX 2) — persist to merchant_outcomes
+    # so the calibration engine reads a structured row rather than
+    # walking audit_log. Best-effort — a Supabase blip only logs a
+    # warning; the audit_log row above is the durable operator-intent
+    # signal.
+    _outcome_map = {
+        "funded": "funded",
+        "declined": "declined",
+        "countered": "countered",
+        "withdrawn": "withdrawn",
+    }
+    _mapped_outcome = _outcome_map.get(outcome_type)
+    if _mapped_outcome is not None:
+        try:
+            from aegis.db import get_supabase as _get_supabase
+
+            _get_supabase().table("merchant_outcomes").insert(
+                {
+                    "merchant_id": str(merchant_id),
+                    "outcome": _mapped_outcome,
+                    "source": "operator_button",
+                    "recorded_by": operator,
+                }
+            ).execute()
+        except Exception as exc:  # best-effort structured write
+            _log.warning(
+                "merchant_outcomes.insert_failed merchant=%s outcome=%s exc=%s",
+                merchant_id,
+                _mapped_outcome,
+                exc,
+            )
+
     message = (
         f"Outcome '{outcome_type}' captured in audit log. "
         f"AEGIS will use this to calibrate scoring accuracy over time."

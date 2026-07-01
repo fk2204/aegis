@@ -97,6 +97,41 @@ def compute_and_store(sb: Any = None) -> CalibrationResult | None:  # noqa: ANN4
         .execute()
     )
     outcomes: list[dict[str, Any]] = [r for r in (outcomes_resp.data or []) if isinstance(r, dict)]
+
+    # 2026-07-01 FIX 2 — merchant_outcomes (migration 106) captures
+    # operator-button outcomes that don't fit the funder_replies
+    # anchor-XOR contract (no deal_id, no submission_id). Fold them
+    # in so calibration ground truth sees Close-side / pre-submission
+    # decline signals. Best-effort: a lookup failure on the young
+    # table falls through to the funder_replies-only path.
+    try:
+        merchant_outcomes_resp = (
+            sb.table("merchant_outcomes").select("id,merchant_id,outcome,recorded_at").execute()
+        )
+        for row in merchant_outcomes_resp.data or []:
+            if not isinstance(row, dict):
+                continue
+            # Normalise onto the funder_replies row shape the downstream
+            # bucketing loop consumes (outcome/merchant_id/created_at).
+            # deal_id + submission_id stay None — the loop tolerates.
+            outcomes.append(
+                {
+                    "id": row.get("id"),
+                    "merchant_id": row.get("merchant_id"),
+                    "outcome": (
+                        "approved" if row.get("outcome") == "funded" else row.get("outcome")
+                    ),
+                    "deal_id": None,
+                    "submission_id": None,
+                    "created_at": row.get("recorded_at"),
+                }
+            )
+    except Exception as exc:
+        _log.warning(
+            "calibration.merchant_outcomes_query_failed exc=%s — falling "
+            "back to funder_replies-only",
+            exc,
+        )
     count = len(outcomes)
 
     if count < MIN_OUTCOMES:
