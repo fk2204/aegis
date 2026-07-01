@@ -37,6 +37,7 @@ class _FakeQuery:
         self._selected: str | None = None
         self._upserted: list[dict[str, Any]] | None = None
         self._on_conflict: str | None = None
+        self._updated_payload: dict[str, Any] | None = None
 
     def select(self, cols: str) -> _FakeQuery:
         self._selected = cols
@@ -55,6 +56,10 @@ class _FakeQuery:
         self._on_conflict = on_conflict
         return self
 
+    def update(self, payload: dict[str, Any]) -> _FakeQuery:
+        self._updated_payload = dict(payload)
+        return self
+
     def execute(self) -> Any:
         self.parent.executed.append(self)
 
@@ -62,7 +67,7 @@ class _FakeQuery:
             def __init__(self, data: list[dict[str, Any]]) -> None:
                 self.data = data
 
-        if self._upserted is not None:
+        if self._upserted is not None or self._updated_payload is not None:
             return _Result([])
         # SELECT path — return whatever overridden ids the parent staged.
         return _Result(self.parent.overridden_data)
@@ -116,11 +121,14 @@ def test_persist_skips_overridden_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     n = persist_classifications(classifications)
     assert n == 1
 
-    upsert_calls = [q for q in fake.executed if q._upserted is not None]
-    assert len(upsert_calls) == 1
-    upserted_ids = {row["id"] for row in (upsert_calls[0]._upserted or [])}
-    assert str(txn_kept) in upserted_ids
-    assert str(txn_overridden) not in upserted_ids
+    update_calls = [q for q in fake.executed if q._updated_payload is not None]
+    assert len(update_calls) == 1
+    # The .in_("id", …) filter carries the kept id and NOT the overridden one.
+    id_filters = [f for q in update_calls for f in q._filters if f[0] == "in_" and f[1] == "id"]
+    assert id_filters, "expected .in_('id', ...) filter"
+    all_ids = {i for _, _, ids in id_filters for i in ids}
+    assert str(txn_kept) in all_ids
+    assert str(txn_overridden) not in all_ids
 
 
 def test_persist_returns_zero_when_supabase_unavailable(

@@ -144,24 +144,56 @@ def persist_classifications(
     if not rows_to_write:
         return 0
 
+    # 2026-07-01 P2.b — switched from upsert() to grouped UPDATE. The
+    # upsert path was hitting the ``document_id NOT NULL`` constraint
+    # on prod (verified in aegis-web logs after the P2 deploy) because
+    # PostgREST's upsert issues INSERT ... ON CONFLICT — and if a
+    # transaction id in ``classifications`` isn't present in the DB
+    # (e.g. a fresh classifier result on a row that didn't survive the
+    # last extraction retry), the INSERT half fires with only the
+    # counterparty columns populated, violating NOT NULL. Grouping
+    # rows by their (counterparty_class, confidence, reason) tuple and
+    # firing one UPDATE ... WHERE id IN (...) per group is safe: no
+    # insert path, and skips rows that no longer exist without error.
     written = 0
-    for chunk in _chunked(rows_to_write, _BATCH_SIZE):
-        try:
-            sb.table("transactions").upsert(
-                cast(Any, chunk),
-                on_conflict="id",
-            ).execute()
-            written += len(chunk)
-        except Exception as exc:
-            _log.warning(
-                "counterparty.persist.upsert_failed chunk_size=%d exc=%s",
-                len(chunk),
-                exc,
-            )
-            # Continue to the next chunk — partial-success on a
-            # multi-chunk write is better than rolling back successful
-            # chunks for an unrelated chunk's failure.
-            continue
+    from collections import defaultdict
+
+    grouped: dict[tuple[str, int, str], list[str]] = defaultdict(list)
+    for row in rows_to_write:
+        key = (
+            str(row["counterparty_class"]),
+            int(row["counterparty_confidence"]),
+            str(row["counterparty_reason"]),
+        )
+        grouped[key].append(str(row["id"]))
+
+    for (cls, conf, reason), ids in grouped.items():
+        for chunk_ids in _chunked(ids, _BATCH_SIZE):
+            try:
+                (
+                    sb.table("transactions")
+                    .update(
+                        cast(
+                            Any,
+                            {
+                                "counterparty_class": cls,
+                                "counterparty_confidence": conf,
+                                "counterparty_reason": reason,
+                            },
+                        )
+                    )
+                    .in_("id", chunk_ids)
+                    .execute()
+                )
+                written += len(chunk_ids)
+            except Exception as exc:
+                _log.warning(
+                    "counterparty.persist.update_failed cls=%s chunk_size=%d exc=%s",
+                    cls,
+                    len(chunk_ids),
+                    exc,
+                )
+                continue
     return written
 
 
@@ -287,7 +319,7 @@ def record_override(
         return False
 
 
-def _chunked(rows: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
+def _chunked[T](rows: list[T], size: int) -> list[list[T]]:
     """Split ``rows`` into chunks of at most ``size``. Returns the list
     of chunks (last chunk may be shorter). Empty input → empty list.
     """
