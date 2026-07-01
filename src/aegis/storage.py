@@ -193,6 +193,13 @@ class AnalysisRow(_StrictModel):
     # canonical; this column is a presentation cache only.
     narrator_summary: dict[str, Any] | None = None
 
+    # Migration 105 — Track B business risk band, persisted from the
+    # dossier route on every render. One of ``low`` / ``moderate`` /
+    # ``elevated`` / ``high`` (CHECK-constrained at the DB layer). NULL
+    # on legacy rows written before 105 lands OR when the render
+    # skipped scoring (missing analysis, unresolved bundle).
+    business_risk_band: str | None = None
+
 
 # Protocol ---------------------------------------------------------------------
 
@@ -387,6 +394,16 @@ class DocumentRepository(Protocol):
         yet — narrator output for a not-yet-aggregated document is
         meaningless. Callers that need to assert a write landed should
         re-read the AnalysisRow.
+        """
+
+    def persist_business_risk_band(self, document_id: UUID, band: str) -> None:
+        """Update ``analyses.business_risk_band`` (migration 105).
+
+        ``band`` must be one of ``low`` / ``moderate`` / ``elevated`` /
+        ``high`` (CHECK-enforced at the DB layer). Silent no-op when
+        the document has no analyses row yet or the band value is not
+        in the accepted enum — the value is derivable from the parse
+        bundle so a missed write is recoverable.
         """
 
 
@@ -610,6 +627,20 @@ class InMemoryDocumentRepository:
         if analysis is None:
             return
         analysis.narrator_summary = payload
+        self._analyses[document_id] = analysis
+
+    def persist_business_risk_band(self, document_id: UUID, band: str) -> None:
+        """In-memory mirror of ``SupabaseDocumentRepository.persist_business_risk_band``.
+
+        Silent no-op when the document has no analyses row or the band
+        is not in the accepted enum.
+        """
+        if band not in {"low", "moderate", "elevated", "high"}:
+            return
+        analysis = self._analyses.get(document_id)
+        if analysis is None:
+            return
+        analysis.business_risk_band = band
         self._analyses[document_id] = analysis
 
 
@@ -1015,6 +1046,39 @@ class SupabaseDocumentRepository:
             "document_id", str(document_id)
         ).execute()
 
+    def persist_business_risk_band(
+        self,
+        document_id: UUID,
+        band: str,
+    ) -> None:
+        """Write Track B's business risk band to ``analyses.business_risk_band``
+        (migration 105, 2026-07-01 GAP 2).
+
+        ``band`` must be one of ``low`` / ``moderate`` / ``elevated`` /
+        ``high`` — enforced by the migration-105 CHECK constraint. Best-
+        effort: any DB failure logs a warning but never raises. The
+        dossier route + calibration cron are the two write sites; both
+        tolerate a silent write failure since the band is re-computable
+        from the parse bundle.
+        """
+        if band not in {"low", "moderate", "elevated", "high"}:
+            _log.warning(
+                "persist_business_risk_band.invalid_band document_id=%s band=%s",
+                document_id,
+                band,
+            )
+            return
+        try:
+            get_supabase().table("analyses").update({"business_risk_band": band}).eq(
+                "document_id", str(document_id)
+            ).execute()
+        except Exception as exc:
+            _log.warning(
+                "persist_business_risk_band.failed document_id=%s exc=%s",
+                document_id,
+                exc,
+            )
+
     # PDF retention chunk B (migration 033) ---------------------------------
 
     def persist_storage_metadata(
@@ -1375,6 +1439,10 @@ def _analysis_to_db_row(analysis: AnalysisRow) -> dict[str, Any]:
         # ``set_narrator_summary`` once the dossier render successfully
         # produces a summary.
         "narrator_summary": analysis.narrator_summary,
+        # Migration 105 — Track B business risk band. NULL on
+        # parse-time write; populated separately via
+        # ``persist_business_risk_band`` on every dossier render.
+        "business_risk_band": analysis.business_risk_band,
     }
 
 
@@ -1416,6 +1484,7 @@ def _db_row_to_analysis(row: dict[str, Any]) -> AnalysisRow:
             else None
         ),
         narrator_summary=row.get("narrator_summary"),
+        business_risk_band=row.get("business_risk_band"),
     )
 
 

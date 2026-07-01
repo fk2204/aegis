@@ -180,13 +180,20 @@ def compute_risk_band(
     # inflows" instead of a silent zero.
     net_revenue_negative_reason: FactorReason | None = None
     if monthly_revenue < Decimal("0"):
+        # 2026-07-01 GAP 3 — renamed factor code from
+        # ``net_revenue_negative`` to ``negative_revenue_computed`` to
+        # match the operator spec's grep target. Semantically identical:
+        # the parser's net-of-transfers revenue came back below zero,
+        # true revenue floors to $0, and the dossier surfaces the
+        # underlying "more outflows than inflows" signal.
         net_revenue_negative_reason = FactorReason(
-            factor="net_revenue_negative",
+            factor="negative_revenue_computed",
             severity="elevated",
             detail=(
-                f"Bank statement shows more outflows than inflows "
-                f"(${monthly_revenue:,.0f}/mo net). Merchant may be "
-                f"underwater on current obligations."
+                f"Revenue net of transfers computed as negative "
+                f"(${monthly_revenue:,.2f}/mo). True revenue set to $0 - "
+                f"outgoing payments may be misclassified. Manual review "
+                f"required."
             ),
         )
         monthly_revenue = Decimal("0")

@@ -885,6 +885,14 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE conrelid='public.stips'::regclass "
         "AND pg_get_constraintdef(oid) LIKE '%stip_type%document%'"
     ),
+    "105_analysis_business_risk_band.sql": (
+        # 105 — Track B band persistence. Probe the CHECK constraint
+        # so a stub column add without the enum landing doesn't
+        # register as complete.
+        "SELECT 1 FROM pg_constraint "
+        "WHERE conrelid='public.analyses'::regclass "
+        "AND conname='analyses_business_risk_band_check'"
+    ),
 }
 
 
