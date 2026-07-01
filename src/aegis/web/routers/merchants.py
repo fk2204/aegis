@@ -5597,6 +5597,28 @@ async def merchant_detail(
             _intel_log.warning("dossier.close_intel_failed", exc_info=True)
             close_intel = None
 
+    # Stipulations (migration 104) — section § 5¼ on the dossier.
+    # Fetch is best-effort: never block dossier render if Supabase
+    # returns an error or the table is missing (pre-104 environments).
+    # Gated on the storage backend so the in-memory test path doesn't
+    # try to hit a real Supabase-backed stips table that doesn't exist
+    # in the test fixture; the dossier still renders the empty state.
+    dossier_stips: list[Any] = []
+    outstanding_stips_count = 0
+    from aegis.config import get_settings as _get_settings
+
+    _settings = _get_settings()
+    if _settings.aegis_storage_backend == "supabase":
+        try:
+            from aegis.stips import SupabaseStipRepository
+
+            _stips_repo = SupabaseStipRepository()
+            dossier_stips = list(_stips_repo.list_for_merchant(merchant_id))
+            outstanding_stips_count = sum(1 for s in dossier_stips if s.status == "outstanding")
+        except Exception:  # pragma: no cover — never block dossier on stips side-fetch
+            dossier_stips = []
+            outstanding_stips_count = 0
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -5694,6 +5716,12 @@ async def merchant_detail(
             # (defensive degradation); the dossier section is hidden
             # entirely in either case.
             "close_intel": close_intel,
+            # Migration-104 stips section (§ 5¼). Full list at page-load
+            # so first paint shows the "N outstanding" badge and the
+            # editable table; HTMX POST/PATCH/DELETE swap the section
+            # in place via #stips-section.
+            "dossier_stips": dossier_stips,
+            "outstanding_stips_count": outstanding_stips_count,
         },
     )
 

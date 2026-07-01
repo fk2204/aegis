@@ -1,0 +1,77 @@
+{# Inline "add stip" form. HTMX target = #stip-add-form (innerHTML swap).
+   Successful POST re-renders the whole stips section via
+   the merchant_list_stips response.
+#}
+<form class="stip-add-form"
+      hx-post="/ui/merchants/{{ merchant_id }}/stips"
+      hx-target="#stips-section"
+      hx-swap="outerHTML"
+      hx-on::after-request="if(event.detail.successful) this.reset()">
+  <div class="stip-form-row">
+    <label for="stip-template-select" class="stip-form-label">Common templates:</label>
+    <select id="stip-template-select"
+            class="stip-form-select"
+            onchange="(function(el){
+              if(!el.value) return;
+              const [t,d] = el.value.split('||');
+              document.getElementById('stip-type').value = t;
+              document.getElementById('stip-description').value = d;
+            })(this)">
+      <option value="">— Choose a template or fill in below —</option>
+      {% for stip_type, description in templates_list %}
+        <option value="{{ stip_type }}||{{ description }}">
+          [{{ stip_type }}] {{ description }}
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="stip-form-row">
+    <label for="stip-type" class="stip-form-label">Type *</label>
+    <select id="stip-type" name="stip_type" class="stip-form-select" required>
+      <option value="document">document</option>
+      <option value="verification">verification</option>
+      <option value="condition">condition</option>
+      <option value="signature">signature</option>
+    </select>
+  </div>
+
+  <div class="stip-form-row">
+    <label for="stip-description" class="stip-form-label">Description *</label>
+    <input id="stip-description"
+           name="description"
+           type="text"
+           class="stip-form-input"
+           maxlength="500"
+           required
+           placeholder="e.g. Voided check, Signed ISO agreement…">
+  </div>
+
+  <div class="stip-form-row">
+    <label for="stip-due-date" class="stip-form-label">Due date (optional)</label>
+    <input id="stip-due-date"
+           name="due_date"
+           type="date"
+           class="stip-form-input">
+  </div>
+
+  <div class="stip-form-row">
+    <label for="stip-notes" class="stip-form-label">Notes (optional)</label>
+    <textarea id="stip-notes"
+              name="notes"
+              class="stip-form-textarea"
+              maxlength="2000"
+              rows="2"></textarea>
+  </div>
+
+  <div class="stip-form-actions">
+    <button type="submit" class="stip-form-submit">Add Stip</button>
+    <button type="button"
+            class="stip-form-cancel"
+            hx-get="/ui/merchants/{{ merchant_id }}/stips"
+            hx-target="#stips-section"
+            hx-swap="outerHTML">
+      Cancel
+    </button>
+  </div>
+</form>

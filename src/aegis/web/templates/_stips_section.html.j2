@@ -1,0 +1,80 @@
+{# Stips section partial for the dossier.
+   Rendered by GET /ui/merchants/{id}/stips (returns just this fragment
+   for HTMX swaps) and also inlined by merchant_detail_dossier.html.j2
+   via {% include "_stips_section.html.j2" %} at page-load.
+#}
+<section id="stips-section" class="dossier-section" data-section="stips">
+  <div class="section-header">
+    <h2>Stipulations</h2>
+    {% if outstanding_stips_count and outstanding_stips_count > 0 %}
+      <span class="stips-badge stips-badge--outstanding">
+        {{ outstanding_stips_count }} outstanding
+      </span>
+    {% else %}
+      <span class="stips-badge stips-badge--clear">All clear</span>
+    {% endif %}
+  </div>
+
+  {% if stips and stips|length > 0 %}
+  <table class="stips-table">
+    <thead>
+      <tr>
+        <th>Requirement</th>
+        <th>Type</th>
+        <th>Due</th>
+        <th>Status</th>
+        <th class="stip-actions-col">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for stip in stips %}
+      <tr class="stip-row stip-row--{{ stip.status }}" data-stip-id="{{ stip.id }}">
+        <td class="stip-desc">{{ stip.description }}</td>
+        <td><span class="stip-type stip-type--{{ stip.stip_type }}">{{ stip.stip_type }}</span></td>
+        <td class="stip-due">{{ stip.due_date.isoformat() if stip.due_date else '—' }}</td>
+        <td><span class="stip-status stip-status--{{ stip.status }}">{{ stip.status }}</span></td>
+        <td class="stip-actions">
+          {% if stip.status == 'outstanding' %}
+            <button type="button"
+                    class="stip-action-btn stip-action-btn--received"
+                    hx-patch="/ui/merchants/{{ merchant_id }}/stips/{{ stip.id }}"
+                    hx-vals='{"status":"received"}'
+                    hx-target="#stips-section"
+                    hx-swap="outerHTML">
+              &#x2713; Received
+            </button>
+            <button type="button"
+                    class="stip-action-btn stip-action-btn--waive"
+                    hx-patch="/ui/merchants/{{ merchant_id }}/stips/{{ stip.id }}"
+                    hx-vals='{"status":"waived"}'
+                    hx-target="#stips-section"
+                    hx-swap="outerHTML">
+              Waive
+            </button>
+          {% endif %}
+          <button type="button"
+                  class="stip-action-btn stip-action-btn--delete"
+                  hx-delete="/ui/merchants/{{ merchant_id }}/stips/{{ stip.id }}"
+                  hx-target="#stips-section"
+                  hx-swap="outerHTML"
+                  hx-confirm="Remove this stipulation?">
+            &#x2715;
+          </button>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="stips-empty">No stipulations recorded for this deal yet.</p>
+  {% endif %}
+
+  <div id="stip-add-form"></div>
+  <button type="button"
+          class="stip-add-btn"
+          hx-get="/ui/merchants/{{ merchant_id }}/stips/add-form"
+          hx-target="#stip-add-form"
+          hx-swap="innerHTML">
+    + Add Stipulation
+  </button>
+</section>

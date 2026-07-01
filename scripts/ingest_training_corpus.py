@@ -182,6 +182,40 @@ _BANK_NAME_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
         "Navy Federal Credit Union",
     ),
     (re.compile(r"\bAxos\s+Bank\b", re.IGNORECASE), "Axos Bank"),
+    # 2026-07-01 (P5) — third-pass patterns for the remaining NULL cohort
+    # (116/283 rows unmatched after the second pass). Each entry below
+    # is a US retail / commercial bank whose statement header is likely
+    # to appear on a Commera lead's file. Operator will verify hit
+    # rates on the next backfill run; if any of these produce zero
+    # additional matches after 30 days of live traffic they get removed.
+    (re.compile(r"\bZions\s+Bank\b", re.IGNORECASE), "Zions Bank"),
+    (re.compile(r"\bFrost\s+Bank\b", re.IGNORECASE), "Frost Bank"),
+    (re.compile(r"\bValley\s+National\s+Bank\b", re.IGNORECASE), "Valley National Bank"),
+    (re.compile(r"\bSynovus\s+Bank\b", re.IGNORECASE), "Synovus Bank"),
+    (re.compile(r"\bEast\s+West\s+Bank\b", re.IGNORECASE), "East West Bank"),
+    (re.compile(r"\bCathay\s+Bank\b", re.IGNORECASE), "Cathay Bank"),
+    (re.compile(r"\bIBERIABANK\b", re.IGNORECASE), "IBERIABANK"),
+    (re.compile(r"\bMidFirst\s+Bank\b", re.IGNORECASE), "MidFirst Bank"),
+    (re.compile(r"\bCadence\s+Bank\b", re.IGNORECASE), "Cadence Bank"),
+    (re.compile(r"\bAmerant\s+Bank\b", re.IGNORECASE), "Amerant Bank, N.A."),
+    (re.compile(r"\bWSFS\s+Bank\b", re.IGNORECASE), "WSFS Bank"),
+    (re.compile(r"\bLendingClub\s+Bank\b", re.IGNORECASE), "LendingClub Bank"),
+    (re.compile(r"\bPopular\s+(?:Community\s+)?Bank\b", re.IGNORECASE), "Popular Bank"),
+    (re.compile(r"\bAmalgamated\s+Bank\b", re.IGNORECASE), "Amalgamated Bank"),
+    (re.compile(r"\bFirstBank\b", re.IGNORECASE), "FirstBank"),
+    (re.compile(r"\bFirst\s+National\s+Bank\b", re.IGNORECASE), "First National Bank"),
+    (re.compile(r"\bSoFi\s+Bank\b", re.IGNORECASE), "SoFi Bank, N.A."),
+    (re.compile(r"\bNearside\b", re.IGNORECASE), "Nearside"),
+    (re.compile(r"\bFound\s+(?:Bank|Business)\b", re.IGNORECASE), "Found"),
+    (re.compile(r"\bNorthOne\b", re.IGNORECASE), "NorthOne"),
+    (re.compile(r"\bOxygen\s+Bank\b", re.IGNORECASE), "Oxygen"),
+    (re.compile(r"\bBanco\s+Popular\b", re.IGNORECASE), "Banco Popular"),
+    (re.compile(r"\bChemical\s+Bank\b", re.IGNORECASE), "Chemical Bank"),
+    (re.compile(r"\bTexas\s+Capital\s+Bank\b", re.IGNORECASE), "Texas Capital Bank"),
+    (re.compile(r"\bColumbia\s+Bank\b", re.IGNORECASE), "Columbia Bank"),
+    (re.compile(r"\bUmpqua\s+Bank\b", re.IGNORECASE), "Umpqua Bank"),
+    (re.compile(r"\bChase\s+Business\s+Complete", re.IGNORECASE), "JPMorgan Chase Bank, N.A."),
+    (re.compile(r"\bChase\s+Total\s+Checking", re.IGNORECASE), "JPMorgan Chase Bank, N.A."),
 )
 
 

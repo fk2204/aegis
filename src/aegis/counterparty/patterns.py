@@ -414,6 +414,42 @@ _PATTERNS_RAW: tuple[tuple[str, str, str, int, str], ...] = (
         60,
         "incoming",
     ),
+    # ──────────────────────────────────────────────────────────────────
+    # INCOMING WIRES — named end-customer revenue via wire transfer
+    # ──────────────────────────────────────────────────────────────────
+    #
+    # Generic "WIRE IN" / "WIRE INCOMING" prefix used by several bank
+    # families. Distinct from BoA's "WIRE TYPE:BOOK IN" (routed above
+    # to ``book_wire_unresolved``): those are internal book-transfer
+    # wires with no sender identity; "WIRE IN" alone signals an
+    # external inbound wire — the counterparty is an outside payer.
+    (
+        r"\bWIRE\s+IN(?:COMING)?\b",
+        "end_customer",
+        "wire_incoming_generic",
+        65,
+        "incoming",
+    ),
+    # FEDWIRE credit — Federal Reserve wire settlement leg on incoming
+    # wires ("FEDWIRE CREDIT VIA:…"). Almost exclusively business
+    # revenue on the merchant statements in the corpus (payroll,
+    # rebates, and vendor payments are ACH; wires are B2B invoices).
+    (
+        r"\bFEDWIRE\s+CREDIT\b",
+        "end_customer",
+        "fedwire_credit",
+        70,
+        "incoming",
+    ),
+    # Chase / M&T / smaller banks: "DOMESTIC WIRE CREDIT" — same intent
+    # as FEDWIRE CREDIT with a different bank's phrasing.
+    (
+        r"\bDOMESTIC\s+WIRE\s+CREDIT\b",
+        "end_customer",
+        "domestic_wire_credit",
+        70,
+        "incoming",
+    ),
 )
 
 

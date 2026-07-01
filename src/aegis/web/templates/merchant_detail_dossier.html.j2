@@ -1223,6 +1223,48 @@
         {% include "_unified_tracks_panel.html.j2" %}
       {% endif %}
 
+      {# Counterparty coverage summary block (2026-07-01 P6). Always
+         renders on the dossier so the operator has an at-a-glance
+         "N% of dollars classified" and a link into the transactions
+         table to reclassify anything mislabelled. Guarded on the
+         context panel being populated; otherwise displays the neutral
+         low-coverage state. #}
+      {% if unified_tracks and unified_tracks.context_panel and unified_tracks.context_panel.by_class %}
+        <div class="counterparty-coverage-block" data-test-id="counterparty-coverage-block"
+             style="margin-top:12px;padding:10px 14px;border:1px solid var(--rule);border-radius:6px;background:#fafaf7">
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px">
+            <strong style="font-size:12.5px">Counterparty coverage</strong>
+            {% for row in unified_tracks.context_panel.by_class %}
+              <span class="class-chip class-chip--{{ row.counterparty }}"
+                    data-counterparty-class="{{ row.counterparty }}"
+                    style="padding:2px 8px;border-radius:10px;background:#eee;font-size:11px">
+                {{ row.counterparty|replace('_', ' ') }} · {{ "%.0f"|format(row.share_pct or 0) }}%
+              </span>
+            {% endfor %}
+            <a class="reclassify-link"
+               href="#transactions"
+               data-test-id="dossier-reclassify-link"
+               style="margin-left:auto;font-size:11px">
+              Reclassify transactions →
+            </a>
+          </div>
+        </div>
+      {% else %}
+        <div class="counterparty-coverage-block low-coverage-warning"
+             data-test-id="counterparty-coverage-block-empty"
+             style="margin-top:12px;padding:10px 14px;border:1px dashed var(--rule);border-radius:6px;color:var(--ink-3);font-size:12px">
+          <span class="class-chip class-chip--unknown"
+                data-counterparty-class="unknown"
+                style="padding:2px 8px;border-radius:10px;background:#eee;font-size:11px">
+            unknown · 100%
+          </span>
+          <span style="margin-left:6px">
+            Counterparty classification not yet populated. Reclassify
+            individual transactions on the ledger as they land.
+          </span>
+        </div>
+      {% endif %}
+
       {# Statement coverage — surfaces the active (bank, last4) bundle, any
          alternate bundles for the merchant, and any missing months between
          the earliest and latest statement in the bundle. Always render when
@@ -2458,8 +2500,9 @@
          Sits ABOVE the existing post-fund CTA so the chronological
          order reads top-to-bottom (funder responded → deal funded /
          renewed / charged off). #}
-      <div class="dossier-page funder-outcome-cta"
+      <div class="dossier-page funder-outcome-cta outcome-prompt"
            data-test-id="funder-outcome-cta"
+           data-testid="outcome-prompt"
            style="display:flex;flex-direction:column;gap:10px;padding:14px 16px;margin:0 0 14px;border:1px solid #c3e6cb;border-radius:6px;background:#f0f7f0">
         <div style="font-size:13px">
           <strong>What did the funder say?</strong>
@@ -2585,6 +2628,22 @@
           <div class="who">manager sign-off</div>
         </div>
       </div>
+    </section>
+
+    {# ============== § 5¼ STIPULATIONS (migration 104) ==============
+       2026-07-01 (P3) — deal-level conditions the funder requires
+       before funding. Full read at page-load so first paint shows
+       "N outstanding". HTMX swaps in-place on add / mark-received /
+       waive / delete (target = #stips-section). #}
+    <section id="stips" class="section" data-test-id="dossier-stips-section">
+      <header>
+        <span class="n">§ 5¼</span>
+        <h2>Stipulations</h2>
+        <span class="footnote">conditions the funder requires</span>
+      </header>
+      {% with merchant_id=merchant.id, stips=(dossier_stips or []), outstanding_stips_count=(outstanding_stips_count or 0) %}
+      {% include "_stips_section.html.j2" %}
+      {% endwith %}
     </section>
 
     {# ============== § 5½ FUNDER SUBMISSIONS ============== #}

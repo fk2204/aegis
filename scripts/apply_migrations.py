@@ -877,6 +877,14 @@ MIGRATION_PROBES: dict[str, str] = {
         "WHERE table_schema='public' "
         "AND table_name='calibration_snapshots'"
     ),
+    "104_stips.sql": (
+        # 104 — stipulations tracking. Probe the stip_type CHECK
+        # constraint since a stub table might exist without the
+        # 4-value enum landing.
+        "SELECT 1 FROM pg_constraint "
+        "WHERE conrelid='public.stips'::regclass "
+        "AND pg_get_constraintdef(oid) LIKE '%stip_type%document%'"
+    ),
 }
 
 

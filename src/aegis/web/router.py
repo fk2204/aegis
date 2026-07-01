@@ -92,6 +92,7 @@ from aegis.web.routers import pipeline as _pipeline_routes
 from aegis.web.routers import portfolio as _portfolio_routes
 from aegis.web.routers import renewals as _renewals_routes
 from aegis.web.routers import shadow_review as _shadow_review_routes
+from aegis.web.routers import stips as _stips_routes
 from aegis.web.routers import submissions as _submissions_routes
 from aegis.web.routers import triage as _triage_routes
 from aegis.web.routers import upload as _upload_routes
@@ -156,6 +157,7 @@ router.include_router(_pipeline_routes.router)
 router.include_router(_renewals_routes.router)
 router.include_router(_portfolio_routes.router)
 router.include_router(_shadow_review_routes.router)
+router.include_router(_stips_routes.router)
 router.include_router(_submissions_routes.router)
 router.include_router(_disclosure_events_routes.router)
 router.include_router(_triage_routes.router)

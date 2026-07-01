@@ -3570,6 +3570,58 @@ async def ssl_certificate_check_cron(ctx: dict[str, Any]) -> None:
         _log.warning("ssl_certificate_check_failed host=%s exc=%s", host, exc)
 
 
+async def daily_hetzner_snapshot(ctx: dict[str, Any]) -> None:
+    """Daily 03:30 UTC — Hetzner Cloud snapshot of the AEGIS prod box.
+
+    Delegates to ``scripts/hetzner_snapshot.py`` via subprocess so the
+    cron itself never grows Hetzner-API-client boilerplate; the script
+    silently skips when ``HETZNER_API_TOKEN`` / ``HETZNER_SERVER_ID``
+    are absent (Windows dev boxes, CI, staging).
+
+    Errors surface as ``system.hetzner_snapshot_failed`` audit rows
+    with the last 200 bytes of stderr — enough for the operator to
+    diagnose Hetzner API errors without leaking the token itself.
+    """
+    del ctx
+    import os as _os
+    import subprocess as _sp
+
+    try:
+        result = _sp.run(
+            ["/opt/aegis/.venv/bin/python", "scripts/hetzner_snapshot.py"],
+            cwd="/opt/aegis",
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env={**_os.environ},
+            check=False,
+        )
+        if result.returncode != 0:
+            from aegis.audit import SupabaseAuditLog
+
+            SupabaseAuditLog().record(
+                actor="system:hetzner_snapshot",
+                action="system.hetzner_snapshot_failed",
+                subject_type="system",
+                details={
+                    "returncode": result.returncode,
+                    "stderr_tail": result.stderr[-200:] if result.stderr else "",
+                },
+            )
+            _log.error(
+                "hetzner_snapshot.failed rc=%d stderr=%s",
+                result.returncode,
+                result.stderr[-200:] if result.stderr else "",
+            )
+        else:
+            _log.info(
+                "hetzner_snapshot.ok stdout=%s",
+                result.stdout[-100:] if result.stdout else "",
+            )
+    except Exception as exc:
+        _log.warning("hetzner_snapshot_cron.failed exc=%s", exc)
+
+
 async def weekly_calibration_cron(ctx: dict[str, Any]) -> None:
     """Monday 04:00 UTC — compute weekly calibration snapshot.
 
@@ -3788,6 +3840,17 @@ class WorkerSettings:
             weekday=0,
             hour=9,
             minute=0,
+            run_at_startup=False,
+        ),
+        # Daily 03:30 UTC — Hetzner Cloud snapshot. Silently skips
+        # when HETZNER_API_TOKEN / HETZNER_SERVER_ID absent (dev / CI /
+        # staging). Off-hours (03:30 UTC = 22:30 America/New_York the
+        # night before / 04:30 CET) so the snapshot doesn't collide
+        # with the 02:00 archive cron or the 04:00 Monday calibration.
+        cron(
+            daily_hetzner_snapshot,
+            hour=3,
+            minute=30,
             run_at_startup=False,
         ),
     )
