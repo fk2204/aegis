@@ -68,7 +68,7 @@ def _search_leads_by_status(client: CloseClient, status: str) -> list[dict[str, 
                 "GET",
                 "/api/v1/lead/",
                 params={
-                    "query": f'lead_status_label:"{status}"',
+                    "query": f"status:{status}",
                     "_skip": skip,
                     "_limit": _PAGE,
                 },
