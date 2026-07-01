@@ -67,6 +67,30 @@ _TOL = Decimal("1.00")
 # math drifts).
 _CONTINUITY_TOL = Decimal("0.01")
 
+# 2026-07-01 P1 — Bank service-charge reconciliation tolerance.
+#
+# TD Bank (verified against Transplex Centers, 6 statements) prints a
+# monthly $65 service charge into the "Withdrawals" summary total but
+# does NOT list the charge as a transaction row on the ledger. The
+# strict $1 tolerance treats the resulting ~$65 gap as
+# ``reconciliation_failed_withdrawal_total`` and routes the doc to
+# manual_review. Same pattern observed on BofA ($29.95/mo maintenance)
+# and Chase ($25-35 monthly service fee).
+#
+# When the withdrawal-side gap is small AND positive (listed sum <
+# printed sum), emit a soft signal
+# (``reconciliation_service_charge_suspected``) instead of the hard
+# ``reconciliation_failed_withdrawal_total`` failure. The soft signal
+# does NOT contribute to the parse-time ``manual_review`` gate —
+# ``parser.pipeline._decide`` only looks at ``[META]`` families for its
+# prescreen sum, not [MATH] signals — so this carve-out is validation-
+# side-only.
+#
+# The threshold ($75) covers TD ($65) with headroom for a small
+# quarterly analysis fee bump; it stays well below the $1000+ range
+# that a real "missing transaction row" produces.
+_SERVICE_CHARGE_TOLERANCE = Decimal("75.00")
+
 # R1.5 shadow check: a transaction-id-like field must be populated on at
 # least this fraction of rows AND those values must be majority numeric
 # before we'll treat it as a real sequence. Below the floor we treat the
@@ -203,10 +227,26 @@ def _check_listed_vs_summary(statement: ExtractedStatement, ctx: _ValidationCont
             f"vs printed {summary.deposit_total}"
         )
     if not money_eq(listed_wd, summary.withdrawal_total, tol=_TOL):
-        ctx.failures.append(
-            f"reconciliation_failed_withdrawal_total: listed {listed_wd} "
-            f"vs printed {summary.withdrawal_total}"
-        )
+        # Bank service-charge carve-out (2026-07-01 P1). When the
+        # printed withdrawal total is slightly HIGHER than the sum of
+        # extracted rows, the delta is almost certainly a monthly
+        # service fee the bank rolls into the summary but never lists
+        # as a transaction line. Emit a soft signal instead of the
+        # hard-fail; the parse still proceeds and the underwriter
+        # sees the note on the dossier.
+        wd_gap = summary.withdrawal_total - listed_wd
+        if wd_gap > Decimal("0") and wd_gap <= _SERVICE_CHARGE_TOLERANCE:
+            ctx.warnings.append(
+                f"reconciliation_service_charge_suspected: listed {listed_wd} "
+                f"vs printed {summary.withdrawal_total} (gap ${wd_gap}). "
+                "Likely bank service fee in printed total not listed as a "
+                "transaction row."
+            )
+        else:
+            ctx.failures.append(
+                f"reconciliation_failed_withdrawal_total: listed {listed_wd} "
+                f"vs printed {summary.withdrawal_total}"
+            )
 
     # Hard check: count parity if the bank printed a count.
     #
