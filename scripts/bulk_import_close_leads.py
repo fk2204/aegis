@@ -6,9 +6,10 @@ Close has ~9,000 leads. AEGIS only cares about two subsets:
      not already linked to an AEGIS merchant gets a placeholder
      merchant row so the operator can attach statements.
 
-  2. **Disqualified** — leads Commera walked away from. If a merchant
-     is already in AEGIS for that Close lead AND no funder outcome
-     is recorded yet, we write a ``funder_replies`` row with
+  2. **Disqualified** — leads Commera walked away from. For each
+     merchant that IS in AEGIS with an existing
+     ``funder_note_submissions`` row and no funder_replies outcome
+     yet, we insert one funder_replies row (per submission) with
      ``outcome='declined'`` so the calibration engine has ground
      truth for the decline path.
 
@@ -18,8 +19,8 @@ useful AEGIS signal yet.
 
 Safety:
   * Idempotent: existing Close-linked merchants are skipped in
-    group 1; merchants that already have a ``funder_replies`` row
-    are skipped in group 2.
+    group 1; submissions with an existing funder_replies row are
+    skipped in group 2.
   * All secrets read from env (``CLOSE_API_KEY``, plus the standard
     Supabase creds via ``get_supabase``). Nothing prints tokens.
   * Never modifies leads already in Close — read-only against Close.
@@ -54,12 +55,16 @@ _PAGE = 100
 
 
 def _search_leads_by_status(client: CloseClient, status: str) -> list[dict[str, Any]]:
-    """Page through Close for every lead matching ``lead_status_label``.
+    """Page through Close for every lead with the given status label.
 
-    Uses the ``GET /api/v1/lead/`` endpoint with the ``query`` param
-    (Close's smart-view search syntax). The alternative POST
-    ``/lead/search/`` requires a saved-search object.
+    Close's smart-view DSL requires the label to be quoted when it
+    contains spaces or punctuation (verified against the live org this
+    session: quoting the full en-dash label returns 42 hits, whereas
+    the unquoted single-token ``status:Qualified`` returns 0).
+    Single-token labels like ``Disqualified`` work either quoted or
+    bare.
     """
+    quoted_status = f'"{status}"' if any(c in status for c in " -–—") else status  # noqa: RUF001
     results: list[dict[str, Any]] = []
     skip = 0
     while True:
@@ -68,7 +73,7 @@ def _search_leads_by_status(client: CloseClient, status: str) -> list[dict[str, 
                 "GET",
                 "/api/v1/lead/",
                 params={
-                    "query": f"status:{status}",
+                    "query": f"status:{quoted_status}",
                     "_skip": skip,
                     "_limit": _PAGE,
                 },
@@ -153,21 +158,26 @@ def _import_qualified(
 def _record_disqualified_outcomes(
     client: CloseClient,
     existing_by_lead: dict[str, str],
-) -> tuple[int, int]:
-    """Group 2 — write ``audit_log`` rows tagging AEGIS merchants whose
-    Close lead is currently in the Disqualified bucket.
+) -> tuple[int, int, int]:
+    """Group 2 — write ``funder_replies`` rows with ``outcome='declined'``
+    per submission for AEGIS merchants whose Close lead is Disqualified.
 
-    Original design (2026-07-01) wrote to ``funder_replies`` but the
-    schema doesn't fit: that table anchors per-(deal_id or submission_id)
-    with NOT NULL funder_id, so a merchant-level "operator disqualified
-    the lead in the CRM" row can't land there without inventing a
-    funder + deal pair. The audit-log tag captures the ground truth
-    signal the calibration engine actually consumes:
-    ``merchant.close_disqualified_sync`` on the merchant subject_id +
-    the operator's Close lead_id in ``details``.
+    Anchor pattern per migration 071's XOR CHECK: rows land against
+    ``submission_id`` (a funder_note_submissions row) with the
+    submission's ``funder_id``. One funder_replies row per merchant
+    submission that doesn't already carry an outcome, so a merchant
+    with multiple submissions gets multiple decline rows (each funder
+    gets its own decline signal for the calibration engine).
 
-    Idempotent: skipped when the merchant already carries a
-    ``merchant.close_disqualified_sync`` row.
+    Merchants without any funder_note_submissions can't land in
+    funder_replies (no valid anchor + funder_id) — those get skipped
+    with a WARN so the operator can decide whether they need a manual
+    submission row created first.
+
+    Idempotent: skipped when the submission already has any
+    funder_replies row.
+
+    Returns (outcomes_recorded, outcomes_skipped, no_anchor_merchants).
     """
     print(f"\nFetching Close leads with status: {_DISQUAL_STATUS}")
     disq = _search_leads_by_status(client, _DISQUAL_STATUS)
@@ -175,6 +185,7 @@ def _record_disqualified_outcomes(
 
     outcomes_recorded = 0
     outcomes_skipped = 0
+    no_anchor_merchants = 0
     sb = get_supabase()
 
     for lead in disq:
@@ -185,57 +196,89 @@ def _record_disqualified_outcomes(
         merchant_id = existing_by_lead[lead_id]
 
         try:
-            existing = (
-                sb.table("audit_log")
-                .select("id")
-                .eq("subject_type", "merchant")
-                .eq("subject_id", merchant_id)
-                .eq("action", "merchant.close_disqualified_sync")
-                .limit(1)
+            subs = (
+                sb.table("funder_note_submissions")
+                .select("id,funder_id")
+                .eq("merchant_id", merchant_id)
                 .execute()
             )
         except Exception as exc:
             _log.warning(
-                "bulk_import.audit_lookup_failed merchant=%s exc=%s",
+                "bulk_import.submissions_lookup_failed merchant=%s exc=%s",
                 merchant_id,
                 exc,
             )
             continue
-        if existing.data:
-            outcomes_skipped += 1
-            continue
 
-        payload: dict[str, Any] = {
-            "actor": "system:bulk_import_close_leads",
-            "action": "merchant.close_disqualified_sync",
-            "subject_type": "merchant",
-            "subject_id": merchant_id,
-            "details": {
-                "close_lead_id": lead_id,
-                "recorded_at": datetime.now(UTC).isoformat(),
-                "note": (
-                    "Lead status was Disqualified in Close as of "
-                    f"{datetime.now(UTC).date().isoformat()}. Feed to "
-                    "calibration ground-truth as a no-fund outcome."
-                ),
-            },
-        }
-        try:
-            sb.table("audit_log").insert(cast(Any, payload)).execute()
-            outcomes_recorded += 1
+        if not subs.data:
+            no_anchor_merchants += 1
             _log.info(
-                "bulk_import.outcome_declined merchant=%s lead_id=%s",
+                "bulk_import.no_anchor merchant=%s lead_id=%s reason=no_submissions",
                 merchant_id,
                 lead_id,
             )
-        except Exception as exc:
-            _log.error(
-                "bulk_import.outcome_write_failed merchant=%s exc=%s",
-                merchant_id,
-                exc,
-            )
+            continue
 
-    return outcomes_recorded, outcomes_skipped
+        for raw_sub in subs.data:
+            if not isinstance(raw_sub, dict):
+                continue
+            sub = cast(dict[str, Any], raw_sub)
+            submission_id = sub.get("id")
+            funder_id = sub.get("funder_id")
+            if not submission_id or not funder_id:
+                continue
+
+            try:
+                existing = (
+                    sb.table("funder_replies")
+                    .select("id")
+                    .eq("submission_id", submission_id)
+                    .limit(1)
+                    .execute()
+                )
+            except Exception as exc:
+                _log.warning(
+                    "bulk_import.reply_lookup_failed submission=%s exc=%s",
+                    submission_id,
+                    exc,
+                )
+                continue
+            if existing.data:
+                outcomes_skipped += 1
+                continue
+
+            now_iso = datetime.now(UTC).isoformat()
+            payload: dict[str, Any] = {
+                "submission_id": submission_id,
+                "funder_id": funder_id,
+                "ingested_via": "operator_paste",
+                "received_at": now_iso,
+                "outcome": "declined",
+                "outcome_recorded_at": now_iso,
+                "outcome_recorded_by": "system:bulk_import_close_leads",
+                "outcome_notes": (
+                    "Auto-recorded from bulk_import_close_leads: Close "
+                    "lead status is Disqualified as of "
+                    f"{datetime.now(UTC).date().isoformat()}."
+                ),
+                "status": "declined",
+            }
+            try:
+                sb.table("funder_replies").insert(cast(Any, payload)).execute()
+                outcomes_recorded += 1
+                _log.info(
+                    "bulk_import.outcome_declined merchant=%s submission=%s",
+                    merchant_id,
+                    submission_id,
+                )
+            except Exception as exc:
+                _log.error(
+                    "bulk_import.outcome_write_failed submission=%s exc=%s",
+                    submission_id,
+                    exc,
+                )
+
+    return outcomes_recorded, outcomes_skipped, no_anchor_merchants
 
 
 def main() -> int:
@@ -275,12 +318,16 @@ def main() -> int:
         f"No name: {sk_noname} | Errors: {errors}"
     )
 
-    recorded, already = _record_disqualified_outcomes(client, existing_by_lead)
-    print(f"Outcomes recorded: {recorded} | Already had outcome: {already}")
+    recorded, already, no_anchor = _record_disqualified_outcomes(client, existing_by_lead)
+    print(
+        f"Outcomes recorded: {recorded} | Already had outcome: {already} | "
+        f"Merchants without submission anchor: {no_anchor}"
+    )
 
     print("\nSummary:")
     print(f"  Qualified leads imported: {imported}")
     print(f"  Declined outcomes recorded: {recorded}")
+    print(f"  Disqualified merchants without submission anchor: {no_anchor}")
     return 0
 
 
