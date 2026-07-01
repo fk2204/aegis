@@ -516,11 +516,175 @@ async def parse_document(
             audit=audit,
         )
 
+    # ===================================================================
+    # CONCERN 5 — post-parse background checks + vision retry
+    # (2026-07-01 FIX 2). Fires after every parse regardless of status
+    # so newly-parsed merchants get OFAC/SOS/UCC/web-presence sweeps
+    # without an operator "Run now" click. Retry gates on same-day
+    # audit to avoid duplicate work if a doc is re-parsed the same day.
+    # ===================================================================
+    if doc_after_persist.merchant_id is not None:
+        await _fire_post_parse_background_checks(
+            ctx=ctx,
+            merchant_id=doc_after_persist.merchant_id,
+            audit=audit,
+        )
+
+    # Vision-retry deferred re-enqueue (2026-07-01 FIX 2). Error-state
+    # docs that still have a sealed pdf_store blob get one automatic
+    # retry ~5 minutes out — most transient extraction failures clear
+    # on the second attempt via the vision fallback path. Guarded on
+    # ``doc_after_persist.parse_status`` because ``PipelineResult`` only
+    # carries proceed/review/manual_review — the ``error`` state is set
+    # by the exception handlers writing to the DB row via ``mark_error``.
+    if (
+        getattr(doc_after_persist, "parse_status", None) == "error"
+        and doc_after_persist.storage_path is not None
+        and doc_after_persist.merchant_id is not None
+    ):
+        await _schedule_vision_retry(
+            ctx=ctx,
+            document_id=document_id,
+            pdf_path=pdf_path,
+            audit=audit,
+        )
+
     return {
         "document_id": str(document_id),
         "parse_status": result.parse_status,
         "fraud_score": result.fraud_score,
     }
+
+
+async def _fire_post_parse_background_checks(
+    *,
+    ctx: dict[str, Any],
+    merchant_id: UUID,
+    audit: AuditLog,
+) -> None:
+    """Enqueue ``run_background_checks`` for a merchant if it hasn't
+    already run today.
+
+    Idempotency key: an audit row with
+    ``action='merchant.background_checks_complete'`` on the merchant
+    subject_id with ``created_at >= today``. Skips silently on lookup
+    failure (Supabase blip) — the underlying job is itself idempotent
+    so a duplicate enqueue costs at most one no-op run.
+    """
+    from datetime import UTC, datetime
+
+    from aegis.db import get_supabase
+
+    try:
+        sb = get_supabase()
+        today = datetime.now(UTC).date().isoformat()
+        existing = (
+            sb.table("audit_log")
+            .select("id")
+            .eq("action", "merchant.background_checks_complete")
+            .eq("subject_type", "merchant")
+            .eq("subject_id", str(merchant_id))
+            .gte("created_at", today)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return
+    except Exception as exc:
+        _log.warning(
+            "post_parse.bgchecks_idempotency_check_failed merchant_id=%s exc=%s",
+            merchant_id,
+            exc,
+        )
+
+    pool = ctx.get("redis")
+    if pool is None:
+        return
+    try:
+        await pool.enqueue_job("run_background_checks", str(merchant_id), "post_parse_auto")
+        audit.record(
+            actor="system:post_parse",
+            action="merchant.background_checks.enqueued",
+            subject_type="merchant",
+            subject_id=merchant_id,
+            details={"trigger": "post_parse_auto"},
+        )
+    except Exception as exc:
+        _log.warning(
+            "post_parse.bgchecks_enqueue_failed merchant_id=%s exc=%s",
+            merchant_id,
+            exc,
+        )
+
+
+async def _schedule_vision_retry(
+    *,
+    ctx: dict[str, Any],
+    document_id: UUID,
+    pdf_path: str,
+    audit: AuditLog,
+) -> None:
+    """Enqueue a deferred re-parse ~5 minutes out for an error-state doc.
+
+    Uses arq's ``_defer_by`` so the worker doesn't burn a slot
+    immediately re-processing the same failing input. The vision
+    fallback path lives inside ``_run_pipeline_with_retry``.
+
+    Idempotency: skipped when the document already carries a
+    ``document.parse.vision_retry_scheduled`` audit row — one retry per
+    error-transition is enough.
+    """
+    from datetime import timedelta
+
+    from aegis.db import get_supabase
+
+    try:
+        sb = get_supabase()
+        existing = (
+            sb.table("audit_log")
+            .select("id")
+            .eq("action", "document.parse.vision_retry_scheduled")
+            .eq("subject_type", "document")
+            .eq("subject_id", str(document_id))
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return
+    except Exception as exc:
+        _log.warning(
+            "post_parse.vision_retry_idempotency_check_failed doc=%s exc=%s",
+            document_id,
+            exc,
+        )
+
+    pool = ctx.get("redis")
+    if pool is None:
+        return
+    try:
+        await pool.enqueue_job(
+            "parse_document",
+            str(document_id),
+            pdf_path,
+            _defer_by=timedelta(minutes=5),
+        )
+        audit.record(
+            actor="system:post_parse",
+            action="document.parse.vision_retry_scheduled",
+            subject_type="document",
+            subject_id=document_id,
+            details={"defer_minutes": 5},
+        )
+        _log.info(
+            "post_parse.vision_retry_scheduled document_id=%s",
+            document_id,
+        )
+    except Exception as exc:
+        _log.warning(
+            "post_parse.vision_retry_enqueue_failed doc=%s exc=%s",
+            document_id,
+            exc,
+        )
 
 
 async def _run_processor_branch(
@@ -3047,6 +3211,85 @@ async def requeue_stuck_documents_cron(ctx: dict[str, Any]) -> dict[str, int]:
     return {"stuck": len(rows), "requeued": requeued}
 
 
+async def retry_stuck_error_documents_cron(ctx: dict[str, Any]) -> dict[str, int]:
+    """arq cron — retry error-state documents that still have a
+    sealed pdf_store blob (2026-07-01 FIX 2).
+
+    Companion to ``requeue_stuck_documents_cron``: the pending sweep
+    handles docs that never left ``pending``; this sweep handles docs
+    that reached ``error`` and can still be retried from the sealed
+    blob. Runs hourly at :00.
+
+    Filter:
+      * ``parse_status='error'``
+      * ``storage_path IS NOT NULL`` (post-chunk-A docs only; legacy
+        docs would need local re-upload)
+      * older than 1 hour (avoid stomping on a doc that just failed and
+        already has a vision-retry scheduled by the post-parse hook)
+
+    Idempotency: enqueues ``parse_document`` per doc; the worker's
+    persist path overwrites the analyses row on the new attempt.
+    Duplicate enqueues are safe — arq's job-id shape makes them
+    coalesce.
+    """
+    from datetime import UTC, timedelta
+    from datetime import datetime as _dt
+
+    from aegis.db import get_supabase
+
+    sb = get_supabase()
+    cutoff = (_dt.now(UTC) - timedelta(hours=1)).isoformat()
+
+    try:
+        stuck = (
+            sb.table("documents")
+            .select("id,merchant_id,original_filename,uploaded_at")
+            .eq("parse_status", "error")
+            .not_.is_("storage_path", "null")
+            .lt("uploaded_at", cutoff)
+            .execute()
+        )
+    except Exception as exc:
+        _log.warning("retry_stuck_error_documents.query_failed exc=%s", exc)
+        return {"stuck": 0, "requeued": 0}
+
+    rows = stuck.data or []
+    if not rows:
+        return {"stuck": 0, "requeued": 0}
+
+    redis = ctx.get("redis")
+    if redis is None:
+        _log.warning("retry_stuck_error_documents.no_redis_in_ctx — skipping")
+        return {"stuck": len(rows), "requeued": 0}
+
+    requeued = 0
+    for doc_raw in rows:
+        doc = cast("dict[str, Any]", doc_raw)
+        doc_id = doc.get("id")
+        pdf_path = doc.get("original_filename") or ""
+        if not doc_id:
+            continue
+        try:
+            await redis.enqueue_job("parse_document", str(doc_id), str(pdf_path))
+            requeued += 1
+            _log.info(
+                "retry_stuck_error_documents.enqueued document_id=%s",
+                doc_id,
+            )
+        except Exception as exc:
+            _log.warning(
+                "retry_stuck_error_documents.enqueue_failed document_id=%s exc=%s",
+                doc_id,
+                exc,
+            )
+    _log.info(
+        "retry_stuck_error_documents.summary stuck=%d requeued=%d",
+        len(rows),
+        requeued,
+    )
+    return {"stuck": len(rows), "requeued": requeued}
+
+
 async def run_background_checks(
     ctx: dict[str, Any],
     merchant_id_str: str,
@@ -3080,6 +3323,8 @@ async def run_background_checks(
     """
     from aegis.api.deps import get_audit, get_merchant_repository
     from aegis.business_intel.refresh import refresh_ucc_for_merchant
+    from aegis.business_intel.sos_refresh import refresh_sos_for_merchant
+    from aegis.compliance.ofac import refresh_ofac_for_merchant
     from aegis.web_presence.refresh import refresh_web_presence_for_merchant
 
     audit = ctx.get("audit") or get_audit()
@@ -3166,6 +3411,56 @@ async def run_background_checks(
     )
 
     failed_checks: list[str] = []
+
+    # OFAC sanctions screening (2026-07-01 FIX 2). Runs first so an OFAC
+    # match surfaces on the dossier before the operator opens it, and so
+    # the merchant.ofac_* columns are populated for the ribbon/gate.
+    # Non-fatal on failure — the two-layer audit row below captures
+    # partial-completion state.
+    try:
+        await asyncio.to_thread(
+            refresh_ofac_for_merchant,
+            merchant_id,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+    except MerchantNotFoundError:
+        _log.warning(
+            "background_checks.ofac_skip_missing_merchant merchant_id=%s",
+            merchant_id,
+        )
+        failed_checks.append("ofac")
+    except Exception:
+        _log.warning(
+            "background_checks.ofac_failed merchant_id=%s",
+            merchant_id,
+            exc_info=True,
+        )
+        failed_checks.append("ofac")
+
+    # SOS good-standing check (2026-07-01 FIX 2). Silently skips when
+    # merchant.state is missing; ``refresh_sos_for_merchant``'s checker
+    # bounces back with data_source='no_state' in that case.
+    try:
+        await asyncio.to_thread(
+            refresh_sos_for_merchant,
+            merchant_id,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+    except MerchantNotFoundError:
+        _log.warning(
+            "background_checks.sos_skip_missing_merchant merchant_id=%s",
+            merchant_id,
+        )
+        failed_checks.append("sos")
+    except Exception:
+        _log.warning(
+            "background_checks.sos_failed merchant_id=%s",
+            merchant_id,
+            exc_info=True,
+        )
+        failed_checks.append("sos")
 
     # UCC + previous-default sweep.
     try:
@@ -3808,6 +4103,18 @@ class WorkerSettings:
             minute={0, 30},
             run_at_startup=False,
         ),
+        # Every hour at :00 UTC — retry error-state documents that
+        # still have a sealed pdf_store blob (2026-07-01 FIX 2).
+        # Companion to the pending sweep above: this cron rescues docs
+        # that reached ``error`` but can still be retried from the
+        # ciphertext. Post-parse hook schedules a single 5-minute
+        # deferred retry; this hourly cron is the safety net for docs
+        # that failed that retry too.
+        cron(
+            retry_stuck_error_documents_cron,
+            minute={0},
+            run_at_startup=False,
+        ),
         # 07:00 UTC daily — pull funder definitions from the local
         # ``/var/lib/aegis/funders`` tree. Idempotent per the script's
         # own hash gate. The corpus-ingestion cron used to live here too
@@ -3958,6 +4265,7 @@ __all__ = [
     "parse_document",
     "process_close_attachments",
     "process_funder_reply",
+    "retry_stuck_error_documents_cron",
     "run_background_checks",
     "run_shadow_review_cron",
     "run_submission_reminder_cron",

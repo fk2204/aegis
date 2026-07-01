@@ -158,6 +158,46 @@ def _safe_or_default(value: Any, default: Any, label: str) -> Any:  # noqa: ANN4
     return value
 
 
+def _is_intake_decline(merchant: MerchantRow) -> bool:
+    """Return True when the merchant would fail intake screening even
+    if their statements parsed clean (2026-07-01 FIX 4).
+
+    Three tripwires:
+      * stated MCA positions >= 5 (over-stacked)
+      * credit_score in (0, 500) - sub-500 FICO auto-declines
+      * stated MCA balance > 5x monthly revenue (unmanageable)
+
+    The Ready-to-Submit list on the dashboard drops these merchants so
+    a proceed-status parse doesn't false-positive them into the
+    "submit today" queue. Values default to safe/inclusive when the
+    field is None (fico=999, positions=0, balance=0) - missing intake
+    data can't cause a false decline.
+    """
+    from decimal import Decimal as _D  # noqa: N814 — local alias for width
+
+    positions = getattr(merchant, "stated_mca_positions", None) or 0
+    if positions >= 5:
+        return True
+
+    fico = getattr(merchant, "credit_score", None)
+    if fico is not None and 0 < fico < 500:
+        return True
+
+    balance = getattr(merchant, "stated_mca_balance", None)
+    revenue = getattr(merchant, "monthly_revenue", None)
+    if balance and revenue:
+        try:
+            b = _D(str(balance))
+            r = _D(str(revenue))
+        except Exception as exc:  # money coercion tolerance
+            _log.debug("intake_decline.decimal_coerce_failed exc=%s", exc)
+            return False
+        if r > 0 and b / r > _D("5"):
+            return True
+
+    return False
+
+
 router = APIRouter()
 
 
@@ -864,7 +904,7 @@ def _compute_key_numbers(
     blocked_merchant_ids = {
         mid
         for mid, m in merchants_by_id.items()
-        if m.status == "disqualified" or m.ofac_is_clear is not True
+        if m.status == "disqualified" or m.ofac_is_clear is not True or _is_intake_decline(m)
     }
     ready_merchant_ids = (
         proceed_merchant_ids - recently_submitted_merchant_ids - blocked_merchant_ids

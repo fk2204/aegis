@@ -1098,6 +1098,19 @@ def _build_analysis(
     monthly_revenue = (
         aggregates.true_revenue.value * Decimal(30) / Decimal(max(statement_days, 1))
     ).quantize(Decimal("0.01"))
+    # Floor monthly_revenue at 0 (2026-07-01 FIX 3). Negative revenue is
+    # semantically impossible — it happens when the aggregator's netting
+    # subtracts more outflows than the row-level classifier tagged as
+    # inflows (mis-classified transfer categories, unusual bank naming
+    # conventions, etc.). Downstream sizing (``recommended_amount``,
+    # ``max_amount`` in ``aegis.scoring_v2.offer``) multiplies
+    # ``monthly_revenue`` and cannot consume a negative number without
+    # producing a negative offer. The Track B compute layer already
+    # floors its own copy at 0 (compute.py L182); this call site is the
+    # persistence-layer floor for ``analyses.monthly_revenue``, which
+    # feeds dashboard KPIs + the calibration engine.
+    if monthly_revenue < Decimal("0"):
+        monthly_revenue = Decimal("0")
 
     lowest_balance = min(
         (t.running_balance for t in classified if t.running_balance is not None),

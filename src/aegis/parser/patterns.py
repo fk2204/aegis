@@ -118,6 +118,10 @@ KNOWN_FUNDERS: Final[tuple[str, ...]] = (
     # "pattern" (daily-cadence match only) instead of "confirmed".
     "fundworks",
     "revenued",
+    # "iou financial" already covered above; adding the bare "iou"
+    # token so debit descriptions like "IOU LLC DAILY PAYMENT" (seen
+    # on Transplex) also land in the confirmed bucket.
+    "iou",
 )
 
 # Behavioral terms — only count when frequency confirms (TS-review fix).
