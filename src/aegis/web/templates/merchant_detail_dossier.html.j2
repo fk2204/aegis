@@ -509,11 +509,122 @@
       {% endif %}
 
       <div style="margin-top:14px">
-        {% if ofac_status == 'clean' %}<span class="pill ok">OFAC ✓ clean</span>
-        {% elif ofac_status == 'match' %}<span class="pill bad">OFAC ✗ match</span>
-        {% elif ofac_status == 'unavailable' %}<span class="pill warn">OFAC stale</span>
-        {% else %}<span class="pill warn">OFAC pending</span>{% endif %}
         {% if merchant.is_renewal %}<span class="pill warn">renewal</span>{% endif %}
+      </div>
+
+      {# Four-row background-check status grid + per-row refresh button.
+         Each row: status pill (ok/bad/warn/pending) + a small
+         last-checked timestamp + a ``↻`` button that POSTs the
+         matching refresh-* route. The refresh routes redirect back to
+         the dossier via HTTP 303, so no JS wiring is required for the
+         status pills to update after the click.
+
+         Safe on merchants with every ``*_checked_at`` = None — each
+         row branches on the timestamp and renders a "Never checked"
+         pill instead of crashing on the missing value. #}
+      <div class="bg-checks-grid" data-test-id="dossier-bg-checks-grid"
+           style="margin-top:12px;display:flex;flex-direction:column;gap:6px">
+
+        {# OFAC row #}
+        <div class="bg-check-row" data-test-id="bg-check-row-ofac"
+             style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+          <span style="min-width:52px;font-size:11px;color:var(--ink-3);font-family:var(--mono, monospace)">OFAC</span>
+          {% if merchant.ofac_checked_at is none %}
+            <span class="pill warn" style="flex:0 0 auto">pending</span>
+          {% elif merchant.ofac_is_clear %}
+            <span class="pill ok" style="flex:0 0 auto">clear</span>
+          {% else %}
+            <span class="pill bad" style="flex:0 0 auto">match</span>
+          {% endif %}
+          <span style="flex:1;text-align:right;font-size:10px;color:var(--ink-3)">
+            {% if merchant.ofac_checked_at %}{{ merchant.ofac_checked_at.strftime('%Y-%m-%d') }}{% else %}—{% endif %}
+          </span>
+          <form method="post" action="/ui/merchants/{{ merchant.id }}/refresh-ofac"
+                class="inline" style="margin:0">
+            <button type="submit" data-test-id="refresh-ofac"
+                    title="Re-run OFAC screening"
+                    style="font-size:11px;padding:1px 6px">↻</button>
+          </form>
+        </div>
+
+        {# UCC row #}
+        <div class="bg-check-row" data-test-id="bg-check-row-ucc"
+             style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+          <span style="min-width:52px;font-size:11px;color:var(--ink-3);font-family:var(--mono, monospace)">UCC</span>
+          {% if merchant.ucc_checked_at is none %}
+            <span class="pill warn" style="flex:0 0 auto">pending</span>
+          {% elif merchant.ucc_default_indicators %}
+            <span class="pill bad" style="flex:0 0 auto">default</span>
+          {% elif merchant.ucc_filings %}
+            <span class="pill warn" style="flex:0 0 auto">filings</span>
+          {% else %}
+            <span class="pill ok" style="flex:0 0 auto">clear</span>
+          {% endif %}
+          <span style="flex:1;text-align:right;font-size:10px;color:var(--ink-3)">
+            {% if merchant.ucc_checked_at %}{{ merchant.ucc_checked_at.strftime('%Y-%m-%d') }}{% else %}—{% endif %}
+          </span>
+          <form method="post" action="/ui/merchants/{{ merchant.id }}/refresh-ucc"
+                class="inline" style="margin:0">
+            <button type="submit" data-test-id="refresh-ucc-sidebar"
+                    title="Re-run UCC + previous-default check"
+                    style="font-size:11px;padding:1px 6px">↻</button>
+          </form>
+        </div>
+
+        {# SOS row #}
+        <div class="bg-check-row" data-test-id="bg-check-row-sos"
+             style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+          <span style="min-width:52px;font-size:11px;color:var(--ink-3);font-family:var(--mono, monospace)">SOS</span>
+          {% if merchant.sos_checked_at is none %}
+            <span class="pill warn" style="flex:0 0 auto">pending</span>
+          {% elif merchant.sos_is_active %}
+            <span class="pill ok" style="flex:0 0 auto">active</span>
+          {% elif merchant.sos_is_active is none %}
+            <span class="pill warn" style="flex:0 0 auto">unknown</span>
+          {% else %}
+            <span class="pill bad" style="flex:0 0 auto">inactive</span>
+          {% endif %}
+          <span style="flex:1;text-align:right;font-size:10px;color:var(--ink-3)">
+            {% if merchant.sos_checked_at %}{{ merchant.sos_checked_at.strftime('%Y-%m-%d') }}{% else %}—{% endif %}
+          </span>
+          <form method="post" action="/ui/merchants/{{ merchant.id }}/background-checks/refresh-sos"
+                class="inline" style="margin:0"
+                hx-post="/ui/merchants/{{ merchant.id }}/background-checks/refresh-sos"
+                hx-target="#background-checks-section"
+                hx-swap="outerHTML">
+            <button type="submit" data-test-id="refresh-sos-sidebar"
+                    title="Re-run Secretary of State check"
+                    style="font-size:11px;padding:1px 6px">↻</button>
+          </form>
+        </div>
+
+        {# Web presence row #}
+        <div class="bg-check-row" data-test-id="bg-check-row-web-presence"
+             style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+          <span style="min-width:52px;font-size:11px;color:var(--ink-3);font-family:var(--mono, monospace)">Web</span>
+          {% if merchant.web_presence_scanned_at is none %}
+            <span class="pill warn" style="flex:0 0 auto">pending</span>
+          {% elif merchant.web_presence_flags %}
+            <span class="pill warn" style="flex:0 0 auto">flags</span>
+          {% else %}
+            <span class="pill ok" style="flex:0 0 auto">clear</span>
+          {% endif %}
+          <span style="flex:1;text-align:right;font-size:10px;color:var(--ink-3)">
+            {% if merchant.web_presence_scanned_at %}{{ merchant.web_presence_scanned_at.strftime('%Y-%m-%d') }}{% else %}—{% endif %}
+          </span>
+          <form method="post" action="/ui/merchants/{{ merchant.id }}/refresh-web-presence"
+                class="inline" style="margin:0">
+            <button type="submit" data-test-id="refresh-web-presence-sidebar"
+                    title="Re-run web-presence scan"
+                    style="font-size:11px;padding:1px 6px">↻</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="crosslink" style="margin-top:10px">
+        <a href="/ui/merchants/{{ merchant.id }}/background-checks.html"
+           data-test-id="bg-check-report-download"
+           download>↓ Download background check report</a>
       </div>
     </div>
 

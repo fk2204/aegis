@@ -1,0 +1,291 @@
+{# Force autoescape on for the whole file. The AEGIS Jinja env keeps
+   autoescape OFF for ``.j2`` extensions (see ``aegis.web._templates``);
+   the dossier template inlines trusted-source merchant fields raw.
+   This report file is downloadable HTML that can be opened outside
+   the dashboard, so we explicitly escape every ``{{ }}`` expression
+   as a defense-in-depth measure — a merchant name that ever contained
+   `<script>` would otherwise execute in whoever opens the file.
+   See ``tests/test_security_invariants.py`` for the file-viewer
+   security posture. #}
+{% autoescape true %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Background-check report — {{ merchant.business_name or merchant.id }}</title>
+  <style>
+    /* Self-contained styles so the downloaded file renders without the
+       AEGIS CSS bundle. Kept minimal + print-friendly: black-on-white,
+       serif for reading, mono for identifiers. */
+    * { box-sizing: border-box; }
+    body {
+      font-family: Georgia, "Times New Roman", serif;
+      color: #222;
+      background: #fff;
+      max-width: 800px;
+      margin: 24px auto;
+      padding: 0 24px;
+      line-height: 1.4;
+      font-size: 13px;
+    }
+    header.report-header {
+      border-bottom: 2px solid #222;
+      padding-bottom: 12px;
+      margin-bottom: 24px;
+    }
+    header.report-header h1 {
+      margin: 0 0 4px;
+      font-size: 22px;
+    }
+    header.report-header .meta {
+      font-size: 11px;
+      color: #555;
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+    }
+    section.check {
+      margin-bottom: 24px;
+      padding: 14px 16px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      page-break-inside: avoid;
+    }
+    section.check header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 8px;
+      border-bottom: 1px solid #eee;
+      padding-bottom: 6px;
+    }
+    section.check h2 {
+      font-size: 14px;
+      margin: 0;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .pill {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border: 1px solid #999;
+    }
+    .pill.ok { background: #e6f4ea; color: #1e6b2e; border-color: #1e6b2e; }
+    .pill.bad { background: #fde7e7; color: #7a0000; border-color: #7a0000; }
+    .pill.warn { background: #fdf2d4; color: #7a5b00; border-color: #7a5b00; }
+    .pill.pending { background: #eee; color: #555; border-color: #999; }
+    dl.details {
+      margin: 0;
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      column-gap: 12px;
+      row-gap: 4px;
+    }
+    dl.details dt {
+      font-weight: 700;
+      color: #555;
+      font-size: 12px;
+    }
+    dl.details dd {
+      margin: 0;
+      font-size: 12px;
+    }
+    ul.match-list, ul.filings-list, ul.flags-list {
+      margin: 6px 0 0;
+      padding-left: 18px;
+      font-size: 12px;
+    }
+    .empty {
+      color: #888;
+      font-style: italic;
+      font-size: 12px;
+    }
+    footer.report-footer {
+      margin-top: 32px;
+      padding-top: 12px;
+      border-top: 1px solid #ccc;
+      font-size: 10px;
+      color: #666;
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+    }
+  </style>
+</head>
+<body>
+
+  <header class="report-header">
+    <h1>Background-check report</h1>
+    <div class="meta">
+      Merchant: {{ merchant.business_name or "(unnamed)" }}<br>
+      Merchant ID: {{ merchant.id }}<br>
+      Generated: {{ generated_at.strftime('%Y-%m-%d %H:%M UTC') }}
+    </div>
+  </header>
+
+  {# ============= OFAC ============= #}
+  <section class="check" data-test-id="report-ofac">
+    <header>
+      <h2>OFAC screening</h2>
+      {% if merchant.ofac_checked_at is none %}
+        <span class="pill pending">Never checked</span>
+      {% elif merchant.ofac_is_clear %}
+        <span class="pill ok">Clear</span>
+      {% else %}
+        <span class="pill bad">Match</span>
+      {% endif %}
+    </header>
+    <dl class="details">
+      <dt>Last checked</dt>
+      <dd>
+        {% if merchant.ofac_checked_at %}{{ merchant.ofac_checked_at.strftime('%Y-%m-%d %H:%M UTC') }}
+        {% else %}<span class="empty">—</span>{% endif %}
+      </dd>
+      <dt>Result</dt>
+      <dd>
+        {% if merchant.ofac_checked_at is none %}<span class="empty">not yet screened</span>
+        {% elif merchant.ofac_is_clear %}No sanctions-list match.
+        {% else %}Sanctions-list match — see details below.{% endif %}
+      </dd>
+    </dl>
+    {% if merchant.ofac_match_detail %}
+      <ul class="match-list" data-test-id="report-ofac-matches">
+        {% for line in merchant.ofac_match_detail %}
+          <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+  {# ============= UCC ============= #}
+  <section class="check" data-test-id="report-ucc">
+    <header>
+      <h2>UCC filings &amp; prior defaults</h2>
+      {% if merchant.ucc_checked_at is none %}
+        <span class="pill pending">Never checked</span>
+      {% elif merchant.ucc_default_indicators %}
+        <span class="pill bad">Prior default</span>
+      {% elif merchant.ucc_filings %}
+        <span class="pill warn">Filings present</span>
+      {% else %}
+        <span class="pill ok">Clear</span>
+      {% endif %}
+    </header>
+    <dl class="details">
+      <dt>Last checked</dt>
+      <dd>
+        {% if merchant.ucc_checked_at %}{{ merchant.ucc_checked_at.strftime('%Y-%m-%d %H:%M UTC') }}
+        {% else %}<span class="empty">—</span>{% endif %}
+      </dd>
+      <dt>Filing count</dt>
+      <dd>{{ merchant.ucc_filings|length }}</dd>
+      <dt>Default indicators</dt>
+      <dd>{{ merchant.ucc_default_indicators|length }}</dd>
+    </dl>
+    {% if merchant.ucc_default_indicators %}
+      <strong style="display:block;margin:10px 0 4px;color:#7a0000">Default indicators</strong>
+      <ul class="match-list" data-test-id="report-ucc-defaults">
+        {% for indicator in merchant.ucc_default_indicators %}
+          <li>{{ indicator }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    {% if merchant.ucc_filings %}
+      <strong style="display:block;margin:10px 0 4px">Filings</strong>
+      <ul class="filings-list" data-test-id="report-ucc-filings">
+        {% for filing in merchant.ucc_filings %}
+          <li>{{ filing }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+  {# ============= SOS ============= #}
+  <section class="check" data-test-id="report-sos">
+    <header>
+      <h2>Secretary of State entity</h2>
+      {% if merchant.sos_checked_at is none %}
+        <span class="pill pending">Never checked</span>
+      {% elif merchant.sos_is_active %}
+        <span class="pill ok">Active</span>
+      {% elif merchant.sos_is_active is none %}
+        <span class="pill warn">Unknown</span>
+      {% else %}
+        <span class="pill bad">Not active</span>
+      {% endif %}
+    </header>
+    <dl class="details">
+      <dt>Last checked</dt>
+      <dd>
+        {% if merchant.sos_checked_at %}{{ merchant.sos_checked_at.strftime('%Y-%m-%d %H:%M UTC') }}
+        {% else %}<span class="empty">—</span>{% endif %}
+      </dd>
+      <dt>State checked</dt>
+      <dd>
+        {% if merchant.sos_state_checked %}{{ merchant.sos_state_checked }}
+        {% else %}<span class="empty">—</span>{% endif %}
+      </dd>
+      <dt>Entity name (registry)</dt>
+      <dd>
+        {% if merchant.sos_entity_name %}{{ merchant.sos_entity_name }}
+        {% else %}<span class="empty">—</span>{% endif %}
+      </dd>
+      <dt>Formation date</dt>
+      <dd>
+        {% if merchant.sos_formation_date %}{{ merchant.sos_formation_date }}
+        {% else %}<span class="empty">—</span>{% endif %}
+      </dd>
+      <dt>Status label</dt>
+      <dd>
+        {% if merchant.sos_status %}{{ merchant.sos_status }}
+        {% else %}<span class="empty">—</span>{% endif %}
+      </dd>
+    </dl>
+  </section>
+
+  {# ============= Web presence ============= #}
+  <section class="check" data-test-id="report-web-presence">
+    <header>
+      <h2>Web presence</h2>
+      {% if merchant.web_presence_scanned_at is none %}
+        <span class="pill pending">Never scanned</span>
+      {% elif merchant.web_presence_flags %}
+        <span class="pill warn">Flags present</span>
+      {% else %}
+        <span class="pill ok">Clear</span>
+      {% endif %}
+    </header>
+    <dl class="details">
+      <dt>Last scanned</dt>
+      <dd>
+        {% if merchant.web_presence_scanned_at %}{{ merchant.web_presence_scanned_at.strftime('%Y-%m-%d %H:%M UTC') }}
+        {% else %}<span class="empty">—</span>{% endif %}
+      </dd>
+      <dt>Flag count</dt>
+      <dd>{{ merchant.web_presence_flags|length }}</dd>
+    </dl>
+    {% if merchant.web_presence_summary %}
+      <p style="margin:10px 0 4px;font-size:12px">{{ merchant.web_presence_summary }}</p>
+    {% elif merchant.web_presence_scanned_at %}
+      <p class="empty" style="margin:10px 0 4px">— no summary returned —</p>
+    {% endif %}
+    {% if merchant.web_presence_flags %}
+      <strong style="display:block;margin:10px 0 4px">Risk flags</strong>
+      <ul class="flags-list" data-test-id="report-web-flags">
+        {% for flag in merchant.web_presence_flags %}
+          <li>{{ flag }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+  <footer class="report-footer">
+    AEGIS internal background-check report ·
+    Commera Capital, ISO broker ·
+    Merchant {{ merchant.id }}
+  </footer>
+
+</body>
+</html>
+{% endautoescape %}
