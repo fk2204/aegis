@@ -25,7 +25,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Literal, Protocol
 from uuid import UUID
 
 import jellyfish
@@ -54,6 +54,77 @@ JARO_WINKLER_THRESHOLD: Final[float] = 0.88
 # where word order differs ("Doe, John A." vs "John A. Doe") that
 # Jaro-Winkler under-counts.
 TOKEN_SORT_THRESHOLD: Final[float] = 0.88
+
+# Context-aware raised threshold used when a US-looking business name is
+# compared against a foreign SDN entry (foreign program AND foreign
+# address). At 0.96 the fuzzy match effectively requires a near-exact
+# textual overlap, killing the "BandA Towing ~ Agustin REYES GARZA" and
+# "The Turnbull Company LLC ~ Tekhnopol/Yakut Ore Company" false
+# positives observed against real Treasury data 2026-07 while still
+# catching the true-positive case of a US operator using an on-list
+# entity name verbatim (e.g. "IRAN LNG CO").
+_FOREIGN_SDN_THRESHOLD: Final[float] = 0.96
+
+# Tokens that strongly suggest the merchant candidate is a US business.
+# Legal-entity suffixes (LLC, INC, CORP, ...) and industry markers that
+# recur in Commera's ISO pipeline (TOWING, TRUCKING, SERVICES, ...).
+# Kept small — the list is not exhaustive; adding more tokens is safe
+# but each addition trades a false negative on a foreign business that
+# borrows US-style suffix for a smaller fuzzy window against real
+# foreign SDNs.
+_US_ENTITY_SUFFIXES: Final[frozenset[str]] = frozenset(
+    {
+        "LLC",
+        "INC",
+        "CORP",
+        "CO",
+        "LLP",
+        "LP",
+        "PC",
+        "PLLC",
+        "TOWING",
+        "TRANSPORT",
+        "TRUCKING",
+        "SERVICES",
+        "GROUP",
+        "SOLUTIONS",
+        "ENTERPRISES",
+        "INDUSTRIES",
+        "ASSOCIATES",
+    }
+)
+
+# OFAC program codes that are inherently foreign-jurisdiction. An SDN
+# entry whose program list intersects this set can be treated as
+# "definitely-not-a-US-business" for the context-aware threshold gate.
+# List is small on purpose: the goal is to catch obvious false-positive
+# geographies (Iran / Russia / North Korea / Cuba / Syria / Belarus /
+# Burma / Venezuela / narcotics kingpin / WMD proliferator), not to
+# exhaustively enumerate every OFAC program.
+_FOREIGN_ONLY_PROGRAMS: Final[frozenset[str]] = frozenset(
+    {
+        "IRAN",
+        "RUSSIA",
+        "UKRAINE-EO13661",
+        "UKRAINE-EO13685",
+        "NK",
+        "NORTHKOREA",
+        "CUBA",
+        "SYRIA",
+        "BELARUS",
+        "BURMA",
+        "VENEZUELA",
+        "ZCWMD",
+        "SDNTK",
+    }
+)
+
+# 2-letter ISO country codes that indicate the SDN entity is US-based.
+# Anything not in this set (including empty) is treated as foreign
+# when combined with a foreign program.
+_US_COUNTRY_CODES: Final[frozenset[str]] = frozenset({"US", "USA", "UNITED STATES"})
+
+CandidateType = Literal["business", "individual"]
 
 CACHE_STALE_THRESHOLD: Final[timedelta] = timedelta(days=7)
 
@@ -134,20 +205,129 @@ def _cache_age_hours(cache: dict[str, object]) -> float:
     return (datetime.now(UTC) - fetched_at).total_seconds() / 3600.0
 
 
+def _entry_programs(entry: dict[str, object]) -> frozenset[str]:
+    """Return the program codes on ``entry`` as an uppercase frozenset.
+
+    Handles both the new ``programs: list[str]`` shape (post-upgrade
+    cache) and the legacy ``program: "SDGT,IRAN"`` comma-joined string
+    (pre-upgrade cache). Missing / malformed → empty set.
+    """
+    programs_raw = entry.get("programs")
+    if isinstance(programs_raw, list):
+        return frozenset(
+            str(p).strip().upper() for p in programs_raw if isinstance(p, str) and p.strip()
+        )
+    legacy = entry.get("program")
+    if isinstance(legacy, str) and legacy:
+        return frozenset(part.strip().upper() for part in legacy.split(",") if part.strip())
+    return frozenset()
+
+
+def _entry_countries(entry: dict[str, object]) -> frozenset[str]:
+    """Return the country codes / names on ``entry`` as an uppercase
+    frozenset. Missing → empty set (treated as foreign when combined
+    with a foreign program)."""
+    countries_raw = entry.get("countries")
+    if isinstance(countries_raw, list):
+        return frozenset(
+            str(c).strip().upper() for c in countries_raw if isinstance(c, str) and c.strip()
+        )
+    return frozenset()
+
+
+def _entry_sdn_type(entry: dict[str, object]) -> str:
+    """Return the SDN entry type as an uppercase string.
+
+    Preference order: new ``sdn_type`` field, legacy ``type`` field,
+    fallback ``ENTITY`` (matches Treasury's default when the field is
+    absent in the raw XML). Kept forgiving so pre-upgrade cache files
+    still screen without a re-fetch.
+    """
+    for key in ("sdn_type", "type"):
+        val = entry.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip().upper()
+    return "ENTITY"
+
+
+def _is_likely_us_business(candidate_norm: str) -> bool:
+    """Heuristic — does the normalized candidate contain a US-style
+    entity suffix or industry marker? Token intersection against
+    ``_US_ENTITY_SUFFIXES``.
+    """
+    if not candidate_norm:
+        return False
+    tokens = set(candidate_norm.split())
+    return bool(tokens & _US_ENTITY_SUFFIXES)
+
+
+def _is_foreign_sdn(entry: dict[str, object]) -> bool:
+    """Return True when the entry's program list intersects
+    ``_FOREIGN_ONLY_PROGRAMS`` AND the entry's country list contains no
+    US marker (or is empty). This is the "SDN is not plausibly a US
+    person / business" branch of the context-aware threshold.
+    """
+    programs = _entry_programs(entry)
+    if not (programs & _FOREIGN_ONLY_PROGRAMS):
+        return False
+    countries = _entry_countries(entry)
+    if countries and (countries & _US_COUNTRY_CODES):
+        # Rare: a US-based SDN under a program that usually targets a
+        # foreign jurisdiction (e.g. a US-domiciled front company on
+        # the IRAN program). Do NOT raise the threshold — the standard
+        # 0.88 cutoff still applies.
+        return False
+    return True
+
+
 def _screen_one_name(
     *,
     candidate: str,
+    candidate_type: CandidateType,
     entries: list[dict[str, object]],
 ) -> list[str]:
     """Compare ``candidate`` to every entry name + alias. Return a list
-    of human-readable match descriptions; empty list means no match."""
+    of human-readable match descriptions; empty list means no match.
+
+    Context-aware behavior:
+
+    * Type-filter — INDIVIDUAL SDN entries are skipped when the
+      candidate is a business; VESSEL / AIRCRAFT SDN entries are
+      skipped when the candidate is an individual. The remaining
+      cross-type combinations (entity vs individual owner name, etc)
+      still screen at the default threshold.
+    * Threshold-raise — when the candidate looks like a US business
+      (token intersection with ``_US_ENTITY_SUFFIXES``) AND the SDN
+      entry is on a foreign-jurisdiction program AND the entry has no
+      US country marker, the fuzzy cutoff is raised from 0.88 to
+      ``_FOREIGN_SDN_THRESHOLD`` (0.96). This kills the "US towing
+      company matches Russian individual" false-positive class while
+      still catching a US operator using the on-list entity name
+      verbatim.
+    """
     if not candidate:
         return []
     candidate_norm = _normalize_name(candidate)
     if not candidate_norm:
         return []
+    is_likely_us_business = candidate_type == "business" and _is_likely_us_business(candidate_norm)
     matches: list[str] = []
     for entry in entries:
+        entry_type = _entry_sdn_type(entry)
+        # Cross-type filter: a business candidate cannot BE a listed
+        # individual; an individual candidate cannot BE a vessel or
+        # aircraft. Everything else (entity vs individual owner, etc)
+        # still screens at the default threshold.
+        if candidate_type == "business" and entry_type == "INDIVIDUAL":
+            continue
+        if candidate_type == "individual" and entry_type in {"VESSEL", "AIRCRAFT"}:
+            continue
+
+        is_foreign_entity = _is_foreign_sdn(entry)
+        use_raised_threshold = is_likely_us_business and is_foreign_entity
+        jw_cutoff = _FOREIGN_SDN_THRESHOLD if use_raised_threshold else JARO_WINKLER_THRESHOLD
+        ts_cutoff = _FOREIGN_SDN_THRESHOLD if use_raised_threshold else TOKEN_SORT_THRESHOLD
+
         names_to_check: list[str] = []
         name = entry.get("name")
         if isinstance(name, str) and name:
@@ -162,10 +342,8 @@ def _screen_one_name(
             if not sanc_norm:
                 continue
             jw = float(jellyfish.jaro_winkler_similarity(candidate_norm, sanc_norm))
-            ts = (
-                _token_sort_ratio(candidate_norm, sanc_norm) if jw < JARO_WINKLER_THRESHOLD else 0.0
-            )
-            if jw >= JARO_WINKLER_THRESHOLD or ts >= TOKEN_SORT_THRESHOLD:
+            ts = _token_sort_ratio(candidate_norm, sanc_norm) if jw < jw_cutoff else 0.0
+            if jw >= jw_cutoff or ts >= ts_cutoff:
                 uid = entry.get("uid", "?")
                 list_name = entry.get("list", "?")
                 # Report the SANC name (it's already public on
@@ -232,9 +410,21 @@ def screen_merchant(
     try:
         matches: list[str] = []
         if business_name:
-            matches.extend(_screen_one_name(candidate=business_name, entries=entries))
+            matches.extend(
+                _screen_one_name(
+                    candidate=business_name,
+                    candidate_type="business",
+                    entries=entries,
+                )
+            )
         if owner_name:
-            matches.extend(_screen_one_name(candidate=owner_name, entries=entries))
+            matches.extend(
+                _screen_one_name(
+                    candidate=owner_name,
+                    candidate_type="individual",
+                    entries=entries,
+                )
+            )
     except Exception as exc:
         return OFACResult(
             is_clear=False,
@@ -404,6 +594,7 @@ __all__ = [
     "DEFAULT_CACHE_PATH",
     "JARO_WINKLER_THRESHOLD",
     "TOKEN_SORT_THRESHOLD",
+    "CandidateType",
     "OFACResult",
     "ensure_ofac_check",
     "refresh_ofac_for_merchant",

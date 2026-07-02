@@ -115,6 +115,17 @@ class OFACEntry:
     entry_type: str = ""
     program: str = ""
     remarks: str = ""
+    # Context-aware fields (added 2026-07). ``sdn_type`` mirrors the raw
+    # ``<sdnType>`` element ("Individual" / "Entity" / "Vessel" /
+    # "Aircraft"); ``programs`` is the list-of-strings shape (the
+    # ``program`` field above stays as the comma-joined string for
+    # backwards compatibility with old cache readers); ``countries``
+    # is the deduped uppercase list of country codes / names from
+    # ``<addressList><address><country>``. All three are consumed by
+    # ``src/aegis/compliance/ofac.py`` for the context-aware threshold.
+    sdn_type: str = ""
+    programs: tuple[str, ...] = field(default_factory=tuple)
+    countries: tuple[str, ...] = field(default_factory=tuple)
 
 
 def _normalize_name(s: str) -> str:
@@ -223,6 +234,20 @@ def _parse_ofac_xml(xml_bytes: bytes, list_name: str) -> list[OFACEntry]:
 
         remarks = _child_text(entry, "remarks")
 
+        # Countries — collected from every <addressList><address><country>
+        # element on the entry. Deduped case-insensitively; original
+        # casing is preserved on the first occurrence so the runtime
+        # can normalize per its own rules.
+        countries: list[str] = []
+        seen_countries: set[str] = set()
+        addr_lists = _children(entry, "addressList")
+        for addr_list in addr_lists:
+            for addr in _children(addr_list, "address"):
+                country = _child_text(addr, "country")
+                if country and country.upper() not in seen_countries:
+                    countries.append(country)
+                    seen_countries.add(country.upper())
+
         entries.append(
             OFACEntry(
                 uid=uid,
@@ -232,6 +257,9 @@ def _parse_ofac_xml(xml_bytes: bytes, list_name: str) -> list[OFACEntry]:
                 entry_type=sdn_type.lower() or "entity",
                 program=",".join(programs),
                 remarks=remarks,
+                sdn_type=sdn_type or "Entity",
+                programs=tuple(programs),
+                countries=tuple(countries),
             )
         )
     return entries
@@ -265,18 +293,52 @@ def _parse_opensanctions(json_bytes: bytes) -> list[OFACEntry]:
         aliases = tuple(n for n in names[1:] if n and n != primary)
         topics = properties.get("topics") or []
         program = ",".join(str(t) for t in topics if t)
+        program_list = tuple(str(t) for t in topics if t)
+        # OpenSanctions FTM schema: "Person" / "Company" / "Organization" /
+        # "Vessel" / "Airplane". Map to the OFAC-style vocabulary so the
+        # runtime type-filter reads the same shape regardless of source.
+        schema = str(obj.get("schema", "")).strip()
+        sdn_type = _opensanctions_schema_to_sdn_type(schema)
+        countries_raw = properties.get("country") or []
+        countries: tuple[str, ...] = ()
+        if isinstance(countries_raw, list):
+            countries = tuple(str(c) for c in countries_raw if c)
+        elif isinstance(countries_raw, str) and countries_raw:
+            countries = (countries_raw,)
         entries.append(
             OFACEntry(
                 uid=uid,
                 name=primary,
                 aliases=aliases,
                 list_name="opensanctions_us_ofac_sdn",
-                entry_type=str(obj.get("schema", "")).lower() or "entity",
+                entry_type=schema.lower() or "entity",
                 program=program,
                 remarks="",
+                sdn_type=sdn_type,
+                programs=program_list,
+                countries=countries,
             )
         )
     return entries
+
+
+def _opensanctions_schema_to_sdn_type(schema: str) -> str:
+    """Map an OpenSanctions FTM schema name to the OFAC-style sdnType.
+
+    The runtime type-filter compares against the uppercased OFAC
+    vocabulary (INDIVIDUAL / ENTITY / VESSEL / AIRCRAFT). OpenSanctions
+    ships different labels; normalize here so both sources produce the
+    same runtime shape.
+    """
+    s = schema.strip().lower()
+    if s in {"person"}:
+        return "Individual"
+    if s in {"vessel", "ship"}:
+        return "Vessel"
+    if s in {"airplane", "aircraft"}:
+        return "Aircraft"
+    # Company / Organization / LegalEntity / default → Entity.
+    return "Entity"
 
 
 def _build_name_index(entries: list[OFACEntry]) -> dict[str, list[str]]:
@@ -310,6 +372,9 @@ def _existing_entries_by_list(cache_path: Path, list_name: str) -> list[OFACEntr
             entry_type=e.get("type", ""),
             program=e.get("program", ""),
             remarks=e.get("remarks", ""),
+            sdn_type=e.get("sdn_type", ""),
+            programs=tuple(e.get("programs") or ()),
+            countries=tuple(e.get("countries") or ()),
         )
         for e in (prior.get("entries") or [])
         if e.get("list") == list_name
@@ -397,6 +462,14 @@ def update_cache(cache_dir: Path) -> int:
                 "type": e.entry_type,
                 "program": e.program,
                 "remarks": e.remarks,
+                # Context-aware fields consumed by
+                # ``src/aegis/compliance/ofac.py`` — safe defaults let
+                # the runtime keep working when the field is absent
+                # (old cache file); the reader falls back to ``ENTITY``
+                # / empty program set / empty country set.
+                "sdn_type": e.sdn_type,
+                "programs": list(e.programs),
+                "countries": list(e.countries),
             }
             for e in all_entries
         ],
