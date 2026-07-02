@@ -357,6 +357,25 @@ def match_funder(
     if not funder.active:
         return None
 
+    # OFAC hard gate (2026-07-01 FIX C1). A merchant with a positive
+    # OFAC-SDN match cannot be presented to ANY funder — this is a
+    # regulatory / compliance line, not a per-funder criteria issue.
+    # The dossier already suppresses the match panel when
+    # ``ofac_blocked`` is true, but the underlying function was
+    # returning FunderMatch objects that could still leak into
+    # downstream code (calibration reads, exports, tests). Return None
+    # here so every caller — dossier, deals API, calibration pre-fetch,
+    # ad-hoc scripts — sees a consistent "no match" answer.
+    # ``ofac_is_clear`` semantics:
+    #     True  = screened, no match (safe to match)
+    #     False = screened, matched (BLOCK)
+    #     None  = never screened (pass — background_checks will fill
+    #             it in on the next dossier open; do not silently drop
+    #             merchants that haven't been screened yet, that would
+    #             regress the "screen-on-first-open" ergonomics).
+    if merchant is not None and merchant.ofac_is_clear is False:
+        return None
+
     # Product-type filter (no new column — uses existing
     # ``deal_types_accepted``). When the merchant has an EXPLICIT
     # ``product_type`` AND the funder has a non-empty
