@@ -130,6 +130,27 @@ _FOREIGN_ONLY_PROGRAMS: Final[frozenset[str]] = frozenset(
         # IRAN designation and lists foreign banks; include it so US
         # small businesses aren't matched against IFSR entries.
         "IFSR",
+        # 2026-07-02 second refresh - EO-suffix variants surfaced by
+        # prod re-screen: Turnbull Company LLC matched TECHNOPOLE COMPANY
+        # on RUSSIA-EO14024 (6,446 entries — the largest program in the
+        # cache). The base country programs above don't cover the
+        # EO-specific SDN entries; add the sibling codes across Russia
+        # / Ukraine / Iran / Belarus / Venezuela / Burma / DPRK, plus
+        # IRGC and the illicit-drugs EO.
+        "RUSSIA-EO14024",
+        "UKRAINE-EO13660",
+        "UKRAINE-EO13662",
+        "IRAN-EO13846",
+        "IRAN-EO13876",
+        "IRAN-EO13902",
+        "IRGC",
+        "BELARUS-EO14038",
+        "VENEZUELA-EO13850",
+        "BURMA-EO14014",
+        "DPRK2",
+        "DPRK3",
+        "DPRK4",
+        "ILLICIT-DRUGS-EO14059",
     }
 )
 
