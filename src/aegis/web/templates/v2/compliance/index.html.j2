@@ -2,12 +2,57 @@
 {% set active = 'compliance' %}
 {% block title %}Compliance · AEGIS{% endblock %}
 {% block content %}
-  <div class="eyebrow">Compliance workbench</div>
-  <h1 class="desk">Compliance</h1>
-  <div class="desk-sub">Sanctions, know-your-business, and licensing — checks that block a deal regardless of credit.</div>
-  {% if ofac %}
-    {# render OFAC queue / KYB / states / activity from the view model (see aegis-reference.html) #}
+<div class="eyebrow">Compliance workbench</div>
+<h1 class="desk">Compliance</h1>
+<div class="desk-sub">Sanctions, know-your-business, and licensing — checks that block a deal regardless of credit.</div>
+
+{% if kpis %}
+<div class="kpis">
+  {% for k in kpis %}
+  <div class="kpi {{ 'alert' if k.is_alert }}">
+    <div class="k">{{ k.label }}</div>
+    <div class="v">{{ k.value }}</div>
+    <div class="d">{{ k.detail }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="comp-sec">
+  <h2>OFAC sanctions queue</h2>
+  <div class="sh">Merchants matched against the OFAC Specially Designated Nationals list. Review each match before clearing or escalating.</div>
+
+  {% for item in ofac %}
+  <div class="ofac {{ 'cleared' if item.status == 'cleared' else '' }}" id="ofac-{{ item.id }}">
+    <div class="omain">
+      <div>
+        <div class="onm">
+          <h3>{{ item.name }}</h3>
+          <span class="stbadge st-match">SDN MATCH</span>
+        </div>
+        <div class="osub">{{ item.state }} · {{ item.match_count }} match(es) found</div>
+      </div>
+      <div class="oact">
+        <a href="/v2/deal/{{ item.id }}"><button type="button" class="btn">View dossier →</button></a>
+        <form method="post" action="/v2/compliance/ofac/{{ item.id }}/clear" style="display:inline">
+          <button type="submit" class="btn primary"
+                  hx-post="/v2/compliance/ofac/{{ item.id }}/clear"
+                  hx-target="#ofac-{{ item.id }}"
+                  hx-swap="outerHTML">Clear</button>
+        </form>
+      </div>
+    </div>
+    {% if item.matches %}
+    <details class="exp" style="padding:0 22px 14px">
+      <summary>{{ item.match_count }} match detail(s)</summary>
+      <div class="matchrows">
+        {% for m in item.matches %}<div>{{ m }}</div>{% endfor %}
+      </div>
+    </details>
+    {% endif %}
+  </div>
   {% else %}
-    <div class="card"><div class="bd"><p style="margin:0;color:var(--ink-3)">No compliance data yet — wire <code>build_compliance_view()</code> to the real screening service.</p></div></div>
-  {% endif %}
+  <div class="card"><div class="bd" style="color:var(--ink-3)">No OFAC flags — all merchants clear.</div></div>
+  {% endfor %}
+</div>
 {% endblock %}

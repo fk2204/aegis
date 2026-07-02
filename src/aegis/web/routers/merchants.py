@@ -811,6 +811,109 @@ def _fintech_bank_warning_from_flags(all_flags: list[str] | None) -> str | None:
     return None
 
 
+def run_scoring_pipeline_for_merchant(
+    merchant_id: UUID,
+    *,
+    merchants_repo: MerchantRepository,
+    docs: DocumentRepository,
+    ofac: OFACClient | None = None,
+) -> tuple[Any, Any, Any] | None:
+    """Reusable scoring pipeline — returns (merchant, score_input, score_result).
+
+    Runs the same three-step pipeline the dossier route runs at
+    ``merchants.py:merchant_detail`` (collect analyzed docs, build
+    ``score_input``, call ``score_deal``). Extracted so surfaces beyond
+    the legacy dossier (v2 UI, ad-hoc scripts) can produce the exact
+    same scoring artifacts without duplicating the setup.
+
+    Returns ``None`` when:
+      * merchant is not finalized (scoring gated on finalized rows)
+      * no analyzed documents are on file (nothing to score)
+      * ``score_deal`` raises (Bedrock down, OFAC stale, etc.)
+
+    Never raises. Callers get ``None`` and render the empty state.
+    """
+    from aegis.web._router_helpers import _collect_analyzed_for_merchant
+
+    try:
+        merchant = merchants_repo.get(merchant_id)
+    except Exception:
+        return None
+    if not getattr(merchant, "is_finalized", False):
+        return None
+
+    items = _collect_analyzed_for_merchant(docs, merchant_id)
+    if not items:
+        return None
+
+    latest_doc, latest_analysis = items[0]
+    try:
+        latest_transactions = docs.list_transactions(latest_doc.id)
+    except Exception:
+        latest_transactions = []
+    pattern_analysis = _dossier_pattern_analysis(latest_analysis, latest_transactions)
+
+    try:
+        score_input = _score_input_multi_month(merchant, items, pattern_analysis=pattern_analysis)
+    except Exception:
+        return None
+
+    try:
+        score_result = score_deal(score_input, ofac=ofac)
+    except (OFACStaleError, Exception):
+        return None
+
+    return merchant, score_input, score_result
+
+
+def run_funder_matching_for_merchant(
+    merchant_id: UUID,
+    *,
+    merchants_repo: MerchantRepository,
+    docs: DocumentRepository,
+    funder_repo: FunderRepository,
+    funder_note_subs: FunderNoteSubmissionRepository,
+    snapshot: DecisionSnapshot,
+    ofac: OFACClient | None = None,
+) -> list[dict[str, Any]]:
+    """Full scoring + funder-matching pipeline for a merchant.
+
+    Runs the scoring pipeline via ``run_scoring_pipeline_for_merchant``
+    then hands the artifacts to ``_build_match_cards`` — the same
+    matched-funders builder the dossier's ``§ 4 Funder matching`` panel
+    uses. Returns an empty list on any failure (unfinalized merchant,
+    no analyzed docs, OFAC-blocked, scoring failure) so the caller can
+    render the empty state without a 500.
+    """
+    result = run_scoring_pipeline_for_merchant(
+        merchant_id,
+        merchants_repo=merchants_repo,
+        docs=docs,
+        ofac=ofac,
+    )
+    if result is None:
+        return []
+    merchant, score_input, score_result = result
+
+    # OFAC hard-gate (parity with dossier § 4).
+    if getattr(merchant, "ofac_is_clear", None) is False:
+        return []
+
+    try:
+        return _build_match_cards(
+            merchant=merchant,
+            score_input=score_input,
+            score_result=score_result,
+            funder_repo=funder_repo,
+            merchants_repo=merchants_repo,
+            docs=docs,
+            funder_note_subs=funder_note_subs,
+            snapshot=snapshot,
+        )
+    except Exception:
+        return []
+
+
 def _build_match_cards(
     *,
     merchant: MerchantRow,

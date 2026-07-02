@@ -524,7 +524,12 @@ def build_deal_view(
     pricing_note = ""
     if funder_matches:
         best = funder_matches[0]
-        est = getattr(best, "estimated_terms", None)
+        if isinstance(best, dict):
+            est = best.get("estimated_terms")
+            best_name = best.get("funder_name") or "best match"
+        else:
+            est = getattr(best, "estimated_terms", None)
+            best_name = getattr(best, "funder_name", None) or "best match"
         if est is not None:
             pricing_rows = [
                 {"k": "Advance", "v": _fmt_money(getattr(est, "estimated_advance", None))},
@@ -536,10 +541,7 @@ def build_deal_view(
                 },
                 {"k": "APR", "v": _fmt_pct(getattr(est, "estimated_apr", None))},
             ]
-            pricing_note = (
-                f"Based on {getattr(best, 'funder_name', 'best match')}: "
-                f"{getattr(est, 'interpolation_evidence', '')}"
-            )
+            pricing_note = f"Based on {best_name}: {getattr(est, 'interpolation_evidence', '')}"
 
     return {
         "deal": {
@@ -742,12 +744,15 @@ def build_funders_view(data: Any, q: str = "", filt: str = "all") -> dict[str, A
 
 
 def build_funder_match_view(matches: list[Any] | None) -> dict[str, Any]:
-    """Shape a list of ``FunderMatch`` for the deal-scoped funder table.
+    """Shape a list of matches for the deal-scoped funder table.
 
-    Only qualifying funders come back from the matcher (non-matches
-    return ``None``), so the table renders qualified matches only -
-    ``hard_fails`` is a per-card ``soft_concerns`` derivative on the
-    real dossier and is intentionally left empty here.
+    Accepts either:
+      * dicts from ``_match_card`` (dossier + v2 pipeline) — real prod path
+      * Pydantic ``FunderMatch`` objects (tests, direct-call callers)
+
+    Card shape from ``_match_card``:
+        ``funder_name``, ``match_score``, ``color`` (red|yellow|green),
+        ``hard_reasons``, ``soft_concerns``, ``estimated_terms`` (Pydantic).
     """
     if not matches:
         return {
@@ -759,9 +764,19 @@ def build_funder_match_view(matches: list[Any] | None) -> dict[str, Any]:
             ),
         }
 
+    def _read(m: Any, key: str, default: Any = None) -> Any:
+        if isinstance(m, dict):
+            return m.get(key, default)
+        return getattr(m, key, default)
+
     items: list[dict[str, Any]] = []
+    qualifying = 0
     for m in matches:
-        est = getattr(m, "estimated_terms", None)
+        color = _read(m, "color", "green")
+        qualifies = color != "red"
+        if qualifies:
+            qualifying += 1
+        est = _read(m, "estimated_terms")
         factor_val = None
         holdback_val = None
         daily_val = None
@@ -772,13 +787,16 @@ def build_funder_match_view(matches: list[Any] | None) -> dict[str, Any]:
             daily_val = getattr(est, "estimated_daily_payment", None)
             apr_val = getattr(est, "estimated_apr", None)
 
+        hard_reasons = list(_read(m, "hard_reasons", []) or [])[:3]
+        soft_concerns = list(_read(m, "soft_concerns", []) or [])[:3]
+
         items.append(
             {
-                "name": getattr(m, "funder_name", "") or "",
-                "qualifies": True,
-                "match_score": getattr(m, "match_score", 0),
-                "hard_fails": [],
-                "soft_concerns": list(getattr(m, "soft_concerns", []) or [])[:3],
+                "name": _read(m, "funder_name", "") or "",
+                "qualifies": qualifies,
+                "match_score": _read(m, "match_score", 0),
+                "hard_fails": hard_reasons,
+                "soft_concerns": soft_concerns,
                 "factor_rate": str(factor_val) if factor_val is not None else "-",
                 "holdback_pct": _fmt_pct(holdback_val),
                 "daily_payment": _fmt_money(daily_val),
@@ -789,44 +807,55 @@ def build_funder_match_view(matches: list[Any] | None) -> dict[str, Any]:
     return {
         "type": "rbf",
         "items": items,
-        "note": f"{len(items)} funder(s) qualify for this deal.",
+        "note": f"{qualifying} of {len(items)} funder(s) qualify for this deal.",
     }
 
 
 # ============================================================ COMPLIANCE
-def build_compliance_view(data: Any) -> dict[str, Any]:
-    """Compliance workbench - list of merchants flagged by OFAC.
+def build_compliance_view(ofac_rows: Any) -> dict[str, Any]:
+    """Compliance workbench — list of merchants flagged by OFAC.
 
-    ``data`` is a list of dicts (raw Supabase rows) or ``None``. Real
-    dashboard-grade metrics live in ``compliance.obligations``; this
-    view surfaces the OFAC block queue as the first cut.
+    ``ofac_rows`` may be a list of dicts (raw Supabase rows), a list of
+    ``MerchantRow`` instances, or ``None``. Handles either shape via
+    getattr/get. Real dashboard-grade metrics live in
+    ``compliance.obligations``; this view surfaces the OFAC block queue
+    as the first cut.
     """
-    ofac_items: list[dict[str, Any]] = []
-    if data:
-        for row in data:
-            if not isinstance(row, dict):
-                continue
-            ofac_items.append(
-                {
-                    "merchant_id": str(row.get("id", "") or ""),
-                    "business_name": row.get("business_name") or "(unknown)",
-                    "state": row.get("state") or "-",
-                    "match_detail": row.get("ofac_match_detail") or [],
-                }
-            )
+    if not ofac_rows:
+        return {"kpis": [], "ofac": [], "kyb": [], "states": [], "activity": []}
 
-    kpis = [
-        {
-            "label": "OFAC blocks",
-            "value": str(len(ofac_items)),
-            "detail": "pending review",
-            "is_alert": bool(ofac_items),
-        },
-        {"label": "KYB checks", "value": "-", "detail": "SOS/UCC status", "is_alert": False},
-        {"label": "State reg", "value": "-", "detail": "obligations open", "is_alert": False},
-    ]
+    ofac_items: list[dict[str, Any]] = []
+    for row in ofac_rows:
+        if isinstance(row, dict):
+            name = row.get("business_name") or ""
+            state = row.get("state") or ""
+            mid = str(row.get("id") or "")
+            matches = list(row.get("ofac_match_detail") or [])
+        else:
+            name = getattr(row, "business_name", "") or ""
+            state = getattr(row, "state", "") or ""
+            mid = str(getattr(row, "id", "") or "")
+            matches = list(getattr(row, "ofac_match_detail", None) or [])
+        ofac_items.append(
+            {
+                "id": mid,
+                "name": name or "(unknown)",
+                "state": state or "-",
+                "match_count": len(matches),
+                "matches": matches[:4],
+                "status": "match",
+            }
+        )
+
     return {
-        "kpis": kpis,
+        "kpis": [
+            {
+                "label": "OFAC flagged",
+                "value": str(len(ofac_items)),
+                "detail": "pending review",
+                "is_alert": len(ofac_items) > 0,
+            },
+        ],
         "ofac": ofac_items,
         "kyb": [],
         "states": [],
