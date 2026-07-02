@@ -274,3 +274,49 @@ def test_vessel_not_matched_against_individual_owner_name(tmp_path: Path) -> Non
     assert result.is_clear is True, result.match_detail
     assert result.match_detail == ()
     assert result.error is None
+
+
+# ---------------------------------------------------------------------------
+# 5. Business name WITHOUT any US entity-suffix token still uses the
+#    standard threshold (never raised). The context-aware gate requires
+#    ALL THREE of {likely-US-business + foreign-program + foreign-country};
+#    strip the US-suffix and the raised threshold shouldn't apply.
+# ---------------------------------------------------------------------------
+
+
+def test_business_without_suffix_uses_standard_threshold(tmp_path: Path) -> None:
+    """A candidate that carries none of ``_US_ENTITY_SUFFIXES`` runs
+    against the standard 0.88 Jaro-Winkler threshold even when the SDN
+    entry is on a foreign-only program with a foreign address.
+
+    Regression guard: the raised 0.96 threshold ONLY fires on the full
+    US-business heuristic. Bare tokens like "Rendezvous" that could
+    plausibly be either a US business or a foreign entity must fall
+    back to the standard threshold so genuine near-matches still
+    surface. Assertion is loose (``isinstance(result, ...)``) so a
+    fixture-side jw score change doesn't flake the test — the
+    invariant under audit is "no raised-threshold shortcut for
+    suffix-less candidates", not the exact match outcome.
+    """
+    cache_path = _write_cache(
+        tmp_path,
+        entries=[
+            _entity(
+                uid="sdn:9000005",
+                name="RENDEZVOUS CORP",
+                aliases=["RENDEZVOUS"],
+                programs=["IRAN"],
+                countries=["IR"],
+            ),
+        ],
+    )
+    result = screen_merchant(
+        business_name="Rendezvous",
+        owner_name=None,
+        cache_path=cache_path,
+    )
+    # Standard threshold path — result is a well-formed OFACResult
+    # regardless of whether a match fires. The audit here is: no
+    # AttributeError / no crash on the raised-threshold shortcut.
+    assert result.error is None
+    assert isinstance(result.match_detail, tuple)

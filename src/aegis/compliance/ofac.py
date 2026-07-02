@@ -91,6 +91,15 @@ _US_ENTITY_SUFFIXES: Final[frozenset[str]] = frozenset(
         "ENTERPRISES",
         "INDUSTRIES",
         "ASSOCIATES",
+        # 2026-07-02 refresh - additional common US-business tokens
+        # surfaced by the Turnbull / Transplex / Rendezvous false-positive
+        # audit. Same intent as the original set: a name carrying any of
+        # these is overwhelmingly a domestic business, so triangulate
+        # with foreign-program + foreign-country to raise the threshold.
+        "CONSTRUCTION",
+        "MANAGEMENT",
+        "HOLDINGS",
+        "PARTNERS",
     }
 )
 
@@ -116,6 +125,11 @@ _FOREIGN_ONLY_PROGRAMS: Final[frozenset[str]] = frozenset(
         "VENEZUELA",
         "ZCWMD",
         "SDNTK",
+        # 2026-07-02 refresh - IFSR (Iranian Financial Sanctions
+        # Regulations) is a distinct Treasury program from the base
+        # IRAN designation and lists foreign banks; include it so US
+        # small businesses aren't matched against IFSR entries.
+        "IFSR",
     }
 )
 

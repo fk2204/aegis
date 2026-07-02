@@ -5669,6 +5669,18 @@ async def merchant_detail(
         # string when Bedrock is unavailable — the template renders a
         # "narrative not available" state and the Submit path falls
         # back to format_funder_note alone.
+        # Bank-statement-measured monthly revenue (2026-07-02) — passed
+        # through so the narrator can render "$X/mo (bank-statement
+        # measured)" instead of the placeholder "see ADB" text, and
+        # fall back to the stated value ONLY when no analysis exists.
+        # sba_analysis is defined further up; latest_analysis is None
+        # for provisional / unscored merchants.
+        _true_rev = (
+            Decimal(str(latest_analysis.monthly_revenue))
+            if latest_analysis is not None
+            and getattr(latest_analysis, "monthly_revenue", None) is not None
+            else None
+        )
         funder_narrative = generate_funder_narrative(
             merchant=merchant,
             score_result=score_result,
@@ -5676,6 +5688,7 @@ async def merchant_detail(
             balance_health=balance_health,
             offer=offer,
             close_context=_close_ctx,
+            true_revenue_monthly=_true_rev,
         )
 
     # Processor revenue section (Stripe / Square / Toast / Clover / PayPal).

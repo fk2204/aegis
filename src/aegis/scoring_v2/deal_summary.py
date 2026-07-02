@@ -376,6 +376,25 @@ class _BedrockTextClient(Protocol):
     def generate_text(self, prompt: str) -> str: ...
 
 
+def _revenue_display(
+    true_revenue_monthly: Decimal | None,
+    merchant_stated_revenue: Decimal | None,
+) -> str:
+    """Format the revenue line for the funder-narrative prompt.
+
+    Prefer the bank-statement-measured value when it is available AND
+    non-zero; when it isn't, fall back to the merchant-stated revenue
+    and label it explicitly as "stated, unverified". The label matters
+    to the model: unverified revenue is treated as an application
+    input to cross-check against call notes, not as an underwriting
+    fact.
+    """
+    if true_revenue_monthly is not None and true_revenue_monthly > Decimal("0"):
+        return f"${true_revenue_monthly:,.0f}/mo (bank-statement measured)"
+    stated = merchant_stated_revenue or Decimal("0")
+    return f"${stated:,.0f}/mo (stated, unverified)"
+
+
 def _narrative_prompt(
     *,
     merchant: MerchantRow,
@@ -384,6 +403,7 @@ def _narrative_prompt(
     balance_health: BalanceHealthAggregation,
     offer: object | None,  # OfferRecommendation, kept loose to avoid the import cycle
     close_context: CloseContext,
+    true_revenue_monthly: Decimal | None = None,
 ) -> str:
     """Build the prompt string for ``generate_funder_narrative``."""
     strengths = _key_strengths(
@@ -400,11 +420,13 @@ def _narrative_prompt(
     )
     holdback = mca_stack.estimated_combined_holdback_pct
 
+    _stated_revenue = getattr(merchant, "monthly_revenue", None)
+    _stated_dec = Decimal(str(_stated_revenue)) if _stated_revenue is not None else None
     return _NARRATIVE_PROMPT_TEMPLATE.format(
         business_name=merchant.business_name or "Unknown",
         industry=merchant.industry_choice or "unspecified",
         tib=_format_months(merchant.time_in_business_months),
-        true_revenue="see ADB",  # true_revenue isn't on BalanceHealthAggregation today
+        true_revenue=_revenue_display(true_revenue_monthly, _stated_dec),
         adb=_format_money(balance_health.avg_daily_balance),
         mca_count=mca_stack.active_mca_count,
         holdback=_format_pct(holdback),
@@ -427,6 +449,7 @@ def generate_funder_narrative(
     close_context: CloseContext,
     *,
     client: _BedrockTextClient | None = None,
+    true_revenue_monthly: Decimal | None = None,
 ) -> str:
     """Generate a 3-4 sentence funder-facing narrative via Bedrock.
 
@@ -450,6 +473,7 @@ def generate_funder_narrative(
         balance_health=balance_health,
         offer=offer,
         close_context=close_context,
+        true_revenue_monthly=true_revenue_monthly,
     )
 
     if client is None:

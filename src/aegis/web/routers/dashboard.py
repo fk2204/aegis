@@ -498,6 +498,45 @@ async def index(
         for card in attention
     ]
 
+    # Portfolio metrics (2026-07-02) — funded / declined counters and
+    # the calibration progress bar surfaced above the attention queue.
+    # Reads ``merchant_outcomes`` in one shot; degrades to ``None``
+    # (template hides the bar entirely) on any Supabase blip. All the
+    # heavy analytics live in ``deals.portfolio_analytics`` on
+    # ``/ui/portfolio`` — this is the "at-a-glance" strip only.
+    portfolio_metrics: dict[str, Any] | None = None
+    try:
+        from aegis.db import get_supabase as _pf_sb
+
+        _mo = _pf_sb().table("merchant_outcomes").select("outcome,recorded_at").execute()
+        _mo_rows: list[dict[str, Any]] = [r for r in (_mo.data or []) if isinstance(r, dict)]
+        _funded = sum(1 for r in _mo_rows if r.get("outcome") == "funded")
+        _declined = sum(1 for r in _mo_rows if r.get("outcome") == "declined")
+        _decided = _funded + _declined
+        _approval_rate = round(_funded / _decided * 100) if _decided > 0 else None
+        _cutoff = (now_utc - timedelta(days=30)).isoformat()
+        _recent = 0
+        for _row in _mo_rows:
+            if not isinstance(_row, dict):
+                continue
+            _ts = _row.get("recorded_at")
+            if isinstance(_ts, str) and _ts > _cutoff:
+                _recent += 1
+        _calibration_target = 20
+        _total_outcomes = len(_mo_rows)
+        portfolio_metrics = {
+            "funded": _funded,
+            "declined": _declined,
+            "total_decided": _decided,
+            "approval_rate": _approval_rate,
+            "outcomes_this_month": _recent,
+            "calibration_progress": f"{_total_outcomes}/{_calibration_target}",
+            "calibration_pct": min(round(_total_outcomes / _calibration_target * 100), 100),
+            "needs_outcomes": max(0, _calibration_target - _total_outcomes),
+        }
+    except Exception:  # pragma: no cover — defensive; never gate Today
+        portfolio_metrics = None
+
     # Quick-action buttons are static — declared here so the template
     # iterates a list rather than hardcoding three blocks. Labels are
     # operator-facing; URLs go to existing routes (no new routes added).
@@ -552,6 +591,7 @@ async def index(
             "today_pipeline": today_pipeline,
             "today_recent_activity": today_recent_activity,
             "quick_actions": quick_actions,
+            "portfolio_metrics": portfolio_metrics,
             # 2026-06-28 refresh — key numbers banner. Monthly-strip
             # context retired 2026-06-29 (Fix A) — replaced by the
             # week-summary-line in the template.
