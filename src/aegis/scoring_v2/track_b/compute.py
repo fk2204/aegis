@@ -353,6 +353,58 @@ def compute_risk_band(
                 )
             )
 
+        # UCC background-check signals (2026-07-02 S2B). Read the
+        # persisted UCC scan results off the merchant row and surface
+        # as FactorReasons so the risk band reflects prior-default and
+        # lien signals — funders will decline on a prior default with
+        # near certainty, and multi-lien merchants need subordination
+        # / payoff structuring before submission. ``getattr`` guards
+        # keep this backwards-safe against pre-BC-column merchant
+        # rows and the SimpleNamespace test shims used elsewhere.
+        ucc_defaults = getattr(merchant, "ucc_default_indicators", None) or []
+        ucc_filings = getattr(merchant, "ucc_filings", None) or []
+
+        if ucc_defaults:
+            severities.append("critical")
+            reasons.append(
+                FactorReason(
+                    factor="previous_default_found",
+                    severity="critical",
+                    detail=(
+                        f"Background check found {len(ucc_defaults)} previous "
+                        f"default indicator(s). Most funders will decline; "
+                        f"disclose to any funder before submission."
+                    ),
+                )
+            )
+
+        if len(ucc_filings) >= 3:
+            severities.append("elevated")
+            reasons.append(
+                FactorReason(
+                    factor="ucc_liens_filed",
+                    severity="elevated",
+                    detail=(
+                        f"{len(ucc_filings)} UCC lien(s) filed against this "
+                        f"business. Secured creditors have priority on "
+                        f"business assets — funder may require subordination "
+                        f"or payoff at closing."
+                    ),
+                )
+            )
+        elif len(ucc_filings) >= 1:
+            severities.append("concern")
+            reasons.append(
+                FactorReason(
+                    factor="ucc_liens_filed",
+                    severity="concern",
+                    detail=(
+                        f"{len(ucc_filings)} UCC lien(s) filed. Verify with "
+                        f"funder whether subordination is required."
+                    ),
+                )
+            )
+
     # ── band + action ──────────────────────────────────────────────
     worst = worst_severity(severities)
     cashflow_band = band_from_severity(worst)

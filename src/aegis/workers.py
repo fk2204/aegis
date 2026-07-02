@@ -3677,6 +3677,46 @@ async def run_background_checks(
             merchants_repo=merchants,
             audit=audit,
         )
+        # Section 2C (2026-07-02): after the UCC scan lands, re-read the
+        # merchant and, when the scan surfaced previous-default indicators,
+        # write a HIGH-signal audit row that shows up in the dossier's
+        # activity feed. Notifications table can't broadcast (requires a
+        # specific recipient_operator_id + a whitelisted event_type
+        # literal); the audit-log signal is the durable channel every
+        # operator viewing the merchant sees.
+        try:
+            _refreshed = merchants.get(merchant_id)
+            _defaults = getattr(_refreshed, "ucc_default_indicators", None) or []
+            _filings = getattr(_refreshed, "ucc_filings", None) or []
+            if _defaults:
+                audit.record(
+                    actor="system",
+                    action="merchant.background_check.default_found",
+                    subject_type="merchant",
+                    subject_id=merchant_id,
+                    details={
+                        "trigger": trigger,
+                        "default_indicators": list(_defaults)[:10],
+                        "default_count": len(_defaults),
+                    },
+                )
+            if len(_filings) >= 3:
+                audit.record(
+                    actor="system",
+                    action="merchant.background_check.multiple_ucc_liens",
+                    subject_type="merchant",
+                    subject_id=merchant_id,
+                    details={
+                        "trigger": trigger,
+                        "filing_count": len(_filings),
+                    },
+                )
+        except Exception:  # pragma: no cover — never block on the notify
+            _log.warning(
+                "background_checks.default_notify_failed merchant_id=%s",
+                merchant_id,
+                exc_info=True,
+            )
     except MerchantNotFoundError:
         # Concurrent soft-delete — log + continue to web_presence.
         _log.warning(

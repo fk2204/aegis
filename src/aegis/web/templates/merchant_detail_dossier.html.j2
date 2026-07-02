@@ -1018,6 +1018,33 @@
                 <div style="font-size:11px;color:var(--ink-3);margin-bottom:6px">
                   checked {{ merchant.ucc_checked_at.strftime('%Y-%m-%d %H:%M UTC') }}
                 </div>
+                {# S2D (2026-07-02) — prominent alerts for defaults +
+                   multi-lien merchants. Placed above the compact chip
+                   grid so the underwriter sees the risk signal first
+                   and can't miss it. #}
+                {% if merchant.ucc_default_indicators %}
+                  <div data-test-id="ucc-default-alert"
+                       style="background:#fff5f5;border-left:4px solid #dc3545;padding:10px 12px;margin:0 0 8px;border-radius:0 4px 4px 0;">
+                    <strong style="color:#7a0000">⚠ Previous Default Found</strong>
+                    <ul style="margin:6px 0 4px;padding-left:16px;font-size:12px">
+                      {% for d in merchant.ucc_default_indicators %}
+                        <li>{{ d }}</li>
+                      {% endfor %}
+                    </ul>
+                    <span style="font-size:11px;color:var(--ink-3)">
+                      Most funders decline on a previous default. Disclose before submitting.
+                    </span>
+                  </div>
+                {% endif %}
+                {% if merchant.ucc_filings and (merchant.ucc_filings | length) >= 3 %}
+                  <div data-test-id="ucc-multi-lien-alert"
+                       style="background:#fff9f0;border-left:4px solid #fd7e14;padding:10px 12px;margin:0 0 8px;border-radius:0 4px 4px 0;">
+                    <strong style="color:#7a3b00">⚠ {{ merchant.ucc_filings | length }} UCC Lien(s)</strong>
+                    <span style="font-size:11px;color:var(--ink-3);display:block;margin-top:3px">
+                      Secured creditors have priority. Funder may require subordination or payoff at closing.
+                    </span>
+                  </div>
+                {% endif %}
                 {% if merchant.ucc_filings %}
                   <div data-test-id="ucc-filings" style="margin-bottom:6px">
                     <div style="font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">UCC filings</div>
