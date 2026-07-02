@@ -1952,6 +1952,19 @@ def _lead_to_merchant_fields(
     if requested_amount is None and financial.get("requested_amount") is not None:
         requested_amount = financial["requested_amount"]
 
+    # S4 (2026-07-02) — when the operator hasn't explicitly set
+    # ``product_type`` in Close (parse_product_type_safe returned no
+    # match), fall back to the auto-detection derived from the
+    # FINANCIAL block's use_of_funds / lenders / amount. The Close
+    # custom field, when set, remains authoritative — same layering
+    # as ``requested_amount`` above. Absent both signals we keep the
+    # default (``revenue_based``) since that's the accurate historical
+    # posture of legacy Commera-broker leads.
+    if product_value is None:
+        _detected = financial.get("detected_product_type")
+        if isinstance(_detected, str):
+            product_type_value = _detected
+
     return {
         "business_name": str(business_name),
         "dba": _str_or_none(get_custom_field(lead, "dba_name")),

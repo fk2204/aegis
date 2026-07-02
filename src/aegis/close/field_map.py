@@ -744,6 +744,88 @@ def _is_government_lender(lender_name: str) -> bool:
     return any(kw in lower for kw in GOVERNMENT_LENDER_KEYWORDS)
 
 
+# S4 (2026-07-02) — Product-type auto-detection keywords. Applied to
+# the ``use_of_funds`` field and the current-lender list from the
+# FINANCIAL block, in this priority order:
+#   1. Equipment keywords in ``use_of_funds`` → "equipment"
+#   2. SBA / govt lender + amount >= $100K → "business_loan"
+#   3. Receivables / invoice / factoring keywords → "receivables"
+#   4. LOC keywords → "line_of_credit"
+#   5. Fallback → None (caller leaves product_type at its current value)
+_PRODUCT_TYPE_EQUIPMENT_KEYWORDS: Final[frozenset[str]] = frozenset(
+    {
+        "equipment",
+        "machinery",
+        "vehicle",
+        "truck",
+        "fleet",
+        "forklift",
+        "trailer",
+        "tools",
+        "hardware",
+    }
+)
+_PRODUCT_TYPE_RECEIVABLES_KEYWORDS: Final[frozenset[str]] = frozenset(
+    {
+        "receivable",
+        "receivables",
+        "invoice",
+        "factoring",
+        "a/r financing",
+        "ar financing",
+    }
+)
+_PRODUCT_TYPE_LOC_KEYWORDS: Final[frozenset[str]] = frozenset(
+    {
+        "line of credit",
+        "credit line",
+        "loc ",
+        "revolving",
+    }
+)
+# Minimum amount for a government-lender signal to route to
+# business_loan. Below this we treat it as a soft signal only and let
+# the caller keep the default product_type.
+_PRODUCT_TYPE_SBA_MIN_AMOUNT: Final[Decimal] = Decimal("100000")
+
+
+def detect_product_type(
+    use_of_funds: str | None = None,
+    current_lenders: list[str] | None = None,
+    requested_amount: Decimal | None = None,
+) -> str | None:
+    """Derive a ``ProductType`` literal from the parsed FINANCIAL block
+    fields. Returns None when the signals are ambiguous — the caller
+    should NOT overwrite the merchant's existing product_type in that
+    case (per operating-principle 4: no fabricated defaults).
+
+    Priority:
+      1. Equipment keywords in use_of_funds
+      2. SBA / govt lender + amount >= $100K
+      3. Receivables / invoice / factoring keywords
+      4. LOC keywords
+    """
+    uof = (use_of_funds or "").lower()
+    lenders_str = " ".join(current_lenders or []).lower()
+
+    if any(kw in uof for kw in _PRODUCT_TYPE_EQUIPMENT_KEYWORDS):
+        return "equipment"
+
+    if requested_amount is not None and requested_amount >= _PRODUCT_TYPE_SBA_MIN_AMOUNT:
+        if any(_is_government_lender(ln) for ln in (current_lenders or [])):
+            return "business_loan"
+        if "sba" in lenders_str:
+            return "business_loan"
+
+    if any(kw in uof for kw in _PRODUCT_TYPE_RECEIVABLES_KEYWORDS):
+        return "receivables"
+
+    if any(kw in uof for kw in _PRODUCT_TYPE_LOC_KEYWORDS):
+        return "line_of_credit"
+
+    return None
+
+
 def _normalize_label(raw: str) -> str:
     """Lowercase + collapse internal whitespace so the lookup absorbs
     operator drift on capitalization and stray spaces."""
@@ -872,6 +954,20 @@ def _parse_close_lead_description(description: str | None) -> dict[str, Any]:
         if gov_lenders:
             out["stated_mca_positions"] = max(0, positions_val - len(gov_lenders))
             out["has_government_loan"] = True
+
+    # S4 (2026-07-02) — derive product_type from use_of_funds + lenders
+    # + requested amount when the operator hasn't explicitly set it in
+    # Close. ``None`` return leaves the field absent so the caller
+    # doesn't overwrite an already-set product_type.
+    uof_raw = out.get("use_of_funds")
+    requested_raw = out.get("requested_amount")
+    detected = detect_product_type(
+        use_of_funds=uof_raw if isinstance(uof_raw, str) else None,
+        current_lenders=lenders_val if isinstance(lenders_val, list) else None,
+        requested_amount=requested_raw if isinstance(requested_raw, Decimal) else None,
+    )
+    if detected is not None:
+        out["detected_product_type"] = detected
 
     return out
 
