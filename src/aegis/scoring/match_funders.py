@@ -373,7 +373,7 @@ def match_funder(
     #             it in on the next dossier open; do not silently drop
     #             merchants that haven't been screened yet, that would
     #             regress the "screen-on-first-open" ergonomics).
-    if merchant is not None and merchant.ofac_is_clear is False:
+    if merchant is not None and getattr(merchant, "ofac_is_clear", None) is False:
         return None
 
     # Product-type filter (no new column — uses existing

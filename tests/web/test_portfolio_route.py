@@ -608,7 +608,9 @@ def test_portfolio_route_renders_populated_funder_table() -> None:
         }
     )
     # Funder-table submission count reads the submissions repo (U20).
-    submissions.create(_submission(f1.id, submitted_at=datetime(2026, 6, 1, tzinfo=UTC)))
+    # Use a submitted_at inside the default 30-day window so the test
+    # doesn't time-drift once wall-clock passes the hard-coded date.
+    submissions.create(_submission(f1.id, submitted_at=datetime.now(UTC) - timedelta(days=5)))
     # Post-U17 the score signal must come from the decisions table —
     # the audit-log fallback is gone. Drop a row in the snapshot store
     # directly (it's a list-backed in-memory implementation).
