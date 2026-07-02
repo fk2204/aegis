@@ -298,6 +298,19 @@ _BANK_NAME_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"\bFulton\s+Bank\b", re.IGNORECASE), "Fulton Bank"),
     (re.compile(r"\bAtlantic\s+Capital\s+Bank\b", re.IGNORECASE), "Atlantic Capital Bank"),
     (re.compile(r"\bBankwell\s+Bank\b", re.IGNORECASE), "Bankwell Bank"),
+    # 2026-07-02 (A2.c) — patterns sampled from the actual first-page
+    # text of the 106-row NULL cohort. Bank of America statements
+    # produce garbled text at the customer-service footer on some
+    # scans (``banko-america.com`` / ``bank0-america`` / ``banko
+    # america``); the existing ``Bank of America`` header pattern
+    # only fires on the header, which is the one section pymupdf
+    # occasionally can't extract. The ``1.888.BUSINESS`` phone
+    # number is the operator-support line printed at the top of
+    # every BofA Business statement — cleaner anchor than any
+    # scan-quality-dependent header text.
+    (re.compile(r"\bbanko?[\W_]?america\b", re.IGNORECASE), "Bank of America, N.A."),
+    (re.compile(r"1[.\s]888[.\s]BUSINESS\b", re.IGNORECASE), "Bank of America, N.A."),
+    (re.compile(r"1[.\s]888[.\s]287[.\s]4637\b", re.IGNORECASE), "Bank of America, N.A."),
 )
 
 
@@ -322,6 +335,14 @@ _APPLICATION_FORM_MARKERS: Final[tuple[str, ...]] = (
     "Business Telephone#:",
     "Tax ID:",
     "Incorporation State:",
+    # 2026-07-02 (A2.c) — the "USE_THIS_APP.pdf" / "APP.pdf" cohort
+    # in the operator's leads.zip opens with these two labels in the
+    # first 400 chars. Adding them lets the two-marker threshold trip
+    # on a bare "Company Information" + "Legal Company Name:" pair
+    # even when the rest of the block is off-screen due to a truncated
+    # first-page extract. Bank statements never carry either verbatim.
+    "Company Information",
+    "Website:",
 )
 
 
