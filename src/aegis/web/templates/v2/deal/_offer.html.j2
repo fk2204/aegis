@@ -1,0 +1,27 @@
+{# _offer.html.j2 — best-funder pricing card (spec 2E).
+
+   Reads the same ``pricing.rows`` / ``pricing.note`` view model that
+   the legacy rail-pricing card used. Renders HELD when gates are
+   present, LIVE otherwise.
+#}
+<div class="card side-card" id="offer">
+  <div class="head">
+    <h2>Offer structure</h2>
+    <span class="c {{ 'bad' if gates }}">{{ 'HELD' if gates else 'LIVE' }}</span>
+  </div>
+  <div class="bd">
+    {% if pricing.rows %}
+      {% for row in pricing.rows %}
+      <div class="kv">
+        <span class="k">{{ row.k }}</span>
+        <span class="v mono">{{ row.v }}</span>
+      </div>
+      {% endfor %}
+    {% else %}
+    <p style="color:var(--ink-3);font-size:13px;margin:0">
+      Pricing frozen until revenue confidence &gt; 80% and OFAC cleared.
+    </p>
+    {% endif %}
+    {% if pricing.note %}<div class="pnote">{{ pricing.note }}</div>{% endif %}
+  </div>
+</div>

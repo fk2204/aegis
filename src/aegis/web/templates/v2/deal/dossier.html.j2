@@ -1,27 +1,64 @@
-{# templates/v2/deal/dossier.html.j2 — thin orchestrator that REPLACES the 2,820-line file.
-   `ignore missing` means it renders whatever partials exist and silently skips the rest,
-   so the deal page never 500s while you build partials one at a time. #}
+{# templates/v2/deal/dossier.html.j2 — deal-dossier rebuild (2026-07-02).
+
+   Renders the new spec top-to-bottom:
+     * product switcher tabs           (inline block, spec 2A)
+     * deal header eyebrow + facts     (_identity, spec 2B)
+     * verdict banner + actions        (_verdict, spec 2F)
+     * gate banners                    (_gates, spec 2C)
+     * two-column body                 (.doss-cols, spec 2D):
+         MAIN — classification, cashflow, signals, funder match
+         SIDE — offer, application, package, background, disposition
+
+   Every include uses ``ignore missing`` so a partial that has not
+   landed yet degrades gracefully rather than 500-ing the page.
+#}
 {% extends "v2/base.html.j2" %}
 {% import "v2/_macros.html.j2" as ui %}
 {% set active = 'deal' %}
 {% block title %}{{ deal.name or 'Deal' }} · AEGIS{% endblock %}
 {% block content %}
+  {# 2A · Product switcher tabs — the six-slot lending product family. #}
+  <div class="prod-tabs">
+    {% set tabs = [
+      ('rbf',        'Revenue-Based',  'MCA · DAILY REMIT'),
+      ('term',       'Business Loan',  'TERM · AMORTIZING'),
+      ('loc',        'Line of Credit', 'REVOLVING'),
+      ('equipment',  'Equipment',      'COLLATERALIZED'),
+      ('abl',        'Asset-Based',    'BORROWING BASE'),
+      ('factoring',  'Receivables',    'FACTORING'),
+    ] %}
+    {% for code, label, sub in tabs %}
+    <a href="/v2/deal/{{ deal.id }}?product={{ code }}"
+       class="ptab {{ 'on' if deal.product == code }}">
+      <div class="ptl">{{ label }}</div>
+      <div class="pts">{{ sub }}</div>
+    </a>
+    {% endfor %}
+  </div>
+
+  {# 2B · Deal header — eyebrow + name + subline + facts strip. #}
   {% include "v2/deal/_identity.html.j2" ignore missing %}
+
+  {# Verdict banner (spec 2F actions live inside the partial). #}
   <div id="deal-verdict">{% include "v2/deal/_verdict.html.j2" ignore missing %}</div>
+
+  {# 2C · Gate banners — driven off the real gates view model. #}
   <div id="deal-gates">{% include "v2/deal/_gates.html.j2" ignore missing %}</div>
-  <div class="cols">
-    <div class="stack">
-      {% include "v2/deal/_scores.html.j2" ignore missing %}
-      {% include "v2/deal/risk/_dispatch.html.j2" ignore missing %}
+
+  {# 2D · Two-column body. #}
+  <div class="doss-cols">
+    <div class="doss-main">
+      {% include "v2/deal/_classification.html.j2" ignore missing %}
+      {% include "v2/deal/_cashflow.html.j2" ignore missing %}
       {% include "v2/deal/_signals.html.j2" ignore missing %}
+      {% include "v2/deal/_funder_match.html.j2" ignore missing %}
     </div>
-    <div class="stack">
-      {% include "v2/deal/_rail_pricing.html.j2" ignore missing %}
-      {% include "v2/deal/_rail_application.html.j2" ignore missing %}
-      {% include "v2/deal/_rail_package.html.j2" ignore missing %}
+    <div class="doss-side">
+      {% include "v2/deal/_offer.html.j2" ignore missing %}
+      {% include "v2/deal/_application.html.j2" ignore missing %}
+      {% include "v2/deal/_package.html.j2" ignore missing %}
       {% include "v2/deal/_background.html.j2" ignore missing %}
       <div id="disposition">{% include "v2/deal/_disposition.html.j2" ignore missing %}</div>
     </div>
   </div>
-  {% include "v2/deal/_funder_match.html.j2" ignore missing %}
 {% endblock %}

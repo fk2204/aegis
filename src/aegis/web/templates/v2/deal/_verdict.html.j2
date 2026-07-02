@@ -1,4 +1,14 @@
-{# EXEMPLAR spine partial — bound to `verdict`. Follow this pattern for the others. #}
+{# _verdict.html.j2 — verdict banner + spec-2F action buttons.
+
+   The existing ``verdict.actions`` list is still rendered for callers
+   that populate it dynamically. On top of that we surface a fixed
+   action group (spec 2F) whose contents depend on the gate state:
+   gates present → reclassify / OFAC / decline; gates clear → single
+   "issue & route" primary CTA. The reclassify button wires through
+   the existing /v2/deal/{id}/reclassify HTMX endpoint; the OFAC /
+   decline / submit routes are placeholders (`#`) until the follow-on
+   PR lands them.
+#}
 <section class="verdict is-{{ verdict.kind }}">
   <div class="stamp">
     <div class="rec">{{ verdict.rec }}</div>
@@ -8,14 +18,33 @@
       {% else %}{{ verdict.tag }}{% endif %}
     </div>
   </div>
-  <div class="reason"><div class="lead">{{ verdict.lead }}</div><div class="why">{{ verdict.why | safe }}</div></div>
-  <div class="vacts">
+  <div class="reason">
+    <div class="lead">{{ verdict.lead }}</div>
+    <div class="why">{{ verdict.why | safe }}</div>
+  </div>
+  <div class="verdict-actions">
     {% for a in verdict.actions %}
-      <button type="button" class="btn {{ a.kind }}"
+      <button type="button" class="va-btn {{ a.kind }}"
         {% if a.hx_post %}hx-post="{{ a.hx_post }}" hx-target="{{ a.hx_target | default('#classification') }}" hx-swap="outerHTML"
         {% elif a.href %}onclick="window.location='{{ a.href }}'"{% endif %}>
         {{ a.label }}{% if a.note %}<span class="n">{{ a.note }}</span>{% endif %}
       </button>
     {% endfor %}
+    {# Spec 2F — fixed action group. Reclassify is wired to the live
+       HTMX endpoint. OFAC / decline / submit stay `#` until the
+       follow-on PR extracts the underlying services. #}
+    {% if gates %}
+      <button type="button" class="va-btn va-reclassify"
+              hx-post="/v2/deal/{{ deal.id }}/reclassify"
+              hx-target="#classification"
+              hx-swap="outerHTML">
+        Reclassify revenue{% if risk and risk.rbf and risk.rbf.unclassified_total %} {{ risk.rbf.unclassified_total }}{% endif %}
+      </button>
+      <button type="button" class="va-btn va-ofac">Run OFAC review</button>
+      <button type="button" class="va-btn va-decline bad">Decline &amp; close</button>
+    {% else %}
+      {# TODO(view-model): wire deal.submit_url once /submit ships. #}
+      <a href="#"><button type="button" class="va-btn va-submit p">Issue &amp; route →</button></a>
+    {% endif %}
   </div>
 </section>

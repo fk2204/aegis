@@ -1,0 +1,41 @@
+{# _cashflow.html.j2 — monthly-cashflow strip (spec 2E).
+
+   Driven by ``risk.rbf.months`` (list of dicts). Each month card
+   surfaces gross deposits, ADB, an at-a-glance sparkline, NSF count,
+   and month-over-month deposits delta. Empty-state renders when the
+   view model has no analysis threaded through.
+#}
+<section class="card" id="cashflow">
+  <div class="head">
+    <h2>Monthly cashflow</h2>
+    <span class="c">GROSS DEPOSITS · ADB · NSF</span>
+  </div>
+  <div class="bd">
+    <div class="cf-grid">
+      {% for m in (risk.rbf.months if risk and risk.rbf else []) %}
+      <div class="cfmo">
+        <div class="cfmo-label">{{ m.label }}</div>
+        <div class="cfmo-amt">{{ m.gross }}</div>
+        <div class="cfmo-adb">ADB {{ m.adb }}</div>
+        <div class="cfmo-spark">
+          {% for bar in m.bars %}<i style="height:{{ bar }}%;background:var(--pass)"></i>{% endfor %}
+        </div>
+        <div class="cfmo-nsf {{ 'bad' if m.nsf and m.nsf > 0 }}">{{ m.nsf }} NSF</div>
+        {% if m.mom is not none %}
+        <div class="cfmo-mom {{ 'bad' if m.mom < 0 }}">{{ '%+d'|format(m.mom) }}% MoM</div>
+        {% endif %}
+      </div>
+      {% else %}
+      <p style="color:var(--ink-3);grid-column:1/-1;margin:0">
+        Upload bank statements to see monthly cashflow.
+      </p>
+      {% endfor %}
+    </div>
+  </div>
+  {% if risk and risk.rbf and risk.rbf.months %}
+  <div class="cf-note">
+    Deposits are NSF-free, but these are <strong>gross</strong> — the
+    classification card above must run before treating them as revenue.
+  </div>
+  {% endif %}
+</section>
