@@ -320,3 +320,33 @@ def test_business_without_suffix_uses_standard_threshold(tmp_path: Path) -> None
     # AttributeError / no crash on the raised-threshold shortcut.
     assert result.error is None
     assert isinstance(result.match_detail, tuple)
+
+
+# ---------------------------------------------------------------------------
+# 6. RUSSIA-EO14024 — the EO-suffix variant that Turnbull Company LLC actually
+#    matched on prod. The base RUSSIA program was already covered by test 2's
+#    Ukraine variant; this test guards the specific EO code that had 6,446
+#    entries in the cache but was not in _FOREIGN_ONLY_PROGRAMS pre-fix.
+# ---------------------------------------------------------------------------
+
+
+def test_us_llc_not_matched_russia_eo14024(tmp_path: Path) -> None:
+    """Turnbull-class: US LLC must not match Russia-EO14024 SDN entries."""
+    cache_path = _write_cache(
+        tmp_path,
+        entries=[
+            _entity(
+                uid="sdn:9000010",
+                name="TECHNOPOLE COMPANY",
+                aliases=[],
+                programs=["RUSSIA-EO14024"],
+                countries=["RU"],
+            ),
+        ],
+    )
+    result = screen_merchant(
+        business_name="The Turnbull Company LLC",
+        owner_name=None,
+        cache_path=cache_path,
+    )
+    assert result.is_clear is True, f"False positive: {result.match_detail}"
