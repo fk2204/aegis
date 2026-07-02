@@ -28,7 +28,8 @@
 
   <div class="queue-head"><h2>Attention queue</h2></div>
   {% for q in queue %}
-    <div class="qcard {{ q.verdict_kind }}"><div class="spine"></div>
+    <div class="qcard {% if q.verdict_kind == 'k' %}block{% elif q.verdict_kind == 'p' %}go{% else %}chase{% endif %}">
+      <div class="spine"></div>
       <div class="qbody">
         <div class="qtop"><span class="qnm">{{ q.name }}</span><span class="prodtag">{{ q.product }}</span>{{ ui.pill(q.status_kind, q.status_text) }}</div>
         <div class="qmeta">{{ q.meta }}</div>
@@ -37,7 +38,7 @@
       <div class="qside">
         {% if q.score_value %}<div class="miniscore"><div class="ms">{{ q.score_value }}</div><div class="ml">{{ q.score_label }}</div></div>{% endif %}
         <a href="/v2/deal/{{ q.deal_id }}">
-          <button type="button" class="qact {{ 'p' if q.verdict_kind == 'p' else 'k' if q.verdict_kind == 'k' else '' }}">
+          <button type="button" class="qact {{ 'p' if q.verdict_kind == 'p' else 'k' if q.verdict_kind == 'k' else 'n' }}">
             {{ 'Open & issue →' if q.verdict_kind == 'p' else 'Open & clear →' if q.verdict_kind == 'k' else 'Open file →' }}
           </button>
         </a>
