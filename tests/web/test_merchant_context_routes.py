@@ -234,7 +234,13 @@ def test_refresh_close_context_success(
     updated = repo.get(m.id)
     assert updated.close_lead_description == "Lead D description"
     assert updated.close_notes_summary == "Route test note 1\n---\nRoute test note 2"
-    assert updated.close_call_transcripts == "Call A"
+    # Transcripts written by ``fetch_call_transcripts_for_lead`` — each
+    # call gets a ``[Call YYYY-MM-DD — Ns]`` header + body. The captured
+    # fixture omits ``date_created`` / ``duration``, so the header falls
+    # back to ``[Call unknown — ?s]``; body is preserved verbatim.
+    assert updated.close_call_transcripts is not None
+    assert "Call A" in updated.close_call_transcripts
+    assert updated.close_call_transcripts.startswith("[Call ")
 
     rows = [e for e in audit.entries if e["action"] == "merchant.close_context.refreshed"]
     assert len(rows) == 1

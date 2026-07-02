@@ -48,8 +48,11 @@ from typing import Any
 from uuid import UUID
 
 from aegis.audit import AuditLog
-from aegis.close.client import CloseCall, CloseClient, CloseNote
-from aegis.close.field_map import extract_lead_description
+from aegis.close.client import CloseClient, CloseNote
+from aegis.close.field_map import (
+    extract_lead_description,
+    fetch_call_transcripts_for_lead,
+)
 from aegis.logger import get_logger
 from aegis.merchants.repository import MerchantRepository
 
@@ -146,10 +149,6 @@ def _note_bodies(notes: list[CloseNote]) -> list[str | None]:
     return [n.note for n in notes]
 
 
-def _call_bodies(calls: list[CloseCall]) -> list[str | None]:
-    return [c.note for c in calls]
-
-
 def refresh_close_context_for_merchant(
     merchant_id: UUID,
     lead_id: str,
@@ -184,10 +183,18 @@ def refresh_close_context_for_merchant(
 
     lead_description = _filter_commera_boilerplate(extract_lead_description(lead_payload))
     notes = close_client.list_recent_notes(lead_id, RECENT_NOTES_LIMIT)
+    # Kept as a shape probe so the audit-row ``calls_pulled`` count stays
+    # honest (the caller sees "we pulled M calls, N of which had bodies
+    # long enough to appear in the transcript column"). The transcripts
+    # column itself is written by ``fetch_call_transcripts_for_lead``,
+    # which formats each call as ``[Call YYYY-MM-DD — Ns]\n{note}``
+    # blocks separated by ``\n\n`` — the format the narrator prompt
+    # reads and the operator sees on the dossier. One write path, richer
+    # format flows all the way through.
     calls = close_client.list_recent_calls(lead_id, RECENT_CALLS_LIMIT)
 
     notes_summary = _join_bodies(_note_bodies(notes))
-    call_transcripts = _join_bodies(_call_bodies(calls))
+    call_transcripts = fetch_call_transcripts_for_lead(lead_id, close_client)
 
     merchants_repo.set_close_context(
         merchant_id,

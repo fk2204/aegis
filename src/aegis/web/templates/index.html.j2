@@ -81,6 +81,38 @@
 </div>
 {% endif %}
 
+{# Portfolio metrics strip (2026-07-02) — approval rate + calibration
+   progress + 30-day activity. Reads ``merchant_outcomes`` in the
+   route; hidden when the read fails (portfolio_metrics is None) or
+   the merchant hasn't recorded any outcomes yet. #}
+{% if portfolio_metrics %}
+<div class="portfolio-bar" data-test-id="today-portfolio-bar"
+     style="display:flex;gap:20px;padding:12px 24px;margin:8px 24px 0;background:#f7f7f5;border:1px solid var(--line,#e0ddd0);border-radius:6px;flex-wrap:wrap">
+  <div class="pf-metric" style="flex:1;min-width:180px">
+    <div class="pf-label" style="font-size:11px;color:var(--ink-3,#666);text-transform:uppercase;letter-spacing:0.05em">Calibration</div>
+    <div class="pf-value" style="font-family:var(--mono,monospace);font-size:20px;font-weight:600">{{ portfolio_metrics.calibration_progress }}</div>
+    <div class="pf-track" style="height:4px;background:#e0ddd0;border-radius:2px;margin-top:6px;overflow:hidden">
+      <div class="pf-fill" style="height:100%;width:{{ portfolio_metrics.calibration_pct }}%;background:{% if portfolio_metrics.calibration_pct >= 100 %}var(--pass,#2a7a5c){% else %}var(--warn,#a55a06){% endif %};transition:width 0.3s"></div>
+    </div>
+    {% if portfolio_metrics.needs_outcomes > 0 %}
+    <div class="pf-sub" style="font-size:11px;color:var(--ink-3,#666);margin-top:4px">{{ portfolio_metrics.needs_outcomes }} more outcomes needed</div>
+    {% endif %}
+  </div>
+  {% if portfolio_metrics.approval_rate is not none %}
+  <div class="pf-metric" style="flex:1;min-width:180px">
+    <div class="pf-label" style="font-size:11px;color:var(--ink-3,#666);text-transform:uppercase;letter-spacing:0.05em">Approval rate</div>
+    <div class="pf-value" style="font-family:var(--mono,monospace);font-size:20px;font-weight:600">{{ portfolio_metrics.approval_rate }}%</div>
+    <div class="pf-sub" style="font-size:11px;color:var(--ink-3,#666);margin-top:4px">{{ portfolio_metrics.funded }} funded / {{ portfolio_metrics.declined }} declined</div>
+  </div>
+  {% endif %}
+  <div class="pf-metric" style="flex:1;min-width:180px">
+    <div class="pf-label" style="font-size:11px;color:var(--ink-3,#666);text-transform:uppercase;letter-spacing:0.05em">Activity (30d)</div>
+    <div class="pf-value" style="font-family:var(--mono,monospace);font-size:20px;font-weight:600">{{ portfolio_metrics.outcomes_this_month }}</div>
+    <div class="pf-sub" style="font-size:11px;color:var(--ink-3,#666);margin-top:4px">outcomes recorded</div>
+  </div>
+</div>
+{% endif %}
+
 <section class="body today-cols">
 
   {# ── LEFT 40% · Attention queue ────────────────────────────────── #}

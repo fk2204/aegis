@@ -319,6 +319,16 @@ def generate_deal_summary(
 _NARRATIVE_CAP: int = 1500  # chars
 _NARRATIVE_MAX_TOKENS: int = 512
 
+# Call-transcript block. Injected as its own block above the "Write the
+# narrative now." tail so the narrator prompt has clean, contradiction-
+# flagging framing when call notes exist, and NO bare label when they
+# don't (an empty "Call notes: —" line invites the model to fabricate).
+# The 800-char truncation is the cap on how much operator call content
+# gets into the prompt — enough for two thoughtful call summaries, below
+# the ADB context-budget line.
+_CALL_NOTES_TRUNCATE_CHARS: int = 800
+_CALL_NOTES_BLOCK_TEMPLATE = "\nCall notes (flag contradictions with application data): {text}\n"
+
 _NARRATIVE_PROMPT_TEMPLATE = """\
 You are an MCA underwriter presenting a deal to a funder. Write a
 factual, concise 3-4 sentence narrative summarising this deal as if
@@ -340,13 +350,49 @@ Deal facts:
 - Key concerns: {concerns}
 - Operator context: {operator_context}
 - Recent Close note: {close_note}
-- Call summary: {call_summary}
-
+{call_notes_block}
 Write the narrative now."""
+
+
+def _call_notes_block(call_transcripts: str | None) -> str:
+    """Return the call-notes prompt block or empty string when absent.
+
+    Truncated at :data:`_CALL_NOTES_TRUNCATE_CHARS` and framed with a
+    contradiction-flag instruction so the model treats the transcripts
+    as ground truth for consistency checking. An empty / whitespace-only
+    input returns ``""`` — the template renders NO bare label in that
+    case, which avoids the "Call notes: —" invitation to fabricate.
+    """
+    if call_transcripts is None:
+        return ""
+    text = call_transcripts.strip()
+    if not text:
+        return ""
+    truncated = text[:_CALL_NOTES_TRUNCATE_CHARS]
+    return _CALL_NOTES_BLOCK_TEMPLATE.format(text=truncated)
 
 
 class _BedrockTextClient(Protocol):
     def generate_text(self, prompt: str) -> str: ...
+
+
+def _revenue_display(
+    true_revenue_monthly: Decimal | None,
+    merchant_stated_revenue: Decimal | None,
+) -> str:
+    """Format the revenue line for the funder-narrative prompt.
+
+    Prefer the bank-statement-measured value when it is available AND
+    non-zero; when it isn't, fall back to the merchant-stated revenue
+    and label it explicitly as "stated, unverified". The label matters
+    to the model: unverified revenue is treated as an application
+    input to cross-check against call notes, not as an underwriting
+    fact.
+    """
+    if true_revenue_monthly is not None and true_revenue_monthly > Decimal("0"):
+        return f"${true_revenue_monthly:,.0f}/mo (bank-statement measured)"
+    stated = merchant_stated_revenue or Decimal("0")
+    return f"${stated:,.0f}/mo (stated, unverified)"
 
 
 def _narrative_prompt(
@@ -357,6 +403,7 @@ def _narrative_prompt(
     balance_health: BalanceHealthAggregation,
     offer: object | None,  # OfferRecommendation, kept loose to avoid the import cycle
     close_context: CloseContext,
+    true_revenue_monthly: Decimal | None = None,
 ) -> str:
     """Build the prompt string for ``generate_funder_narrative``."""
     strengths = _key_strengths(
@@ -373,11 +420,13 @@ def _narrative_prompt(
     )
     holdback = mca_stack.estimated_combined_holdback_pct
 
+    _stated_revenue = getattr(merchant, "monthly_revenue", None)
+    _stated_dec = Decimal(str(_stated_revenue)) if _stated_revenue is not None else None
     return _NARRATIVE_PROMPT_TEMPLATE.format(
         business_name=merchant.business_name or "Unknown",
         industry=merchant.industry_choice or "unspecified",
         tib=_format_months(merchant.time_in_business_months),
-        true_revenue="see ADB",  # true_revenue isn't on BalanceHealthAggregation today
+        true_revenue=_revenue_display(true_revenue_monthly, _stated_dec),
         adb=_format_money(balance_health.avg_daily_balance),
         mca_count=mca_stack.active_mca_count,
         holdback=_format_pct(holdback),
@@ -387,7 +436,7 @@ def _narrative_prompt(
         concerns=", ".join(concerns) if concerns else "none surfaced",
         operator_context=(merchant.deal_context or "—")[:300],
         close_note=(close_context.notes_summary or "—")[:300],
-        call_summary=(close_context.call_transcripts or "—")[:300],
+        call_notes_block=_call_notes_block(close_context.call_transcripts),
     )
 
 
@@ -400,6 +449,7 @@ def generate_funder_narrative(
     close_context: CloseContext,
     *,
     client: _BedrockTextClient | None = None,
+    true_revenue_monthly: Decimal | None = None,
 ) -> str:
     """Generate a 3-4 sentence funder-facing narrative via Bedrock.
 
@@ -423,6 +473,7 @@ def generate_funder_narrative(
         balance_health=balance_health,
         offer=offer,
         close_context=close_context,
+        true_revenue_monthly=true_revenue_monthly,
     )
 
     if client is None:
