@@ -5617,28 +5617,67 @@ async def merchant_detail(
         except Exception:  # pragma: no cover — defensive; never gate dossier
             sba_eligibility = None
 
-    # Product-specific scoring (2026-07-01 A1a/b/c). Dispatched by
-    # ``merchant.product_type``: SBA path for business_loan, equipment-
-    # financing path for equipment, factoring path for receivables. MCA /
-    # unknown types leave ``product_analysis`` as ``None`` — the dossier
-    # template hides the section entirely in that case. Best-effort;
-    # never blocks the dossier render.
+    # Product-specific scoring (2026-07-01 A1a/b/c/e/f). Dispatched by
+    # ``merchant.product_type``:
+    #   * business_loan sub-$500K  → term-loan (alt lenders)
+    #   * business_loan ≥$500K     → SBA path
+    #   * line_of_credit           → LOC path
+    #   * term_loan                → term-loan (explicit)
+    #   * equipment                → equipment financing
+    #   * receivables              → factoring
+    # MCA / unknown types leave ``product_analysis`` as ``None`` — the
+    # dossier template hides the section entirely in that case.
+    # Best-effort; never blocks the dossier render.
     product_analysis: Any = None
     try:
         _product_type = merchant.product_type
-        if _product_type == "business_loan":
+        _true_rev = (
+            Decimal(str(sba_analysis.true_revenue))
+            if sba_analysis is not None and getattr(sba_analysis, "true_revenue", None) is not None
+            else None
+        )
+        _num_nsf = int(getattr(sba_analysis, "num_nsf", 0) or 0)
+        _avg_daily_balance = (
+            Decimal(str(sba_analysis.avg_daily_balance))
+            if sba_analysis is not None
+            and getattr(sba_analysis, "avg_daily_balance", None) is not None
+            else None
+        )
+        _mca_positions = mca_stack.active_mca_count if mca_stack else 0
+        _requested = (
+            Decimal(str(merchant.requested_amount)) if merchant.requested_amount else Decimal("0")
+        )
+        _small_business_loan = (
+            _product_type == "business_loan"
+            and _requested > Decimal("0")
+            and _requested < Decimal("500000")
+        )
+
+        if _small_business_loan:
+            from aegis.scoring_v2.term_loan_scoring import score_term_loan_deal
+
+            product_analysis = score_term_loan_deal(
+                merchant=merchant,
+                true_revenue_monthly=_true_rev,
+                nsf_count_3mo=_num_nsf,
+                confirmed_mca_count=_mca_positions,
+            )
+        elif _product_type == "business_loan":
             from aegis.scoring_v2.sba_scoring import score_sba_deal
 
-            _true_rev = (
-                Decimal(str(sba_analysis.true_revenue))
-                if sba_analysis is not None
-                and getattr(sba_analysis, "true_revenue", None) is not None
-                else None
-            )
             product_analysis = score_sba_deal(
                 merchant=merchant,
                 true_revenue_monthly=_true_rev,
-                confirmed_mca_count=(mca_stack.active_mca_count if mca_stack else 0),
+                confirmed_mca_count=_mca_positions,
+            )
+        elif _product_type == "line_of_credit":
+            from aegis.scoring_v2.loc_scoring import score_loc_deal
+
+            product_analysis = score_loc_deal(
+                merchant=merchant,
+                true_revenue_monthly=_true_rev,
+                nsf_count_3mo=_num_nsf,
+                avg_daily_balance=_avg_daily_balance,
             )
         elif _product_type == "equipment":
             from aegis.scoring_v2.equipment_scoring import score_equipment_deal

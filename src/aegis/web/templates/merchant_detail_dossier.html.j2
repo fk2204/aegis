@@ -1925,7 +1925,8 @@
           <span class="n">§ 3¾</span>
           <h2>Product-specific <em>analysis</em></h2>
           <span class="chip">
-            {% if product_type == "business_loan" %}SBA
+            {% if product_type == "business_loan" %}SBA / Term loan
+            {% elif product_type == "line_of_credit" %}Line of credit
             {% elif product_type == "equipment" %}Equipment finance
             {% elif product_type == "receivables" %}Invoice factoring
             {% else %}Product{% endif %}
@@ -1940,9 +1941,14 @@
                style="background:#f0fdf4;border:1px solid #86efac;padding:10px 12px;border-radius:6px;margin-bottom:10px;">
             <strong>Eligible</strong>
             {% if product_type == "business_loan" %}
-              &middot; Program: <strong>{{ product_analysis.program }}</strong>
+              {% if product_analysis.program is defined %}
+                &middot; Program: <strong>{{ product_analysis.program }}</strong>
+              {% endif %}
+              {% if product_analysis.tier is defined %}
+                &middot; Tier: <strong>{{ product_analysis.tier | replace('_', ' ') | title }}</strong>
+              {% endif %}
               {% if product_analysis.recommended_amount %}
-                &middot; Recommended amount: ${{ "{:,.0f}".format(product_analysis.recommended_amount) }}
+                &middot; Recommended: ${{ "{:,.0f}".format(product_analysis.recommended_amount) }}
               {% endif %}
               {% if product_analysis.estimated_rate_low and product_analysis.estimated_rate_high %}
                 &middot; Est. rate: {{ "{:.1%}".format(product_analysis.estimated_rate_low) }}–{{ "{:.1%}".format(product_analysis.estimated_rate_high) }}
@@ -1970,10 +1976,45 @@
               {% if product_analysis.factoring_fee_low and product_analysis.factoring_fee_high %}
                 &middot; Fee: {{ "{:.1%}".format(product_analysis.factoring_fee_low) }}–{{ "{:.1%}".format(product_analysis.factoring_fee_high) }}
               {% endif %}
+            {% elif product_type == "line_of_credit" %}
+              {% if product_analysis.recommended_line %}
+                &middot; Recommended line: <strong>${{ "{:,.0f}".format(product_analysis.recommended_line) }}</strong>
+                (revolving)
+              {% endif %}
+              {% if product_analysis.estimated_rate_low and product_analysis.estimated_rate_high %}
+                &middot; Est. rate: {{ "{:.1%}".format(product_analysis.estimated_rate_low) }}–{{ "{:.1%}".format(product_analysis.estimated_rate_high) }}
+              {% endif %}
             {% endif %}
           </div>
 
-          {% if product_type == "business_loan" and product_analysis.referral_lenders %}
+          {% if product_analysis.estimated_dscr is defined and product_analysis.estimated_dscr %}
+            <div class="product-dscr {% if product_analysis.estimated_dscr >= 1.5 %}dscr-strong{% elif product_analysis.estimated_dscr >= 1.25 %}dscr-ok{% else %}dscr-weak{% endif %}"
+                 data-test-id="dossier-product-dscr"
+                 style="padding:6px 0;font-size:14px;">
+              Estimated DSCR: <strong>{{ "{:.2f}".format(product_analysis.estimated_dscr) }}x</strong>
+              {% if product_analysis.estimated_dscr >= 1.5 %} ✓ Strong
+              {% elif product_analysis.estimated_dscr >= 1.25 %} ✓ Acceptable
+              {% else %} ✗ Below minimum (1.25x required)
+              {% endif %}
+            </div>
+          {% endif %}
+
+          {% if product_analysis.estimated_monthly_payment is defined and product_analysis.estimated_monthly_payment %}
+            <div class="product-payment" style="color:var(--ink-2);font-size:13px;padding:4px 0;">
+              Estimated monthly payment:
+              <strong>${{ "{:,.0f}".format(product_analysis.estimated_monthly_payment) }}</strong>
+              (36-month term, mid-range rate)
+            </div>
+          {% endif %}
+
+          {% if product_analysis.typical_term_months_range is defined and product_analysis.typical_term_months_range %}
+            <div style="font-size:13px;padding:4px 0;color:var(--ink-2);">
+              Typical term:
+              {{ product_analysis.typical_term_months_range[0] }}–{{ product_analysis.typical_term_months_range[1] }} months
+            </div>
+          {% endif %}
+
+          {% if product_analysis.referral_lenders %}
             <p style="margin-top:8px;"><strong>Referral lenders:</strong>
               {{ product_analysis.referral_lenders | join(", ") }}
             </p>
