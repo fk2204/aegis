@@ -1,0 +1,15 @@
+{# templates/v2/_macros.html.j2 — {% import "v2/_macros.html.j2" as ui %} #}
+{% macro pill(kind, text) %}<span class="pill {{ kind }}">{{ text }}</span>{% endmacro %}
+{% macro badge(status, label) %}<span class="stbadge st-{{ status }}">{{ label }}</span>{% endmacro %}
+{% macro kv(k, v, mono=false) %}<div class="kv"><span class="k">{{ k }}</span><span class="v{{ ' mono' if mono }}">{{ v }}</span></div>{% endmacro %}
+{% macro bar(pct, color) %}<div class="track"><i style="width:{{ pct }}%;background:{{ color }}"></i></div>{% endmacro %}
+{% macro sparkline(values, color='#cdd6cf') %}
+{% set mx = (values | max) if values else 1 %}
+<svg class="spark" viewBox="0 0 120 30" preserveAspectRatio="none" width="100%" height="30" aria-hidden="true">
+  {% set w = 120 / (values | length) if values else 120 %}
+  {% for v in values %}
+    {% set h = (v / mx * 28) if mx else 0 %}
+    <rect x="{{ (loop.index0 * w) | round(2) }}" y="{{ (30 - h) | round(2) }}" width="{{ (w - 2) | round(2) }}" height="{{ h | round(2) }}" rx="1.5" fill="{{ color }}"/>
+  {% endfor %}
+</svg>
+{% endmacro %}

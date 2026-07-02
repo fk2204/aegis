@@ -1,0 +1,22 @@
+{# _scores.html.j2 — integrity + secondary gauge (DSCR / grade / etc). #}
+<section class="card">
+  <div class="head"><h2>Scores</h2></div>
+  <div class="bd">
+    <div class="scores">
+      <div class="score">
+        <div class="lbl">Integrity</div>
+        <div class="gauge"><div class="val">{{ scores.integrity.value }}</div></div>
+        <div class="track"><i style="width:{{ scores.integrity.pct }}%;background:{% if scores.integrity.pct > 70 %}var(--pass){% elif scores.integrity.pct > 40 %}var(--warn){% else %}var(--kill){% endif %}"></i></div>
+      </div>
+      <div class="score">
+        <div class="lbl">{{ scores.second.label }}</div>
+        <div class="gauge"><div class="val">{{ scores.second.value }}</div></div>
+        <div class="track">
+          <i style="width:{{ scores.second.bar_pct }}%;background:{{ scores.second.color }}"></i>
+          <div class="mark" style="left:{{ scores.second.mark_pct }}%"></div>
+        </div>
+        {% if scores.second.say %}<div class="say">{{ scores.second.say }}</div>{% endif %}
+      </div>
+    </div>
+  </div>
+</section>

@@ -1,0 +1,16 @@
+{# _rail_package.html.j2 — document-completeness checklist. #}
+<section class="card">
+  <div class="head"><h2>Document package</h2></div>
+  <div class="bd">
+    <div class="pkgbar">
+      <div class="pct">{{ package.pct }}%</div>
+      <div class="track" style="flex:1"><i style="width:{{ package.pct }}%;background:{% if package.pct == 100 %}var(--pass){% else %}var(--warn){% endif %}"></i></div>
+    </div>
+    {% for item in package['items'] %}
+    <div class="ck {{ 'done' if item.done else 'miss' }}">
+      <div class="box">{{ '✓' if item.done else '✕' }}</div>
+      <div class="nm">{{ item.name }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</section>

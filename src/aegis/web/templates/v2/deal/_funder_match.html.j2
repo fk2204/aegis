@@ -1,0 +1,38 @@
+{# _funder_match.html.j2 — deal-scoped funder ranking with pricing preview. #}
+<div class="fund-sec">
+  <div class="head">
+    <h2>Funder matching</h2>
+    <span class="c">{{ funder_match.note }}</span>
+  </div>
+  {% for f in funder_match['items'] %}
+  <div class="fund {{ '' if f.qualifies else 'paused' }}">
+    <div class="fmain" style="display:grid;grid-template-columns:1fr auto;gap:18px;align-items:center;padding:16px 20px 8px 22px">
+      <div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <strong style="font-family:var(--disp);font-size:18px">{{ f.name }}</strong>
+          {% if f.qualifies %}<span class="pill p">Qualifies</span>{% else %}<span class="pill k">Hard fail</span>{% endif %}
+        </div>
+        {% if f.hard_fails %}
+        <div style="margin-top:6px;font-size:13px;color:var(--kill)">
+          {% for h in f.hard_fails %}✕ {{ h }}{% if not loop.last %} · {% endif %}{% endfor %}
+        </div>
+        {% endif %}
+        {% if f.soft_concerns %}
+        <div style="margin-top:4px;font-size:13px;color:var(--warn)">
+          {% for s in f.soft_concerns %}⚠ {{ s }}{% if not loop.last %} · {% endif %}{% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% if f.qualifies %}
+      <div style="text-align:right">
+        <div style="font-family:var(--disp);font-weight:700;font-size:22px">{{ f.factor_rate }}</div>
+        <div style="font-size:12px;color:var(--ink-3)">factor rate</div>
+        <div style="font-size:13px;margin-top:4px">{{ f.daily_payment }}/day · {{ f.apr }} APR</div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <div class="card"><div class="bd"><p style="color:var(--ink-3);margin:0">No funder matches — parse bank statements and ensure OFAC is clear.</p></div></div>
+  {% endfor %}
+</div>

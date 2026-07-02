@@ -1,0 +1,27 @@
+{# templates/v2/deal/dossier.html.j2 — thin orchestrator that REPLACES the 2,820-line file.
+   `ignore missing` means it renders whatever partials exist and silently skips the rest,
+   so the deal page never 500s while you build partials one at a time. #}
+{% extends "v2/base.html.j2" %}
+{% import "v2/_macros.html.j2" as ui %}
+{% set active = 'deal' %}
+{% block title %}{{ deal.name or 'Deal' }} · AEGIS{% endblock %}
+{% block content %}
+  {% include "v2/deal/_identity.html.j2" ignore missing %}
+  <div id="deal-verdict">{% include "v2/deal/_verdict.html.j2" ignore missing %}</div>
+  <div id="deal-gates">{% include "v2/deal/_gates.html.j2" ignore missing %}</div>
+  <div class="cols">
+    <div class="stack">
+      {% include "v2/deal/_scores.html.j2" ignore missing %}
+      {% include "v2/deal/risk/_dispatch.html.j2" ignore missing %}
+      {% include "v2/deal/_signals.html.j2" ignore missing %}
+    </div>
+    <div class="stack">
+      {% include "v2/deal/_rail_pricing.html.j2" ignore missing %}
+      {% include "v2/deal/_rail_application.html.j2" ignore missing %}
+      {% include "v2/deal/_rail_package.html.j2" ignore missing %}
+      {% include "v2/deal/_background.html.j2" ignore missing %}
+      <div id="disposition">{% include "v2/deal/_disposition.html.j2" ignore missing %}</div>
+    </div>
+  </div>
+  {% include "v2/deal/_funder_match.html.j2" ignore missing %}
+{% endblock %}

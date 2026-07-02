@@ -1,0 +1,45 @@
+{# EXEMPLAR HTMX partial — this is BOTH the initial render AND the /reclassify response.
+   The reclassify endpoint sets oob=True, appending out-of-band fragments that HTMX
+   swaps into #deal-verdict and #deal-gates — one round-trip updates the card AND
+   softens the verdict / clears the gate, with no client-side state. #}
+{% import "v2/_macros.html.j2" as ui %}
+{% set c = classification %}
+<section class="card" id="classification">
+  <div class="head">
+    <h2>{{ 'Transaction classification' if deal.product == 'rbf' else 'Collateral eligibility classification' }}</h2>
+    <span class="meta">coverage {{ c.coverage_pct }}%</span>
+  </div>
+  <div class="bd">
+    <div class="cov">
+      <div class="big" style="color:{{ 'var(--pass)' if c.coverage_pct >= 80 else 'var(--warn)' }}">{{ c.coverage_pct }}%</div>
+      <div class="ct">
+        {{ ui.bar(c.coverage_pct if c.coverage_pct else 4, 'var(--pass)' if c.coverage_pct >= 80 else 'var(--warn)') }}
+        <div class="cl">{{ c.coverage_say | safe }}</div>
+      </div>
+    </div>
+    <div class="buckets">
+      <div class="bkt-bar">{% for b in c.buckets %}<i style="width:{{ b.pct }}%;background:{{ b.color }}" title="{{ b.name }}"></i>{% endfor %}</div>
+      <div class="bkt-leg">
+        {% for b in c.buckets %}<div class="bl"><i style="background:{{ b.color }}"></i><span class="bn">{{ b.name }}<small>{{ b.help }}</small></span><span class="bv">{{ b.amount }}</span></div>{% endfor %}
+      </div>
+    </div>
+    {% if c.sample_txns %}
+    <details class="exp" style="margin-top:16px"><summary>inspect sample transactions</summary>
+      <table class="txn"><thead><tr><th>Date</th><th>Description</th><th class="r">Amount</th><th>AEGIS says</th><th>Conf.</th></tr></thead><tbody>
+        {% for t in c.sample_txns %}<tr><td class="mono">{{ t.date }}</td><td>{{ t.desc }}<div class="cp">{{ t.counterparty }}</div></td><td class="r mono">{{ t.amount }}</td><td><span class="clschip cls-{{ t.cls }}">{{ t.cls_label }}</span></td><td><span class="conf-dot">{{ t.confidence }}</span></td></tr>{% endfor %}
+      </tbody></table>
+    </details>
+    {% endif %}
+    {% if c.callout %}<div class="callout {{ c.callout_kind }}">{{ c.callout | safe }}</div>{% endif %}
+    {% if c.coverage_pct < 80 %}
+    <button type="button" class="btn primary" style="margin-top:14px;justify-content:center"
+            hx-post="/v2/deal/{{ deal.id }}/reclassify" hx-target="#classification" hx-swap="outerHTML">
+      Reclassify revenue
+    </button>
+    {% endif %}
+  </div>
+</section>
+{% if oob %}
+  <div id="deal-verdict" hx-swap-oob="true">{% include "v2/deal/_verdict.html.j2" ignore missing %}</div>
+  <div id="deal-gates" hx-swap-oob="true">{% include "v2/deal/_gates.html.j2" ignore missing %}</div>
+{% endif %}

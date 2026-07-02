@@ -1,0 +1,16 @@
+{# _rail_pricing.html.j2 — best-funder pricing estimate. #}
+<section class="card">
+  <div class="head"><h2>Pricing estimate</h2></div>
+  <div class="bd">
+    {% if pricing.rows %}
+    <div class="wf">
+      {% for row in pricing.rows %}
+      <div class="wr"><span>{{ row.k }}</span><span class="wv">{{ row.v }}</span></div>
+      {% endfor %}
+    </div>
+    {% if pricing.note %}<div class="note">{{ pricing.note }}</div>{% endif %}
+    {% else %}
+    <p style="color:var(--ink-3);font-size:13.5px;margin:0">Pricing available after funder matching. Ensure bank statements are parsed and the deal is OFAC-clear.</p>
+    {% endif %}
+  </div>
+</section>

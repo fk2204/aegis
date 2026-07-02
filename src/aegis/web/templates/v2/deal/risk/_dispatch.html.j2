@@ -1,0 +1,11 @@
+{# Renders exactly one product module server-side (no client switcher in prod). #}
+{% set p = deal.product %}
+{% if   p == 'rbf' %}{% include "v2/deal/risk/_mca.html.j2" ignore missing %}
+  <div id="classification-wrap">{% include "v2/deal/_classification.html.j2" ignore missing %}</div>
+{% elif p == 'term' %}{% include "v2/deal/risk/_term.html.j2" ignore missing %}
+{% elif p == 'loc' %}{% include "v2/deal/risk/_loc.html.j2" ignore missing %}
+{% elif p == 'equipment' %}{% include "v2/deal/risk/_equipment.html.j2" ignore missing %}
+{% elif p == 'abl' %}{% include "v2/deal/risk/_abl.html.j2" ignore missing %}
+  <div id="classification-wrap">{% include "v2/deal/_classification.html.j2" ignore missing %}</div>
+{% elif p == 'factoring' %}{% include "v2/deal/risk/_factoring.html.j2" ignore missing %}
+{% endif %}

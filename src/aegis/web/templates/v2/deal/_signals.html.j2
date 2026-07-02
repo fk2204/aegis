@@ -1,0 +1,33 @@
+{# _signals.html.j2 — kill / weaken / favor grouped signals list. #}
+<section class="card" id="signals">
+  <div class="head"><h2>Risk signals</h2></div>
+  <div class="bd">
+    {% if signals.kill %}
+    <div class="siggrp">
+      <div class="grphead"><div class="sq m-k"></div><div class="gl">Critical</div><div class="cnt">{{ signals.kill | length }}</div><div class="rail"></div></div>
+      {% for s in signals.kill %}
+      <div class="sig"><div class="marker m-k"></div><div><div class="st">{{ s.title }}</div><div class="sd">{{ s.detail }}</div></div><span class="sev k">CRITICAL</span></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if signals.weaken %}
+    <div class="siggrp">
+      <div class="grphead"><div class="sq m-w"></div><div class="gl">Elevated</div><div class="cnt">{{ signals.weaken | length }}</div><div class="rail"></div></div>
+      {% for s in signals.weaken %}
+      <div class="sig"><div class="marker m-w"></div><div><div class="st">{{ s.title }}</div><div class="sd">{{ s.detail }}</div></div><span class="sev w">ELEVATED</span></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if signals.favor %}
+    <div class="siggrp">
+      <div class="grphead"><div class="sq m-p"></div><div class="gl">Favorable</div><div class="cnt">{{ signals.favor | length }}</div><div class="rail"></div></div>
+      {% for s in signals.favor %}
+      <div class="sig"><div class="marker m-p"></div><div><div class="st">{{ s.title }}</div><div class="sd">{{ s.detail }}</div></div><span class="sev p">FAVORABLE</span></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if not signals.kill and not signals.weaken and not signals.favor %}
+    <p style="color:var(--ink-3);font-size:13.5px;margin:0">No scoring signals yet — upload and parse bank statements.</p>
+    {% endif %}
+  </div>
+</section>

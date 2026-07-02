@@ -179,6 +179,15 @@ def create_app() -> FastAPI:
     for r in ALL_ROUTERS:
         app.include_router(r)
 
+    # AEGIS v2 UI (redesign; additive, non-destructive). Mounted under
+    # /v2 — never touches an existing route or template. Router reuses
+    # the shared ``aegis.web._templates`` singleton and the existing
+    # ``/ui/static`` mount; its data services are unwired until Step 2.
+    # See _design_migration/README.md for the migration plan.
+    from aegis_ui.router import router as aegis_v2_router
+
+    app.include_router(aegis_v2_router)
+
     # v2 design assets — CSS, fonts, future static images. Mounted under
     # /ui/static so paths in base.html.j2 are stable. No auth needed; the
     # files are bundled with the app and contain no secrets.

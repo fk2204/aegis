@@ -1,0 +1,6 @@
+{# HTMX target: full page returns this inside #funder-list; search/filter returns just this. #}
+{% for f in funders %}
+  {# Build the .cat card here from f (see aegis-reference.html for markup + fields). #}
+{% else %}
+  <div class="card"><div class="bd"><p style="margin:0;color:var(--ink-3)">No funders loaded yet — wire <code>build_funders_view()</code> to the real funder records.</p></div></div>
+{% endfor %}

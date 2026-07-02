@@ -1,0 +1,13 @@
+{% extends "v2/base.html.j2" %}
+{% set active = 'compliance' %}
+{% block title %}Compliance · AEGIS{% endblock %}
+{% block content %}
+  <div class="eyebrow">Compliance workbench</div>
+  <h1 class="desk">Compliance</h1>
+  <div class="desk-sub">Sanctions, know-your-business, and licensing — checks that block a deal regardless of credit.</div>
+  {% if ofac %}
+    {# render OFAC queue / KYB / states / activity from the view model (see aegis-reference.html) #}
+  {% else %}
+    <div class="card"><div class="bd"><p style="margin:0;color:var(--ink-3)">No compliance data yet — wire <code>build_compliance_view()</code> to the real screening service.</p></div></div>
+  {% endif %}
+{% endblock %}

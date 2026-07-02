@@ -1,0 +1,14 @@
+{# EXEMPLAR spine partial — bound to `verdict`. Follow this pattern for the others. #}
+<section class="verdict is-{{ verdict.kind }}">
+  <div class="stamp"><div class="rec">{{ verdict.rec }}</div><div class="tag">{{ verdict.tag }}</div></div>
+  <div class="reason"><div class="lead">{{ verdict.lead }}</div><div class="why">{{ verdict.why | safe }}</div></div>
+  <div class="vacts">
+    {% for a in verdict.actions %}
+      <button type="button" class="btn {{ a.kind }}"
+        {% if a.hx_post %}hx-post="{{ a.hx_post }}" hx-target="{{ a.hx_target | default('#classification') }}" hx-swap="outerHTML"
+        {% elif a.href %}onclick="window.location='{{ a.href }}'"{% endif %}>
+        {{ a.label }}{% if a.note %}<span class="n">{{ a.note }}</span>{% endif %}
+      </button>
+    {% endfor %}
+  </div>
+</section>

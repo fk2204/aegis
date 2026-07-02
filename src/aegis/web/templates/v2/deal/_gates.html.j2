@@ -1,0 +1,15 @@
+{# _gates.html.j2 — kill / amber gates on top of the dossier. #}
+{% for g in gates %}
+<div class="gate {{ 'amber' if g.severity == 'amber' else '' }}">
+  <div class="ic">{{ '!' if g.severity == 'kill' else '⚠' }}</div>
+  <div class="body">
+    <h3>{{ g.title }}</h3>
+    <p>{{ g.body }}</p>
+  </div>
+  {% if g.action_label %}
+  <div class="act">
+    <a href="{{ g.action_url or '#' }}"><button type="button" class="btn">{{ g.action_label }}</button></a>
+  </div>
+  {% endif %}
+</div>
+{% endfor %}

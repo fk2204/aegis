@@ -1,0 +1,23 @@
+{# _background.html.j2 — OFAC / UCC / SOS / web-presence badges + drill-down. #}
+{% import "v2/_macros.html.j2" as ui %}
+<section class="card" id="background">
+  <div class="head"><h2>Background checks</h2></div>
+  <div class="bd">
+    {% for b in background %}
+    <div class="chk">
+      <div class="top">
+        <span class="nm">{{ b.name }}</span>
+        <span class="stbadge {{ b.status }}">{{ b.status | replace('st-','') | upper }}</span>
+      </div>
+      <div class="what">{{ b.what }}</div>
+      <div class="find">{{ b.finding }}</div>
+      {% if b.detail %}
+      <details class="exp">
+        <summary>{{ b.detail | length }} match detail(s)</summary>
+        <div class="matchrows">{% for d in b.detail %}<div>{{ d }}</div>{% endfor %}</div>
+      </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>

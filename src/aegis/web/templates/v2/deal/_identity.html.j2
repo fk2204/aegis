@@ -1,0 +1,13 @@
+{# _identity.html.j2 — page header: crumb, business name, subline, facts strip. #}
+{% import "v2/_macros.html.j2" as ui %}
+<div class="crumb">
+  <a href="/v2/">Today</a> <span>›</span>
+  <span class="mono">{{ deal.code }}</span>
+</div>
+<h1 class="deal">{{ deal.name or 'Unknown' }}</h1>
+<div class="subline">{{ deal.subline }}</div>
+<div class="facts">
+  {% for f in deal.facts %}
+  <div class="fact"><div class="k">{{ f.k }}</div><div class="v">{{ f.v }}</div></div>
+  {% endfor %}
+</div>

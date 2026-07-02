@@ -1,0 +1,15 @@
+{% extends "v2/base.html.j2" %}
+{% set active = 'funders' %}
+{% block title %}Funders · AEGIS{% endblock %}
+{% block content %}
+  <div class="eyebrow">Funder directory</div>
+  <h1 class="desk">Funders</h1>
+  <div class="desk-sub">Your funders and their basic requirements. Open one for the full guideline and notes.</div>
+  <div class="toolbar">
+    <input class="search" name="q" placeholder="Search funders…"
+           hx-get="/v2/funders" hx-trigger="input changed delay:200ms"
+           hx-target="#funder-list" hx-include="[name=filter]">
+    <input type="hidden" name="filter" value="{{ filter | default('all') }}">
+  </div>
+  <div id="funder-list">{% include "v2/funders/_list.html.j2" %}</div>
+{% endblock %}

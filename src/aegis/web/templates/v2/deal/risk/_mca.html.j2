@@ -1,0 +1,24 @@
+{# risk/_mca.html.j2 — MCA / revenue-based risk module. #}
+{% set r = risk %}
+<section class="card">
+  <div class="head"><h2>Revenue analysis</h2><span class="meta">MCA / Revenue-based</span></div>
+  <div class="bd">
+    {% if r.true_revenue %}
+    <div class="ratio">
+      <div class="big">{{ r.true_revenue }}</div>
+      <div class="rsub"><b>True monthly revenue</b><span>net of transfers &amp; MCA debits</span></div>
+    </div>
+    <div class="rbar">
+      <div class="rl"><b>Stated revenue</b></div>
+      <div class="rt"><i style="width:100%;background:var(--info)"></i></div>
+      <div class="rv">{{ r.stated_revenue }}</div>
+    </div>
+    {% endif %}
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px">
+      <div class="score"><div class="lbl">NSF count</div><div class="gauge"><div class="val {{ 'kill' if (r.nsf_count or 0) > 10 else '' }}">{{ r.nsf_count if r.nsf_count is not none else '—' }}</div></div></div>
+      <div class="score"><div class="lbl">MCA confirmed</div><div class="gauge"><div class="val">{{ r.mca_confirmed if r.mca_confirmed is not none else '—' }}</div></div></div>
+      <div class="score"><div class="lbl">Avg daily balance</div><div class="gauge"><div class="val" style="font-size:18px">{{ r.avg_daily_balance or '—' }}</div></div></div>
+    </div>
+    {% if r.months_analyzed %}<div class="note">Based on {{ r.months_analyzed }} month(s) of statements.</div>{% endif %}
+  </div>
+</section>

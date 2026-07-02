@@ -1,0 +1,40 @@
+{% extends "v2/base.html.j2" %}
+{% import "v2/_macros.html.j2" as ui %}
+{% set active = 'today' %}
+{% block title %}Today · AEGIS{% endblock %}
+{% block content %}
+  <div class="eyebrow">Underwriting desk</div>
+  <h1 class="desk">Today</h1>
+  <div class="desk-sub">Pipeline triaged by what blocks a decision, not upload time.</div>
+
+  {% if kpis %}
+  <div class="kpis">
+    {% for k in kpis %}
+    <div class="kpi {{ 'alert' if k.is_alert }}"><div class="k">{{ k.label }}</div><div class="v">{{ k.value }}</div><div class="d">{{ k.detail }}</div></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if mix %}
+  <div class="mix">
+    <h3>Pipeline by product</h3>
+    <div class="mixbar">{% for m in mix %}<i style="width:{{ m.pct }}%;background:{{ m.color }}"></i>{% endfor %}</div>
+    <div class="mixleg">{% for m in mix %}<span><i style="background:{{ m.color }}"></i>{{ m.product }} <b>{{ m.count }}</b></span>{% endfor %}</div>
+  </div>
+  {% endif %}
+
+  <div class="queue-head"><h2>Attention queue</h2></div>
+  {% for q in queue %}
+    <div class="qcard {{ q.verdict_kind }}"><div class="spine"></div>
+      <div class="qbody">
+        <div class="qtop"><span class="qnm">{{ q.name }}</span><span class="prodtag">{{ q.product }}</span>{{ ui.pill(q.status_kind, q.status_text) }}</div>
+        <div class="qmeta">{{ q.meta }}</div>
+        <div class="qwhy">{{ q.why | safe }}</div>
+      </div>
+      <div class="qside"><div class="miniscore"><div class="ms">{{ q.score_value }}</div><div class="ml">{{ q.score_label }}</div></div>
+        <a href="/v2/deal/{{ q.deal_id }}"><button type="button" class="qact p">Open →</button></a></div>
+    </div>
+  {% else %}
+    <div class="card"><div class="bd"><p style="margin:0;color:var(--ink-3)">No pipeline data yet — wire <code>build_today_view()</code> to the real pipeline service (see MIGRATION.md §6). The shell and styling are working.</p></div></div>
+  {% endfor %}
+{% endblock %}
