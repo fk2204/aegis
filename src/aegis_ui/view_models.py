@@ -189,6 +189,8 @@ def build_deal_view(
     documents: list[Any] | None = None,
     background_ctx: dict[str, Any] | None = None,
     funder_matches: list[Any] | None = None,
+    score_result: Any = None,
+    transactions: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Shape a single deal for the v2 dossier."""
     if merchant is None:
@@ -202,6 +204,14 @@ def build_deal_view(
     ofac_clear = getattr(merchant, "ofac_is_clear", None)
     ucc_defaults = getattr(merchant, "ucc_default_indicators", None) or []
     ucc_filings = getattr(merchant, "ucc_filings", None) or []
+
+    # paper_grade and score-tier live on ``ScoreResult`` (not
+    # ``AnalysisRow``). ``run_scoring_pipeline_for_merchant`` in
+    # merchants.py surfaces both when the merchant is finalized and
+    # scoreable; ``None`` for unscored / unfinalized merchants.
+    paper_grade = getattr(score_result, "paper_grade", None) if score_result else None
+    score_tier = getattr(score_result, "tier", None) if score_result else None
+    recommendation = getattr(score_result, "recommendation", None) if score_result else None
 
     if ofac_clear is False:
         verdict_kind = "block"
@@ -556,6 +566,9 @@ def build_deal_view(
             "kind": verdict_kind,
             "rec": rec,
             "tag": band or "",
+            "grade": paper_grade,
+            "score_tier": score_tier,
+            "recommendation": recommendation,
             "lead": lead,
             "why": why,
             "actions": [],
@@ -569,14 +582,24 @@ def build_deal_view(
         "background": background,
         "risk": build_risk_module(merchant, analysis, product),
         "funder_match": build_funder_match_view(funder_matches),
-        **build_classification_view(analysis),
+        **build_classification_view(analysis, transactions=transactions),
     }
 
 
 def _empty_deal_view() -> dict[str, Any]:
     return {
         "deal": {"id": "", "product": "rbf", "name": "", "code": "", "subline": "", "facts": []},
-        "verdict": {"kind": "review", "rec": "-", "tag": "", "lead": "", "why": "", "actions": []},
+        "verdict": {
+            "kind": "review",
+            "rec": "-",
+            "tag": "",
+            "grade": None,
+            "score_tier": None,
+            "recommendation": None,
+            "lead": "",
+            "why": "",
+            "actions": [],
+        },
         "gates": [],
         "scores": {
             "integrity": {"value": "-", "pct": 0},
@@ -657,16 +680,74 @@ def build_risk_module(merchant: Any, analysis: Any, product: str) -> dict[str, A
 
 
 # ============================================================ CLASSIFICATION
-def build_classification_view(analysis: Any) -> dict[str, Any]:
-    """Classification-coverage panel. Currently a placeholder - the real
-    coverage figures live in ``scoring_v2.dossier_panel``. This surface
-    reads a friendly caption until the same extraction happens.
+# Per-category color + operator-facing label. Same taxonomy as
+# ``TransactionCategory`` (parser.models). ``other`` is the unclassified
+# bucket the coverage-percentage subtracts from 100%.
+_BUCKET_COLORS: dict[str, str] = {
+    "deposit": "var(--pass)",
+    "payroll": "var(--warn)",
+    "ach_credit": "#2a7a5c",
+    "mca_debit": "var(--violet)",
+    "nsf_fee": "var(--kill)",
+    "wire_in": "#2a7a5c",
+    "wire_out": "#a55a06",
+    "transfer": "var(--info)",
+    "fee": "#c9c6ba",
+    "chargeback": "var(--kill)",
+    "refund": "#8a6d3b",
+    "other": "#e0ddd0",
+}
+_BUCKET_HELP: dict[str, str] = {
+    "deposit": "Revenue in",
+    "payroll": "Payroll out",
+    "ach_credit": "ACH credit",
+    "mca_debit": "MCA repayment",
+    "nsf_fee": "NSF / OD",
+    "wire_in": "Wire received",
+    "wire_out": "Wire sent",
+    "transfer": "Owner / internal",
+    "fee": "Bank fees",
+    "chargeback": "Chargeback",
+    "refund": "Refund",
+    "other": "Unclassified",
+}
+
+
+def build_classification_view(
+    analysis: Any,
+    transactions: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Classification-coverage panel driven by real transactions.
+
+    Coverage % = share of transactions whose ``category`` != ``other``.
+    Buckets = ``sum(|amount|)`` per non-``other`` category, top-N.
+    Empty state when no transactions are threaded through.
+
+    ``analysis`` is kept as a parameter to preserve the signature
+    ``build_deal_view`` calls with; only its presence is inspected (to
+    decide whether the panel should say "no analysis yet" vs "analysis
+    present but no transactions loaded").
     """
-    if analysis is None:
+    if not transactions:
+        if analysis is None:
+            return {
+                "classification": {
+                    "coverage_pct": 0,
+                    "coverage_say": "No analysis yet - upload bank statements.",
+                    "buckets": [],
+                    "counterparties": [],
+                    "sample_txns": [],
+                    "callout_kind": "i",
+                    "callout": "",
+                }
+            }
         return {
             "classification": {
                 "coverage_pct": 0,
-                "coverage_say": "No analysis yet - upload bank statements.",
+                "coverage_say": (
+                    "Transactions not loaded in this render - open the dossier "
+                    "to see the classification detail."
+                ),
                 "buckets": [],
                 "counterparties": [],
                 "sample_txns": [],
@@ -675,15 +756,69 @@ def build_classification_view(analysis: Any) -> dict[str, Any]:
             }
         }
 
+    total = len(transactions)
+    if total == 0:
+        return {
+            "classification": {
+                "coverage_pct": 0,
+                "coverage_say": "No transactions on this statement.",
+                "buckets": [],
+                "counterparties": [],
+                "sample_txns": [],
+                "callout_kind": "i",
+                "callout": "",
+            }
+        }
+
+    bucket_totals: dict[str, float] = {}
+    classified = 0
+    for t in transactions:
+        cat = str(getattr(t, "category", "other") or "other")
+        try:
+            amt = abs(float(getattr(t, "amount", 0) or 0))
+        except (TypeError, ValueError):
+            amt = 0.0
+        bucket_totals[cat] = bucket_totals.get(cat, 0.0) + amt
+        if cat != "other":
+            classified += 1
+
+    coverage_pct = round(classified / total * 100)
+    max_amount = max(bucket_totals.values()) if bucket_totals else 1.0
+    buckets = [
+        {
+            "name": cat.replace("_", " ").title(),
+            "pct": round(total_amt / max_amount * 100) if max_amount else 0,
+            "amount": _fmt_money(total_amt),
+            "color": _BUCKET_COLORS.get(cat, "#e0ddd0"),
+            "help": _BUCKET_HELP.get(cat, cat),
+        }
+        for cat, total_amt in sorted(bucket_totals.items(), key=lambda x: -x[1])
+        if cat != "other"
+    ][:8]
+
+    if coverage_pct < 60:
+        callout_kind = "w"
+        callout = (
+            "<b>Low classification coverage.</b> Many transactions couldn't "
+            "be categorized — revenue figures may be understated. Try "
+            "reclassifying."
+        )
+    elif coverage_pct >= 90:
+        callout_kind = "p"
+        callout = "<b>Strong classification.</b> Revenue figures are reliable."
+    else:
+        callout_kind = "i"
+        callout = ""
+
     return {
         "classification": {
-            "coverage_pct": 0,
-            "coverage_say": "Coverage detail pending extraction from scoring_v2.dossier_panel.",
-            "buckets": [],
+            "coverage_pct": coverage_pct,
+            "coverage_say": f"{coverage_pct}% of transactions classified ({classified}/{total})",
+            "buckets": buckets,
             "counterparties": [],
             "sample_txns": [],
-            "callout_kind": "i",
-            "callout": "",
+            "callout_kind": callout_kind,
+            "callout": callout,
         }
     }
 

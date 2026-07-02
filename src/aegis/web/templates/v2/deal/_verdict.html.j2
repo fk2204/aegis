@@ -1,6 +1,13 @@
 {# EXEMPLAR spine partial — bound to `verdict`. Follow this pattern for the others. #}
 <section class="verdict is-{{ verdict.kind }}">
-  <div class="stamp"><div class="rec">{{ verdict.rec }}</div><div class="tag">{{ verdict.tag }}</div></div>
+  <div class="stamp">
+    <div class="rec">{{ verdict.rec }}</div>
+    <div class="tag">
+      {% if verdict.grade %}{{ verdict.grade }} paper{% if verdict.tag %} · {{ verdict.tag }}{% endif %}
+      {% elif verdict.score_tier %}Tier {{ verdict.score_tier }}{% if verdict.tag %} · {{ verdict.tag }}{% endif %}
+      {% else %}{{ verdict.tag }}{% endif %}
+    </div>
+  </div>
   <div class="reason"><div class="lead">{{ verdict.lead }}</div><div class="why">{{ verdict.why | safe }}</div></div>
   <div class="vacts">
     {% for a in verdict.actions %}

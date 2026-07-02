@@ -1,0 +1,24 @@
+{# risk/_equipment.html.j2 — equipment financing risk module. #}
+{% set r = risk %}
+<section class="card">
+  <div class="head"><h2>Equipment analysis</h2><span class="meta">Equipment financing</span></div>
+  <div class="bd">
+    <div class="scores">
+      <div class="score">
+        <div class="lbl">FICO</div>
+        <div class="gauge"><div class="val">{{ r.fico if r.fico is not none else '—' }}</div></div>
+        <div class="track"><i style="width:{{ (((r.fico or 0) - 300) / 5.5) | int }}%;background:{% if (r.fico or 0) >= 680 %}var(--pass){% elif (r.fico or 0) >= 600 %}var(--warn){% else %}var(--kill){% endif %}"></i></div>
+        <div class="say">600 minimum · 680+ preferred</div>
+      </div>
+      <div class="score">
+        <div class="lbl">Time in business</div>
+        <div class="gauge"><div class="val">{{ r.tib_months if r.tib_months is not none else '—' }}<small style="font-size:16px">mo</small></div></div>
+        <div class="say">12 months minimum</div>
+      </div>
+    </div>
+    {% if r.use_of_funds %}
+    <div class="callout i" style="margin-top:14px">Equipment: <b>{{ r.use_of_funds }}</b></div>
+    {% endif %}
+    <div class="note" style="margin-top:12px">LTV max 90% · Down payment typically 10%</div>
+  </div>
+</section>

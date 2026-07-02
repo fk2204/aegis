@@ -1,0 +1,30 @@
+{# risk/_term.html.j2 — term loan / LOC risk module. #}
+{% set r = risk %}
+<section class="card">
+  <div class="head"><h2>Term loan analysis</h2><span class="meta">Business term loan</span></div>
+  <div class="bd">
+    <div class="scores">
+      <div class="score">
+        <div class="lbl">FICO</div>
+        <div class="gauge"><div class="val">{{ r.fico if r.fico is not none else '—' }}</div></div>
+        <div class="track"><i style="width:{{ (((r.fico or 0) - 300) / 5.5) | int }}%;background:{% if (r.fico or 0) >= 700 %}var(--pass){% elif (r.fico or 0) >= 650 %}var(--warn){% else %}var(--kill){% endif %}"></i></div>
+        <div class="say">660 minimum · 700+ preferred</div>
+      </div>
+      <div class="score">
+        <div class="lbl">Time in business</div>
+        <div class="gauge"><div class="val">{{ r.tib_months if r.tib_months is not none else '—' }}<small style="font-size:16px">mo</small></div></div>
+        <div class="say">24 months minimum</div>
+      </div>
+    </div>
+    <div class="rbar" style="margin-top:14px">
+      <div class="rl"><b>Requested amount</b></div>
+      <div class="rt"><i style="width:60%;background:var(--info)"></i></div>
+      <div class="rv">{{ r.requested }}</div>
+    </div>
+    <div class="rbar">
+      <div class="rl"><b>Monthly revenue</b></div>
+      <div class="rt"><i style="width:80%;background:var(--pass)"></i></div>
+      <div class="rv">{{ r.true_revenue }}</div>
+    </div>
+  </div>
+</section>

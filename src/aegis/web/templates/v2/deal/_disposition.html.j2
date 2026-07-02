@@ -1,0 +1,29 @@
+{# _disposition.html.j2 — operator outcome capture. HTMX post to
+   /v2/deal/{id}/disposition writes a merchant_outcomes row (via the
+   same table as the legacy funder-outcome buttons) and swaps the form
+   for a compact confirmation. #}
+<section class="card" id="disposition">
+  <div class="head"><h2>Disposition</h2></div>
+  <div class="bd">
+    {% if decision %}
+    <div class="callout p" data-test-id="v2-disposition-recorded">
+      ✓ Outcome recorded — <strong>{{ decision | title }}</strong>
+    </div>
+    {% else %}
+    <form hx-post="/v2/deal/{{ deal.id if deal is defined and deal else deal_id }}/disposition"
+          hx-target="#disposition"
+          hx-swap="outerHTML"
+          data-test-id="v2-disposition-form">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <button name="decision" value="funded"    class="btn primary">✓ Funded</button>
+        <button name="decision" value="declined"  class="btn kill">✕ Declined</button>
+        <button name="decision" value="countered" class="btn">↔ Countered</button>
+        <button name="decision" value="withdrawn" class="btn">← Withdrawn</button>
+      </div>
+      <textarea name="note"
+                placeholder="Note (optional)"
+                style="width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:13.5px;resize:vertical;min-height:52px"></textarea>
+    </form>
+    {% endif %}
+  </div>
+</section>

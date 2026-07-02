@@ -1,0 +1,16 @@
+{# risk/_factoring.html.j2 — invoice factoring / ABL risk module. #}
+{% set r = risk %}
+<section class="card">
+  <div class="head"><h2>Factoring analysis</h2><span class="meta">Invoice factoring</span></div>
+  <div class="bd">
+    <div class="ratio">
+      <div class="big">{{ r.true_revenue }}</div>
+      <div class="rsub"><b>Monthly revenue</b><span>basis for A/R estimate</span></div>
+    </div>
+    <div class="callout w" style="margin-top:14px">
+      A/R aging report required to calculate eligible receivables and advance amount.
+      Upload the aging report to complete this analysis.
+    </div>
+    <div class="note">Typical advance rate: 85% of eligible A/R · Fee: 1.5–3.5%</div>
+  </div>
+</section>

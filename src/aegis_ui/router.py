@@ -141,6 +141,7 @@ def deal(
         documents = []
 
     latest_analysis = None
+    latest_doc_id = None
     for d in documents:
         try:
             a = docs_repo.get_analysis(d.id)
@@ -148,30 +149,54 @@ def deal(
             a = None
         if a is not None:
             latest_analysis = a
+            latest_doc_id = d.id
             break
+
+    # Load transactions for the latest analyzed doc so
+    # ``build_classification_view`` can render real coverage % + per-
+    # bucket totals from ClassifiedTransaction.category.
+    transactions: list[Any] = []
+    if latest_doc_id is not None:
+        try:
+            transactions = list(docs_repo.list_transactions(latest_doc_id) or [])
+        except Exception:
+            transactions = []
 
     # Background context is derived from merchant fields directly (OFAC /
     # UCC / SOS / web-presence all live on MerchantRow); the view-model
     # reads them via getattr.
     background_ctx: dict[str, Any] = {}
 
-    # Full scoring + funder-matching pipeline via the extracted
-    # ``run_funder_matching_for_merchant`` helper (merchants.py). Returns
-    # ranked match-card dicts identical to the dossier's § 4 grid; ``[]``
-    # on any failure so the deal page renders the empty-state note.
+    # Full scoring pipeline via the extracted helper (merchants.py).
+    # Returns (merchant, score_input, score_result) or None. Feeds both
+    # the funder-matching table AND the verdict card's paper_grade tag.
+    score_result: Any = None
+    funder_matches: list[Any] = []
     try:
-        from aegis.web.routers.merchants import run_funder_matching_for_merchant
+        from aegis.web.routers.merchants import (
+            run_funder_matching_for_merchant,
+            run_scoring_pipeline_for_merchant,
+        )
 
-        funder_matches: list[Any] = run_funder_matching_for_merchant(
+        pipeline_out = run_scoring_pipeline_for_merchant(
             merchant_id,
             merchants_repo=merchants_repo,
             docs=docs_repo,
-            funder_repo=funder_repo,
-            funder_note_subs=funder_note_subs,
-            snapshot=snapshot,
             ofac=ofac,
         )
-    except Exception:
+        if pipeline_out is not None:
+            _, _, score_result = pipeline_out
+            funder_matches = run_funder_matching_for_merchant(
+                merchant_id,
+                merchants_repo=merchants_repo,
+                docs=docs_repo,
+                funder_repo=funder_repo,
+                funder_note_subs=funder_note_subs,
+                snapshot=snapshot,
+                ofac=ofac,
+            )
+    except Exception:  # pragma: no cover — never block deal render
+        score_result = None
         funder_matches = []
 
     return templates.TemplateResponse(
@@ -179,7 +204,15 @@ def deal(
         "v2/deal/dossier.html.j2",
         {
             "active": "deal",
-            **build_deal_view(merchant, latest_analysis, documents, background_ctx, funder_matches),
+            **build_deal_view(
+                merchant,
+                latest_analysis,
+                documents,
+                background_ctx,
+                funder_matches,
+                score_result=score_result,
+                transactions=transactions,
+            ),
         },
     )
 
@@ -230,15 +263,50 @@ def reclassify(
 def disposition(
     request: Request,
     deal_id: str,
-    decision: str = Form(...),
-    note: str = Form(""),
+    decision: Annotated[str, Form()],
+    note: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
-    """Disposition endpoint — stub. Real save-path lives in the legacy
-    dossier route; wiring pending extraction.
+    """Persist operator outcome to ``merchant_outcomes`` (migration 106).
+
+    Same target table the legacy dossier's four disposition buttons write
+    to (``merchants.py`` merchant_record_funder_outcome route). Uses
+    ``source="operator_v2"`` so the operator can distinguish v2-recorded
+    outcomes from the legacy path when auditing. Idempotency-agnostic —
+    duplicate posts create duplicate rows on purpose; the calibration
+    engine treats them as separate events.
     """
-    _ = (deal_id, decision, note)
+    valid_outcomes = {"funded", "declined", "countered", "withdrawn"}
+    recorded = False
+    if decision in valid_outcomes:
+        try:
+            from datetime import UTC, datetime
+
+            from aegis.db import get_supabase
+
+            get_supabase().table("merchant_outcomes").insert(
+                {
+                    "merchant_id": deal_id,
+                    "outcome": decision,
+                    "source": "operator_v2",
+                    "notes": (note or None),
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                }
+            ).execute()
+            recorded = True
+        except Exception as exc:  # best-effort write
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "v2.disposition.insert_failed deal_id=%s exc=%s", deal_id, exc
+            )
     return templates.TemplateResponse(
-        request, "v2/deal/dossier.html.j2", {"active": "deal", **build_deal_view(None)}
+        request,
+        "v2/deal/_disposition.html.j2",
+        {
+            "deal_id": deal_id,
+            "decision": decision if recorded else None,
+            "note": note,
+        },
     )
 
 
