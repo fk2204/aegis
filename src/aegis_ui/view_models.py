@@ -25,8 +25,10 @@ Deferred TODO(data) still present:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import UUID
 
 PRODUCTS = frozenset({"rbf", "term", "loc", "equipment", "abl", "factoring"})
 
@@ -977,11 +979,157 @@ def build_classification_view(
 
 
 # ============================================================ FUNDERS
-def build_funders_view(data: Any, q: str = "", filt: str = "all") -> dict[str, Any]:
+# Product-line labels for the funder card's ``product_line`` display
+# string. Same tokens as ``FunderRow.deal_types_accepted`` mapped to a
+# short human-facing label. Unknown tokens display verbatim.
+_DEAL_TYPE_LABELS: dict[str, str] = {
+    "mca": "MCA",
+    "revenue_based": "MCA",
+    "term_loan": "Term",
+    "term": "Term",
+    "business_loan": "Term",
+    "loc": "LOC",
+    "line_of_credit": "LOC",
+    "equipment": "Equipment",
+    "equipment_financing": "Equipment",
+    "factoring": "Factoring",
+    "receivables": "Factoring",
+    "asset_based": "ABL",
+    "abl": "ABL",
+    "sba": "SBA",
+}
+
+
+def _fmt_money_short(val: Any) -> str:
+    """Render ``$25K`` / ``$1.5M`` style for compact card fields.
+
+    Money math stays on ``Decimal``; the final label is a string. ``None``
+    or blank returns em-dash.
+    """
+    if val is None or val == "":
+        return "—"
+    try:
+        d = Decimal(str(val))
+    except (InvalidOperation, TypeError, ValueError):
+        return "—"
+    if d <= 0:
+        return "$0"
+    if d >= Decimal("1000000"):
+        rendered = f"${d / Decimal('1000000'):.1f}M"
+        return rendered.replace(".0M", "M")
+    if d >= Decimal("1000"):
+        return f"${d / Decimal('1000'):.0f}K"
+    return f"${d:,.0f}"
+
+
+def _build_excludes_summary(
+    excluded_industries: tuple[str, ...],
+    excluded_states: tuple[str, ...],
+) -> str:
+    """Compact excludes label for the card. em-dash when both empty."""
+    industries = list(excluded_industries)[:3]
+    states = list(excluded_states)[:5]
+    if not industries and not states:
+        return "—"
+    pieces: list[str] = []
+    if industries:
+        pieces.append(", ".join(i.replace("_", " ") for i in industries))
+    if states:
+        pieces.append(", ".join(states))
+    return " · ".join(pieces)
+
+
+def _resolve_channel(funder: Any) -> str:
+    """Return ``"direct"`` or ``"marketplace"``.
+
+    Schema gap: ``FunderRow`` has no ``channel`` field yet. We surface
+    any ``channel`` attribute if downstream code has added one; otherwise
+    default to ``"direct"`` (Commera integrates with direct lenders as
+    the standard case; marketplace is an exception). Reported as a
+    schema gap so the column can be added later.
+    """
+    raw = getattr(funder, "channel", None)
+    if raw in ("direct", "marketplace"):
+        return str(raw)
+    return "direct"
+
+
+def _resolve_product_line(deal_types: tuple[str, ...]) -> str:
+    """Compact product-line label from ``deal_types_accepted``.
+
+    Empty tuple -> ``"MCA"`` (matcher default). Multiple types -> joined
+    with `` / ``.
+    """
+    if not deal_types:
+        return "MCA"
+    labels: list[str] = []
+    for t in deal_types[:3]:
+        labels.append(_DEAL_TYPE_LABELS.get(t, t.replace("_", " ").title()))
+    return " / ".join(labels)
+
+
+def _last_submission_summary(
+    funder_id: str,
+    funder_note_subs: Any,
+) -> tuple[str | None, str | None]:
+    """Look up the most recent Close-Note submission for this funder.
+
+    Returns ``(result_label, date_str)`` -- both may be ``None`` when the
+    repository has no rows or the lookup fails. ``funder_note_subs`` is
+    optional; the HTMX partial re-render path passes ``None`` and both
+    values come back ``None``.
+    """
+    if funder_note_subs is None or not funder_id:
+        return (None, None)
+    try:
+        rows = funder_note_subs.list_for_funder(UUID(funder_id), limit=1) or []
+    except Exception:
+        return (None, None)
+    if not rows:
+        return (None, None)
+    latest = rows[0]
+    status = getattr(latest, "status", None)
+    submitted = getattr(latest, "submitted_at", None)
+    result_label: str | None = None
+    if status:
+        result_label = {
+            "approved": "Approved",
+            "declined": "Declined",
+            "pending": "Pending",
+        }.get(str(status), str(status).title())
+    date_str: str | None = None
+    if isinstance(submitted, datetime):
+        date_str = submitted.strftime("%Y-%m-%d")
+    return (result_label, date_str)
+
+
+def build_funders_view(
+    data: Any,
+    q: str = "",
+    filt: str = "all",
+    *,
+    funder_note_subs: Any = None,
+) -> dict[str, Any]:
     """List page shaper. ``data`` is a list of ``FunderRow`` (or ``None``).
 
-    Filter tokens: ``all`` / ``active`` / ``paused``.
+    Filter tokens:
+      * ``all``          - no filter
+      * ``direct``       - ``channel == "direct"``
+      * ``marketplace``  - ``channel == "marketplace"``
+      * ``active`` / ``paused`` / ``first_position_only`` / ``selective``
+                         - operator_status tokens kept for legacy callers
+
     Search is a case-insensitive substring against ``name``.
+
+    Card fields per funder:
+        ``id, name, channel, status, product_line, remittance_type,
+        min_revenue, min_fico, min_tib_months, max_positions,
+        stacking_ok, excludes_summary,
+        last_submission_result, last_submission_date``
+
+    ``funder_note_subs`` is the optional repository used to look up
+    ``last_submission_*``. The router passes it on the full-page render;
+    HTMX partial re-renders may omit it.
     """
     if not data:
         return {"funders": [], "q": q, "filter": filt}
@@ -991,12 +1139,19 @@ def build_funders_view(data: Any, q: str = "", filt: str = "all") -> dict[str, A
     for f in data:
         name = getattr(f, "name", "") or ""
         status = getattr(f, "operator_status", "active") or "active"
-        deal_types = getattr(f, "deal_types_accepted", ()) or ()
+        deal_types = tuple(getattr(f, "deal_types_accepted", ()) or ())
         tiers = getattr(f, "tiers", ()) or ()
 
         if q_lower and q_lower not in name.lower():
             continue
-        if filt != "all" and status != filt:
+
+        channel = _resolve_channel(f)
+        # Channel filter is orthogonal to operator_status filter.
+        if filt == "direct" and channel != "direct":
+            continue
+        if filt == "marketplace" and channel != "marketplace":
+            continue
+        if filt in ("active", "paused", "first_position_only", "selective") and status != filt:
             continue
 
         best_tier = tiers[0] if tiers else None
@@ -1015,16 +1170,39 @@ def build_funders_view(data: Any, q: str = "", filt: str = "all") -> dict[str, A
             if best_tier
             else getattr(f, "max_positions", None)
         )
+        min_tib = (
+            getattr(best_tier, "min_months_in_business", None)
+            if best_tier
+            else getattr(f, "min_months_in_business", None)
+        )
+
+        fid = str(getattr(f, "id", "") or "")
+        last_result, last_date = _last_submission_summary(fid, funder_note_subs)
 
         funders_out.append(
             {
-                "id": str(getattr(f, "id", "") or ""),
+                "id": fid,
                 "name": name,
+                # Schema gap: no ``channel`` column on FunderRow yet.
+                "channel": channel,
                 "status": status,
-                "deal_types": list(deal_types)[:4],
+                "product_line": _resolve_product_line(deal_types),
+                # Schema gap: no ``remittance_type`` column yet.
+                "remittance_type": getattr(f, "remittance_type", None) or "straight",
+                "min_revenue": _fmt_money_short(min_rev),
                 "min_fico": min_fico,
-                "min_revenue": _fmt_money(min_rev),
+                "min_tib_months": min_tib,
                 "max_positions": max_pos,
+                "stacking_ok": bool(getattr(f, "accepts_stacking", False)),
+                "excludes_summary": _build_excludes_summary(
+                    tuple(getattr(f, "excluded_industries", ()) or ()),
+                    tuple(getattr(f, "excluded_states", ()) or ()),
+                ),
+                # Legacy field kept for callers that still read it -
+                # not consumed by the v2 template.
+                "deal_types": list(deal_types)[:4],
+                "last_submission_result": last_result,
+                "last_submission_date": last_date,
             }
         )
 
@@ -1100,54 +1278,363 @@ def build_funder_match_view(matches: list[Any] | None) -> dict[str, Any]:
 
 
 # ============================================================ COMPLIANCE
-def build_compliance_view(ofac_rows: Any) -> dict[str, Any]:
-    """Compliance workbench — list of merchants flagged by OFAC.
+# ``ok`` / ``warn`` / ``miss`` map to the ``.st-*`` CSS classes in
+# aegis-design.css (``st-clear``, ``st-review``, ``st-match``). We use
+# the shorter tokens directly on the template's ``st-{status}`` string
+# after mapping in ``_kyb_status`` below.
+def _kyb_status(passed: bool | None) -> tuple[str, str]:
+    """Bool tri-state -> (status_class, label).
 
-    ``ofac_rows`` may be a list of dicts (raw Supabase rows), a list of
-    ``MerchantRow`` instances, or ``None``. Handles either shape via
-    getattr/get. Real dashboard-grade metrics live in
-    ``compliance.obligations``; this view surfaces the OFAC block queue
-    as the first cut.
+    ``True``  -> ``ok``   / ``"OK"``
+    ``False`` -> ``miss`` / ``"Missing"``
+    ``None``  -> ``warn`` / ``"Pending"`` (never-checked path)
     """
-    if not ofac_rows:
-        return {"kpis": [], "ofac": [], "kyb": [], "states": [], "activity": []}
+    if passed is True:
+        return ("ok", "OK")
+    if passed is False:
+        return ("miss", "Missing")
+    return ("warn", "Pending")
 
-    ofac_items: list[dict[str, Any]] = []
-    for row in ofac_rows:
-        if isinstance(row, dict):
-            name = row.get("business_name") or ""
-            state = row.get("state") or ""
-            mid = str(row.get("id") or "")
-            matches = list(row.get("ofac_match_detail") or [])
+
+def _relative_time(when: datetime | None, now: datetime | None = None) -> str:
+    """Compact ``"3h ago"`` / ``"2d ago"`` for the activity log.
+
+    ``None`` returns em-dash. Now-relative rendering uses UTC.
+    """
+    if when is None:
+        return "—"
+    now = now or datetime.now(UTC)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    delta = now - when
+    if delta < timedelta(minutes=1):
+        return "just now"
+    if delta < timedelta(hours=1):
+        mins = int(delta.total_seconds() // 60)
+        return f"{mins}m ago"
+    if delta < timedelta(days=1):
+        hrs = int(delta.total_seconds() // 3600)
+        return f"{hrs}h ago"
+    if delta < timedelta(days=30):
+        return f"{delta.days}d ago"
+    return when.strftime("%Y-%m-%d")
+
+
+def _activity_kind_for_action(action: str) -> tuple[str, str]:
+    """Map an audit action -> (kind, label) for the activity-log badge.
+
+    Kind is one of ``ok`` / ``warn`` / ``kill`` / ``info``; label is the
+    short badge string. Kept centralized because prefix alone is
+    ambiguous (``kyb.clear`` is ok, ``kyb.miss`` is warn).
+    """
+    a = (action or "").lower()
+    if "ofac" in a and any(tok in a for tok in ("hit", "match", "block")):
+        return ("kill", "OFAC hit")
+    if "hard_decline" in a or ".block" in a:
+        return ("kill", "Block")
+    if any(tok in a for tok in ("deadline_approaching", "pending", "reminder", "escalat")):
+        return ("warn", "Attention")
+    if any(tok in a for tok in ("clear", "confirm", "verified", "resolved", "approved")):
+        return ("ok", "Cleared")
+    return ("info", "Event")
+
+
+def _activity_description(row: dict[str, Any]) -> str:
+    """Render one audit row -> short human-facing description string.
+
+    Prefers ``details.summary`` if present; falls back to the action
+    with subject substitutions.
+    """
+    details = row.get("details") or {}
+    if isinstance(details, dict):
+        summary = details.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+    action = row.get("action") or "event"
+    subject_type = row.get("subject_type") or ""
+    subject_id = row.get("subject_id") or ""
+    if subject_type and subject_id:
+        return f"{action} · {subject_type} {str(subject_id)[:8]}"
+    return str(action)
+
+
+def _load_state_matrix_rows() -> list[dict[str, Any]]:
+    """Read ``docs/compliance/states.yaml`` -> list of state cards.
+
+    Sorted by risk (kill first, then warn, then ok) then name. Each card
+    gets a short ``description`` derived from tier + overlays. Never
+    fabricates statute text -- only surfaces facts structurally present
+    in the yaml. Empty list on any load / validation failure.
+    """
+    try:
+        from aegis.compliance.state_matrix import Tier1Regulation, load_matrix
+    except Exception:
+        return []
+    try:
+        matrix = load_matrix()
+    except Exception:
+        return []
+
+    warn_risk = {"medium"}
+    kill_risk = {"high"}
+
+    rows: list[dict[str, Any]] = []
+    for code, entry in matrix.states.items():
+        tier = getattr(entry, "tier", 3)
+        if tier == 1 and isinstance(entry, Tier1Regulation):
+            risk_source = getattr(entry.overlays, "ag_enforcement_risk", "low")
+            statute = ", ".join(entry.cfdl.statute[:1]) if entry.cfdl.statute else "CFDL"
+            coj = getattr(entry.overlays, "coj", "permitted")
+            broker_fee = getattr(entry.overlays, "broker_advance_fee", "permitted")
+            desc_parts = [f"CFDL: {statute}"]
+            if coj != "permitted":
+                desc_parts.append(f"CoJ {coj}")
+            if broker_fee == "prohibited":
+                desc_parts.append("broker advance-fee prohibited")
+            description = " · ".join(desc_parts)
+        elif tier == 2:
+            risk_source = getattr(entry, "likelihood", "low")
+            bills = list(getattr(entry, "pending_bills", []))[:2]
+            description = f"Watch: {', '.join(bills)}" if bills else "Watch list"
+        else:  # tier 3
+            risk_source = getattr(entry, "ag_enforcement_risk", "low")
+            description = "No MCA-specific law · defensive posture"
+
+        if risk_source in kill_risk:
+            risk = "kill"
+        elif risk_source in warn_risk:
+            risk = "warn"
         else:
-            name = getattr(row, "business_name", "") or ""
-            state = getattr(row, "state", "") or ""
-            mid = str(getattr(row, "id", "") or "")
-            matches = list(getattr(row, "ofac_match_detail", None) or [])
-        ofac_items.append(
+            risk = "ok"
+
+        rows.append(
             {
-                "id": mid,
-                "name": name or "(unknown)",
-                "state": state or "-",
-                "match_count": len(matches),
-                "matches": matches[:4],
-                "status": "match",
+                "name": getattr(entry, "name", code),
+                "code": code,
+                "risk": risk,
+                "description": description,
+                "tier": tier,
             }
         )
 
-    return {
-        "kpis": [
+    risk_order = {"kill": 0, "warn": 1, "ok": 2}
+    rows.sort(key=lambda r: (risk_order.get(r["risk"], 3), r["name"]))
+    return rows
+
+
+def _build_kyb_rows(merchants: list[Any] | None) -> list[dict[str, Any]]:
+    """One row per merchant with a real KYB signal on the record.
+
+    Filters to merchants where any KYB-adjacent field has been touched -
+    no reason to render an all-``pending`` row for a merchant that has
+    not been screened at all.
+
+    Columns: entity (SOS), beneficial ownership, ID verification,
+    TIN / EIN match, bank verification. Per-column status derives from
+    real ``MerchantRow`` fields; where no source field exists
+    (beneficial ownership, TIN cross-check), status is ``warn``
+    (schema gap - those columns are on the KYB backlog).
+    """
+    if not merchants:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for m in merchants:
+        touched = any(
+            getattr(m, attr, None) is not None
+            for attr in ("sos_checked_at", "ucc_checked_at", "ofac_checked_at")
+        )
+        if not touched:
+            continue
+
+        sos_status, sos_label = _kyb_status(getattr(m, "sos_is_active", None))
+
+        # Schema gap: no ``beneficial_ownership_confirmed`` column yet.
+        bo_status, bo_label = ("warn", "Pending")
+
+        dl_ok = bool(getattr(m, "drivers_license_on_file", False))
+        id_status, id_label = _kyb_status(True) if dl_ok else _kyb_status(False)
+
+        # Schema gap: no IRS cross-check field; ``ein`` presence is the
+        # closest signal (on-file vs missing).
+        ein = getattr(m, "ein", None)
+        if ein:
+            tin_status, tin_label = ("ok", "On file")
+        else:
+            tin_status, tin_label = ("miss", "Missing")
+
+        bank_ok = bool(getattr(m, "voided_check_on_file", False))
+        bank_status, bank_label = _kyb_status(True) if bank_ok else _kyb_status(False)
+
+        rows.append(
             {
-                "label": "OFAC flagged",
-                "value": str(len(ofac_items)),
-                "detail": "pending review",
-                "is_alert": len(ofac_items) > 0,
-            },
-        ],
+                "name": getattr(m, "business_name", None) or "(unknown)",
+                "sos_status": sos_status,
+                "sos_label": sos_label,
+                "bo_status": bo_status,
+                "bo_label": bo_label,
+                "id_status": id_status,
+                "id_label": id_label,
+                "tin_status": tin_status,
+                "tin_label": tin_label,
+                "bank_status": bank_status,
+                "bank_label": bank_label,
+            }
+        )
+
+    return rows[:50]
+
+
+def _build_compliance_kpis(
+    ofac_items: list[dict[str, Any]],
+    kyb_rows: list[dict[str, Any]],
+    activity_rows: list[dict[str, Any]],
+    state_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Five KPIs matching the mockup, computed from real signals.
+
+    Never invents; each KPI degrades to em-dash on missing source data.
+    """
+    ofac_open = len(ofac_items)
+
+    kyb_incomplete = sum(
+        1
+        for r in kyb_rows
+        if any(
+            r.get(c) in ("miss", "warn")
+            for c in ("sos_status", "bo_status", "id_status", "tin_status", "bank_status")
+        )
+    )
+
+    state_flags = sum(1 for r in state_rows if r.get("risk") == "kill")
+
+    cleared_7d = sum(1 for a in activity_rows if a.get("kind") == "ok")
+
+    # Avg clear time - cannot compute without the paired
+    # (opened_at, cleared_at) rows the audit log does not currently
+    # pair. Degrade to em-dash so the panel is honest.
+    avg_clear_time = "—"
+
+    return [
+        {
+            "label": "OFAC open",
+            "value": str(ofac_open),
+            "detail": "pending review",
+            "is_alert": ofac_open > 0,
+        },
+        {
+            "label": "KYB incomplete",
+            "value": str(kyb_incomplete) if kyb_rows else "—",
+            "detail": "missing signals",
+            "is_alert": kyb_incomplete > 0,
+        },
+        {
+            "label": "State-license flags",
+            "value": str(state_flags) if state_rows else "—",
+            "detail": "high AG risk",
+            "is_alert": state_flags > 0,
+        },
+        {
+            "label": "Cleared · 7d",
+            "value": str(cleared_7d) if activity_rows else "—",
+            "detail": "recent activity",
+            "is_alert": False,
+        },
+        {
+            "label": "Avg clear time",
+            "value": avg_clear_time,
+            "detail": "median lookback",
+            "is_alert": False,
+        },
+    ]
+
+
+def build_compliance_view(
+    ofac_rows: Any,
+    *,
+    all_merchants: list[Any] | None = None,
+    audit_log: Any = None,
+) -> dict[str, Any]:
+    """Compliance workbench view model.
+
+    ``ofac_rows``      - list of ``MerchantRow`` (or dicts) with the OFAC
+                          match flag set. Same shape the router passes.
+    ``all_merchants``  - full merchant list used to build the KYB table.
+                          Omit -> KYB section renders empty.
+    ``audit_log``      - ``AuditLog`` protocol implementation used to
+                          read recent compliance-family activity.
+                          Omit -> activity section renders empty.
+
+    Returns ``{"kpis", "ofac", "kyb", "states", "activity"}`` - the
+    router forwards this to the template context verbatim.
+    """
+    # -- OFAC queue (existing shape preserved) --
+    ofac_items: list[dict[str, Any]] = []
+    if ofac_rows:
+        for row in ofac_rows:
+            if isinstance(row, dict):
+                name = row.get("business_name") or ""
+                state = row.get("state") or ""
+                mid = str(row.get("id") or "")
+                matches = list(row.get("ofac_match_detail") or [])
+            else:
+                name = getattr(row, "business_name", "") or ""
+                state = getattr(row, "state", "") or ""
+                mid = str(getattr(row, "id", "") or "")
+                matches = list(getattr(row, "ofac_match_detail", None) or [])
+            ofac_items.append(
+                {
+                    "id": mid,
+                    "name": name or "(unknown)",
+                    "state": state or "-",
+                    "match_count": len(matches),
+                    "matches": matches[:4],
+                    "status": "match",
+                }
+            )
+
+    kyb_rows = _build_kyb_rows(all_merchants)
+    state_rows = _load_state_matrix_rows()
+
+    activity_rows: list[dict[str, Any]] = []
+    if audit_log is not None:
+        try:
+            raw = audit_log.list_recent(limit=200) or []
+        except Exception:
+            raw = []
+        for r in raw:
+            action = (r.get("action") or "").lower()
+            if not any(action.startswith(p) for p in ("compliance.", "ofac.", "kyb.")):
+                continue
+            created_at = r.get("created_at")
+            when: datetime | None = None
+            if isinstance(created_at, datetime):
+                when = created_at
+            elif isinstance(created_at, str):
+                try:
+                    when = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                except ValueError:
+                    when = None
+            kind, label = _activity_kind_for_action(action)
+            activity_rows.append(
+                {
+                    "date": _relative_time(when),
+                    "description": _activity_description(r),
+                    "kind": kind,
+                    "label": label,
+                }
+            )
+            if len(activity_rows) >= 20:
+                break
+
+    kpis = _build_compliance_kpis(ofac_items, kyb_rows, activity_rows, state_rows)
+
+    return {
+        "kpis": kpis,
         "ofac": ofac_items,
-        "kyb": [],
-        "states": [],
-        "activity": [],
+        "kyb": kyb_rows,
+        "states": state_rows,
+        "activity": activity_rows,
     }
 
 

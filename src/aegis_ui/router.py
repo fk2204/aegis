@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 
 from aegis.api.deps import (
+    get_audit,
     get_decision_snapshot,
     get_funder_note_submission_repository,
     get_funder_repository,
@@ -34,6 +35,7 @@ from aegis.api.deps import (
     get_ofac_client,
     get_repository,
 )
+from aegis.audit import AuditLog
 from aegis.compliance.snapshot import DecisionSnapshot
 from aegis.funder_note_submissions.repository import FunderNoteSubmissionRepository
 from aegis.funders.repository import FunderRepository
@@ -315,19 +317,35 @@ def disposition(
 def funders(
     request: Request,
     funder_repo: Annotated[FunderRepository, Depends(get_funder_repository)],
+    funder_note_subs: Annotated[
+        FunderNoteSubmissionRepository, Depends(get_funder_note_submission_repository)
+    ],
     q: str = "",
     filter: str = "all",
 ) -> HTMLResponse:
     """Funders directory — pulls the active-funders list through the
     real ``FunderRepository`` and shapes it via ``build_funders_view``.
     Returns the ``_list.html.j2`` partial when the request is HTMX so
-    the search input can swap results without re-rendering the shell.
+    the search / filter can swap results without re-rendering the shell.
+
+    ``funder_note_subs`` is threaded so each card can render its
+    ``last_submission_result`` / ``last_submission_date`` from the
+    Close-Note submissions repository. Lookup failure degrades to
+    ``"NO HISTORY YET"`` on the card, never blocks the page.
     """
     try:
         data = funder_repo.list_active()
     except Exception:
         data = []
-    ctx = {"active": "funders", **build_funders_view(data, q=q, filt=filter)}
+    ctx = {
+        "active": "funders",
+        **build_funders_view(
+            data,
+            q=q,
+            filt=filter,
+            funder_note_subs=funder_note_subs,
+        ),
+    }
     tpl = "v2/funders/_list.html.j2" if _is_htmx(request) else "v2/funders/index.html.j2"
     return templates.TemplateResponse(request, tpl, ctx)
 
@@ -337,22 +355,31 @@ def funders(
 def compliance(
     request: Request,
     merchants_repo: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit_log: Annotated[AuditLog, Depends(get_audit)],
 ) -> HTMLResponse:
-    """Compliance workbench — surfaces the OFAC-blocked merchant queue.
+    """Compliance workbench — OFAC queue + KYB table + state licensing
+    + recent activity + five KPIs.
 
-    Reads through the merchant repository and filters in Python
-    (``merchants_repo.list_all()`` is small enough here; a bounded
-    ``list_flagged()`` helper is a follow-on).
+    Reads through the merchant repository and audit-log dependency and
+    filters in Python. ``merchants_repo.list_all()`` is small enough
+    here; a bounded ``list_flagged()`` helper is a follow-on if the
+    catalog grows. All external calls are guarded — every section
+    degrades to an empty state before failing the page render.
     """
     try:
         all_m = merchants_repo.list_all()
     except Exception:
         all_m = []
     ofac_rows = [m for m in all_m if getattr(m, "ofac_is_clear", None) is False]
+    ctx = build_compliance_view(
+        ofac_rows,
+        all_merchants=all_m,
+        audit_log=audit_log,
+    )
     return templates.TemplateResponse(
         request,
         "v2/compliance/index.html.j2",
-        {"active": "compliance", **build_compliance_view(ofac_rows)},
+        {"active": "compliance", **ctx},
     )
 
 
