@@ -21,6 +21,21 @@
   <div class="reason">
     <div class="lead">{{ verdict.lead }}</div>
     <div class="why">{{ verdict.why | safe }}</div>
+    {% if verdict.kind in ('block', 'review') and signals is defined %}
+      {% set top_signals = (signals.kill + signals.weaken)[:3] %}
+      {% if top_signals %}
+      <div class="verdict-reasons">
+        <div class="vr-label">Why this verdict:</div>
+        {% for s in top_signals %}
+        <div class="vr-item">
+          <span class="vr-dot {{ 'k' if s.severity == 'k' else 'w' }}"></span>
+          <span class="vr-title">{{ s.title }}</span>
+          <span class="vr-detail">— {{ s.detail }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% endif %}
   </div>
   <div class="verdict-actions">
     {% for a in verdict.actions %}

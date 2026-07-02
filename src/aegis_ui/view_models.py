@@ -441,6 +441,47 @@ def build_deal_view(
                 }
             )
 
+    # -- Stated-vs-observed MCA position cross-check --
+    # If the analysis extracted N MCA debit streams from the bank
+    # statement, compare against merchant's stated positions. Any
+    # mismatch is a hard call before submitting to a funder.
+    mca_from_bank = getattr(analysis, "mca_position_count", None) if analysis else None
+    stated_positions_raw = getattr(merchant, "stated_mca_positions", None)
+    try:
+        stated_positions_int = int(stated_positions_raw) if stated_positions_raw is not None else 0
+    except (TypeError, ValueError):
+        stated_positions_int = 0
+    try:
+        mca_from_bank_int = int(mca_from_bank) if mca_from_bank is not None else 0
+    except (TypeError, ValueError):
+        mca_from_bank_int = 0
+
+    if mca_from_bank_int > 0 and stated_positions_int == 0:
+        kill_signals.insert(
+            0,
+            {
+                "title": "Undisclosed MCA detected",
+                "detail": (
+                    f"Bank statements show {mca_from_bank_int} MCA debit stream(s) "
+                    f"but merchant stated 0 existing positions. "
+                    f"Verify with merchant before submitting to any funder."
+                ),
+                "severity": "k",
+            },
+        )
+    elif mca_from_bank_int > stated_positions_int > 0:
+        weaken_signals.insert(
+            0,
+            {
+                "title": "MCA position undercount",
+                "detail": (
+                    f"Merchant stated {stated_positions_int} position(s) but bank shows "
+                    f"{mca_from_bank_int} MCA debit stream(s). May have undisclosed advances."
+                ),
+                "severity": "w",
+            },
+        )
+
     # -- Background checks --
     _bg = background_ctx or {}
     _ = _bg  # reserved for future SOS/UCC operator-verified context
