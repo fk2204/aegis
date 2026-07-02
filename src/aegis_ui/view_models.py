@@ -25,6 +25,7 @@ Deferred TODO(data) still present:
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 PRODUCTS = frozenset({"rbf", "term", "loc", "equipment", "abl", "factoring"})
@@ -282,7 +283,10 @@ def build_deal_view(
     if len(ucc_filings) >= 3:
         gates.append(
             {
-                "severity": "amber",
+                # ``warn`` is the spec-2C severity token. ``_gates.html.j2``
+                # normalises legacy ``amber`` to ``warn`` as well so
+                # downstream callers cannot regress on this rename.
+                "severity": "warn",
                 "title": f"{len(ucc_filings)} UCC Liens Filed",
                 "body": (
                     "Multiple secured creditors have claims on business "
@@ -553,6 +557,17 @@ def build_deal_view(
             ]
             pricing_note = f"Based on {best_name}: {getattr(est, 'interpolation_evidence', '')}"
 
+    # Deal-header inputs (spec 2B). The rebuilt dossier renders a fixed
+    # 6-slot fact strip driven by these values; the legacy ``facts``
+    # list stays populated for callers that still consume it.
+    _entity_raw = getattr(merchant, "entity_type", None)
+    entity_display = _entity_raw.upper() if isinstance(_entity_raw, str) else None
+    tib_months = getattr(merchant, "time_in_business_months", None)
+    fico_val = getattr(merchant, "credit_score", None)
+    requested_raw = getattr(merchant, "requested_amount", None)
+    mca_balance_raw = getattr(merchant, "stated_mca_balance", None)
+    mca_positions_stated = getattr(merchant, "stated_mca_positions", None)
+
     return {
         "deal": {
             "id": str(getattr(merchant, "id", "") or ""),
@@ -561,7 +576,18 @@ def build_deal_view(
             "code": str(getattr(merchant, "id", "") or "")[:8].upper(),
             "subline": _deal_subline(merchant, product_raw),
             "facts": facts,
+            # Spec-2B extras. None values pass through so the template
+            # can render an em-dash placeholder instead of an empty cell.
+            "owner_name": getattr(merchant, "owner_name", None),
+            "state": getattr(merchant, "state", None),
+            "entity": entity_display,
+            "tib": tib_months,
+            "fico": fico_val,
+            "requested": _fmt_money(requested_raw) if requested_raw is not None else None,
+            "mca_balance": _fmt_money(mca_balance_raw) if mca_balance_raw is not None else None,
+            "mca_positions": mca_positions_stated,
         },
+        "documents": documents or [],
         "verdict": {
             "kind": verdict_kind,
             "rec": rec,
@@ -588,7 +614,25 @@ def build_deal_view(
 
 def _empty_deal_view() -> dict[str, Any]:
     return {
-        "deal": {"id": "", "product": "rbf", "name": "", "code": "", "subline": "", "facts": []},
+        "deal": {
+            "id": "",
+            "product": "rbf",
+            "name": "",
+            "code": "",
+            "subline": "",
+            "facts": [],
+            # Spec-2B extras — None so the template's ``or '—'`` fallback
+            # renders the em-dash placeholder without raising.
+            "owner_name": None,
+            "state": None,
+            "entity": None,
+            "tib": None,
+            "fico": None,
+            "requested": None,
+            "mca_balance": None,
+            "mca_positions": None,
+        },
+        "documents": [],
         "verdict": {
             "kind": "review",
             "rec": "-",
@@ -632,6 +676,105 @@ def _empty_deal_view() -> dict[str, Any]:
 
 
 # ============================================================ RISK MODULES
+_MONTH_NAMES: tuple[str, ...] = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+
+def _build_rbf_months(analysis: Any) -> list[dict[str, Any]]:
+    """Shape ``AnalysisRow.monthly_breakdown`` for the cashflow module.
+
+    Source row shape (see ``parser/aggregate.py::_monthly_breakdown``):
+        ``{"month": "YYYY-MM", "deposits": "1234.56",
+           "withdrawals": "234.56", "avg_balance": "5678.90",
+           "nsf_count": "0"}``  — Decimals stringified for JSONB.
+
+    Template consumes ``{label, gross, adb, bars, nsf, mom}`` where
+    ``bars`` is a list of 0-100 bar heights driving the sparkline and
+    ``mom`` is the month-over-month deposits delta as a signed integer
+    percentage. Money math via ``Decimal`` per CLAUDE.md.
+    """
+    if analysis is None:
+        return []
+    raw = list(getattr(analysis, "monthly_breakdown", None) or [])
+    if not raw:
+        return []
+
+    parsed: list[dict[str, Any]] = []
+    for row in raw:
+        try:
+            deposits_dec = Decimal(str(row.get("deposits", "0") or "0"))
+            adb_dec = Decimal(str(row.get("avg_balance", "0") or "0"))
+        except (InvalidOperation, TypeError, ValueError):
+            deposits_dec = Decimal("0")
+            adb_dec = Decimal("0")
+        try:
+            nsf_int = int(row.get("nsf_count", "0") or "0")
+        except (TypeError, ValueError):
+            nsf_int = 0
+        parsed.append(
+            {
+                "raw_month": row.get("month", "") or "",
+                "deposits": deposits_dec,
+                "adb": adb_dec,
+                "nsf": nsf_int,
+            }
+        )
+
+    max_deposits = max((p["deposits"] for p in parsed), default=Decimal("0"))
+    out: list[dict[str, Any]] = []
+    for idx, p in enumerate(parsed):
+        # Sparkline: 5 bars scaled off peak-month deposits so the
+        # operator sees the relative-height trend at a glance. All bars
+        # in one month share the same height today (deposits are a
+        # single scalar per month), but the shape stays open for a
+        # future per-week breakdown.
+        if max_deposits > 0:
+            pct = int((p["deposits"] / max_deposits) * 100)
+        else:
+            pct = 0
+        bars = [pct] * 5
+
+        mom: int | None = None
+        if idx > 0:
+            prev = parsed[idx - 1]["deposits"]
+            if prev > 0:
+                delta = ((p["deposits"] - prev) / prev) * Decimal("100")
+                mom = int(delta.quantize(Decimal("1")))
+
+        raw_month = p["raw_month"]
+        try:
+            year_str, month_str = raw_month.split("-", 1)
+            year = int(year_str)
+            month = int(month_str)
+            label = f"{_MONTH_NAMES[month - 1]} {year % 100:02d}"
+        except (ValueError, IndexError):
+            label = raw_month
+
+        out.append(
+            {
+                "label": label,
+                "gross": _fmt_money(p["deposits"]),
+                "adb": _fmt_money(p["adb"]),
+                "bars": bars,
+                "nsf": p["nsf"],
+                "mom": mom,
+            }
+        )
+    return out
+
+
 def build_risk_module(merchant: Any, analysis: Any, product: str) -> dict[str, Any]:
     """One dict per product; template dispatch selects the right sub-key."""
     revenue_month = getattr(analysis, "monthly_revenue", None) if analysis else None
@@ -642,6 +785,8 @@ def build_risk_module(merchant: Any, analysis: Any, product: str) -> dict[str, A
     statement_days = getattr(analysis, "statement_days", None) if analysis else None
     months_analyzed = (int(statement_days) // 30) if statement_days else None
 
+    rbf_months = _build_rbf_months(analysis)
+
     modules: dict[str, dict[str, Any]] = {
         "rbf": {
             "true_revenue": _fmt_money(revenue_month),
@@ -651,6 +796,14 @@ def build_risk_module(merchant: Any, analysis: Any, product: str) -> dict[str, A
             "avg_daily_balance": _fmt_money(avg_balance),
             "days_negative": days_negative,
             "months_analyzed": months_analyzed,
+            # Cashflow-module inputs (spec 2E). Empty list when no
+            # analysis is threaded through — the template renders the
+            # "upload statements" empty state instead.
+            "months": rbf_months,
+            # Placeholder for the reclassify-CTA amount suffix. Empty
+            # today; wired in a follow-on that surfaces per-category
+            # `other`-bucket dollar totals.
+            "unclassified_total": "",
         },
         "term": {
             "true_revenue": _fmt_money(revenue_month),

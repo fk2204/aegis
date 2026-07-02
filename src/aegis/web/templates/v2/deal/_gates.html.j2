@@ -1,15 +1,21 @@
-{# _gates.html.j2 — kill / amber gates on top of the dossier. #}
-{% for g in gates %}
-<div class="gate {{ 'amber' if g.severity == 'amber' else '' }}">
-  <div class="ic">{{ '!' if g.severity == 'kill' else '⚠' }}</div>
-  <div class="body">
-    <h3>{{ g.title }}</h3>
-    <p>{{ g.body }}</p>
+{# _gates.html.j2 — kill / warn gates (spec 2C).
+
+   The view model emits ``severity`` as ``kill`` or ``warn``. Legacy
+   callers that still pass ``amber`` collapse to ``warn`` here so the
+   render never regresses on the rename.
+#}
+{% for gate in gates %}
+{% set sev = 'kill' if gate.severity == 'kill' else 'warn' %}
+<div class="gate gate-{{ sev }}">
+  <div class="gate-icon">{{ '!' if sev == 'kill' else '⚠' }}</div>
+  <div class="gate-body">
+    <div class="gate-title">{{ gate.title }}</div>
+    <div class="gate-why">{{ gate.body }}</div>
   </div>
-  {% if g.action_label %}
-  <div class="act">
-    <a href="{{ g.action_url or '#' }}"><button type="button" class="btn">{{ g.action_label }}</button></a>
-  </div>
+  {% if gate.action_label %}
+  <a href="{{ gate.action_url or '#' }}">
+    <button type="button" class="gate-btn">{{ gate.action_label }}</button>
+  </a>
   {% endif %}
 </div>
 {% endfor %}

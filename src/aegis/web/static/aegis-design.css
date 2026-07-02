@@ -443,3 +443,90 @@
   --ink-1: var(--ink);     /* #14201b */
   /* --ink-2:#3a463f and --ink-3:#657069 already defined above */
 }
+
+/* ============================================================
+   V2 DEAL DOSSIER REBUILD (2026-07-02)
+   Additive classes for the deal-dossier spec rebuild. Every existing
+   class above is preserved so legacy templates keep rendering.
+   Colors + typography reuse the :root tokens; no new palette values.
+   ============================================================ */
+
+/* Product switcher tabs (2A) */
+.prod-tabs{display:flex;gap:7px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:7px;box-shadow:var(--shadow);margin-bottom:20px}
+.prod-tabs .ptab{flex:1 1 auto;min-width:150px;border:1px solid transparent;background:transparent;border-radius:9px;padding:11px 13px;text-align:left;transition:.14s;text-decoration:none;color:inherit;display:block}
+.prod-tabs .ptab:hover{background:var(--panel-2)}
+.prod-tabs .ptab.on{background:var(--green);border-color:var(--green)}
+.prod-tabs .ptab .ptl{font-family:var(--disp);font-weight:600;font-size:14.5px;color:var(--ink);line-height:1.15}
+.prod-tabs .ptab .pts{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);margin-top:3px}
+.prod-tabs .ptab.on .ptl{color:#eafff4}
+.prod-tabs .ptab.on .pts{color:#9fd4bd}
+
+/* Deal header (2B) */
+.deal-eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-3);font-weight:500;margin-bottom:6px}
+h1.deal-name{font-family:var(--disp);font-weight:700;font-size:36px;line-height:1.03;letter-spacing:-.02em;margin:0}
+.deal-sub{color:var(--ink-2);font-size:15px;margin-top:8px}
+.deal-facts{display:flex;flex-wrap:wrap;gap:0;margin:16px 0 18px}
+.deal-facts .df{padding:2px 20px;border-left:1px solid var(--line)}
+.deal-facts .df:first-child{padding-left:0;border-left:0}
+.deal-facts .df .dl{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+.deal-facts .df .dv{font-size:16px;font-weight:600;margin-top:3px}
+.deal-facts .df .dv strong{font-weight:700}
+
+/* Gate banner variants (2C) — additive .gate-kill / .gate-warn on top of .gate. */
+.gate.gate-kill{border-color:var(--kill-line);background:var(--kill-bg)}
+.gate.gate-warn{border-color:var(--warn-line);background:var(--warn-bg)}
+.gate .gate-icon{width:34px;height:34px;border-radius:9px;background:#fff;border:1px solid var(--kill-line);display:grid;place-items:center;font-size:18px;flex:none}
+.gate.gate-warn .gate-icon{border-color:var(--warn-line)}
+.gate .gate-body{flex:1}
+.gate .gate-title{margin:0 0 3px;font-size:16px;font-weight:700;color:var(--kill);font-family:var(--disp)}
+.gate.gate-warn .gate-title{color:var(--warn)}
+.gate .gate-why{margin:0;font-size:14.5px;color:#7a2a22;line-height:1.45}
+.gate.gate-warn .gate-why{color:#7a4a12}
+.gate .gate-btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:9px;padding:9px 14px;font-size:13.5px;font-weight:600;white-space:nowrap;cursor:pointer}
+.gate .gate-btn:hover{background:var(--panel-2);border-color:#c8c6ba}
+
+/* Two-column dossier layout (2D) */
+.doss-cols{display:grid;grid-template-columns:1fr 392px;gap:20px;margin-top:16px;align-items:start}
+.doss-main,.doss-side{display:flex;flex-direction:column;gap:20px}
+@media (max-width:1100px){.doss-cols{grid-template-columns:1fr}}
+
+/* Cashflow module (2E) */
+#cashflow > .head .c{margin-left:auto;font-family:var(--mono);font-size:11.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);text-align:right}
+.cf-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+@media (max-width:900px){.cf-grid{grid-template-columns:repeat(2,1fr)}}
+.cfmo{border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--panel-2)}
+.cfmo-label{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+.cfmo-amt{font-family:var(--disp);font-weight:700;font-size:19px;margin:5px 0 1px}
+.cfmo-adb{font-size:12px;color:var(--ink-3)}
+.cfmo-spark{height:30px;margin-top:9px;display:flex;align-items:flex-end;gap:2px}
+.cfmo-spark > i{flex:1;min-height:2px;border-radius:2px 2px 0 0;display:block}
+.cfmo-nsf{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.03em;padding:2px 6px;border-radius:5px;color:var(--ink-3);background:#f0efe6;margin-top:8px;display:inline-block}
+.cfmo-nsf.bad{color:var(--warn);background:var(--warn-bg)}
+.cfmo-mom{font-family:var(--mono);font-size:11px;color:var(--pass);margin-top:4px}
+.cfmo-mom.bad{color:var(--kill)}
+.cf-note{margin:14px 18px 18px;padding:12px 14px;border-radius:10px;font-size:13.5px;line-height:1.45;border:1px solid var(--info-line);background:var(--info-bg);color:#1d456a}
+.cf-note strong{color:#123553;font-weight:700}
+
+/* Side-card partials (2E) — offer / application / package */
+.side-card > .head .c{margin-left:auto;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);text-align:right}
+.side-card > .head .c.warn{color:var(--warn)}
+.side-card > .head .c.bad{color:var(--kill)}
+.pnote{margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12.5px;line-height:1.45;background:var(--warn-bg);border:1px solid var(--warn-line);color:#7a4a12}
+.side-card .track.big{height:10px;border-radius:6px;background:#eceadf;overflow:hidden;position:relative;margin-bottom:6px}
+.side-card .track.big > i{display:block;height:100%;border-radius:6px;transition:width .5s ease}
+.pct-label{font-family:var(--disp);font-weight:700;font-size:18px;margin-bottom:10px}
+.stip{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line-2);font-size:14px}
+.stip:first-of-type{border-top:0}
+.stip .stip-icon{width:19px;height:19px;border-radius:5px;border:1.5px solid var(--line);display:grid;place-items:center;font-size:12px;flex:none;font-weight:700}
+.stip.done .stip-icon{background:var(--pass);border-color:var(--pass);color:#fff}
+.stip.miss .stip-icon{border-color:var(--kill-line);color:var(--kill)}
+.stip.miss{color:var(--kill)}
+
+/* Verdict actions (2F) */
+.verdict-actions{display:flex;flex-direction:column;gap:9px;min-width:220px}
+.va-btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:9px;padding:11px 15px;font-size:14.5px;font-weight:600;text-align:left;display:flex;align-items:center;gap:10px;transition:.14s;white-space:nowrap;font-family:inherit;cursor:pointer}
+.va-btn:hover{border-color:#c8c6ba;background:var(--panel-2)}
+.va-btn.p,.va-btn.va-submit{background:var(--green);border-color:var(--green);color:#eafff4}
+.va-btn.p:hover,.va-btn.va-submit:hover{background:#0c3325}
+.va-btn.bad,.va-btn.va-decline{background:var(--kill-bg);border-color:var(--kill-line);color:var(--kill)}
+.va-btn.bad:hover,.va-btn.va-decline:hover{background:#fbdfdb}

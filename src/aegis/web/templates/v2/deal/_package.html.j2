@@ -1,0 +1,23 @@
+{# _package.html.j2 — document-package completeness (spec 2E).
+
+   Reuses the ``package.pct`` + ``package.items`` view model shape.
+   Renders the completeness bar + a per-stip checkbox row.
+#}
+<div class="card side-card" id="package">
+  <div class="head">
+    <h2>Package &amp; stipulations</h2>
+    <span class="c">COMPLETENESS</span>
+  </div>
+  <div class="bd">
+    <div class="track big">
+      <i style="width:{{ package.pct }}%;background:{% if package.pct >= 80 %}var(--pass){% else %}var(--warn){% endif %}"></i>
+    </div>
+    <div class="pct-label">{{ package.pct }}%</div>
+    {% for item in package['items'] %}
+    <div class="stip {{ 'done' if item.done else 'miss' }}">
+      <span class="stip-icon">{{ '✓' if item.done else '!' }}</span>
+      {{ item.name }}
+    </div>
+    {% endfor %}
+  </div>
+</div>

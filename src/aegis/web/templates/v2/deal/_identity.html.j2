@@ -1,13 +1,47 @@
-{# _identity.html.j2 — page header: crumb, business name, subline, facts strip. #}
+{# _identity.html.j2 — deal header (spec 2B).
+
+   Renders the eyebrow crumb, deal name, one-line subline, and the
+   six-slot fact strip. Every value degrades to an em-dash when the
+   source field is None so the layout stays fixed-width — no synthetic
+   defaults; the view model returns ``None`` and the template maps it
+   to "—" here.
+#}
 {% import "v2/_macros.html.j2" as ui %}
-<div class="crumb">
-  <a href="/v2/">Today</a> <span>›</span>
-  <span class="mono">{{ deal.code }}</span>
+<div class="deal-eyebrow">
+  The AEGIS dossier · DEAL {{ deal.code }} · Commera Capital
 </div>
-<h1 class="deal">{{ deal.name or 'Unknown' }}</h1>
-<div class="subline">{{ deal.subline }}</div>
-<div class="facts">
-  {% for f in deal.facts %}
-  <div class="fact"><div class="k">{{ f.k }}</div><div class="v">{{ f.v }}</div></div>
-  {% endfor %}
+<h1 class="deal-name">{{ deal.name or 'Unknown' }}</h1>
+<div class="deal-sub">
+  {{ deal.product | replace('_', ' ') | title }}-based advance ·
+  {{ (documents | length) if documents is defined else 0 }} statement(s) on file ·
+  {% if gates %}scoring held pending {{ gates | length }} blocker(s){% else %}no blockers{% endif %}.
+</div>
+<div class="deal-facts">
+  <div class="df">
+    <div class="dl">Owner</div>
+    <div class="dv">{{ deal.owner_name or '—' }}</div>
+  </div>
+  <div class="df">
+    <div class="dl">State</div>
+    <div class="dv">{{ deal.state or '—' }}</div>
+  </div>
+  <div class="df">
+    <div class="dl">Entity</div>
+    <div class="dv">{{ deal.entity or '—' }} · {{ (deal.tib ~ ' mo') if deal.tib is not none else '—' }}</div>
+  </div>
+  <div class="df">
+    <div class="dl">Credit</div>
+    <div class="dv"><strong>{{ deal.fico or '—' }}</strong> FICO</div>
+  </div>
+  <div class="df">
+    <div class="dl">Requested</div>
+    <div class="dv"><strong>{{ deal.requested or '—' }}</strong></div>
+  </div>
+  <div class="df">
+    <div class="dl">Existing MCA</div>
+    <div class="dv">
+      {{ deal.mca_balance or '—' }} ·
+      {{ deal.mca_positions if deal.mca_positions is not none else 0 }} pos
+    </div>
+  </div>
 </div>
