@@ -3,11 +3,14 @@
   <div class="brand"><span class="mark">C</span> Commera <small>AEGIS</small></div>
   <nav class="top">
     <a href="/v2/"           class="{{ 'on' if active == 'today' }}"><button type="button">Today</button></a>
+    <a href="/v2/deal"       class="{{ 'on' if active == 'deal' }}"><button type="button">Deal</button></a>
     <a href="/v2/funders"    class="{{ 'on' if active == 'funders' }}"><button type="button">Funders</button></a>
     <a href="/v2/compliance" class="{{ 'on' if active == 'compliance' }}"><button type="button">Compliance</button></a>
+    <a href="/ui/documents/upload"><button type="button">Upload</button></a>
   </nav>
   <div class="right">
     <span class="env"><span class="dot"></span> aegis-prod · {{ build_version | default('v4') }}</span>
-    <span class="avatar">{{ user_initials | default('··') }}</span>
+    {% if queue_depth is defined %}<span class="qd">· queue {{ queue_depth }}</span>{% endif %}
+    <span class="avatar">{{ user_initials | default('FK') }}</span>
   </div>
 </header>
