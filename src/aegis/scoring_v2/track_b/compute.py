@@ -405,6 +405,125 @@ def compute_risk_band(
                 )
             )
 
+        # Stated-application cross-checks (2026-07-02). Four detectors
+        # that fire on merchant-provided intake fields alone (no bank-
+        # measured input) — they surface obvious contradictions and
+        # impossible ratios BEFORE the deal ever reaches an underwriter.
+        # All reads are ``getattr``-guarded so pre-migration-087 rows or
+        # SimpleNamespace shims that omit the fields short-circuit
+        # silently. Money is Decimal throughout; every division is
+        # guarded against a zero / non-positive stated revenue so we
+        # never divide by zero from bad intake data.
+        stated_revenue = getattr(merchant, "monthly_revenue", None)
+        stated_cc_sales = getattr(merchant, "avg_monthly_cc_sales", None)
+        stated_daily_pmt = getattr(merchant, "stated_daily_payment", None)
+        stated_requested = getattr(merchant, "requested_amount", None)
+
+        # Coerce via str() so a legacy float slipping in becomes a
+        # 2dp Decimal instead of a binary-float ghost. Mirrors the
+        # ``compute_monthly_revenue`` pattern in signals.py.
+        stated_revenue_d = Decimal(str(stated_revenue)) if stated_revenue is not None else None
+        stated_cc_sales_d = Decimal(str(stated_cc_sales)) if stated_cc_sales is not None else None
+        stated_daily_pmt_d = (
+            Decimal(str(stated_daily_pmt)) if stated_daily_pmt is not None else None
+        )
+        stated_requested_d = (
+            Decimal(str(stated_requested)) if stated_requested is not None else None
+        )
+
+        # (1) CC sales > 115% of stated revenue -> ELEVATED. Merchant
+        # cannot have card-sales volume that exceeds their total
+        # business revenue; the 15% cushion allows for merchants that
+        # slightly under-report gross revenue on the intake form.
+        if (
+            stated_cc_sales_d is not None
+            and stated_revenue_d is not None
+            and stated_revenue_d > Decimal("0")
+            and stated_cc_sales_d > stated_revenue_d * Decimal("1.15")
+        ):
+            excess_pct = (stated_cc_sales_d / stated_revenue_d - Decimal("1")) * Decimal("100")
+            severities.append("elevated")
+            reasons.append(
+                FactorReason(
+                    factor="cc_sales_exceeds_revenue",
+                    severity="elevated",
+                    detail=(
+                        f"Stated CC sales ${stated_cc_sales_d:,.0f}/mo exceeds "
+                        f"stated revenue ${stated_revenue_d:,.0f}/mo by "
+                        f"{excess_pct:.0f}%. CC sales cannot exceed total "
+                        f"business revenue. Verify application data before "
+                        f"submitting."
+                    ),
+                )
+            )
+
+        # (2) Payment load critical -> CRITICAL. 21.7 business days is
+        # the industry convention for monthly MCA debit computation.
+        # ``> 50%`` of stated revenue is a hard ceiling; sustainable
+        # maximum is ~35%.
+        if (
+            stated_daily_pmt_d is not None
+            and stated_revenue_d is not None
+            and stated_revenue_d > Decimal("0")
+        ):
+            implied_monthly = stated_daily_pmt_d * Decimal("21.7")
+            if implied_monthly > stated_revenue_d * Decimal("0.50"):
+                pct_of_revenue = implied_monthly / stated_revenue_d * Decimal("100")
+                severities.append("critical")
+                reasons.append(
+                    FactorReason(
+                        factor="payment_load_critical",
+                        severity="critical",
+                        detail=(
+                            f"Stated daily payment ${stated_daily_pmt_d:,.0f} "
+                            f"implies ${implied_monthly:,.0f}/mo debt service "
+                            f"- {pct_of_revenue:.0f}% of stated revenue "
+                            f"${stated_revenue_d:,.0f}/mo. Sustainable max "
+                            f"~35%. Deal cannot cash-flow."
+                        ),
+                    )
+                )
+
+        # (3) & (4) Requested-amount vs stated-revenue capacity check.
+        # Mutually exclusive: ``> 5x`` is CRITICAL (no funder will
+        # approve), ``3x < ratio <= 5x`` is ELEVATED (structurally
+        # oversized — recommend a lower amount or longer-term product).
+        if (
+            stated_requested_d is not None
+            and stated_revenue_d is not None
+            and stated_revenue_d > Decimal("0")
+        ):
+            ratio = stated_requested_d / stated_revenue_d
+            if ratio > Decimal("5"):
+                severities.append("critical")
+                reasons.append(
+                    FactorReason(
+                        factor="requested_amount_exceeds_capacity",
+                        severity="critical",
+                        detail=(
+                            f"Requested ${stated_requested_d:,.0f} is "
+                            f"{ratio:.1f}x monthly revenue "
+                            f"${stated_revenue_d:,.0f}. MCA max is typically "
+                            f"1.5x. No funder will approve this amount at "
+                            f"this revenue level."
+                        ),
+                    )
+                )
+            elif ratio > Decimal("3"):
+                severities.append("elevated")
+                reasons.append(
+                    FactorReason(
+                        factor="requested_amount_high_ratio",
+                        severity="elevated",
+                        detail=(
+                            f"Requested ${stated_requested_d:,.0f} is "
+                            f"{ratio:.1f}x monthly revenue "
+                            f"${stated_revenue_d:,.0f}. Consider a lower "
+                            f"amount or longer-term product."
+                        ),
+                    )
+                )
+
     # ── band + action ──────────────────────────────────────────────
     worst = worst_severity(severities)
     cashflow_band = band_from_severity(worst)
