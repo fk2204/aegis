@@ -5783,6 +5783,41 @@ async def merchant_detail(
             dossier_stips = []
             outstanding_stips_count = 0
 
+    # Outcome-prompt gate (2026-07-02 S1C). The dossier § 5 "What did
+    # the funder say?" buttons only render when the merchant is
+    # scoreable (has ≥1 proceed doc) AND OFAC-clear AND the operator
+    # hasn't already recorded an outcome. When an outcome exists we
+    # surface a compact "outcome recorded" chip in place of the
+    # prompt so a revisit shows history instead of blank buttons.
+    has_proceed_doc = any(d.parse_status == "proceed" for d in all_docs)
+    has_recorded_outcome = False
+    last_outcome_type: str | None = None
+    last_outcome_date: str | None = None
+    if _settings.aegis_storage_backend == "supabase":
+        try:
+            from aegis.db import get_supabase as _outcomes_sb
+
+            _existing = (
+                _outcomes_sb()
+                .table("merchant_outcomes")
+                .select("outcome,recorded_at")
+                .eq("merchant_id", str(merchant_id))
+                .order("recorded_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if _existing.data:
+                _row0 = cast(dict[str, Any], _existing.data[0])
+                has_recorded_outcome = True
+                last_outcome_type = str(_row0.get("outcome") or "")
+                _recorded_at = _row0.get("recorded_at")
+                if isinstance(_recorded_at, str):
+                    last_outcome_date = _recorded_at[:10]
+        except Exception:  # pragma: no cover — never block dossier render
+            has_recorded_outcome = False
+            last_outcome_type = None
+            last_outcome_date = None
+
     return templates.TemplateResponse(
         request,
         template_name,
@@ -5888,6 +5923,15 @@ async def merchant_detail(
             # in place via #stips-section.
             "dossier_stips": dossier_stips,
             "outstanding_stips_count": outstanding_stips_count,
+            # Outcome-prompt gate (2026-07-02 S1C). Templates read
+            # these to only surface the "What did the funder say?"
+            # buttons when the merchant is scoreable + OFAC-clear +
+            # no outcome recorded yet; otherwise a compact "outcome
+            # recorded" chip shows in their place.
+            "has_proceed_doc": has_proceed_doc,
+            "has_recorded_outcome": has_recorded_outcome,
+            "last_outcome_type": last_outcome_type,
+            "last_outcome_date": last_outcome_date,
         },
     )
 

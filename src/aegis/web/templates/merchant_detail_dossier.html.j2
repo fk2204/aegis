@@ -2636,7 +2636,22 @@
          loop sees the operator's intent even without a submission.
          Sits ABOVE the existing post-fund CTA so the chronological
          order reads top-to-bottom (funder responded → deal funded /
-         renewed / charged off). #}
+         renewed / charged off).
+
+         Gate (2026-07-02): only surface the prompt when the merchant
+         is scoreable (≥1 proceed doc) and OFAC-clear (matched
+         merchants aren't being submitted). Already-recorded merchants
+         show a compact "outcome recorded" chip in place of the
+         prompt — an operator revisiting the dossier sees their own
+         history instead of blank buttons that would double-write. #}
+      {% if has_recorded_outcome %}
+      <div class="dossier-page outcome-recorded"
+           data-test-id="outcome-recorded"
+           style="padding:10px 14px;margin:0 0 14px;border:1px solid #c3e6cb;border-radius:6px;background:#f0f7f0;font-size:13px;color:#155724;">
+        ✓ Outcome recorded — <strong>{{ last_outcome_type }}</strong>
+        {% if last_outcome_date %}on {{ last_outcome_date }}{% endif %}
+      </div>
+      {% elif has_proceed_doc and not ofac_blocked %}
       <div class="dossier-page funder-outcome-cta outcome-prompt"
            data-test-id="funder-outcome-cta"
            data-testid="outcome-prompt"
@@ -2678,6 +2693,7 @@
           </button>
         </div>
       </div>
+      {% endif %}
 
       {# Prominent post-fund "Record outcome" CTA. Sits at the top of
          §5 so the underwriter's first action after the deal funds is
