@@ -744,6 +744,36 @@ def _is_government_lender(lender_name: str) -> bool:
     return any(kw in lower for kw in GOVERNMENT_LENDER_KEYWORDS)
 
 
+# S5 (2026-07-02) — SSN discrepancy scan. Matches both hyphenated
+# (``123-45-6789``) and unhyphenated (``123456789``) forms. Prefixed
+# with ``SSN:`` label to avoid false-positives against 9-digit account
+# numbers, EINs, or phone numbers that happen to collide.
+_SSN_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\bSSN\s*:?\s*([\d]{3}[-]?[\d]{2}[-]?[\d]{4})\b",
+    re.IGNORECASE,
+)
+
+
+def _check_ssn_consistency(description: str) -> bool:
+    """Log a WARN when a description carries multiple distinct SSNs.
+
+    Returns True on consistency (0 or 1 distinct SSN), False when >= 2
+    distinct SSN values appear. The parser doesn't try to resolve the
+    ambiguity — the operator sees the WARN and decides whether the
+    lead needs to be split into two merchants or if a data-entry
+    correction is needed.
+    """
+    matches = {m.group(1).replace("-", "") for m in _SSN_PATTERN.finditer(description)}
+    if len(matches) <= 1:
+        return True
+    _log.warning(
+        "field_map.ssn_discrepancy distinct_count=%d — multiple SSN values in a "
+        "single lead description; verify owner identity before scoring.",
+        len(matches),
+    )
+    return False
+
+
 # S4 (2026-07-02) — Product-type auto-detection keywords. Applied to
 # the ``use_of_funds`` field and the current-lender list from the
 # FINANCIAL block, in this priority order:
@@ -864,6 +894,16 @@ def _parse_close_lead_description(description: str | None) -> dict[str, Any]:
     if text == "":
         return {}
 
+    # SSN discrepancy scan (2026-07-02 FIX 5). Multiple different SSNs
+    # in a single lead description signal either (a) the operator
+    # concatenated two applications for different owners into one Close
+    # lead — normalize before scoring — OR (b) identity mismatch /
+    # fraud. WARN-only: the parser cannot resolve the ambiguity and
+    # must not silently drop a legitimate multi-owner application. Same
+    # 9- to 11-char range as the operator's spec (covers "123-45-6789"
+    # and "123456789" formats).
+    _check_ssn_consistency(text)
+
     header_match = _FINANCIAL_HEADER.search(text)
     if header_match is None:
         return {}
@@ -914,6 +954,29 @@ def _parse_close_lead_description(description: str | None) -> dict[str, Any]:
 
         if field in _MONEY_FIELDS:
             parsed, _warn = parse_money_safe(stripped_value)
+            # Revenue sanity check (2026-07-02 FIX 2). A stated monthly
+            # revenue under $1,000 is almost certainly an operator
+            # transcription error - typically a missing thousands mark
+            # ("50" pasted where "50k" or "50000" was intended). Log at
+            # WARN so the audit dashboard surfaces the merchant for a
+            # follow-up, but keep the value verbatim; the operator may
+            # legitimately submit tiny-revenue deals to specialty
+            # lenders and we don't want to silently rewrite their
+            # intake. The stated-vs-measured divergence detector
+            # (patterns.py) is the downstream gate that catches the
+            # scoring impact.
+            if field == "monthly_revenue" and parsed is not None:
+                try:
+                    _rev_val = float(parsed)
+                except (TypeError, ValueError):
+                    _rev_val = None
+                if _rev_val is not None and 0 < _rev_val < 1000:
+                    _log.warning(
+                        "field_map.suspicious_revenue value=%.2f raw=%r - "
+                        "possible missing thousands mark",
+                        _rev_val,
+                        stripped_value[:60],
+                    )
             out[field] = parsed
             continue
 

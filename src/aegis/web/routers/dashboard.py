@@ -195,6 +195,23 @@ def _is_intake_decline(merchant: MerchantRow) -> bool:
         if r > 0 and b / r > _D("5"):
             return True
 
+    # Requested / revenue > 5x tripwire (2026-07-02 FIX 3). A merchant
+    # asking for more than five months of gross revenue is almost
+    # certainly not fundable at that number; the Turnbull case
+    # ($4M requested on $32K measured revenue = 125x) is the canonical
+    # example. Same graceful defaults as the balance/revenue check
+    # above - missing fields never trigger a false decline.
+    requested = getattr(merchant, "requested_amount", None)
+    if requested and revenue:
+        try:
+            req = _D(str(requested))
+            r2 = _D(str(revenue))
+        except Exception as exc:
+            _log.debug("intake_decline.requested_coerce_failed exc=%s", exc)
+            return False
+        if r2 > 0 and req / r2 > _D("5"):
+            return True
+
     return False
 
 
