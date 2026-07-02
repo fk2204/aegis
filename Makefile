@@ -1,4 +1,4 @@
-.PHONY: install install-hooks dev worker test test-fast typecheck lint format check migrate migrate-dry verify-bedrock verify-db verify-db-list cutover-check deploy rollback
+.PHONY: install install-hooks dev dev-v2 shell worker test test-fast typecheck lint format check migrate migrate-dry verify-bedrock verify-db verify-db-list cutover-check deploy rollback
 
 install:
 	uv sync
@@ -17,8 +17,22 @@ install-hooks:
 	@chmod +x .githooks/pre-commit
 	@echo "[install-hooks] pre-commit installed; ruff + mypy + compliance-review chained."
 
+# One-shot local dev — scripts/dev.py loads .env (BOM + UTF-16 aware)
+# then launches uvicorn on 127.0.0.1:8080 with --reload. Override the
+# port via ``AEGIS_DEV_PORT=8000 make dev`` if 8080 is taken; disable
+# reload for profiling via ``AEGIS_DEV_NORELOAD=1 make dev``.
 dev:
-	uv run uvicorn aegis.api.app:app --reload --port 5555
+	uv run python scripts/dev.py
+
+# Alias — same as dev; the v2 UI is mounted at /v2 on the same app.
+# Legacy /ui/ stays available on the same port.
+dev-v2: dev
+
+# Python REPL with .env loaded (same loader scripts/dev.py uses) so
+# ad-hoc scripts against the app work without manual
+# ``set -a; source .env`` gymnastics.
+shell:
+	uv run python -c "import scripts.dev as d; d._load_env_file(d._ENV_FILE); import code; code.interact(local={})"
 
 worker:
 	uv run arq aegis.workers.WorkerSettings

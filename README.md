@@ -22,11 +22,49 @@ Solo operator, ~100 deals/month. Internal-only. Python 3.12+.
 ## Run locally
 
 ```bash
-make install      # uv sync
-cp .env.example .env   # then fill in secrets and set
-                       # AEGIS_DATA_RESIDENCY_CONFIRMED=true
-make dev          # uvicorn on :5555
-make worker       # arq worker (separate terminal)
+make install                 # uv sync
+cp .env.example .env         # then fill in secrets and set
+                             # AEGIS_DATA_RESIDENCY_CONFIRMED=true
+make dev                     # uvicorn on 127.0.0.1:8080 with .env loaded
+make worker                  # arq worker (separate terminal)
+```
+
+Once `make dev` is up:
+
+- **v2 UI**: <http://127.0.0.1:8080/v2/>
+- **Legacy UI**: <http://127.0.0.1:8080/ui/>
+
+### Windows PowerShell shortcut
+
+For operators on Windows without `make`:
+
+```powershell
+cd C:\Users\fkozi\aegis
+.\dev.ps1                    # default: :8080 with --reload
+.\dev.ps1 -Port 8000         # override port
+.\dev.ps1 -NoReload          # disable auto-reload
+```
+
+Both `make dev` and `.\dev.ps1` delegate to `scripts/dev.py`, which:
+
+* Reads `.env` handling UTF-16-LE / UTF-16-BE / UTF-8-BOM / UTF-8
+  (Windows PowerShell redirect defaults break the strict dotenv
+  parser `uv --env-file` uses).
+* Sets `AEGIS_DATA_RESIDENCY_CONFIRMED=true` for the local process
+  (dev-only — production still requires the operator to set it
+  explicitly).
+* Falls back to `AEGIS_STORAGE_BACKEND=memory` when `SUPABASE_URL`
+  or `SUPABASE_KEY` is unset, so `/v2/` boots against the same
+  in-memory repos the tests use. Set both to point local dev at
+  real Supabase.
+
+Each override prints a one-line banner at startup so it's obvious
+which backend the process ended up on.
+
+### Other one-shots
+
+```bash
+make shell                   # Python REPL with .env loaded
 ```
 
 ## Pre-commit gate
