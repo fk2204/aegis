@@ -106,6 +106,42 @@ _DEAL_TYPE_TO_PRODUCT: Final[dict[str, str]] = {
 }
 
 
+def _effective_mca_positions(merchant: MerchantRow | None) -> tuple[int, int]:
+    """Return ``(effective, govt_count)`` for a merchant's stated position stack.
+
+    ``effective`` = ``stated_mca_positions`` - count of government-backed
+    lenders in ``stated_current_lenders`` (SBA / USDA / EIDL / PPP /
+    other names covered by
+    ``aegis.close.field_map._is_government_lender``). Government-backed
+    loans are term loans with a fixed amortization schedule and a
+    regulator behind them — they must not inflate a merchant's MCA
+    stack when compared against a funder's ``max_positions`` cap.
+
+    Returns ``(0, 0)`` when the merchant is ``None`` or has no stated
+    positions. Never raises; graceful over missing / mis-typed fields.
+
+    ``govt_count`` is returned alongside so callers can surface a soft
+    concern ("SBA loan detected — verify with funder before submitting")
+    on match cards.
+    """
+    if merchant is None:
+        return (0, 0)
+    from aegis.close.field_map import _is_government_lender
+
+    total = getattr(merchant, "stated_mca_positions", None) or 0
+    if not total:
+        return (0, 0)
+
+    lenders = getattr(merchant, "stated_current_lenders", None) or []
+    if isinstance(lenders, str):
+        lender_iter = [ln.strip() for ln in lenders.split(",") if ln.strip()]
+    else:
+        lender_iter = [str(ln).strip() for ln in lenders if str(ln).strip()]
+
+    govt_count = sum(1 for ln in lender_iter if _is_government_lender(ln))
+    return (max(0, total - govt_count), govt_count)
+
+
 def _supports_product(
     deal_types_accepted: tuple[str, ...],
     product_type: str,
@@ -375,6 +411,26 @@ def match_funder(
     #             regress the "screen-on-first-open" ergonomics).
     if merchant is not None and getattr(merchant, "ofac_is_clear", None) is False:
         return None
+
+    # Government-backed loan (SBA / USDA / EIDL / PPP) detection. When
+    # the merchant lists one of these among ``stated_current_lenders``
+    # the funder needs to know: (a) the effective MCA stack is smaller
+    # than the raw stated count and (b) some funders require the govt
+    # loan to be disclosed on the application even if it doesn't count
+    # against ``max_positions``. Surfaces as a soft concern on every
+    # match card produced below; the hard max-positions gate on
+    # ``deal.mca_positions`` (analysis-derived) is unchanged because
+    # the parser already excludes govt-loan debits before the position
+    # count is computed.
+    _effective_positions, _govt_lender_count = _effective_mca_positions(merchant)
+    _govt_lender_soft_concern: str | None = None
+    if _govt_lender_count > 0:
+        _govt_lender_soft_concern = (
+            f"government_loan_disclosed: {_govt_lender_count} govt-backed "
+            f"loan(s) on stated stack (SBA / USDA / EIDL / PPP); effective "
+            f"MCA positions {_effective_positions}. Disclose to funder before "
+            f"submitting."
+        )
 
     # Product-type filter (no new column — uses existing
     # ``deal_types_accepted``). When the merchant has an EXPLICIT
@@ -697,6 +753,10 @@ def match_funder(
     if bank_warning is not None:
         fintech_soft_concerns.append(bank_warning)
 
+    govt_lender_soft_concerns: list[str] = []
+    if _govt_lender_soft_concern is not None:
+        govt_lender_soft_concerns.append(_govt_lender_soft_concern)
+
     return FunderMatch(
         funder_id=funder.id,
         funder_name=funder.name,
@@ -704,8 +764,8 @@ def match_funder(
         reasons=reasons,
         # Union of hard fails + soft concerns + per-merchant stip soft
         # concerns + web-presence flags + UCC/default findings + the
-        # parser-emitted fintech-bank warning — caller wants the full
-        # picture.
+        # parser-emitted fintech-bank warning + govt-loan disclosure —
+        # caller wants the full picture.
         soft_concerns=(
             hard
             + soft
@@ -713,6 +773,7 @@ def match_funder(
             + web_presence_soft_concerns
             + ucc_soft_concerns
             + fintech_soft_concerns
+            + govt_lender_soft_concerns
         ),
         estimated_terms=estimated_terms,
         tier_matches=tier_matches,
