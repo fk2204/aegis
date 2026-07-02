@@ -319,6 +319,16 @@ def generate_deal_summary(
 _NARRATIVE_CAP: int = 1500  # chars
 _NARRATIVE_MAX_TOKENS: int = 512
 
+# Call-transcript block. Injected as its own block above the "Write the
+# narrative now." tail so the narrator prompt has clean, contradiction-
+# flagging framing when call notes exist, and NO bare label when they
+# don't (an empty "Call notes: —" line invites the model to fabricate).
+# The 800-char truncation is the cap on how much operator call content
+# gets into the prompt — enough for two thoughtful call summaries, below
+# the ADB context-budget line.
+_CALL_NOTES_TRUNCATE_CHARS: int = 800
+_CALL_NOTES_BLOCK_TEMPLATE = "\nCall notes (flag contradictions with application data): {text}\n"
+
 _NARRATIVE_PROMPT_TEMPLATE = """\
 You are an MCA underwriter presenting a deal to a funder. Write a
 factual, concise 3-4 sentence narrative summarising this deal as if
@@ -340,9 +350,26 @@ Deal facts:
 - Key concerns: {concerns}
 - Operator context: {operator_context}
 - Recent Close note: {close_note}
-- Call summary: {call_summary}
-
+{call_notes_block}
 Write the narrative now."""
+
+
+def _call_notes_block(call_transcripts: str | None) -> str:
+    """Return the call-notes prompt block or empty string when absent.
+
+    Truncated at :data:`_CALL_NOTES_TRUNCATE_CHARS` and framed with a
+    contradiction-flag instruction so the model treats the transcripts
+    as ground truth for consistency checking. An empty / whitespace-only
+    input returns ``""`` — the template renders NO bare label in that
+    case, which avoids the "Call notes: —" invitation to fabricate.
+    """
+    if call_transcripts is None:
+        return ""
+    text = call_transcripts.strip()
+    if not text:
+        return ""
+    truncated = text[:_CALL_NOTES_TRUNCATE_CHARS]
+    return _CALL_NOTES_BLOCK_TEMPLATE.format(text=truncated)
 
 
 class _BedrockTextClient(Protocol):
@@ -387,7 +414,7 @@ def _narrative_prompt(
         concerns=", ".join(concerns) if concerns else "none surfaced",
         operator_context=(merchant.deal_context or "—")[:300],
         close_note=(close_context.notes_summary or "—")[:300],
-        call_summary=(close_context.call_transcripts or "—")[:300],
+        call_notes_block=_call_notes_block(close_context.call_transcripts),
     )
 
 

@@ -103,6 +103,7 @@ def _try_parse_k_suffix(cleaned: str) -> Decimal | None:
 
 if TYPE_CHECKING:
     from aegis.audit import AuditLog
+    from aegis.close.client import CloseClient
 
 _log = get_logger(__name__)
 
@@ -1111,6 +1112,119 @@ def extract_lead_description(close_lead_payload: dict[str, Any]) -> str | None:
     return trimmed or None
 
 
+# Limit applied to the /api/v1/activity/call/ pull inside
+# ``fetch_call_transcripts_for_lead``. Matches the RECENT_CALLS_LIMIT
+# used by ``merchants.close_context.refresh_close_context_for_merchant``
+# (3) but bumped to 10 because this helper is the richer-formatted path
+# consumed by the narrator prompt, where a bit more historical context
+# on stale leads is worth the extra 7 rows. Bumping again is a config
+# change — every bump pulls more PII into the DB column.
+_CALL_TRANSCRIPTS_LIMIT: Final[int] = 10
+
+
+def fetch_call_transcripts_for_lead(
+    lead_id: str,
+    client: CloseClient,
+) -> str | None:
+    """Pull the most-recent Close ``activity/call`` entries for a lead
+    and return them formatted as ``[Call YYYY-MM-DD — Ns]\\n{note}``
+    blocks separated by ``\\n\\n``.
+
+    Feature D companion — the plain ``list_recent_calls`` path in
+    :class:`aegis.close.client.CloseClient` joins call ``note`` bodies
+    with ``\\n---\\n`` (used by
+    :func:`aegis.merchants.close_context.refresh_close_context_for_merchant`).
+    This function is the richer-formatted variant the narrator prompt
+    consumes: each call gets a header stamp showing when it happened and
+    how long it ran, so an LLM reading the merged transcripts can spot
+    contradictions with application data more cleanly than out of a
+    flat separator-joined blob.
+
+    Format:
+
+    ::
+
+        [Call 2026-06-15 — 442s]
+        Confirmed merchant has 2 active MCAs. ...
+
+        [Call 2026-06-13 — 318s]
+        Discovery call. Inventory expansion ...
+
+    - ``date_created`` is truncated to the ``YYYY-MM-DD`` prefix; when
+      the field is missing or unparseable, the header falls back to
+      ``[Call unknown — Ns]``.
+    - ``duration`` is expected as seconds (Close API returns int); when
+      missing or unparseable it falls back to ``[Call {date} — ?s]``.
+    - Empty / whitespace-only note bodies are skipped entirely.
+    - Returns ``None`` when the list is empty, every note is empty, or
+      the Close call raises. Failure is best-effort and logged at
+      WARNING — never propagates. Callers rely on this to avoid a
+      Close-side blip blocking a merchant create.
+
+    Uses ``client.request("GET", "/api/v1/activity/call/", params=...)``
+    directly rather than :meth:`CloseClient.list_recent_calls` so we
+    can pin ``_fields`` and ``_order_by`` on the wire and pull the raw
+    ``duration`` / ``date_created`` values without going through the
+    :class:`aegis.close.client.CloseCall` model (which intentionally
+    strips ``duration``).
+    """
+    try:
+        page = client.request(
+            "GET",
+            "/api/v1/activity/call/",
+            params={
+                "lead_id": lead_id,
+                "_limit": _CALL_TRANSCRIPTS_LIMIT,
+                "_fields": "note,duration,date_created",
+                "_order_by": "-date_created",
+            },
+        )
+    except Exception as exc:
+        _log.warning(
+            "close.fetch_call_transcripts_failed lead_id=%s err=%s",
+            lead_id,
+            type(exc).__name__,
+        )
+        return None
+
+    raw_items = page.get("data")
+    if not isinstance(raw_items, list):
+        return None
+
+    blocks: list[str] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        note = raw.get("note")
+        if not isinstance(note, str):
+            continue
+        stripped = note.strip()
+        if not stripped:
+            continue
+
+        date_raw = raw.get("date_created")
+        if isinstance(date_raw, str) and len(date_raw) >= 10:
+            date_str = date_raw[:10]
+        else:
+            date_str = "unknown"
+
+        duration_raw = raw.get("duration")
+        if isinstance(duration_raw, int):
+            duration_str = f"{duration_raw}s"
+        elif isinstance(duration_raw, float):
+            # Defensive — Close returns int, but coerce a stray float
+            # cleanly rather than emitting ``[Call ... 442.0s]``.
+            duration_str = f"{int(duration_raw)}s"
+        else:
+            duration_str = "?s"
+
+        blocks.append(f"[Call {date_str} — {duration_str}]\n{stripped}")
+
+    if not blocks:
+        return None
+    return "\n\n".join(blocks)
+
+
 def filename_matches_statement_filter(filename: str, filters: tuple[str, ...]) -> bool:
     """Case-insensitive substring match of ``filename`` against ``filters``.
 
@@ -1222,6 +1336,7 @@ __all__ = [
     "FieldMapError",
     "_parse_close_lead_description",
     "extract_lead_description",
+    "fetch_call_transcripts_for_lead",
     "filename_is_non_statement",
     "filename_matches_statement_filter",
     "financial_diff",

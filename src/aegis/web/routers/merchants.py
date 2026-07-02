@@ -203,6 +203,57 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
+# OFAC match confidence display helper
+# ---------------------------------------------------------------------------
+
+
+# ``aegis.compliance.ofac`` formats each SDN match as
+# ``"sdn:9999 :: BLOCKED ENTITY HOLDINGS LLC (jw=0.97 ts=0.94)"`` — the
+# ``jw`` token is the Jaro-Winkler similarity between the merchant's
+# legal name and the SDN entry. Values approach ``1.0`` for a strong
+# match. The dossier now surfaces a tiered confidence label next to
+# each raw match string so the underwriter can spot obvious false
+# positives without leaving the page.
+#
+# Thresholds are conservative:
+#   * >= 0.96 → HIGH (investigate immediately)
+#   * >= 0.92 → MEDIUM (review carefully)
+#   * <  0.92 → LOW (likely FP, but review before declining)
+#   * missing / unparseable → "unknown" (do not guess)
+_OFAC_JW_PATTERN: Final[re.Pattern[str]] = re.compile(r"jw=(?P<jw>\d+(?:\.\d+)?)")
+_OFAC_HIGH_JW_THRESHOLD: Final[float] = 0.96
+_OFAC_MEDIUM_JW_THRESHOLD: Final[float] = 0.92
+
+
+def _parse_ofac_confidence(match_str: str) -> str:
+    """Return a tiered confidence label for an OFAC match string.
+
+    ``match_str`` is one entry from ``merchants.ofac_match_detail``
+    (typed ``list[str]``). The scoring annotation is embedded as
+    ``(jw=0.XX ts=0.XX)`` at the tail of the line. When no ``jw`` token
+    parses cleanly, returns ``"unknown"`` — never a fabricated number.
+
+    Labels are intentionally verbose so the dossier renders as a
+    complete instruction next to each match ("investigate immediately"
+    / "review carefully" / "likely false positive, review before
+    declining") rather than a bare severity token the operator has to
+    interpret.
+    """
+    match = _OFAC_JW_PATTERN.search(match_str)
+    if match is None:
+        return "unknown"
+    try:
+        jw = float(match.group("jw"))
+    except ValueError:
+        return "unknown"
+    if jw >= _OFAC_HIGH_JW_THRESHOLD:
+        return "HIGH — investigate immediately"
+    if jw >= _OFAC_MEDIUM_JW_THRESHOLD:
+        return "MEDIUM — review carefully"
+    return f"LOW ({jw:.2f}) — likely false positive, review before declining"
+
+
+# ---------------------------------------------------------------------------
 # Merchant-list deal-status helper
 # ---------------------------------------------------------------------------
 
@@ -6005,6 +6056,15 @@ async def merchant_detail(
             # grid. ``None`` (pre-083 / never checked) renders nothing.
             "ofac_blocked": ofac_blocked,
             "ofac_match_detail": list(merchant.ofac_match_detail),
+            # Enriched shape carrying a tiered confidence label alongside
+            # each raw match. The template renders this NEXT TO the raw
+            # detail (not instead of), so existing readers of
+            # ``ofac_match_detail`` keep working while the underwriter
+            # sees an at-a-glance HIGH / MEDIUM / LOW / unknown verdict.
+            "ofac_match_details_scored": [
+                {"raw": m, "confidence": _parse_ofac_confidence(m)}
+                for m in merchant.ofac_match_detail
+            ],
             # Assignment chip on the dossier header. ``assignee`` is None
             # when the merchant is unassigned; the chip renders the
             # "Unassigned + Assign" CTA in that case.

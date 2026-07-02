@@ -199,7 +199,11 @@ def test_pre_uw_trigger_refreshes_close_context(
     assert merchant is not None
     assert merchant.close_lead_description == "Long-form Close lead description here"
     assert merchant.close_notes_summary == "Note body 1\n---\nNote body 2"
-    assert merchant.close_call_transcripts == "Call body 1"
+    # Transcripts wear the per-call ``[Call ... — ...s]`` header emitted
+    # by ``fetch_call_transcripts_for_lead``; body preserved verbatim.
+    assert merchant.close_call_transcripts is not None
+    assert "Call body 1" in merchant.close_call_transcripts
+    assert merchant.close_call_transcripts.startswith("[Call ")
 
     refreshes = [e for e in audit.entries if e["action"] == "merchant.close_context.refreshed"]
     assert len(refreshes) == 1
@@ -239,7 +243,10 @@ def test_activity_note_created_refreshes_context_for_known_merchant(
 
     after = repo.get(existing.id)
     assert after.close_notes_summary == "Note body 1\n---\nNote body 2"
-    assert after.close_call_transcripts == "Call body 1"
+    # See ``test_pre_uw_trigger_refreshes_close_context`` for format detail.
+    assert after.close_call_transcripts is not None
+    assert "Call body 1" in after.close_call_transcripts
+    assert after.close_call_transcripts.startswith("[Call ")
 
 
 def test_activity_note_created_skips_when_lead_unknown(

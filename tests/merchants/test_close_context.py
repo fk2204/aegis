@@ -28,12 +28,19 @@ from aegis.merchants.repository import InMemoryMerchantRepository
 
 @dataclass
 class _StubCloseClient:
-    """Captures call args and returns scripted notes/calls."""
+    """Captures call args and returns scripted notes/calls.
+
+    ``request`` handles the ``/api/v1/activity/call/`` path used by
+    ``fetch_call_transcripts_for_lead`` — synthesises a payload from
+    ``calls_payload`` (default derived from the ``calls`` list so
+    existing tests don't need to double-configure)."""
 
     notes: list[CloseNote] = field(default_factory=list)
     calls: list[CloseCall] = field(default_factory=list)
+    calls_payload: list[dict[str, Any]] | None = None
     notes_calls_seen: list[tuple[str, int]] = field(default_factory=list)
     calls_calls_seen: list[tuple[str, int]] = field(default_factory=list)
+    request_paths_seen: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     def list_recent_notes(self, lead_id: str, limit: int = 5) -> list[CloseNote]:
         self.notes_calls_seen.append((lead_id, limit))
@@ -42,6 +49,34 @@ class _StubCloseClient:
     def list_recent_calls(self, lead_id: str, limit: int = 3) -> list[CloseCall]:
         self.calls_calls_seen.append((lead_id, limit))
         return self.calls
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self.request_paths_seen.append((path, params or {}))
+        if path == "/api/v1/activity/call/":
+            # Prefer explicit payload; else derive one from the ``calls``
+            # list so tests written before the switch to
+            # ``fetch_call_transcripts_for_lead`` still exercise a
+            # meaningful transcript column.
+            if self.calls_payload is not None:
+                return {"data": self.calls_payload, "has_more": False}
+            derived: list[dict[str, Any]] = [
+                {
+                    "id": c.id,
+                    "note": c.note,
+                    "date_created": c.date_created or "1970-01-01T00:00:00+00:00",
+                    "duration": 60,
+                }
+                for c in self.calls
+            ]
+            return {"data": derived, "has_more": False}
+        raise AssertionError(f"unexpected request path {path!r}")
 
     def get_lead(self, lead_id: str) -> dict[str, Any]:
         # Not used in these tests — they all inject ``lead_fetcher``
@@ -92,7 +127,12 @@ def test_refresh_populates_all_three_columns() -> None:
     updated = repo.get(merchant.id)
     assert updated.close_lead_description == "Lead-desc body"
     assert updated.close_notes_summary == "Note 1 body\n---\nNote 2 body"
-    assert updated.close_call_transcripts == "Call 1 disposition"
+    # Transcripts now use the richer per-call header format written by
+    # ``fetch_call_transcripts_for_lead`` — date + duration stamp
+    # followed by the body. Body is preserved verbatim.
+    assert updated.close_call_transcripts is not None
+    assert "Call 1 disposition" in updated.close_call_transcripts
+    assert updated.close_call_transcripts.startswith("[Call ")
 
 
 def test_refresh_uses_default_limits() -> None:
