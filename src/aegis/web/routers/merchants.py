@@ -5617,6 +5617,40 @@ async def merchant_detail(
         except Exception:  # pragma: no cover — defensive; never gate dossier
             sba_eligibility = None
 
+    # Product-specific scoring (2026-07-01 A1a/b/c). Dispatched by
+    # ``merchant.product_type``: SBA path for business_loan, equipment-
+    # financing path for equipment, factoring path for receivables. MCA /
+    # unknown types leave ``product_analysis`` as ``None`` — the dossier
+    # template hides the section entirely in that case. Best-effort;
+    # never blocks the dossier render.
+    product_analysis: Any = None
+    try:
+        _product_type = merchant.product_type
+        if _product_type == "business_loan":
+            from aegis.scoring_v2.sba_scoring import score_sba_deal
+
+            _true_rev = (
+                Decimal(str(sba_analysis.true_revenue))
+                if sba_analysis is not None
+                and getattr(sba_analysis, "true_revenue", None) is not None
+                else None
+            )
+            product_analysis = score_sba_deal(
+                merchant=merchant,
+                true_revenue_monthly=_true_rev,
+                confirmed_mca_count=(mca_stack.active_mca_count if mca_stack else 0),
+            )
+        elif _product_type == "equipment":
+            from aegis.scoring_v2.equipment_scoring import score_equipment_deal
+
+            product_analysis = score_equipment_deal(merchant=merchant)
+        elif _product_type == "receivables":
+            from aegis.scoring_v2.factoring_scoring import score_factoring_deal
+
+            product_analysis = score_factoring_deal(merchant=merchant)
+    except Exception:  # pragma: no cover — defensive; never gate dossier
+        product_analysis = None
+
     # Tax returns (migration 093) + A/R aging (migration 094) — surfaced
     # on the dossier when a row exists for this merchant. The route
     # never fails on these queries; an empty list/None just hides the
@@ -5759,6 +5793,8 @@ async def merchant_detail(
             "revenue_trends": revenue_trends,
             "merchant_monthly_trend": merchant_monthly_trend,
             "sba_eligibility": sba_eligibility,
+            "product_analysis": product_analysis,
+            "product_type": merchant.product_type,
             "tax_returns": tax_returns_for_merchant,
             "ar_aging": ar_aging_for_merchant,
             "funder_note_submissions": funder_note_submissions,

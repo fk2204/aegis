@@ -228,6 +228,76 @@ _BANK_NAME_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
         "National Bank of Arizona",
     ),
     (re.compile(r"\bTHE\s+BANK\s*-\s*OAKLEY\b", re.IGNORECASE), "The Bank of Oakley"),
+    # 2026-07-01 (A2) — high-confidence additive patterns for the NULL
+    # cohort. Each entry is a US retail / commercial / SMB-serving bank
+    # whose statement header appears in MCA broker lead flow. Additive
+    # only; existing patterns unchanged so nothing already matched can
+    # regress. Statement headers embed the full legal bank name, so
+    # false-positive risk on these tokens is essentially zero.
+    (re.compile(r"\bHSBC\s+Bank\s+USA\b", re.IGNORECASE), "HSBC Bank USA, N.A."),
+    (re.compile(r"\bBank\s+of\s+the\s+West\b", re.IGNORECASE), "Bank of the West"),
+    (re.compile(r"\bWintrust\s+Bank\b", re.IGNORECASE), "Wintrust Bank"),
+    (re.compile(r"\bOld\s+National\s+Bank\b", re.IGNORECASE), "Old National Bank"),
+    (re.compile(r"\bRenasant\s+Bank\b", re.IGNORECASE), "Renasant Bank"),
+    (re.compile(r"\bBank\s+OZK\b", re.IGNORECASE), "Bank OZK"),
+    (re.compile(r"\bSimmons\s+Bank\b", re.IGNORECASE), "Simmons Bank"),
+    (re.compile(r"\bPacific\s+Premier\s+Bank\b", re.IGNORECASE), "Pacific Premier Bank"),
+    (re.compile(r"\bBerkshire\s+Bank\b", re.IGNORECASE), "Berkshire Bank"),
+    (re.compile(r"\bConnectOne\s+Bank\b", re.IGNORECASE), "ConnectOne Bank"),
+    (re.compile(r"\bLive\s+Oak\s+Bank\b", re.IGNORECASE), "Live Oak Bank"),
+    (re.compile(r"\bByline\s+Bank\b", re.IGNORECASE), "Byline Bank"),
+    (re.compile(r"\bNewtek\s+Bank\b", re.IGNORECASE), "Newtek Bank, N.A."),
+    (re.compile(r"\bCross\s+River\s+Bank\b", re.IGNORECASE), "Cross River Bank"),
+    (
+        re.compile(r"\bCommunity\s+Federal\s+Savings\s+Bank\b", re.IGNORECASE),
+        "Community Federal Savings Bank",
+    ),
+    (
+        re.compile(r"\bUSAA\s+(?:Federal\s+)?Savings\s+Bank\b", re.IGNORECASE),
+        "USAA Federal Savings Bank",
+    ),
+    (
+        re.compile(r"\bPentagon\s+Federal\s+Credit\s+Union\b|\bPenFed\b", re.IGNORECASE),
+        "Pentagon Federal Credit Union",
+    ),
+    (re.compile(r"\bAlliant\s+Credit\s+Union\b", re.IGNORECASE), "Alliant Credit Union"),
+    (re.compile(r"\bBECU\b|\bBoeing\s+Employees'?\s+Credit\s+Union\b", re.IGNORECASE), "BECU"),
+    (
+        re.compile(r"\bBethpage\s+Federal\s+Credit\s+Union\b", re.IGNORECASE),
+        "Bethpage Federal Credit Union",
+    ),
+    (
+        re.compile(r"\bSuncoast\s+Credit\s+Union\b", re.IGNORECASE),
+        "Suncoast Credit Union",
+    ),
+    (
+        re.compile(r"\bGolden\s+1\s+Credit\s+Union\b", re.IGNORECASE),
+        "Golden 1 Credit Union",
+    ),
+    (re.compile(r"\bSilicon\s+Valley\s+Bank\b", re.IGNORECASE), "Silicon Valley Bank"),
+    (re.compile(r"\bFirst\s+Republic\s+Bank\b", re.IGNORECASE), "First Republic Bank"),
+    (re.compile(r"\bSignature\s+Bank\b", re.IGNORECASE), "Signature Bank"),
+    (re.compile(r"\bMUFG\s+Union\s+Bank\b", re.IGNORECASE), "MUFG Union Bank"),
+    (re.compile(r"\bChime\b", re.IGNORECASE), "Chime"),
+    (re.compile(r"\bGreen\s+Dot\s+Bank\b", re.IGNORECASE), "Green Dot Bank"),
+    (re.compile(r"\bStearns\s+Bank\b", re.IGNORECASE), "Stearns Bank, N.A."),
+    (re.compile(r"\bHome\s+Bank\b", re.IGNORECASE), "Home Bank"),
+    (re.compile(r"\bIndependent\s+Bank\b", re.IGNORECASE), "Independent Bank"),
+    (re.compile(r"\bBank\s+of\s+Hope\b", re.IGNORECASE), "Bank of Hope"),
+    (re.compile(r"\bPreferred\s+Bank\b", re.IGNORECASE), "Preferred Bank"),
+    (
+        re.compile(r"\bMetropolitan\s+Commercial\s+Bank\b", re.IGNORECASE),
+        "Metropolitan Commercial Bank",
+    ),
+    (re.compile(r"\bFlushing\s+Bank\b", re.IGNORECASE), "Flushing Bank"),
+    (re.compile(r"\bNBT\s+Bank\b", re.IGNORECASE), "NBT Bank, N.A."),
+    (re.compile(r"\bFirst\s+Horizon\s+Bank\b", re.IGNORECASE), "First Horizon Bank"),
+    (re.compile(r"\bAssociated\s+Bank\b", re.IGNORECASE), "Associated Bank, N.A."),
+    (re.compile(r"\bArvest\s+Bank\b", re.IGNORECASE), "Arvest Bank"),
+    (re.compile(r"\bWesBanco\s+Bank\b", re.IGNORECASE), "WesBanco Bank"),
+    (re.compile(r"\bFulton\s+Bank\b", re.IGNORECASE), "Fulton Bank"),
+    (re.compile(r"\bAtlantic\s+Capital\s+Bank\b", re.IGNORECASE), "Atlantic Capital Bank"),
+    (re.compile(r"\bBankwell\s+Bank\b", re.IGNORECASE), "Bankwell Bank"),
 )
 
 

@@ -1909,6 +1909,102 @@
       </section>
     {% endif %}
 
+    {# ============== § 3¾ PRODUCT ANALYSIS ==============
+       Product-specific scoring (2026-07-01 A1). Rendered when the
+       merchant's product_type is business_loan / equipment / receivables
+       and the corresponding scorer returned a result. MCA / unknown
+       product types leave ``product_analysis`` as ``None`` and this
+       whole section is suppressed. Informational only — never gates
+       funder matching. #}
+    {% if product_analysis %}
+      <section id="product-analysis"
+               class="section"
+               data-test-id="dossier-product-analysis"
+               data-product-type="{{ product_type }}">
+        <header>
+          <span class="n">§ 3¾</span>
+          <h2>Product-specific <em>analysis</em></h2>
+          <span class="chip">
+            {% if product_type == "business_loan" %}SBA
+            {% elif product_type == "equipment" %}Equipment finance
+            {% elif product_type == "receivables" %}Invoice factoring
+            {% else %}Product{% endif %}
+          </span>
+          <span class="footnote">
+            {% if product_analysis.eligible %}eligible{% else %}not eligible{% endif %}
+          </span>
+        </header>
+
+        {% if product_analysis.eligible %}
+          <div class="ok-banner"
+               style="background:#f0fdf4;border:1px solid #86efac;padding:10px 12px;border-radius:6px;margin-bottom:10px;">
+            <strong>Eligible</strong>
+            {% if product_type == "business_loan" %}
+              &middot; Program: <strong>{{ product_analysis.program }}</strong>
+              {% if product_analysis.recommended_amount %}
+                &middot; Recommended amount: ${{ "{:,.0f}".format(product_analysis.recommended_amount) }}
+              {% endif %}
+              {% if product_analysis.estimated_rate_low and product_analysis.estimated_rate_high %}
+                &middot; Est. rate: {{ "{:.1%}".format(product_analysis.estimated_rate_low) }}–{{ "{:.1%}".format(product_analysis.estimated_rate_high) }}
+              {% endif %}
+            {% elif product_type == "equipment" %}
+              {% if product_analysis.max_advance %}
+                &middot; Max advance: ${{ "{:,.0f}".format(product_analysis.max_advance) }}
+              {% endif %}
+              {% if product_analysis.ltv %}
+                &middot; LTV: {{ "{:.0%}".format(product_analysis.ltv) }}
+              {% endif %}
+              {% if product_analysis.required_down_payment %}
+                &middot; Down: ${{ "{:,.0f}".format(product_analysis.required_down_payment) }}
+              {% endif %}
+              {% if product_analysis.term_months_range %}
+                &middot; Term: {{ product_analysis.term_months_range[0] }}–{{ product_analysis.term_months_range[1] }} mo
+              {% endif %}
+            {% elif product_type == "receivables" %}
+              {% if product_analysis.eligible_receivables %}
+                &middot; Eligible A/R: ${{ "{:,.0f}".format(product_analysis.eligible_receivables) }}
+              {% endif %}
+              {% if product_analysis.estimated_advance %}
+                &middot; Estimated advance: ${{ "{:,.0f}".format(product_analysis.estimated_advance) }}
+              {% endif %}
+              {% if product_analysis.factoring_fee_low and product_analysis.factoring_fee_high %}
+                &middot; Fee: {{ "{:.1%}".format(product_analysis.factoring_fee_low) }}–{{ "{:.1%}".format(product_analysis.factoring_fee_high) }}
+              {% endif %}
+            {% endif %}
+          </div>
+
+          {% if product_type == "business_loan" and product_analysis.referral_lenders %}
+            <p style="margin-top:8px;"><strong>Referral lenders:</strong>
+              {{ product_analysis.referral_lenders | join(", ") }}
+            </p>
+          {% endif %}
+
+          {% if product_analysis.soft_concerns %}
+            <details style="margin-top:8px;">
+              <summary>{{ product_analysis.soft_concerns | length }} soft concern{{ '' if product_analysis.soft_concerns | length == 1 else 's' }}</summary>
+              <ul style="margin-top:6px;">
+                {% for c in product_analysis.soft_concerns %}
+                  <li>{{ c }}</li>
+                {% endfor %}
+              </ul>
+            </details>
+          {% endif %}
+        {% else %}
+          <div class="warn-banner"
+               style="background:#fef2f2;border:1px solid #fca5a5;padding:10px 12px;border-radius:6px;margin-bottom:10px;">
+            <strong>Not eligible for this product path.</strong>
+            {% if product_analysis.blockers %}
+              <ul style="margin-top:6px;">
+                {% for b in product_analysis.blockers %}
+                  <li>{{ b }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+          </div>
+        {% endif %}
+      </section>
+    {% endif %}
+
     {# ============== § 4 FUNDER MATCHING (inline) ==============
        Phase 7B inline-match (2026-06-19). Lifted the side-by-side
        comparison from /ui/merchants/{id}/match into the dossier so the

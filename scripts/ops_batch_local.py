@@ -27,8 +27,17 @@ sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 _env_file = _REPO_ROOT / ".env"
 if _env_file.exists():
-    for _line in _env_file.read_text(encoding="utf-8").splitlines():
-        _line = _line.strip()
+    _raw = _env_file.read_bytes()
+    if _raw.startswith(b"\xff\xfe"):
+        _text = _raw.decode("utf-16-le")
+    elif _raw.startswith(b"\xfe\xff"):
+        _text = _raw.decode("utf-16-be")
+    elif _raw.startswith(b"\xef\xbb\xbf"):
+        _text = _raw[3:].decode("utf-8")
+    else:
+        _text = _raw.decode("utf-8", errors="replace")
+    for _line in _text.splitlines():
+        _line = _line.strip().lstrip("﻿")
         if _line and not _line.startswith("#") and "=" in _line:
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
