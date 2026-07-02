@@ -20,7 +20,7 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import UUID
 
 from arq import cron
@@ -108,6 +108,23 @@ from aegis.scoring_v2.narrator_job import generate_narrator_summary
 from aegis.storage import DocumentNotFoundError, DocumentRepository, DocumentRow
 
 _log = get_logger(__name__)
+
+# Hard-fraud flag set consulted by ``promote_clean_manual_review_cron``.
+# A document sitting in ``manual_review`` whose ``all_flags`` intersects
+# any of these codes is NEVER auto-promoted to ``proceed`` — those flags
+# mark integrity failures that require operator adjudication. Module
+# level (not inside the cron) so it's allocated once at import.
+HARD_FRAUD_FLAGS: Final[frozenset[str]] = frozenset(
+    {
+        "FONT_INCONSISTENCY",
+        "METADATA_MISMATCH",
+        "SHADOW_DOCUMENT",
+        "SYNTHETIC_PDF",
+        "IMPOSSIBLE_REVENUE",
+        "TAMPERED",
+        "RECONCILIATION_FAILED_WITHDRAWAL_TOTAL",
+    }
+)
 
 
 async def parse_document(
@@ -3317,6 +3334,95 @@ async def retry_stuck_error_documents_cron(ctx: dict[str, Any]) -> dict[str, int
     return {"stuck": len(rows), "requeued": requeued}
 
 
+async def promote_clean_manual_review_cron(
+    ctx: dict[str, Any],
+) -> dict[str, int]:
+    """arq cron — promote ``manual_review`` documents that carry only
+    soft flags (no hard-fraud codes) to ``proceed``.
+
+    A document lands in ``manual_review`` when Track A's integrity
+    pre-screen (parser-layer routing, `src/aegis/parser/pipeline.py`) sums
+    metadata flag severities above threshold, OR when a downstream signal
+    forces manual triage. Many of those docs carry only advisory flags
+    (WARN, SHADOW, etc.) that don't warrant blocking underwriting — the
+    original H10 discipline (`CLAUDE.md § Scoring discipline`) is to
+    keep integrity + business risk separate, not to hold every doc
+    forever.
+
+    Policy: for each doc with ``parse_status='manual_review'`` that also
+    has an ``analyses`` row (i.e. the pipeline finished), uppercase every
+    entry in ``all_flags`` and check for intersection with
+    ``HARD_FRAUD_FLAGS``. Skip on any intersection. Otherwise UPDATE
+    ``parse_status='proceed'``.
+
+    Never raises: query failure logs a WARN and returns zeros; per-doc
+    update failure logs a WARN and continues.
+    """
+    from aegis.db import get_supabase
+
+    sb = get_supabase()
+
+    try:
+        # ``analyses!inner(id)`` filters out docs without a completed
+        # analysis row — the parser hasn't landed aggregates yet, so
+        # promoting to ``proceed`` would be premature. Nested embed keeps
+        # the sweep to one round-trip.
+        stuck = (
+            sb.table("documents")
+            .select("id,all_flags,analyses!inner(id)")
+            .eq("parse_status", "manual_review")
+            .execute()
+        )
+    except Exception as exc:
+        _log.warning("promote_clean_manual_review.query_failed exc=%s", exc)
+        return {"checked": 0, "promoted": 0, "skipped": 0}
+
+    rows = stuck.data or []
+    if not rows:
+        return {"checked": 0, "promoted": 0, "skipped": 0}
+
+    promoted = 0
+    skipped = 0
+    for doc_raw in rows:
+        doc = cast("dict[str, Any]", doc_raw)
+        doc_id = doc.get("id")
+        if not doc_id:
+            skipped += 1
+            continue
+
+        raw_flags = doc.get("all_flags") or []
+        normalized = {str(flag).upper() for flag in raw_flags if isinstance(flag, str)}
+
+        if normalized & HARD_FRAUD_FLAGS:
+            skipped += 1
+            continue
+
+        try:
+            sb.table("documents").update({"parse_status": "proceed"}).eq(
+                "id", str(doc_id)
+            ).execute()
+            promoted += 1
+            _log.info(
+                "promote_clean_manual_review.promoted document_id=%s",
+                doc_id,
+            )
+        except Exception as exc:
+            _log.warning(
+                "promote_clean_manual_review.update_failed document_id=%s exc=%s",
+                doc_id,
+                exc,
+            )
+            skipped += 1
+
+    _log.info(
+        "promote_clean_manual_review.summary checked=%d promoted=%d skipped=%d",
+        len(rows),
+        promoted,
+        skipped,
+    )
+    return {"checked": len(rows), "promoted": promoted, "skipped": skipped}
+
+
 async def run_funder_matching(
     ctx: dict[str, Any],
     merchant_id_str: str,
@@ -4435,6 +4541,19 @@ class WorkerSettings:
             minute={0},
             run_at_startup=False,
         ),
+        # 06:00 UTC daily — promote ``manual_review`` documents whose
+        # ``all_flags`` don't intersect ``HARD_FRAUD_FLAGS`` to
+        # ``proceed``. Companion to the retry sweep above: this cron
+        # clears docs stuck in ``manual_review`` because a soft flag
+        # tripped the pre-screen but no hard-fraud signal is present.
+        # 06:00 UTC lands before the operator's morning queue so the
+        # promoted docs surface as ``proceed`` at start-of-day.
+        cron(
+            promote_clean_manual_review_cron,
+            hour=6,
+            minute=0,
+            run_at_startup=False,
+        ),
         # 07:00 UTC daily — pull funder definitions from the local
         # ``/var/lib/aegis/funders`` tree. Idempotent per the script's
         # own hash gate. The corpus-ingestion cron used to live here too
@@ -4598,6 +4717,7 @@ __all__ = [
     "parse_document",
     "process_close_attachments",
     "process_funder_reply",
+    "promote_clean_manual_review_cron",
     "retry_stuck_error_documents_cron",
     "run_background_checks",
     "run_funder_matching",

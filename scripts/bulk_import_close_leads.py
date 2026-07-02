@@ -35,6 +35,7 @@ Run on the prod box via:
 
 from __future__ import annotations
 
+import argparse
 import sys
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -99,8 +100,14 @@ def _search_leads_by_status(client: CloseClient, status: str) -> list[dict[str, 
 def _import_qualified(
     client: CloseClient,
     existing_by_lead: dict[str, str],
+    *,
+    dry_run: bool,
 ) -> tuple[int, int, int, int]:
-    """Group 1 — create merchant rows for Qualified - Opp Open leads."""
+    """Group 1 — create merchant rows for Qualified - Opp Open leads.
+
+    In dry-run mode, prints what would be imported (lead_id + name) but
+    performs zero Supabase writes.
+    """
     print(f"\nFetching Close leads with status: {_IMPORT_STATUS}")
     qualified = _search_leads_by_status(client, _IMPORT_STATUS)
     print(f"Found: {len(qualified)}")
@@ -140,6 +147,11 @@ def _import_qualified(
             if value is not None:
                 merchant_data[key] = value
 
+        if dry_run:
+            imported += 1
+            print(f"  [DRY-RUN] would import lead_id={lead_id} name={name!r}")
+            continue
+
         try:
             sb.table("merchants").insert(cast(Any, merchant_data)).execute()
             imported += 1
@@ -158,6 +170,8 @@ def _import_qualified(
 def _record_disqualified_outcomes(
     client: CloseClient,
     existing_by_lead: dict[str, str],
+    *,
+    dry_run: bool,
 ) -> tuple[int, int, int]:
     """Group 2 — write ``funder_replies`` rows with ``outcome='declined'``
     per submission for AEGIS merchants whose Close lead is Disqualified.
@@ -263,6 +277,14 @@ def _record_disqualified_outcomes(
                 ),
                 "status": "declined",
             }
+            if dry_run:
+                outcomes_recorded += 1
+                print(
+                    f"  [DRY-RUN] would record declined outcome "
+                    f"merchant={merchant_id} submission={submission_id}"
+                )
+                continue
+
             try:
                 sb.table("funder_replies").insert(cast(Any, payload)).execute()
                 outcomes_recorded += 1
@@ -281,7 +303,31 @@ def _record_disqualified_outcomes(
     return outcomes_recorded, outcomes_skipped, no_anchor_merchants
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Selective Close lead import for AEGIS. Fetches Qualified - Opp Open "
+            "and Disqualified leads, mirrors them into merchants + funder_replies."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Query Close and enumerate what WOULD be imported/recorded, but do NOT "
+            "write any rows to Supabase. Safe to run without operator approval."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    dry_run: bool = args.dry_run
+
+    banner = "# mode=DRY-RUN (no Supabase writes)" if dry_run else "# mode=APPLY"
+    print(banner)
+
     settings = get_settings()
     if not getattr(settings, "close_api_key", None):
         print("CLOSE_API_KEY not configured; nothing to do.")
@@ -312,22 +358,30 @@ def main() -> int:
             existing_by_lead[lead_id_val] = mid_val
     print(f"Existing Close-linked merchants: {len(existing_by_lead)}")
 
-    imported, sk_exists, sk_noname, errors = _import_qualified(client, existing_by_lead)
+    imported, sk_exists, sk_noname, errors = _import_qualified(
+        client, existing_by_lead, dry_run=dry_run
+    )
+    label_imported = "Would import" if dry_run else "Imported"
     print(
-        f"Imported: {imported} | Skipped existing: {sk_exists} | "
+        f"{label_imported}: {imported} | Skipped existing: {sk_exists} | "
         f"No name: {sk_noname} | Errors: {errors}"
     )
 
-    recorded, already, no_anchor = _record_disqualified_outcomes(client, existing_by_lead)
+    recorded, already, no_anchor = _record_disqualified_outcomes(
+        client, existing_by_lead, dry_run=dry_run
+    )
+    label_recorded = "Would record outcomes" if dry_run else "Outcomes recorded"
     print(
-        f"Outcomes recorded: {recorded} | Already had outcome: {already} | "
+        f"{label_recorded}: {recorded} | Already had outcome: {already} | "
         f"Merchants without submission anchor: {no_anchor}"
     )
 
     print("\nSummary:")
-    print(f"  Qualified leads imported: {imported}")
-    print(f"  Declined outcomes recorded: {recorded}")
+    print(f"  {label_imported} qualified leads: {imported}")
+    print(f"  {label_recorded} (declined): {recorded}")
     print(f"  Disqualified merchants without submission anchor: {no_anchor}")
+    if dry_run:
+        print("  (dry-run — nothing written to Supabase)")
     return 0
 
 

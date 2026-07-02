@@ -3478,6 +3478,105 @@ async def merchant_refresh_ucc(
     )
 
 
+@router.post("/merchants/{merchant_id}/refresh-ofac", response_model=None)
+async def merchant_refresh_ofac(
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+    audit: Annotated[AuditLog, Depends(get_audit)],
+) -> RedirectResponse:
+    """Force-run the OFAC sanctions screening for this merchant.
+
+    Mirrors ``merchant_refresh_ucc`` — always runs, persists the four
+    ``ofac_*`` merchant columns via ``refresh_ofac_for_merchant``, and
+    writes a ``compliance.ofac_screened`` audit row (plus
+    ``compliance.ofac_block`` on a match). Cache-missing / cache-stale
+    failure modes are absorbed inside the screener and surfaced as
+    ``ofac_is_clear=False`` with an ``error`` string on the audit row,
+    so the operator sees the click did something.
+    """
+    from aegis.compliance.ofac import refresh_ofac_for_merchant
+
+    try:
+        refresh_ofac_for_merchant(
+            merchant_id,
+            merchants_repo=merchants,
+            audit=audit,
+        )
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return RedirectResponse(
+        url=f"/ui/merchants/{merchant_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.get(
+    "/merchants/{merchant_id}/background-checks.html",
+    response_class=HTMLResponse,
+)
+async def merchant_background_check_report(
+    request: Request,
+    merchant_id: UUID,
+    merchants: Annotated[MerchantRepository, Depends(get_merchant_repository)],
+) -> HTMLResponse:
+    """Return a self-contained printable HTML background-check report.
+
+    Renders the four background-check surfaces the dossier already
+    exposes (OFAC / UCC / SOS / Web presence) as a downloadable file
+    the operator can archive alongside a Close-note or a funder-tab
+    email attachment. Deliberately self-contained (styles inline, no
+    external asset references) so the file renders unchanged when
+    served offline.
+
+    Safe on merchants with every check field ``None`` — the template
+    branches on each ``*_checked_at`` and renders a "Never checked"
+    pill rather than crashing on the missing timestamp.
+    """
+    try:
+        merchant = merchants.get(merchant_id)
+    except MerchantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    generated_at = datetime.now(UTC)
+    slug = _slugify_for_filename(merchant.business_name) or "merchant"
+    filename = f"bg-check-{slug}-{generated_at.strftime('%Y%m%d')}.html"
+    response = templates.TemplateResponse(
+        request,
+        "merchant_background_check_report.html.j2",
+        {
+            "merchant": merchant,
+            "generated_at": generated_at,
+        },
+    )
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+def _slugify_for_filename(value: str | None) -> str:
+    """Reduce a merchant name to an ASCII kebab-case token safe for the
+    Content-Disposition filename attribute.
+
+    The RFC 6266 attribute value grammar is limited to a subset of
+    ASCII; we go further and strip to ``[a-z0-9-]`` so an unusual
+    business name can't smuggle a quote, path separator, or CR/LF into
+    the header. Falls back to an empty string on missing / all-unsafe
+    input so the caller can substitute a default.
+    """
+    if not value:
+        return ""
+    slug_chars: list[str] = []
+    prev_dash = True
+    for ch in value.lower():
+        if ch.isascii() and (ch.isalnum()):
+            slug_chars.append(ch)
+            prev_dash = False
+        elif not prev_dash:
+            slug_chars.append("-")
+            prev_dash = True
+    return "".join(slug_chars).strip("-")
+
+
 @router.post(
     "/merchants/{merchant_id}/verify-license",
     response_class=HTMLResponse,
