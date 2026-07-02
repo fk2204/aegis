@@ -478,6 +478,11 @@
   --rule:  var(--line);    /* #e6e4d9 */
   --ink-1: var(--ink);     /* #14201b */
   /* --ink-2:#3a463f and --ink-3:#657069 already defined above */
+
+  /* Aliases for the approved-mockup CSS spec below (2026-07-02). */
+  --bg:       var(--paper);
+  --alert:    var(--kill);
+  --warn-fg:  var(--warn);
 }
 
 /* ============================================================
@@ -566,3 +571,102 @@ h1.deal-name{font-family:var(--disp);font-weight:700;font-size:36px;line-height:
 .va-btn.p:hover,.va-btn.va-submit:hover{background:#0c3325}
 .va-btn.bad,.va-btn.va-decline{background:var(--kill-bg);border-color:var(--kill-line);color:var(--kill)}
 .va-btn.bad:hover,.va-btn.va-decline:hover{background:#fbdfdb}
+
+/* ============================================================
+   APPROVED-MOCKUP ALIGNMENT (2026-07-02)
+   Additive block matching the approved Space-Grotesk-heavy mockup.
+   Cascade: same specificity as the base rules above, so equal
+   selectors defined here win last-declared and re-skin the module.
+   Uses --bg / --alert / --warn-fg aliases from the legacy bridge.
+   ============================================================ */
+
+/* KPI cards */
+.kpi{background:var(--panel);border-radius:10px;padding:20px 24px;border:1px solid var(--line)}
+.kpi .k{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin-bottom:6px}
+.kpi .v{font-size:48px;font-weight:700;line-height:1;color:var(--ink);font-family:var(--disp)}
+.kpi .d{font-size:13px;color:var(--ink-3);margin-top:4px}
+.kpi.alert .v{color:var(--alert)}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:20px 0 28px}
+
+/* Queue cards */
+.qcard{background:var(--panel);border-radius:10px;border:1px solid var(--line);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;border-left:4px solid var(--line)}
+.qcard.k{border-left-color:var(--alert)}
+.qcard.p{border-left-color:var(--pass)}
+.qcard .qmain{flex:1}
+.qcard .qname{font-size:16px;font-weight:600;color:var(--ink);margin-bottom:4px}
+.qcard .qtags{display:flex;gap:6px;margin-bottom:6px}
+.qcard .qwhy{font-size:13px;color:var(--ink-2)}
+.qcard .qside{display:flex;align-items:center;gap:14px}
+.qact{padding:8px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--ink-2)}
+.qact.k{background:var(--green);color:#fff;border-color:var(--green)}
+.qact.p{background:var(--pass);color:#fff;border-color:var(--pass)}
+
+/* Product tabs */
+.prod-tabs{display:flex;border-bottom:1px solid var(--line);margin-bottom:24px}
+.ptab{padding:12px 20px;text-decoration:none;color:var(--ink-3);border-bottom:2px solid transparent;margin-bottom:-1px}
+.ptab.on{color:var(--ink);border-bottom-color:var(--green)}
+.ptab .ptl{font-size:14px;font-weight:600}
+.ptab .pts{font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+
+/* Gate banners */
+.gate{border-left:4px solid var(--alert);background:#fdf3f2;border-radius:8px;padding:16px 20px;display:flex;align-items:flex-start;gap:14px;margin-bottom:14px}
+.gate.gate-warn{border-left-color:var(--warn-fg);background:#fdf8f0}
+.gate-title{font-size:15px;font-weight:700;color:var(--ink);margin-bottom:4px}
+.gate-why{font-size:13px;color:var(--ink-2)}
+.gate-btn{padding:8px 16px;background:var(--green);color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+
+/* Two-col dossier layout */
+.doss-cols{display:grid;grid-template-columns:65fr 35fr;gap:24px;align-items:start}
+.doss-main{display:flex;flex-direction:column;gap:16px}
+.doss-side{display:flex;flex-direction:column;gap:16px}
+
+/* Deal header */
+.deal-eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin-bottom:8px}
+.deal-name{font-size:32px;font-weight:700;color:var(--ink);font-family:var(--disp);margin:0 0 6px}
+.deal-sub{font-size:14px;color:var(--ink-2);margin-bottom:20px}
+.deal-facts{display:flex;gap:32px;flex-wrap:wrap;padding:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-bottom:20px}
+.df .dl{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);margin-bottom:3px}
+.df .dv{font-size:14px;font-weight:600;color:var(--ink)}
+
+/* Funder cards */
+.cat{background:var(--panel);border-radius:10px;border:1px solid var(--line);padding:20px 24px;margin-bottom:12px}
+.cnm{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+.cnm h3{font-size:20px;font-weight:700;margin:0}
+.cprod{font-size:13px;color:var(--ink-2);margin-bottom:16px}
+.reqstrip{display:grid;grid-template-columns:repeat(6,1fr);gap:0;border-top:1px solid var(--line);padding-top:14px}
+.reqstat .rl{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);margin-bottom:4px}
+.reqstat .rv{font-size:14px;font-weight:600;color:var(--ink)}
+.rv.yes{color:var(--pass)}
+.rv.no{color:var(--alert)}
+
+/* Mix bar */
+.mix-bar{height:8px;border-radius:4px;overflow:hidden;display:flex;margin:10px 0 8px}
+.mix-seg{height:100%}
+.desk-foot{margin-top:32px;padding:12px 0;border-top:1px solid var(--line);font-size:11px;color:var(--ink-3);display:flex;align-items:center;gap:8px}
+
+/* Pills and badges */
+.pill{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}
+.pill.p,.pill.ok{background:#e6f4ec;color:var(--pass)}
+.pill.k,.pill.bad{background:#fdecea;color:var(--alert)}
+.pill.w,.pill.warn{background:#fbf1de;color:var(--warn-fg)}
+.stbadge{display:inline-block;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:700;text-transform:uppercase}
+.stbadge.clear,.stbadge.active,.stbadge.verified,.stbadge.match{background:#e6f4ec;color:var(--pass)}
+.stbadge.blocked,.stbadge.inactive,.stbadge.failed{background:#fdecea;color:var(--alert)}
+.stbadge.review,.stbadge.pending,.stbadge.not-run{background:#fbf1de;color:var(--warn-fg)}
+
+/* Cards */
+.card{background:var(--panel);border-radius:10px;border:1px solid var(--line)}
+.card .head{padding:16px 20px 0;display:flex;justify-content:space-between;align-items:center}
+.card .head h2{font-size:16px;font-weight:700;margin:0}
+.card .bd{padding:16px 20px 20px}
+.side-card{background:var(--panel);border-radius:10px;border:1px solid var(--line)}
+.side-card .head{padding:14px 16px 0;display:flex;justify-content:space-between;align-items:center}
+.side-card .head h2{font-size:14px;font-weight:700;margin:0}
+.side-card .bd{padding:12px 16px 16px}
+
+/* KV rows */
+.kv{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px}
+.kv:last-child{border-bottom:none}
+.kv .k{color:var(--ink-3)}
+.kv .v{font-weight:600;color:var(--ink)}
+.kv .v.mono{font-family:var(--mono)}
