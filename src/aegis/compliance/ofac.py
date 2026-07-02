@@ -53,7 +53,15 @@ JARO_WINKLER_THRESHOLD: Final[float] = 0.88
 # Token-sort secondary check uses simple-ratio cutoff. Catches cases
 # where word order differs ("Doe, John A." vs "John A. Doe") that
 # Jaro-Winkler under-counts.
-TOKEN_SORT_THRESHOLD: Final[float] = 0.88
+#
+# Raised 0.88 → 0.92 on 2026-07-02 after the prod re-screen showed 20/20
+# blocked merchants tripping on token-sort ratio alone (jw well below
+# 0.88 but ts=0.88-0.90). Generic-word overlaps like "LLC Company
+# Management" against Russian / NK SDN entries scored 0.89 and blocked
+# real US small businesses. 0.92 eliminates that class of false positive
+# while still catching genuine reordered-name matches like
+# "Doe, John A." vs "John A. Doe" (which score ≥ 0.95).
+TOKEN_SORT_THRESHOLD: Final[float] = 0.92
 
 # Context-aware raised threshold used when a US-looking business name is
 # compared against a foreign SDN entry (foreign program AND foreign

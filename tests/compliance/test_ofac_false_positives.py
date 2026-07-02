@@ -350,3 +350,41 @@ def test_us_llc_not_matched_russia_eo14024(tmp_path: Path) -> None:
         cache_path=cache_path,
     )
     assert result.is_clear is True, f"False positive: {result.match_detail}"
+
+
+# ---------------------------------------------------------------------------
+# 7. Token-sort false positive — LLC/Company/Management-style token overlap
+#    scored 0.89 in prod before the threshold was raised. This test locks
+#    the raised TOKEN_SORT_THRESHOLD (0.92) so a regression back to 0.88
+#    surfaces immediately.
+# ---------------------------------------------------------------------------
+
+
+def test_us_llc_not_matched_on_token_sort_only(tmp_path: Path) -> None:
+    """Token-sort score alone at 0.89 must not block a US LLC.
+
+    Genovate / Turnbull class: generic words like 'LLC Company Management'
+    produce ts=0.89 against Russian/NK SDN entries. Raising TS threshold
+    to 0.92 eliminates this without affecting genuine matches.
+    """
+    cache_path = _write_cache(
+        tmp_path,
+        entries=[
+            _entity(
+                uid="sdn:9000020",
+                name="LLC COMPANY TEKHNOPOL",
+                aliases=[],
+                programs=["RUSSIA-EO14024"],
+                countries=["RU"],
+            ),
+        ],
+    )
+    result = screen_merchant(
+        business_name="The Turnbull Company LLC",
+        owner_name=None,
+        cache_path=cache_path,
+    )
+    assert result.is_clear is True, (
+        f"Token-sort false positive: Turnbull matched TEKHNOPOL "
+        f"at ts threshold 0.88: {result.match_detail}"
+    )
