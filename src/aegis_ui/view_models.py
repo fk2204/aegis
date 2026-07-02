@@ -1298,10 +1298,12 @@ def build_funders_view(
                 "product_line": _resolve_product_line(deal_types),
                 # Schema gap: no ``remittance_type`` column yet.
                 "remittance_type": getattr(f, "remittance_type", None) or "straight",
+                # All strings so the template stays dumb and the
+                # empty-state banner check can look for "—".
                 "min_revenue": _fmt_money_short(min_rev),
-                "min_fico": min_fico,
-                "min_tib_months": min_tib,
-                "max_positions": max_pos,
+                "min_fico": str(min_fico) if min_fico else "—",
+                "min_tib_months": f"{min_tib} mo" if min_tib else "—",
+                "max_positions": str(max_pos) if max_pos else "—",
                 "stacking_ok": bool(getattr(f, "accepts_stacking", False)),
                 "excludes_summary": _build_excludes_summary(
                     tuple(getattr(f, "excluded_industries", ()) or ()),

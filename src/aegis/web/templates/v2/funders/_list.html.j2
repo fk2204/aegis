@@ -17,9 +17,9 @@
   </div>
   <div class="reqstrip">
     <div class="reqstat"><div class="rl">MIN MRR</div><div class="rv">{{ f.min_revenue }}</div></div>
-    <div class="reqstat"><div class="rl">MIN FICO</div><div class="rv">{{ f.min_fico or '—' }}</div></div>
-    <div class="reqstat"><div class="rl">MIN TIB</div><div class="rv">{{ f.min_tib_months or '—' }}{% if f.min_tib_months %} mo{% endif %}</div></div>
-    <div class="reqstat"><div class="rl">MAX POSITIONS</div><div class="rv">{{ f.max_positions or '—' }}</div></div>
+    <div class="reqstat"><div class="rl">MIN FICO</div><div class="rv">{{ f.min_fico }}</div></div>
+    <div class="reqstat"><div class="rl">MIN TIB</div><div class="rv">{{ f.min_tib_months }}</div></div>
+    <div class="reqstat"><div class="rl">MAX POSITIONS</div><div class="rv">{{ f.max_positions }}</div></div>
     <div class="reqstat"><div class="rl">STACKING</div><div class="rv {{ 'yes' if f.stacking_ok else 'no' }}">{{ 'Yes' if f.stacking_ok else 'No' }}</div></div>
     <div class="reqstat"><div class="rl">EXCLUDES</div><div class="rv">{{ f.excludes_summary or '—' }}</div></div>
   </div>

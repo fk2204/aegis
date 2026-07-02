@@ -78,6 +78,12 @@ def today(
     finalized: list[Any] = [m for m in _all_merchants if getattr(m, "status", None) == "finalized"][
         :50
     ]
+    # Fallback: if the pipeline has no finalized merchants (a fresh
+    # environment or an ops window where every deal is still provisional)
+    # show up to 50 non-deleted merchants so the Today view has content
+    # to triage instead of rendering an empty queue.
+    if not finalized:
+        finalized = [m for m in _all_merchants if getattr(m, "deleted_at", None) is None][:50]
     del MerchantStatus  # future: filter by broader status set here
 
     pipeline: list[dict[str, Any]] = []

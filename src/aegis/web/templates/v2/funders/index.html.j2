@@ -17,5 +17,10 @@
       <a href="?filter=marketplace"><button type="button" class="fchip{% if filter == 'marketplace' %} on{% endif %}">Marketplace</button></a>
     </div>
   </div>
+  {% if funders and funders | selectattr('min_revenue', 'equalto', '—') | list | length == funders | length %}
+  <div style="background:#fbf1de;border:1px solid #f0d8a0;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#a55a06">
+    ⚠️ Funder criteria not yet entered. Min MRR, FICO, TIB and position limits are empty — add them via the funder guideline editor so the matcher can route deals correctly.
+  </div>
+  {% endif %}
   <div id="funder-list">{% include "v2/funders/_list.html.j2" %}</div>
 {% endblock %}
