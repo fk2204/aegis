@@ -654,6 +654,31 @@ def build_deal_view(
     mca_balance_raw = getattr(merchant, "stated_mca_balance", None)
     mca_positions_stated = getattr(merchant, "stated_mca_positions", None)
 
+    # Classification is computed once, up front, so the coverage %
+    # can drive an additional soft-gate ("revenue unverifiable")
+    # before the return dict is assembled.
+    classification_view = build_classification_view(analysis, transactions=transactions)
+    coverage_pct = classification_view.get("coverage_pct", 100) or 100
+    if isinstance(coverage_pct, (int, float)) and coverage_pct < 20:
+        unclassified = classification_view.get("unclassified_total")
+        body_prefix = (
+            f"{unclassified} of gross incoming is unclassified. "
+            if unclassified
+            else "Not enough incoming deposits are classified yet. "
+        )
+        gates.append(
+            {
+                "severity": "warn",
+                "title": "Revenue unverifiable — scoring held",
+                "body": (
+                    body_prefix + "Reclassify counterparties, then re-score before treating "
+                    "gross deposits as revenue."
+                ),
+                "action_label": "Reclassify now",
+                "action_url": f"/v2/deal/{merchant.id}/reclassify",
+            }
+        )
+
     return {
         "deal": {
             "id": str(getattr(merchant, "id", "") or ""),
@@ -694,7 +719,7 @@ def build_deal_view(
         "background": background,
         "risk": build_risk_module(merchant, analysis, product),
         "funder_match": build_funder_match_view(funder_matches),
-        **build_classification_view(analysis, transactions=transactions),
+        **classification_view,
     }
 
 
