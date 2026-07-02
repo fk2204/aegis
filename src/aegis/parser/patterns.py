@@ -153,6 +153,35 @@ GENERIC_MCA_TERMS: Final[tuple[str, ...]] = (
     "rcvbl",
 )
 
+# S3 (2026-07-02) — Government-backed loan debits. SBA / USDA / other
+# federal-program loan payments show up in bank statements the same way
+# private MCA debits do (recurring ACH), but they are NOT an MCA
+# position: they are government-backed term loans with a fixed
+# amortization schedule and a real regulator behind them. Counting them
+# as MCA positions inflates the merchant's apparent stack, which pushes
+# clean deals into "over-stacked" false-declines. Any debit whose
+# description matches this regex is dropped BEFORE the MCA-detection
+# pass runs.
+GOVERNMENT_DEBIT_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:SBA|US\s*SBA|SMALL\s*BUSINESS\s*ADMIN(?:ISTRATION)?|"
+    r"USDA(?:\s*RURAL)?|US\s*DEPT(?:\.|\s)*(?:OF\s*)?AGRICULTURE|"
+    r"FEDERAL\s*LOAN|EIDL|PPP\s*LOAN)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_government_debit(description: str | None) -> bool:
+    """Return True when the transaction description matches a known
+    government-backed loan program (SBA, USDA, EIDL, PPP). Government
+    loans MUST NOT be counted as MCA positions — they are term loans
+    with a fixed schedule and a regulator behind them, not merchant
+    cash advances. See ``GOVERNMENT_DEBIT_PATTERN``.
+    """
+    if not description:
+        return False
+    return bool(GOVERNMENT_DEBIT_PATTERN.search(description))
+
+
 # R1.1: Disguise descriptors used by funders / brokers to hide an MCA
 # behind product-neutral language. These NEVER fire on their own — they
 # require the same cadence guard as ``GENERIC_MCA_TERMS`` (≥10 occurrences
@@ -789,8 +818,13 @@ def _detect_mca_positions(
     - Daily cadence (≥10 occurrences) with generic-MCA term -> position
     Generic single words alone do NOT fire (TS-review fix).
     """
+    # S3 (2026-07-02) — skip government-backed loan debits before the
+    # description-grouping pass. SBA / USDA / EIDL / PPP payments are
+    # not MCA positions and must not inflate the merchant's stack count.
+    filtered_debits = [d for d in debits if not _is_government_debit(d.description)]
+
     groups: defaultdict[str, list[ClassifiedTransaction]] = defaultdict(list)
-    for d in debits:
+    for d in filtered_debits:
         key = _normalize_desc(d.description)
         groups[key].append(d)
 

@@ -715,6 +715,35 @@ _INT_FIELDS: Final[frozenset[str]] = frozenset({"stated_monthly_deposits", "stat
 _LIST_FIELDS: Final[frozenset[str]] = frozenset({"stated_current_lenders"})
 
 
+# S3 (2026-07-02) — Government-backed lenders. When "Current Lenders"
+# contains any of these, they must NOT count toward the MCA position
+# stack: they are term loans with a fixed schedule and a regulator
+# behind them, not merchant cash advances. Substring match against the
+# lowercased lender string so operator drift ("SBA loan", "US SBA",
+# "Small Business Admin") all resolve.
+GOVERNMENT_LENDER_KEYWORDS: Final[frozenset[str]] = frozenset(
+    {
+        "sba",
+        "small business administration",
+        "small business admin",
+        "usda",
+        "us department of agriculture",
+        "eidl",
+        "ppp loan",
+        "federal loan",
+        "govt",
+        "government",
+    }
+)
+
+
+def _is_government_lender(lender_name: str) -> bool:
+    """Return True when ``lender_name`` matches a known government-
+    backed loan program keyword. See ``GOVERNMENT_LENDER_KEYWORDS``."""
+    lower = lender_name.lower().strip()
+    return any(kw in lower for kw in GOVERNMENT_LENDER_KEYWORDS)
+
+
 def _normalize_label(raw: str) -> str:
     """Lowercase + collapse internal whitespace so the lookup absorbs
     operator drift on capitalization and stray spaces."""
@@ -820,6 +849,29 @@ def _parse_close_lead_description(description: str | None) -> dict[str, Any]:
 
         # Free-text field (use_of_funds, stated_bank).
         out[field] = stripped_value
+
+    # S3 (2026-07-02) — subtract government lenders from the stated MCA
+    # position count when we can safely infer the operator lumped them
+    # in. Safe inference is: (1) both fields were pasted together in this
+    # block, and (2) the position count equals the lender count. When
+    # that holds, we know the operator produced position_count by tallying
+    # the lender list — and any SBA/USDA/EIDL entry in that list must be
+    # subtracted so the risk band doesn't over-count the stack. When the
+    # counts don't match we leave both fields alone (the operator's count
+    # may already exclude the government lender; guessing would corrupt
+    # the source-of-truth signal).
+    lenders_val = out.get("stated_current_lenders")
+    positions_val = out.get("stated_mca_positions")
+    if (
+        isinstance(lenders_val, list)
+        and isinstance(positions_val, int)
+        and positions_val == len(lenders_val)
+        and positions_val > 0
+    ):
+        gov_lenders = [ln for ln in lenders_val if _is_government_lender(str(ln))]
+        if gov_lenders:
+            out["stated_mca_positions"] = max(0, positions_val - len(gov_lenders))
+            out["has_government_loan"] = True
 
     return out
 
