@@ -7,9 +7,15 @@
   <div class="desk-sub">Your funders and their basic requirements. Open one for the full guideline and notes.</div>
   <div class="toolbar">
     <input class="search" name="q" placeholder="Search funders…"
+           value="{{ q | default('') }}"
            hx-get="/v2/funders" hx-trigger="input changed delay:200ms"
            hx-target="#funder-list" hx-include="[name=filter]">
     <input type="hidden" name="filter" value="{{ filter | default('all') }}">
+    <div class="filter-btns">
+      <a href="?filter=all"><button type="button" class="fchip{% if filter == 'all' or not filter %} on{% endif %}">All</button></a>
+      <a href="?filter=direct"><button type="button" class="fchip{% if filter == 'direct' %} on{% endif %}">Direct</button></a>
+      <a href="?filter=marketplace"><button type="button" class="fchip{% if filter == 'marketplace' %} on{% endif %}">Marketplace</button></a>
+    </div>
   </div>
   <div id="funder-list">{% include "v2/funders/_list.html.j2" %}</div>
 {% endblock %}

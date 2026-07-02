@@ -1,6 +1,33 @@
 {# HTMX target: full page returns this inside #funder-list; search/filter returns just this. #}
 {% for f in funders %}
-  {# Build the .cat card here from f (see aegis-reference.html for markup + fields). #}
+<div class="cat" id="funder-{{ f.id }}">
+  <div class="cmain">
+    <div>
+      <div class="cnm">
+        <h3>{{ f.name }}</h3>
+        <span class="ctype">{{ 'DIRECT' if f.channel == 'direct' else 'MARKETPLACE' }}</span>
+        <span class="pill {{ 'p' if f.status == 'active' else 'w' }}">{{ f.status | upper }}</span>
+      </div>
+      <div class="cprod">{{ f.product_line }} · {{ f.remittance_type | default('straight') }}</div>
+    </div>
+    <div class="cR">
+      <div class="apr">{% if f.last_submission_result %}{{ f.last_submission_result }}{% else %}—{% endif %}</div>
+      <div class="aprl">{{ f.last_submission_date or 'NO HISTORY YET' }}</div>
+    </div>
+  </div>
+  <div class="reqstrip">
+    <div class="reqstat"><div class="rl">MIN MRR</div><div class="rv">{{ f.min_revenue }}</div></div>
+    <div class="reqstat"><div class="rl">MIN FICO</div><div class="rv">{{ f.min_fico or '—' }}</div></div>
+    <div class="reqstat"><div class="rl">MIN TIB</div><div class="rv">{{ f.min_tib_months or '—' }}{% if f.min_tib_months %} mo{% endif %}</div></div>
+    <div class="reqstat"><div class="rl">MAX POSITIONS</div><div class="rv">{{ f.max_positions or '—' }}</div></div>
+    <div class="reqstat"><div class="rl">STACKING</div><div class="rv {{ 'yes' if f.stacking_ok else 'no' }}">{{ 'Yes' if f.stacking_ok else 'No' }}</div></div>
+    <div class="reqstat"><div class="rl">EXCLUDES</div><div class="rv">{{ f.excludes_summary or '—' }}</div></div>
+  </div>
+  <div class="det-toggle">
+    <span class="det-label">DETAIL</span>
+    <a class="det-link" href="/v2/funders/{{ f.id }}">· full guideline &amp; notes</a>
+  </div>
+</div>
 {% else %}
-  <div class="card"><div class="bd"><p style="margin:0;color:var(--ink-3)">No funders loaded yet — wire <code>build_funders_view()</code> to the real funder records.</p></div></div>
+<div class="card"><div class="bd"><p style="margin:0;color:var(--ink-3)">No funders match. Add funders via admin.</p></div></div>
 {% endfor %}

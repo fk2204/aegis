@@ -18,7 +18,7 @@
 </div>
 {% endif %}
 
-<div class="comp-sec">
+<section class="comp-sec" id="ofac">
   <h2>OFAC sanctions queue</h2>
   <div class="sh">Merchants matched against the OFAC Specially Designated Nationals list. Review each match before clearing or escalating.</div>
 
@@ -54,5 +54,62 @@
   {% else %}
   <div class="card"><div class="bd" style="color:var(--ink-3)">No OFAC flags — all merchants clear.</div></div>
   {% endfor %}
-</div>
+</section>
+
+<section class="comp-sec" id="kyb">
+  <h2>Know-your-business (KYB)</h2>
+  <p class="sec-sub">Confirms the entity is real, registered, and owned by who the application claims.</p>
+  <table class="kyb-table">
+    <thead>
+      <tr>
+        <th>Deal</th><th>Entity (SOS)</th><th>Beneficial ownership</th>
+        <th>ID verification</th><th>TIN / EIN match</th><th>Bank verification</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in kyb %}
+      <tr>
+        <td class="nm">{{ row.name }}</td>
+        <td><span class="stbadge st-{{ row.sos_status }}">{{ row.sos_label }}</span></td>
+        <td><span class="stbadge st-{{ row.bo_status }}">{{ row.bo_label }}</span></td>
+        <td><span class="stbadge st-{{ row.id_status }}">{{ row.id_label }}</span></td>
+        <td><span class="stbadge st-{{ row.tin_status }}">{{ row.tin_label }}</span></td>
+        <td><span class="stbadge st-{{ row.bank_status }}">{{ row.bank_label }}</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" style="color:var(--ink-3);text-align:center">Data pending — no KYB checks recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="comp-sec" id="states">
+  <h2>State licensing &amp; usury posture</h2>
+  <p class="sec-sub">Where Commera can lend, and the rules that change the deal in each state.</p>
+  <div class="state-grid">
+    {% for s in states %}
+    <div class="state-card {{ s.risk }}">
+      <div class="sname">{{ s.name }} · {{ s.code }}</div>
+      <div class="sdesc">{{ s.description }}</div>
+    </div>
+    {% else %}
+    <div class="card"><div class="bd" style="color:var(--ink-3)">Data pending — state matrix not loaded.</div></div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="comp-sec" id="activity">
+  <h2>Recent compliance activity</h2>
+  <div class="act-log">
+    {% for a in activity %}
+    <div class="act-row">
+      <span class="act-date">{{ a.date }}</span>
+      <span class="act-desc">{{ a.description }}</span>
+      <span class="act-badge {{ a.kind }}">{{ a.label }}</span>
+    </div>
+    {% else %}
+    <div class="card"><div class="bd" style="color:var(--ink-3)">No recent compliance activity.</div></div>
+    {% endfor %}
+  </div>
+</section>
 {% endblock %}
