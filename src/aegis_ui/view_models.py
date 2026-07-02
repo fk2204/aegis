@@ -70,15 +70,29 @@ def _fmt_pct(val: Any) -> str:
 
 
 # ============================================================ TODAY
-def build_today_view(pipeline: Any) -> dict[str, Any]:
+def build_today_view(
+    pipeline: Any,
+    outcomes: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Shape a merchant pipeline list into the Today view's KPI + queue.
 
     ``pipeline`` is a list of dicts (or None):
         {"merchant": MerchantRow, "analysis": AnalysisRow | None,
          "documents": list[DocumentRow]}
+
+    ``outcomes`` is a list of ``merchant_outcomes`` rows (or None) —
+    used to compute the "Funded · 7d" KPI. Each row: ``outcome``,
+    ``funded_amount``, ``recorded_at``.
     """
     if not pipeline:
-        return {"kpis": [], "mix": [], "queue": []}
+        return {
+            "kpis": [],
+            "mix": [],
+            "queue": [],
+            "total_requested": "$0",
+            "queue_depth": 0,
+            "funded_7d": "$0",
+        }
 
     queue: list[dict[str, Any]] = []
     product_counts: dict[str, int] = {}
@@ -125,6 +139,12 @@ def build_today_view(pipeline: Any) -> dict[str, Any]:
 
         proceed_count = sum(1 for d in docs if getattr(d, "parse_status", None) == "proceed")
 
+        requested_raw = getattr(merchant, "requested_amount", None)
+        try:
+            requested_int = int(requested_raw) if requested_raw is not None else 0
+        except (TypeError, ValueError, InvalidOperation):
+            requested_int = 0
+
         queue.append(
             {
                 "deal_id": str(getattr(merchant, "id", "") or ""),
@@ -133,7 +153,7 @@ def build_today_view(pipeline: Any) -> dict[str, Any]:
                 "status_text": status_text,
                 "status_kind": status_kind,
                 "meta": (
-                    f"{_fmt_money(getattr(merchant, 'requested_amount', None))} · "
+                    f"{_fmt_money(requested_raw)} · "
                     f"{getattr(merchant, 'state', '') or '-'} · "
                     f"{proceed_count} doc(s)"
                 ),
@@ -141,6 +161,7 @@ def build_today_view(pipeline: Any) -> dict[str, Any]:
                 "score_value": band or "-",
                 "score_label": "band",
                 "verdict_kind": verdict_kind,
+                "requested": requested_int,
             }
         )
 
@@ -166,23 +187,86 @@ def build_today_view(pipeline: Any) -> dict[str, Any]:
     proceed_total = sum(1 for q in queue if q["status_kind"] == "p")
     block_total = sum(1 for q in queue if q["status_kind"] == "k")
 
+    # Funded in last 7 days (from merchant_outcomes)
+    _7d_ago = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    funded_rows = [
+        r
+        for r in (outcomes or [])
+        if isinstance(r, dict)
+        and r.get("outcome") == "funded"
+        and str(r.get("recorded_at") or "") > _7d_ago
+    ]
+
+    def _row_amount(r: dict[str, Any]) -> int:
+        raw = r.get("funded_amount") or 0
+        try:
+            return int(raw)
+        except (TypeError, ValueError, InvalidOperation):
+            return 0
+
+    funded_total = sum(_row_amount(r) for r in funded_rows)
+    funded_str = (
+        f"${funded_total / 1_000_000:.1f}M"
+        if funded_total >= 1_000_000
+        else f"${funded_total:,.0f}"
+    )
+    avg_ticket = int(funded_total / len(funded_rows)) if funded_rows else 0
+    avg_str = f"avg ticket ${avg_ticket:,.0f}" if avg_ticket else "no funded deals"
+
+    # Committee = proceed verdict AND requested > 500k
+    committee = [
+        q for q in queue if q.get("verdict_kind") == "p" and q.get("requested", 0) > 500_000
+    ]
+
+    # Pipeline total requested (Decimal-safe int sum)
+    total_requested = sum(int(q.get("requested", 0) or 0) for q in queue)
+    total_req_str = (
+        f"${total_requested / 1_000_000:.1f}M"
+        if total_requested >= 1_000_000
+        else f"${total_requested:,.0f}"
+    )
+
     kpis = [
-        {"label": "Active deals", "value": str(total), "detail": "in pipeline", "is_alert": False},
         {
-            "label": "Ready to submit",
-            "value": str(proceed_total),
-            "detail": "proceed verdict",
+            "label": "Active files",
+            "value": str(total),
+            "detail": f"{len(set(q.get('product', '') for q in queue))} product lines",
             "is_alert": False,
         },
         {
-            "label": "Blocked",
+            "label": "Blocked · can't decide",
             "value": str(block_total),
-            "detail": "need review",
+            "detail": "compliance + missing package",
             "is_alert": block_total > 0,
+        },
+        {
+            "label": "Ready to issue",
+            "value": str(proceed_total),
+            "detail": "approved + matched",
+            "is_alert": False,
+        },
+        {
+            "label": "In committee",
+            "value": str(len(committee)),
+            "detail": "above auto-approve size",
+            "is_alert": False,
+        },
+        {
+            "label": "Funded · 7d",
+            "value": funded_str,
+            "detail": avg_str,
+            "is_alert": False,
         },
     ]
 
-    return {"kpis": kpis, "mix": mix, "queue": queue}
+    return {
+        "kpis": kpis,
+        "mix": mix,
+        "queue": queue,
+        "total_requested": total_req_str,
+        "queue_depth": len([q for q in queue if q.get("verdict_kind") not in ("p", "k")]),
+        "funded_7d": funded_str,
+    }
 
 
 # ============================================================ DEAL

@@ -97,10 +97,26 @@ def today(
                 break
         pipeline.append({"merchant": m, "analysis": latest_analysis, "documents": docs})
 
+    # Pull merchant_outcomes for the Funded · 7d KPI. Fail-open — the
+    # KPI degrades to "$0 / no funded deals" when the query blows up.
+    outcomes_rows: list[dict[str, Any]] = []
+    try:
+        from aegis.db import get_supabase
+
+        _outcomes_resp = (
+            get_supabase()
+            .table("merchant_outcomes")
+            .select("outcome,funded_amount,recorded_at")
+            .execute()
+        )
+        outcomes_rows = [r for r in (_outcomes_resp.data or []) if isinstance(r, dict)]
+    except Exception:
+        outcomes_rows = []
+
     return templates.TemplateResponse(
         request,
         "v2/today.html.j2",
-        {"active": "today", **build_today_view(pipeline)},
+        {"active": "today", **build_today_view(pipeline, outcomes=outcomes_rows)},
     )
 
 
